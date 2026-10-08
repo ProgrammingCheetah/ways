@@ -121,4 +121,4 @@ You are the hub.
 - **Close your own review loop before opening a PR:** apply every finding, or route it. A deferred finding is stated in the PR.
 - **Verify, don't trust.** A "settled" claim in a handoff gets checked against its source, and a security or protocol claim cites a checked source or is marked unverified.
 - **Never push the main branch directly.** Before any force-push: fetch, lease to the fetched tip, and stop and report if it isn't a clean replay.
-- **Comments you post through the human's accounts** (GitHub, Jira) start with `Isaac:`.
+- **Comments you post through the human's accounts** (GitHub, Jira) start with `Claude:`.

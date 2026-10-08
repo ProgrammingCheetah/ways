@@ -1,6 +1,6 @@
 ## Teams — <project>
 
-The Orchestrator (the tech lead) is **Isaac**. The Product Owner, manager and stakeholder is **Zuri**. Each team has one lead, 2–3 programmers and one QA. Members keep their names, and each is spawned only when there's work for them.
+**The Orchestrator** is the tech lead. **The Engineer** is the Product Owner, manager and stakeholder. Each team has one lead, 2–3 programmers and one QA. Members keep their names, and each is spawned only when there's work for them.
 
 | Team | Mission | Owns (paths) | Lead | Programmers | QA |
 |---|---|---|---|---|---|
