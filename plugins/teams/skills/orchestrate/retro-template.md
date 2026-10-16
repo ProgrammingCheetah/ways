@@ -10,9 +10,9 @@
 
 ---
 
-<!-- The team's QA writes this part as its own file, beside this one (<same name>-qa.md), with /teams:retrospective <team> <feature> qa -->
+<!-- At each milestone the top-level QA writes this part as its own file, in the same folder: <YYYYMMDD>-qa-<version>-m<n>.md, with /teams:retrospective qa <version> m<n>. The next milestone's fresh QA is briefed with it. -->
 
-# QA log: <team>, <feature or release>
+# QA log: release <version>, milestone <n>
 
 <date> · QA: <name>
 
@@ -21,3 +21,5 @@
 ## Checks I ran by hand more than once (each is a tool candidate)
 
 ## What slipped past me
+
+## Look at next milestone

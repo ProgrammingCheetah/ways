@@ -1,6 +1,6 @@
 # <Slice name>: <one-line what>
 
-<date> · <lead name> (<team> lead) · QA: <qa name> · Release <version>, slice <n> · **A read-only plan: nothing was changed to write it.**
+<date> · <lead name> (<team> lead) · Release <version>, slice <n>, milestone <m> · **A read-only plan: nothing was changed to write it.**
 
 <!-- Claude Code's plan-mode shape: Context first, one recommended approach, the critical files,
      what to reuse, and how to verify. The teams sections follow it. Keep the plan scannable. -->
@@ -31,7 +31,7 @@
 
 ## Verification
 
-<How to test it end to end: the gate, the test that proves each rule (each must fail when its rule breaks), and what to run or click. Where QA will plant bugs.>
+<How to test it end to end: the gate, the test that proves each rule (each must fail when its rule breaks), and what to run or click. Where milestone QA should plant bugs.>
 
 ## Questions for this slice
 
@@ -56,6 +56,8 @@
 | # | Call | Why |
 |---|---|---|
 
-## QA challenges
+## Challenges
 
-## QA resolutions
+<The Orchestrator's check against the Groundwork; the security reviewer's, when the slice hits a trigger.>
+
+## Resolutions

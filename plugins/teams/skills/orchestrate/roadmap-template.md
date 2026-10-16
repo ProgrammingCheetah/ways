@@ -1,6 +1,6 @@
 # Roadmap: <team>, release <version>
 
-<date> · Lead: <name> · QA: <name> · Read from: the signed release documents, not their authors' notes.
+<date> · Lead: <name> · Read from: the signed release documents, not their authors' notes.
 
 ## In one screen
 
@@ -8,7 +8,7 @@
 
 ## Slices
 
-- **Slice 1: <outcome>.** Packages: <names from the implementation plan>. Depends on: <team and what, or nothing>. Done when: <a check the Engineer could run by hand>.
+- **Slice 1: <outcome>.** Packages: <names from the implementation plan>. Depends on: <team and what, or nothing>. Done when: <a check the Engineer could run by hand>. Milestone: <n>.
 - **Slice 2: …**
 
 <Slice 1 is the smallest increment that works end to end; each later slice grows it.>
@@ -25,9 +25,7 @@
 
 ## Questions (each pre-answered)
 
-## QA challenges
-
-## QA resolutions
+<!-- No QA section: the Groundwork's QA reads every roadmap and records its challenges there. -->
 
 ---
 
