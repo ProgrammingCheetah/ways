@@ -26,7 +26,7 @@ flowchart TD
   I -->|release done| J[Release reviews and retros]
 ```
 
-Every arrow into a new box hands a document to **freshly spawned** agents: names and roles persist, context doesn't. Documents that reach the Engineer (the design document, the Groundwork) carry their QA's challenges and the author's resolutions. Slice plans reach the Engineer only for a domain fork or a one-way door. A fix or small change outside a release starts at the slice plan.
+Every arrow into a new box hands a document to **freshly spawned** agents: names and roles persist, context doesn't. Documents that reach the Engineer (the design document, the Groundwork) carry their QA's challenges and the author's resolutions. Slice plans reach the Engineer only for a domain fork or a one-way door. A fix or small change outside a release starts at the slice plan, and with no Groundwork behind it, that plan goes to the Engineer.
 
 ## How the roles reach the main session
 

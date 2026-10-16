@@ -64,7 +64,7 @@ Nothing runs at low effort. A Model or Effort set in the teams file's **Lanes** 
 9. **Clean up.** After a merge and its fix rounds, each agent removes its own workspace and build output: commit or snapshot what's left, remove it through the VCS, delete the folder. Never remove the Engineer's checkout or another agent's workspace.
 10. **Release end.** Release reviews (section 7), the demo of the last milestone, the Engineer's acceptance, then retrospectives.
 
-**Off-cycle work** (a fix or a small change outside a release) starts at step 5 from the Engineer's one-paragraph ask. If it would change a signed document, the Engineer re-checks that document first.
+**Off-cycle work** (a fix or a small change outside a release) starts at step 5 from the Engineer's one-paragraph ask. With no Groundwork behind it, its plan goes to the Engineer for approval. If it would change a signed document, the Engineer re-checks that document first.
 
 ## 5. Spawning
 
@@ -72,7 +72,7 @@ Nothing runs at low effort. A Model or Effort set in the teams file's **Lanes** 
 - **Count lanes first.** A lane is a lead with its programmers and QA; a documents-only lane counts too. At most `Limits › max lanes` (default 2) at once, or up to `small lanes` (default 4) when each is small: one or two agents on a short slice. Stagger full gates, have reviewers run targeted tests, and re-run a suspicious failure alone before believing it.
 - **Write the brief** from `brief-template.md`: who they are, what to read (paths and sections, including the style rules in the project's CLAUDE.md and `Repository › style`), where to work and which files they may touch (shared ground named), scope and what's not in it, stop rules, done-when for their role, the report format, and a scratch folder of their own.
 - **Work the Engineer must drive** (an interview) stays in your session: a background Spawn isn't reachable by them.
-- **Permissions:** Spawns' prompts come to your session. Pre-approve the gate and VCS commands before a build wave.
+- **Permissions:** Spawns' prompts come to your session. Pre-approve the gate and VCS commands before a build wave, and add the workspaces folder to the session (`/add-dir`) so Spawns can edit there.
 - **Review every Spawn's output before reporting it.** You are accountable for what reaches the Engineer.
 - Leave experimental agent teams (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`) off.
 
