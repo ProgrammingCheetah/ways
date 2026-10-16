@@ -25,8 +25,8 @@
 | Key | Value | Notes |
 |---|---|---|
 | strategy | integration | `integration` (one branch per release, fed by slice PRs; one PR into main at release end) or `trunk` (a PR per slice into main, the Engineer's; milestone QA reviews what merged, and its fixes are new PRs) |
-| integration | `release/{release}` | cut at main's tip before the release's first slice; main is merged in after each off-cycle merge. `{release}`: the version as `Release › version format` writes it |
-| slice | `{team}/{release}-{n}-{part}` | its PR targets the integration branch. `{team}`: the team's name, `/` as `-` |
+| integration | `release/{release}` | cut and pushed at main's tip before the release's first slice; main is merged in after each off-cycle merge. `{release}`: the version as `Release › version format` writes it |
+| slice | `{team}/{release}-{n}-{part}` | its PR targets the integration branch. `{team}`: the team's name, `/` as `-`. An off-cycle branch matches none of these patterns |
 | fix | `{team}/{release}-m{n}-fix` | a milestone fix round's branch; its PR targets the integration branch |
 | engineer reviews | main | PRs into these branches are the Engineer's to review and merge |
 | merge slice | merge | `merge`, `squash` or `rebase`, for PRs the Orchestrator merges |

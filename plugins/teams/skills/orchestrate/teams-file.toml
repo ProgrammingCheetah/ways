@@ -19,8 +19,8 @@ light_gate = ""
 
 [branches]
 strategy = "integration"         # integration (one branch per release, one PR into main at its end) | trunk (a PR per slice into main; QA after merge)
-integration = "release/{release}"  # {release}: the version as release.version_format writes it
-slice = "{team}/{release}-{n}-{part}"  # {team}: / as -
+integration = "release/{release}"  # cut and pushed before slice 1; {release}: the version as release.version_format writes it
+slice = "{team}/{release}-{n}-{part}"  # {team}: / as -; an off-cycle branch matches none of these patterns
 fix = "{team}/{release}-m{n}-fix"     # a milestone fix round's branch
 engineer_reviews = ["main"]
 merge_slice = "merge"            # merge | squash | rebase
