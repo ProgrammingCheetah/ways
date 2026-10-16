@@ -23,7 +23,7 @@ A Claude Code plugin marketplace of **ways of working**: one plugin per way, eac
 | Person | `~/.claude/CLAUDE.md` | the Engineer's own preferences |
 | Project | the project, in a file each pack seeds on its first run and owns from then on | `teams` uses `.claude/TEAMS.md` (or `.yaml`, `.toml`); `nodes` uses the root `NODE.toml`. A pack with no settings has no file. |
 
-In a repo the Engineer doesn't own (the remote's owner is neither their forge login nor an organization in `WAYS_OWN_ORGS`; admin rights don't count), a pack's project files go in the repo's exclude file (`git rev-parse --git-path info/exclude`), written before the files themselves.
+In a repo the Engineer doesn't own (the push remote's owner is neither their forge login nor an organization in `WAYS_OWN_ORGS`; a fork counts by its parent's owner, never its own; admin rights don't count), a pack's project files go in the repo's exclude file (`git rev-parse --git-path info/exclude`), written before the files themselves.
 
 ## Install on a new computer
 
@@ -41,7 +41,7 @@ In a repo the Engineer doesn't own (the remote's owner is neither their forge lo
 4. **Install** the teams pack.
    `claude plugin install teams@ways`
    Done when: the output ends with `Successfully installed plugin: teams@ways (scope: user)`.
-5. **Optional: name** your organizations, only if some of your own repos live under an organization. Add this line to your shell profile (`~/.zshrc` or `~/.bashrc`; on Windows run `setx WAYS_OWN_ORGS example-org`), with several organizations comma-separated, then open a new terminal. Skip it where no organization is yours, as on a work computer.
+5. **Optional: name** your organizations, only if some of your own repos live under an organization. Add this line to your shell profile (`~/.zshrc` or `~/.bashrc`; on Windows run `setx WAYS_OWN_ORGS example-org`), with several organizations comma-separated (spaces around the commas are ignored), then open a new terminal. Skip it where no organization is yours, as on a work computer.
    `export WAYS_OWN_ORGS=example-org`
    Done when: `printenv WAYS_OWN_ORGS` (PowerShell: `$env:WAYS_OWN_ORGS`) prints your organization(s).
 6. **Start** Claude in a terminal at your work project's root folder.

@@ -58,8 +58,8 @@ Read from the teams file (`.claude/TEAMS.md`, else `.claude/TEAMS.yaml`, else `.
      A summary or conversation comment has no thread: reply with `gh pr comment <N> --body "<prefix> <reason>"`, quoting or linking it.
    - **Propose.** Ask the Engineer: do it, defer it, or file a follow-up. Don't apply it without a yes.
    - **Escalate.** Hand it to the Engineer with the reasoning. Never decide it.
-6. **Re-gate and push, if anything was fixed.** Run the light gate (the gate when unset), green on exit code **and** output. Fixes go in meaningful commits (`Tracker › commit format` when set). Push keyed to the fetched tip:
-   - git: `git push --force-with-lease=<branch>:<fetched tip> origin <branch>`
+6. **Re-gate and push, if anything was fixed.** Run the light gate (the gate when unset), green on exit code **and** output. Fixes go in meaningful commits (`Tracker › commit format` when set). Push without overwriting anyone's work:
+   - git: when the fixes only add commits (`git merge-base --is-ancestor <fetched tip> HEAD` exits 0), plain `git push origin <branch>`, which git refuses if the remote moved; after a rebase, `git push --force-with-lease=<branch>:<fetched tip> origin <branch>`
    - jj: `jj git push --bookmark <bookmark>` (it refuses if the remote moved since the fetch)
    A refused push: stop and report; don't re-fetch and retry over someone else's work. Then lift the hold: `gh pr ready <N>` if you made it a draft (leave a PR that was already a draft alone), or ``gh pr comment <N> --body "<prefix> hold lifted"``. On a release PR (an integration branch into main) nothing is pushed here: the fix PR merges into the integration branch, which updates the release PR; lift the hold once it merges.
 7. **One pass.** A push can trigger the bot again. Don't loop re-requesting review; a later round is a new run.
