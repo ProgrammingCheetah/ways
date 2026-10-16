@@ -99,7 +99,7 @@ First run also hands the Engineer one worksheet that saves `.claude/settings.loc
 
 ## Optional integrations
 
-- **nodes** (`nodes@ways` and its `nodes` binary, 0.6.0 or later): setup offers it, pre-selected yes in the Engineer's own repos and no in anyone else's, where a tree would be local-only and live only in the Orchestrator's checkout. When in use, every brief has its Spawn run `nodes --root <dir> chain <path>` for the paths it owns and touches before reading code there: its own workspace for a committed tree, which writing Spawns may also update; the Orchestrator's checkout, read-only, for a local-only tree, which the Orchestrator re-charts after each merge. Teams runs plain `nodes` from PATH and doesn't read the nodes pack's `NODE.toml`. Declining records the opt-out and everything else runs the same.
+- **nodes** (`nodes@ways` and its `nodes` binary, 0.7.0 or later): setup offers it, pre-selected yes in the Engineer's own repos and no in anyone else's, where a tree would be local-only and live only in the Orchestrator's checkout. When in use, every brief has its Spawn run `nodes --root <dir> chain <path>` for the paths it owns and touches before reading code there: its own workspace for a committed tree, which writing Spawns may also update; the Orchestrator's checkout, read-only, for a local-only tree, which the Orchestrator re-charts after each merge. Teams runs plain `nodes` from PATH and doesn't read the nodes pack's `NODE.toml`. Declining records the opt-out and everything else runs the same.
 - **The agent board** (its own plugin): used only when its tools are present. Writing Spawns register, teams may run roadmap rounds and claims on the board, and locks cover shared ground.
 
 ## Updating

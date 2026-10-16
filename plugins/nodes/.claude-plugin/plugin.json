@@ -1,6 +1,6 @@
 {
   "name": "nodes",
-  "description": "The NODE.json node tree: /nodes:chart writes one node per directory that carries information beyond its parent, through the `nodes` tool, so an agent loads a path's context from the root down (`nodes chain <path>`); /nodes:familiarize loads the tree at the start of a session.",
+  "description": "The NODE.inf.json node tree: /nodes:chart writes one node per directory that carries information beyond its parent, through the `nodes` tool, so an agent loads a path's context from the root down (`nodes chain <path>`); /nodes:familiarize loads the tree at the start of a session.",
   "author": {
     "name": "ProgrammingCheetah"
   },
@@ -8,7 +8,7 @@
   "repository": "https://github.com/ProgrammingCheetah/ways",
   "keywords": [
     "node-tree",
-    "NODE.json",
+    "NODE.inf.json",
     "context",
     "codebase-map"
   ]
