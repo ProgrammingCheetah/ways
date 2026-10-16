@@ -10,7 +10,7 @@
 
 ---
 
-<!-- The team's QA writes its own log, separately, beside this file: <same name>-qa.md -->
+<!-- The team's QA writes this part as its own file, beside this one (<same name>-qa.md), with /teams:retrospective <team> <feature> qa -->
 
 # QA log: <team>, <feature or release>
 

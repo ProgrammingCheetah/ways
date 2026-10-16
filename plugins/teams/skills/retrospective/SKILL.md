@@ -8,7 +8,7 @@ argument-hint: "<team> <feature or release> [qa]  |  [time range, default: last 
 
 Ground every point in a commit, PR or file, not in impressions. Honest, constructive, specific: concrete examples over generalities. Three modes, picked from the arguments.
 
-**Config** (the teams file: `.claude/TEAMS.md`, else `.claude/TEAMS.yaml`, else `.claude/TEAMS.toml`, at the root of this checkout; if absent and this is a secondary workspace, at the root of the main checkout (git: the first path `git worktree list` prints; jj: `jj workspace root --name default`)): `Repository › docs`, `vcs`, `main`, and the **Teams** table. Without a teams file, detect: a `.jj/` folder means jj, else git; the default branch from `gh repo view --json defaultBranchRef` or `git symbolic-ref refs/remotes/origin/HEAD`. `<docs>` is `Repository › docs` from the main checkout's root.
+**Config:** read these from the teams file: `Repository › docs`, `vcs`, `main`, and the **Teams** table. It is `.claude/TEAMS.md`, else `.claude/TEAMS.yaml`, else `.claude/TEAMS.toml`, at the root of this checkout; if absent and this is a secondary workspace, at the root of the main checkout (git: the first path `git worktree list` prints; jj: `jj workspace root --name default`). Without a teams file, detect: a `.jj/` folder means jj, else git; the default branch from `gh repo view --json defaultBranchRef` or `git symbolic-ref refs/remotes/origin/HEAD`. `<docs>` is `Repository › docs` from the main checkout's root.
 
 ## Which mode
 
@@ -36,7 +36,7 @@ Run by the team's QA (`teams:designer`) when a feature or release ends.
 
 Claude's own first-person retro. Range: the argument, else the last 2 weeks.
 
-**Where it goes:** with a teams file, `<docs>/retros/<YYYYMMDD>-claude-<range>.md`, with the range slugified (lowercase, spaces to `-`, e.g. `last-2-weeks`) (say the path before writing). Without one, ask the Engineer up front for a file path, or a directory (then `retrospective-<YYYY-MM-DD>.md`), and confirm before writing. A Spawn has no Engineer to ask: put the question in its report.
+**Where it goes:** with a teams file, `<docs>/retros/<YYYYMMDD>-claude-<range>.md`, with the range slugified (lowercase, spaces to `-`, e.g. `last-2-weeks`); say the path before writing. Without one, ask the Engineer up front for a file path, or a directory (then `retrospective-<YYYY-MM-DD>.md`), and confirm before writing. A Spawn has no Engineer to ask: put the question in its report.
 
 **Evidence** (scoped to the range):
 
