@@ -2,7 +2,8 @@
 
 <!-- The teams plugin's whole configuration for this project: settings, teams, opt-outs.
      Section titles and keys are fixed; the Orchestrator reads them by name. Edit values freely.
-     "—" means unset. Written once by /teams:orchestrate; never regenerated over your edits. -->
+     "—" means unset. Written once by /teams:orchestrate; never regenerated over your edits.
+     A file written before QA moved to the top has a QA column: drop it and name the top-level QA in the qa row. -->
 
 ## Repository
 
@@ -23,12 +24,13 @@
 
 | Key | Value | Notes |
 |---|---|---|
-| strategy | integration | `integration` (a feature branch fed by slice PRs) or `trunk` (one PR per slice into main) |
-| integration | `feature/{slug}` | cut at main's tip |
-| slice | `feature/{slug}-{n}-{part}` | its PR targets the integration branch |
+| strategy | integration | `integration` (one branch per release, fed by slice PRs; one PR into main at release end) or `trunk` (a PR per slice into main, the Engineer's; milestone QA reviews what merged, and its fixes are new PRs) |
+| integration | `release/{release}` | cut and pushed at main's tip before the release's first slice; main is merged in after each off-cycle merge. `{release}`: the version as `Release › version format` writes it |
+| slice | `{team}/{release}-{n}-{part}` | its PR targets the integration branch. `{team}`: the team's name, `/` as `-`. An off-cycle branch matches none of these patterns |
+| fix | `{team}/{release}-m{n}-fix` | a milestone fix round's branch; its PR targets the integration branch |
 | engineer reviews | main | PRs into these branches are the Engineer's to review and merge |
 | merge slice | merge | `merge`, `squash` or `rebase`, for PRs the Orchestrator merges |
-| merge main | squash | for PRs into the Engineer's branches |
+| merge main | squash | for PRs into the Engineer's branches; a squashed release PR is one commit on main, `merge` keeps its slices |
 
 ## Tracker
 
@@ -76,23 +78,24 @@
 
 | Key | Value | Notes |
 |---|---|---|
-| release reviews | on | compliance, architecture and security at the end of each release |
-| security triggers | authentication; authorization and permissions; sessions, tokens, secrets and keys; cryptography; untrusted input; trust boundaries; network egress; personal data storage | a slice that touches one gets a security review; first run fits these to the project |
+| release reviews | on | compliance, architecture and security at the end of each release, before its last QA |
+| security triggers | authentication; authorization and permissions; sessions, tokens, secrets and keys; cryptography; untrusted input; trust boundaries; network egress; personal data storage | a slice that touches one gets a security review of its plan and its code; first run fits these to the project |
 | compliance triggers | personal data; payments; accessibility; a new dependency's license | a slice that touches one calls compliance in early; first run fits these to the project |
 | bot | — | a review bot requested on PRs into the Engineer's branches, e.g. copilot |
 | comment prefix | `Claude:` | starts every comment posted through the Engineer's accounts |
 
 ## Teams
 
-The Orchestrator is the tech lead; the Engineer is Product Owner, manager and stakeholder. A team is a named lead and QA, spawned only when there's work. Programmers aren't listed: each is short-lived, spawned and named by its build lead for one task, and ends when it's done. Review teams list their standing reviewers.
+The Orchestrator is the tech lead; the Engineer is Product Owner, manager and stakeholder. A team is a named lead, spawned only when there's work. The qa row is the top-level QA and the architects' lead is the architect: both stand beside the Orchestrator, at every milestone and the release. Programmers aren't listed: each is short-lived, spawned and named by its build lead for one task, and ends when it's done. Review teams list their standing reviewers.
 
-| Team | Mission | Owns (paths) | Lead | Reviewers | QA |
-|---|---|---|---|---|---|
-| <team> | <one line> | `<path/**>` | <Name> | — | <Name> |
-| internal | Finds the most effective way for the teams to work and spend their time | — | <Name> | — | <Name> |
-| compliance | Release review: what the project is legally bound to follow | — | <Name> | <Name> | <Name> |
-| architects | Release review: correct architecture | — | <Name> | <Name> | <Name> |
-| security | Every security-triggered slice, big merges, and the release review | — | <Name> | <Name> | <Name> |
+| Team | Mission | Owns (paths) | Lead | Reviewers |
+|---|---|---|---|---|
+| <team> | <one line> | `<path/**>` | <Name> | — |
+| qa | Top-level QA: documents for the Engineer, every milestone, every PR into main | — | <Name> | — |
+| internal | Finds the most effective way for the teams to work and spend their time | — | <Name> | — |
+| compliance | Release review: what the project is legally bound to follow | — | <Name> | <Name> |
+| architects | Reviews every milestone, before QA; release review: correct architecture | — | <Name> | <Name> |
+| security | Every security-triggered slice (its plan, then its code), and the release review | — | <Name> | <Name> |
 
 **Shared ground** (no team owns it; one Spawn at a time, assigned by the Orchestrator): <lockfiles, migrations, generated files, root config, CI>.
 

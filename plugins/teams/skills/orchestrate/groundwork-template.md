@@ -1,6 +1,6 @@
 # Groundwork: release <version>
 
-<date> · <author> (neither a team lead nor the design's author) · QA: <qa name> · **For the Engineer's approval. Once approved, teams plan and build their slices on it.**
+<date> · <author> (neither a team lead nor the design's author) · QA: <qa name> (the top-level QA; it checks the roadmaps and claims too) · **For the Engineer's approval. Once approved, teams plan and build their slices on it.**
 
 ## Summary
 
@@ -22,7 +22,7 @@
 
 ## Cross-team order
 
-<The slices in the order they must land across teams, with the first usable increment first.>
+<The slices in the order they must land across teams, grouped by the milestone each closes, with the first usable increment first.>
 
 ## Claims, resolved
 

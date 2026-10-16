@@ -1,6 +1,6 @@
 # Release <version>: <one-line what it delivers>
 
-<date> · <author> · QA: <qa name> (a second fresh designer, not the author) · **Draft until the Engineer signs it.**
+<date> · <author> · QA: <qa name> (the top-level QA, fresh, not the author) · **Draft until the Engineer signs it.**
 
 <!-- One document by default. If the teams file's `Release › documents` splits it (for example product, technical
      and delivery documents), each section below goes to the document that owns it. -->
@@ -28,14 +28,14 @@
 
 ## Timeline: phases and milestones
 
-| Phase | Ends in (a visible milestone, demoed) | Packages |
+| Phase | Ends in (a milestone: reviewed, then demoed) | Packages |
 |---|---|---|
 
-<The first milestone is the smallest increment a user can actually use.>
+<The first milestone is the smallest increment a user can actually use. Keep each timeline phase small enough for one QA to read its new diff whole beside these documents.>
 
 ## Review gates and merge plan
 
-<Which reviews each package gets (QA, security, compliance), and how it reaches the main branch.>
+<Each slice: the gate and its build lead's critique, plus a security review when it hits a trigger (name those packages) and compliance called early when it hits a compliance trigger. Each milestone: the architect, then QA, on the cumulative diff. Release end: the release reviews, then QA, then one PR into main.>
 
 ## One-way doors
 

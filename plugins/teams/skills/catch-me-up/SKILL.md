@@ -25,7 +25,8 @@ Skip anything already loaded this session. Never read whole source files or whol
    - `roadmaps/` and `claims.md`: roadmaps and claims;
    - `groundwork.md`: Groundwork;
    - `plans/`: slice plans, so build is next or under way;
-   - `reviews/`: release reviews.
+   - `milestones.md`: milestone QA; its last row says which milestone and whether its fix rounds closed;
+   - `reviews/` with `compliance.md`, `architects.md` or `security.md`: release reviews.
 
    Then the newest `rulings-*.md` there.
 3. **Signed files:** for each id in `signoff.md`, run `git hash-object <file>` and compare. Read-only: never pass `-w`. It works in a jj repo too. A changed signed file is a finding.

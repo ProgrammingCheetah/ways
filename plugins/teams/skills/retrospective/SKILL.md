@@ -1,7 +1,7 @@
 ---
 name: retrospective
-description: Evidence-based retro: a team lead's after a feature or release, or Claude's on its own recent work. E.g. /teams:retrospective api v0.2, or /teams:retrospective last 2 weeks.
-argument-hint: "<team> <feature or release> [qa]  |  [time range, default: last 2 weeks]"
+description: Evidence-based retro: a team lead's after a feature or release, the top-level QA's log after a milestone, or Claude's on its own recent work. E.g. /teams:retrospective api v0.2, /teams:retrospective qa v0.2 m1, or /teams:retrospective last 2 weeks.
+argument-hint: "<team> <feature or release>  |  qa <version> m<n>  |  [time range, default: last 2 weeks]"
 ---
 
 # /teams:retrospective: reflect on the work, from evidence
@@ -12,25 +12,25 @@ Ground every point in a commit, PR or file, not in impressions. Honest, construc
 
 ## Which mode
 
-- The first argument names a team in the **Teams** table, followed by a feature or release and then `qa`: **QA mode**.
-- The first argument names a team in the **Teams** table, followed by a feature or release: **team mode**.
+- The first argument is `qa` (the **Teams** table's qa row), followed by a release and a milestone (`m<n>`): **QA mode**.
+- The first argument names another team in the **Teams** table (not `qa`: QA writes milestone logs, not team retros), followed by a feature or release: **team mode**.
 - Anything else (empty, or a time range such as "last 2 weeks" or "since May 1"): **self mode**.
 
 ## Team mode: `/teams:retrospective <team> <feature or release>`
 
 Run by the team's lead (`teams:designer`) when a feature or release ends. Fast: a few lines each.
 
-1. **Gather** (read-only): the feature's commits and PRs (its branch names, `Branches › integration` and `slice`, or the PRs the Orchestrator names), their review comments and fix rounds, the release folder `<docs>/releases/<version>/` (plans, reviews, rulings), the QA log if already written, and the programmers' reported blockers (from your brief).
+1. **Gather** (read-only): the feature's commits and PRs (its branch names, `Branches › integration`, `slice` and `fix`, or the PRs the Orchestrator names), their review comments and fix rounds, the release folder `<docs>/releases/<version>/` (plans, reviews, rulings), QA's milestone logs for the release, and the programmers' reported blockers (from your brief).
 2. **Write** the lead's part of `${CLAUDE_SKILL_DIR}/../orchestrate/retro-template.md` (the part above its `---`): header (date, `Lead:` your name from **Teams**), then **Went well**, **Cost time or tokens**, **Try next**. Every point cites a commit, PR or file. Programmers' blockers are input; polish is not.
-3. **Save** to `<docs>/retros/<YYYYMMDD>-<team>-<feature>.md` without asking. The QA log is QA mode's, written by the team's QA beside it (`…-qa.md`).
+3. **Save** to `<docs>/retros/<YYYYMMDD>-<team>-<feature>.md` without asking. Don't write a QA log: the top-level QA writes one per milestone, in QA mode.
 
-## QA mode: `/teams:retrospective <team> <feature or release> qa`
+## QA mode: `/teams:retrospective qa <version> m<n>`
 
-Run by the team's QA (`teams:designer`) when a feature or release ends.
+Run by the top-level QA (`teams:designer`) at the end of each milestone, after its fix rounds.
 
-1. **Gather:** as team mode.
-2. **Write** the part of `${CLAUDE_SKILL_DIR}/../orchestrate/retro-template.md` below its `---`: header (date, `QA:` your name from **Teams**), then **What I caught, and how**, **Checks I ran by hand more than once**, **What slipped past me**. Every point cites a commit, PR or file.
-3. **Save** to `<docs>/retros/<YYYYMMDD>-<team>-<feature>-qa.md` without asking.
+1. **Gather** (read-only): the milestone's row in `<docs>/releases/<version>/milestones.md` (its range and fix rounds), its reports (`reviews/m<n>-architect.md`, `reviews/m<n>-qa.md`), the saved slice plans of its timeline phase, and your last milestone's log.
+2. **Write** the part of `${CLAUDE_SKILL_DIR}/../orchestrate/retro-template.md` below its `---`: header (date, `QA:` your name from the **Teams** table's qa row), then **What I caught, and how**, **Checks I ran by hand more than once**, **What slipped past me**, **Look at next milestone**. Every point cites a commit, PR or file.
+3. **Save** to `<docs>/retros/<YYYYMMDD>-qa-<version>-m<n>.md` without asking. The next milestone's fresh QA is briefed with it.
 
 ## Self mode: `/teams:retrospective [time range]`
 
