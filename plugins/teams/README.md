@@ -48,7 +48,7 @@ Besides `/teams:orchestrate`, eight routines (they absorb what a separate `ship`
 | `/teams:cleanup` | Reports every git worktree or jj workspace with its merge evidence and cleanliness; after one confirmation, runs `Repository › teardown` and removes only the merged, remote-gone, clean ones; keeps and reports the rest. Without a teams file it only reports. | **Clean up** |
 | `/teams:critique` | Two passes over a diff: the right thing built (against the plan or ticket), built right (against the codebase's own patterns); fix or ask per finding. | **Build**: the build lead's pass before it pushes |
 | `/teams:document` | Doc comments on what changed, in each language's style and placement. Docs only. | definition of done |
-| `/teams:prepare-pr` | One branch to an open PR: commits, rebase, the gate, a leased push, the PR body, the review bot. Never merges. In the lifecycle a `teams:machinery` Spawn runs it. | **Slice merge**, **Release end** |
+| `/teams:prepare-pr` | One branch to an open PR: commits, rebase, the gate, a push that can't overwrite work (plain, or leased after a rebase), the PR body, the review bot. Never merges. In the lifecycle a `teams:machinery` Spawn runs it. | **Slice merge**, **Release end** |
 | `/teams:address-comments` | Triages a PR's review comments (fix, decline, propose, escalate), routes fixes through the lanes, re-gates and pushes. Security comments are never declined. | **Release end**, and any PR into the Engineer's branches |
 | `/teams:retrospective` | A retro grounded in commits, PRs and reviews: a team's, in `retro-template.md`'s shape, the top-level QA's milestone log (`qa <version> m<n>`), or Claude's own over a time range. Saved in `<docs>/retros/`. | retrospectives, **Milestone QA** |
 
