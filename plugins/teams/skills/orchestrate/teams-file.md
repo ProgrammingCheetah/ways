@@ -9,7 +9,7 @@
 
 | Key | Value | Notes |
 |---|---|---|
-| owner | engineer | `engineer` (the Engineer's own repo: this file and the docs are committed) or `others` (both kept out of git) |
+| owner | engineer | `engineer` (the Engineer's own repo: its owner is the Engineer's forge login or an org in `WAYS_OWN_ORGS`, never judged by permission; this file and the docs are committed) or `others` (both kept out of git) |
 | docs | `.teams` | queue, releases/, retros/ live here (outside `.claude/`, whose writes always prompt) |
 | style | — | the project's style rules, read by every agent, e.g. `docs/style.md` |
 | decisions | — | where the project records decisions, e.g. `docs/adr/`; — = the rulings files only |
@@ -101,6 +101,6 @@ The Orchestrator is the tech lead; the Engineer is Product Owner, manager and st
 
 ## Opt-outs
 
-<!-- One line each: what, the date, the Engineer's words. Recognised: internal team, nodes, release reviews. -->
+<!-- One line each: what, the date, the Engineer's words. Recognised: internal team, nodes, release reviews, main's protection. -->
 
 - —
