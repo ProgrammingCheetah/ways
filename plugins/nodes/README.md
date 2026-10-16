@@ -1,6 +1,6 @@
 # nodes
 
-A repository charted as a tree of `NODE.inf.json` files, one per directory that carries information beyond its parent. Each node says only what its ancestors haven't, so an agent understands any path by loading the chain from the root down (`nodes chain src/domain/rules` loads four small nodes) instead of reading the code or the whole map. `NODE.inf.json` is *what/where*; `CLAUDE.md` stays *how to behave*. The node files are gitignored (`**/*.inf.json`): a tree lives in the checkout where it was charted. Its refs, the authored pointers to external pages, live in one `NODE.refs.json` at the tree's root, committed unless the tree is local-only.
+A repository charted as a tree of `NODE.inf.json` files, one per directory that carries information beyond its parent. Each node says only what its ancestors haven't, so an agent understands any path by loading the chain from the root down (`nodes chain src/domain/rules` loads four small nodes) instead of reading the code or the whole map. `NODE.inf.json` is *what/where*; `CLAUDE.md` stays *how to behave*. Its refs, the authored pointers to external pages, live in one `NODE.refs.json` at the tree's root. Per repository, the whole tree is either committed with the code or kept local-only.
 
 | Part | What it is |
 |---|---|
@@ -34,25 +34,25 @@ The pack's whole configuration for a project is the root `NODE.toml`. `/nodes:ch
 | tool › fmt_on_write | `false` | `true` when a hook already formats each written node |
 | refs › index | `""` | a file listing citable page ids (id → status + title), e.g. a pointer index generated from the project's docs; `""` = no refs |
 | refs › kind, on_superseded | `""` | what a page is here; how a ref to a superseded page is re-pointed |
-| root › local | `false` | `true`: `NODE.toml`, `.chartignore` and `NODE.refs.json` stay out of version control too (node files always do) |
+| root › local | `false` | `true`: the whole tree — node files, `NODE.refs.json`, `NODE.toml`, `.chartignore` — stays out of version control |
 | root › notes | `[]` | tree-wide conventions, pinned as the root node's first notes |
 
 Optional files: `.chartignore` (gitignore syntax, seeded once) keeps directories out of the tree.
 
 ## Version control
 
-The node files never enter version control: `**/*.inf.json` keeps them out. A worktree or jj workspace reads the main checkout's tree and never charts its own; a fresh clone has no tree until `/nodes:chart` runs there, which asks first. What stays a choice is the pack's settings and the refs file. Before its first write in a repository, `/nodes:chart` asks: **commit** its settings, keep it all **local-only**, or **not now**. It pre-selects commit only when there is no remote or the remote's owner is the signed-in forge user; in a repository that isn't yours, or when it can't tell, it pre-selects local-only. "Not now" writes nothing to the repository; it is remembered in Claude's project memory, outside the repository, when the project has one, so `/nodes:familiarize` stops offering.
+The tree is a set of files in the repo. Before its first write in a repository, `/nodes:chart` asks: **commit** the tree, keep it **local-only**, or **not now**. It pre-selects commit only when there is no remote or the remote's owner is the signed-in forge user; in a repository that isn't yours, or when it can't tell, it pre-selects local-only. "Not now" writes nothing to the repository; it is remembered in Claude's project memory, outside the repository, when the project has one, so `/nodes:familiarize` stops offering.
 
-Commit runs `nodes init` first, which adds `**/*.inf.json` to the root `.gitignore`; `NODE.toml`, `.chartignore`, `NODE.refs.json` and that line are the repository's to commit.
+**Commit.** Every node file, `NODE.refs.json`, `NODE.toml` and `.chartignore` are tracked, and node changes ship with the code they describe (`/nodes:chart --diff` before opening a PR). A clone, a worktree and CI all have the tree, so `nodes check` in CI checks all of it. `nodes init` and `migrate` add `**/*.inf.json` to `.gitignore` unless told not to; the skill always passes `--no-gitignore`, and takes out that line if an earlier run added it.
 
-Local-only never writes `.gitignore` (it migrates with `nodes migrate --no-gitignore`) and writes `**/*.inf.json`, `NODE.refs.json`, `NODE.toml` and `.chartignore` into the repo's exclude file before anything else: git's `info/exclude` (`git rev-parse --git-path info/exclude`, which also serves jj colocated with git), or, in jj without colocation, `info/exclude` in the git directory `.jj/repo/store/git_target` names (absolute, or relative to `.jj/repo/store/`). `nodes` still reads every node; nothing shows in `git status` or `jj st`. Either way, each run untracks any node file (and, local-only, either settings file or the refs file) that the tree itself got tracked by mistake; files of those names the repository already tracks are its own: they are left alone and reported. Know two things about the ignored node files:
+**Local-only.** `.gitignore` is never written. `**/*.inf.json`, `NODE.refs.json`, `NODE.toml` and `.chartignore` go into the repo's exclude file before anything else: git's `info/exclude` (`git rev-parse --git-path info/exclude`, which also serves jj colocated with git), or, in jj without colocation, `info/exclude` in the git directory `.jj/repo/store/git_target` names (absolute, or relative to `.jj/repo/store/`). `nodes` still reads every node; nothing shows in `git status` or `jj st`, and each run untracks any of those files that the tree itself got tracked by mistake; files of those names the repository already tracks are its own: they are left alone and reported. Know two things about a local-only tree:
 
-- Excluded files are ignored files: `git clean -x` or `-X` deletes them (local-only: the settings and refs too), and nothing backs them up. A re-chart rebuilds the nodes; committed refs survive.
-- They are one copy, in that checkout only, shared by every branch. Other worktrees and clones don't have it.
+- Excluded files are ignored files: `git clean -x` or `-X` deletes the whole tree, refs included, and nothing backs it up.
+- It is one copy, in the main checkout only, shared by every branch. Other worktrees and clones don't have it.
 
 ## The pointer rule
 
-When a project cites external pages (design pages, specs), the citation lives in the nearest node's `refs` — page id, title, what it governs there — and nowhere else: code comments state their facts plainly, and memory or `CLAUDE.md` hold pointers, never copied page bodies. The rule holds although node files aren't committed: `nodes add-ref` / `rm-ref` keep a tree's refs in its committed `NODE.refs.json`, so they are versioned and reviewed with the code. `nodes refs <page>` finds every directory a page governs; `nodes check --ref-index <index>` flags refs to superseded pages, and with no tree present (a fresh clone, CI) checks the refs file alone, so CI runs it.
+When a project cites external pages (design pages, specs), the citation lives in the nearest node's `refs` — page id, title, what it governs there — and nowhere else: code comments state their facts plainly, and memory or `CLAUDE.md` hold pointers, never copied page bodies. `nodes add-ref` / `rm-ref` keep a tree's refs in its `NODE.refs.json`; in a committed tree they are versioned and reviewed with the code. `nodes refs <page>` finds every directory a page governs; `nodes check --ref-index <index>` flags refs to superseded pages, and in a checkout that holds `NODE.refs.json` but no nodes it checks the refs file alone.
 
 ## For other agents
 
@@ -63,13 +63,13 @@ What any agent (a `teams` Spawn, say) runs, with no skill loaded. Always pass `-
 | `nodes chain <path>` | before reading code in a directory: root → … → node |
 | `nodes find <term>` | before searching blind: searches the chart |
 | `nodes grep <term>`, `nodes resolve <name>` | full text of the charted files; a half-remembered path |
-| `nodes set <path> <field> '<json>'`, then `nodes touch <path>` | after changing what a directory holds; in that checkout only |
-| `nodes add-ref <path> <page> "<title>" "<governs>"`, `nodes rm-ref <path> <page>` | when code starts or stops following a page: in the checkout that holds the tree, or in any worktree or clone, where they edit the committed `NODE.refs.json` alone and the change ships with the code |
-| `nodes check` | after any node edit (the project's `[tool].check` may add `--ref-index`; plain `check` skips only the ref rules). With no tree (a CI-mirrored gate) it checks the refs file alone |
+| `nodes set <path> <field> '<json>'`, then `nodes touch <path>` | after changing what a directory holds: in your own checkout for a committed tree (the change ships in your PR); for a local-only tree, only in the main checkout |
+| `nodes add-ref <path> <page> "<title>" "<governs>"`, `nodes rm-ref <path> <page>` | when code starts or stops following a page: in your own checkout for a committed tree (the change ships in your PR); for a local-only tree, only in the main checkout |
+| `nodes check` | after any node edit (the project's `[tool].check` may add `--ref-index`; plain `check` skips only the ref rules) |
 
 No tree yet: `/nodes:chart`.
 
-**Every tree's nodes live only in the checkout where it was charted**, since they are gitignored. Agents working in other worktrees or clones read it from the main checkout, read-only (`nodes --root <main checkout> chain <path>`), and don't edit nodes; their ref edits (`add-ref` / `rm-ref` in their own checkout) go to `NODE.refs.json` and ship in their PR. After pulling each merge, the main session re-charts what it brought: `/nodes:chart --diff <main's commit before the pull>` (git: `ORIG_HEAD` straight after the pull; jj: the trunk commit id recorded before fetching).
+**A committed tree** is in every checkout: agents read and edit it in their own (`--root <their checkout>`), and the changes ship in their PR. **A local-only tree** lives only in the main checkout: agents in other worktrees or clones read it there, read-only (`nodes --root <main checkout> chain <path>`), don't edit it, and report ref changes instead. After pulling each merge, the main session re-charts what it brought: `/nodes:chart --diff <main's commit before the pull>` (git: `ORIG_HEAD` straight after the pull; jj: the trunk commit id recorded before fetching).
 
 ## Updating
 
