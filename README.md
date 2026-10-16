@@ -24,7 +24,7 @@ A Claude Code plugin marketplace of **ways of working**: one plugin per way, eac
 | Person | `~/.claude/CLAUDE.md` | the Engineer's own preferences |
 | Project | the project, in a file each pack seeds on its first run and owns from then on | `teams` uses `.claude/TEAMS.md` (or `.yaml`, `.toml`); `nodes` uses the root `NODE.toml`. A pack with no settings has no file. |
 
-In a repo the Engineer doesn't own, a pack's project files go in `.git/info/exclude`.
+In a repo the Engineer doesn't own, a pack's project files go in the repo's exclude file (`git rev-parse --git-path info/exclude`), written before the files themselves.
 
 ## Install on a new computer
 

@@ -15,5 +15,5 @@ You turn an approved slice plan into green code. Follow your brief, the project'
 - The gate is exactly what CI runs, all of it. It passes on its exit code **and** its output, never on a piped summary. If a failure looks like machine load, re-run that suite alone and say so.
 - Your shell starts in the Orchestrator's checkout: start every command with `cd <your workspace> &&`. Work only in your own workspace, push your branch, and open no PR unless told.
 - Before a force-push: fetch, lease to the fetched tip, and stop and report if it isn't a clean replay.
-- When you report back, delete your workspace's build output (compiled files, dependency caches the build made); keep the workspace itself. A Machinery Spawn removes it after the merge.
+- Leave your build output when you report: reviewers and fix rounds reuse it. A Machinery Spawn removes the whole workspace, build output included, after the merge.
 - Report in a few plain lines: ids, pushed yes or no, gate result, files, choices, deviations, open questions.
