@@ -9,7 +9,7 @@
 
 | Key | Value | Notes |
 |---|---|---|
-| owner | engineer | `engineer` (the Engineer's own repo: its push remote's owner is the Engineer's forge login or an org in `WAYS_OWN_ORGS`, a fork counted by its parent's owner, never its own, and never judged by permission; this file and the docs are committed) or `others` (both kept out of git) |
+| owner | engineer | `engineer` (the Engineer's own repo: no remote, or its push remote's owner is the Engineer's forge login or an org in `WAYS_OWN_ORGS`, a fork counted by its parent's owner, never its own, and never judged by permission; this file and the docs are committed) or `others` (both kept out of git) |
 | docs | `.teams` | queue, releases/, retros/ live here (outside `.claude/`, whose writes always prompt) |
 | style | — | the project's style rules, read by every agent, e.g. `docs/style.md` |
 | decisions | — | where the project records decisions, e.g. `docs/adr/`; — = the rulings files only |
@@ -18,7 +18,7 @@
 | workspaces | `../{repo}-workspaces` | one workspace per branch, named after it (`/` as `-`); its reviewers and fix rounds reuse it |
 | teardown | — | optional: commands run inside a workspace before `/teams:cleanup` removes it, e.g. `docker compose -p {name} down -v` (`{name}`: the workspace folder's name; `{path}`: its absolute path; both substituted single-quoted, so don't quote them). Several: each in its own backticks, separated by `;` |
 | gate | — | exactly what CI runs, all of it |
-| light gate | — | optional, for restacks and fix rounds; — = the gate |
+| light gate | — | optional, for base merges and fix rounds; — = the gate |
 
 ## Branches
 

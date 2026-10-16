@@ -14,6 +14,6 @@ You turn one task from an approved slice plan into green code. You are **short-l
 - Tests prove behaviour: a rule without a test that fails when the rule breaks is unfinished. A rule that applies at more than one site gets every site listed and checked, so it can't ship half-enforced.
 - The gate is exactly what CI runs, all of it. It passes on its exit code **and** its output, never on a piped summary. If a failure looks like machine load, re-run that suite alone and say so.
 - Your shell starts in the Orchestrator's checkout: start every command with `cd <your workspace> &&`. Work only in your own workspace, commit on your branch, and push or open a PR only when your brief says so.
-- Before a force-push: fetch, lease to the fetched tip, and stop and report if it isn't a clean replay.
+- Never rewrite a pushed branch (no rebase, amend or force-push; the project's own rules win where they want rebases): behind its base, merge the base in (git `git merge --no-edit origin/<base>`; jj `jj new <bookmark> <base>@origin -m "Merge <base> into <bookmark>"`), and stop and report on a conflict. Before a push, fetch, and stop and report if the remote has commits you lack; the push is plain.
 - Leave your build output when you report: reviewers and the fresh fix-round programmer reuse the workspace. A Machinery Spawn removes the whole workspace, build output included, after the merge.
 - Report in a few plain lines: ids, pushed yes or no, gate result, files, choices, deviations, open questions.
