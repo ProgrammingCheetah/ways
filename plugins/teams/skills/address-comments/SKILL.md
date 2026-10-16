@@ -2,6 +2,7 @@
 name: address-comments
 description: Triage an open PR's review comments into a weighted table, apply clear fixes, decline nits on the PR, hand judgment and security calls to the Engineer, re-gate, push. E.g. /teams:address-comments 86
 argument-hint: "[PR number or URL; empty: the current branch's PR]"
+model: opus
 ---
 
 # /teams:address-comments: triage and close out PR review feedback
@@ -11,11 +12,12 @@ Once the PR is open (`/teams:prepare-pr`) and reviews have landed (the review bo
 ## Input
 
 - **A PR number or URL:** use it.
-- **Empty:** the current branch's PR (`gh pr view --json number,title,url,state,isDraft,headRefName,headRefOid,baseRefName`; jj: pass the bookmark, from `jj bookmark list -r ::@`, as the argument). No open PR: say so and stop.
+- **Empty:** the current branch's PR (`gh pr view --json number,title,url,state,isDraft,headRefName,headRefOid,baseRefName`; jj: pass the bookmark, from `jj bookmark list -r "(::@ & mutable())"`, as the argument: exactly one, else ask; a Spawn reports). No open PR: say so and stop.
+- **Where to work:** where the PR's head branch is checked out. git: the `git worktree list` row showing `[<branch>]`. jj: the workspace that `jj log -r "working_copies() & <bookmark>::" --no-graph -T 'working_copies ++ "\n"'` names (`<name>@`; its folder is `jj workspace root --name <name>`); more than one, ask. None: say so and stop; never switch the Engineer's checkout.
 
 ## Configuration
 
-Read from the teams file (`.claude/TEAMS.md`, else `.claude/TEAMS.yaml`, else `.claude/TEAMS.toml`, at this checkout's root; in a secondary workspace without one, the main checkout's root):
+Read from the teams file (`.claude/TEAMS.md`, else `.claude/TEAMS.yaml`, else `.claude/TEAMS.toml`, at this checkout's root; in a secondary workspace without one, the main checkout's root: git, the first path `git worktree list` prints; jj, `jj workspace root --name default`):
 
 - `Reviews › bot`, `Reviews › security triggers`, `Reviews › comment prefix`
 - `Repository › gate`, `Repository › light gate`, `Repository › vcs`
@@ -39,7 +41,7 @@ Read from the teams file (`.claude/TEAMS.md`, else `.claude/TEAMS.yaml`, else `.
    - **Category:** security, bug, performance, quality, nit, false positive.
    - **Verdict:** **Fix** (clear and mechanical), **Decline** (nit or false positive), **Propose** (judgment or scope), **Escalate** (a domain call, or security you can't settle).
    - **Security** is any comment that touches a `Reviews › security triggers` item. It is never declined: its verdict is Fix or Escalate only.
-   - **Agent,** by the pack's model rule: only programmers may run on Sonnet; security-nature work and every other role are always Opus; nothing at low effort. A Lanes Model pin applies to programmers but never to security work; a Lanes Effort pin applies (never low).
+   - **Agent,** by the pack's model rule: only programmers may run on Sonnet; security-nature work and every other role are always Opus; nothing at low effort. A Lanes Model pin applies to programmers but never to security work; a Lanes Effort pin applies (never low). Pass every opus row as `model: "opus"` on the Agent call, even when the session runs on Sonnet.
 
      | Fix kind | Agent |
      |---|---|
@@ -47,19 +49,19 @@ Read from the teams file (`.claude/TEAMS.md`, else `.claude/TEAMS.yaml`, else `.
      | ambiguous or cross-cutting | `teams:builder`, opus, high |
      | security | `teams:builder`, opus, high, then a security re-review by `teams:designer`, opus, xhigh |
      | Propose, Escalate | the Engineer |
-4. **Hold the merge first.** Before any fix lands on the open PR, mark it draft (`gh pr ready <N> --undo`) or, where drafts aren't available, comment ``gh pr comment <N> --body "<prefix> hold merge: review fixes in progress"``. From here on, every report says whether the fix is pushed.
+4. **Hold the merge first.** Before any fix lands on the open PR, mark it draft (`gh pr ready <N> --undo`) or, where drafts aren't available, comment ``gh pr comment <N> --body "<prefix> hold merge: review fixes in progress"``, without asking. From here on, every report says whether the fix is pushed.
 5. **Act by verdict.**
-   - **Fix.** Under `/teams:orchestrate`, the fixes are a fix round (its lifecycle step 7): a fresh build lead (`teams:designer`) gets the findings, the branch and the workspace, and spawns fresh programmers per the agent column; the Orchestrator runs the security re-reviews. Solo: apply them directly, or spawn the recommended agent when the `teams:` agents are available.
-   - **Decline.** Reply on the thread with a one-line reason starting with the comment prefix (it goes out through the Engineer's account), then resolve the thread:
-     `gh api graphql -f query='mutation($t:ID!,$b:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$t,body:$b}){comment{url}}}' -f t=<thread id> -f b="<prefix> <reason>"`
-     `gh api graphql -f query='mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{isResolved}}}' -f t=<thread id>`
+   - **Fix.** Under `/teams:orchestrate`, the fixes are a fix round (the lifecycle's **Review** step, where fix rounds are defined): a fresh build lead (`teams:designer`) gets the findings, the branch and the workspace, and spawns fresh programmers per the agent column; the Orchestrator runs the security re-reviews. Steps 6–7 then belong to the fix round: give its build lead the fetched tip (step 2) as the lease; lift the hold once the fix round's reviewers verify. Solo: apply them directly, or spawn the recommended agent when the `teams:` agents are available.
+   - **Decline.** A one-line reason starting with the comment prefix; it goes out through the Engineer's account. **The bot's comments:** post without asking, then resolve the thread. **Human reviewers' comments:** collect every decline and ask the Engineer once, all of them in one yes, before posting any; reply only, never resolve a human's thread. The Engineer may lift either rule. A Spawn posts nothing on human threads and lists those declines in its report for that confirmation.
+     Reply: `gh api graphql -f query='mutation($t:ID!,$b:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$t,body:$b}){comment{url}}}' -f t=<thread id> -f b="<prefix> <reason>"`
+     Resolve (the bot's threads only): `gh api graphql -f query='mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{isResolved}}}' -f t=<thread id>`
      A summary or conversation comment has no thread: reply with `gh pr comment <N> --body "<prefix> <reason>"`, quoting or linking it.
    - **Propose.** Ask the Engineer: do it, defer it, or file a follow-up. Don't apply it without a yes.
    - **Escalate.** Hand it to the Engineer with the reasoning. Never decide it.
 6. **Re-gate and push, if anything was fixed.** Run the light gate (the gate when unset), green on exit code **and** output. Fixes go in meaningful commits (`Tracker › commit format` when set). Push keyed to the fetched tip:
    - git: `git push --force-with-lease=<branch>:<fetched tip> origin <branch>`
    - jj: `jj git push --bookmark <bookmark>` (it refuses if the remote moved since the fetch)
-   A refused push: stop and report; don't re-fetch and retry over someone else's work. Then lift the hold: `gh pr ready <N>` if you made it a draft (leave a PR that was already a draft alone), or comment that the hold is lifted.
+   A refused push: stop and report; don't re-fetch and retry over someone else's work. Then lift the hold: `gh pr ready <N>` if you made it a draft (leave a PR that was already a draft alone), or ``gh pr comment <N> --body "<prefix> hold lifted"``.
 7. **One pass.** A push can trigger the bot again. Don't loop re-requesting review; a later round is a new run.
 
 ## Output
@@ -75,7 +77,7 @@ Sources: bot <n>, humans <m>. Gate after fixes: <green / failed / not run>. Push
 
 Then:
 - **Applied:** each fix and its commit.
-- **Declined:** each with its reason as posted.
+- **Declined:** each with its reason, marked posted or awaiting the Engineer's batch yes (human threads).
 - **For the Engineer:** every Propose and Escalate as a clear ask (do, defer, file a follow-up, decide).
 - **Net:** one line, e.g. "2 fixed and re-gated green, pushed abc1234; 1 nit declined on the PR; 1 perf comment proposed as a follow-up." Say who merges: a PR into a `Branches › engineer reviews` branch is the Engineer's.
 
