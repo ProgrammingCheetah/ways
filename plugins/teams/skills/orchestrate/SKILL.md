@@ -72,7 +72,7 @@ Nothing runs at low effort. A Model or Effort in the teams file's **Lanes** tabl
 
 - **Settle blocking decisions first;** don't spawn an agent that can only park or wait for a slot.
 - **Fan out independent work, up to the limits.** A lane is a lead and its running programmers, or one reviewer; documents-only lanes count. At most `Limits › max lanes` at once, or `small lanes` when each is one or two agents on a short slice. Each build lead's programmer budget (how many at once) fits them. Stagger full gates; reviewers run targeted tests; re-run a suspicious failure alone.
-- **The brief** is `brief-template.md`, filled in for the role. A build lead's carries the template, for the narrow programmer briefs it writes.
+- **The brief** is `brief-template.md`, filled in for the role. A build lead's carries the template, for the narrow programmer briefs it writes. No force-push command in a brief, leased or not: auto mode blocked such Spawns at launch.
 - **Work the Engineer must drive** (an interview) stays in your session.
 - **Review every Spawn's output before reporting it.** You're accountable for what reaches the Engineer.
 - **Launch subagents only,** never teammates (no `name` on Agent calls): teammates bypass the hub.
