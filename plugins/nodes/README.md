@@ -64,12 +64,12 @@ What any agent (a `teams` Spawn, say) runs, with no skill loaded. Always pass `-
 | `nodes find <term>` | before searching blind: searches the chart |
 | `nodes grep <term>`, `nodes resolve <name>` | full text of the charted files; a half-remembered path |
 | `nodes set <path> <field> '<json>'`, then `nodes touch <path>` | after changing what a directory holds; in that checkout only |
-| `nodes add-ref <path> <page> "<title>" "<governs>"`, `nodes rm-ref <path> <page>` | when code starts or stops following a page; in that checkout only |
+| `nodes add-ref <path> <page> "<title>" "<governs>"`, `nodes rm-ref <path> <page>` | when code starts or stops following a page: in the checkout that holds the tree, or in any worktree or clone, where they edit the committed `NODE.refs.json` alone and the change ships with the code |
 | `nodes check` | after any node edit (the project's `[tool].check` may add `--ref-index`; plain `check` skips only the ref rules). With no tree (a CI-mirrored gate) it checks the refs file alone |
 
 No tree yet: `/nodes:chart`.
 
-**Every tree's nodes live only in the checkout where it was charted**, since they are gitignored. Agents working in other worktrees or clones read it from the main checkout, read-only (`nodes --root <main checkout> chain <path>`), and don't edit nodes. After pulling each merge, the main session re-charts what it brought: `/nodes:chart --diff <main's commit before the pull>` (git: `ORIG_HEAD` straight after the pull; jj: the trunk commit id recorded before fetching).
+**Every tree's nodes live only in the checkout where it was charted**, since they are gitignored. Agents working in other worktrees or clones read it from the main checkout, read-only (`nodes --root <main checkout> chain <path>`), and don't edit nodes; their ref edits (`add-ref` / `rm-ref` in their own checkout) go to `NODE.refs.json` and ship in their PR. After pulling each merge, the main session re-charts what it brought: `/nodes:chart --diff <main's commit before the pull>` (git: `ORIG_HEAD` straight after the pull; jj: the trunk commit id recorded before fetching).
 
 ## Updating
 
