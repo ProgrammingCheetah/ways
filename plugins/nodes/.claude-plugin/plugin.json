@@ -1,6 +1,6 @@
 {
   "name": "nodes",
-  "description": "The NODE.inf.json node tree: /nodes:chart writes one node per directory that carries information beyond its parent, through the `nodes` tool, so an agent loads a path's context from the root down (`nodes chain <path>`); /nodes:familiarize loads the tree at the start of a session.",
+  "description": "The NODE.inf.json node tree: /nodes:chart writes one node per directory that carries information beyond its parent, through the `nodes` tool, so an agent loads a path's context from the root down (`nodes chain <path>`). Node files are gitignored; refs live in one NODE.refs.json per tree, committed unless the tree is local-only. /nodes:familiarize loads the tree at the start of a session.",
   "author": {
     "name": "ProgrammingCheetah"
   },
