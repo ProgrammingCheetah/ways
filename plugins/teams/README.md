@@ -82,7 +82,7 @@ Every agent file says Opus. **Only programmers may run on Sonnet** (the build le
 
 This pack's whole configuration for a project is **`.claude/TEAMS.md`**: settings, the teams and opt-outs, in fixed sections the Orchestrator reads by name. `/teams:orchestrate` offers to create it on first run (`skills/orchestrate/first-run.md`), asking once with every answer pre-filled from what it detects, and never regenerates it over your edits. `.claude/TEAMS.yaml` and `.claude/TEAMS.toml` work too, with the same settings under snake_case keys (`skills/orchestrate/teams-file.toml`); if more than one exists the Orchestrator warns and reads Markdown, then YAML, then TOML. Before writing anything, first run adds `.claude/settings.local.json` to the repo's exclude file (`git rev-parse --git-path info/exclude`), and in a repo that isn't the Engineer's also the teams file, `CLAUDE.local.md` and the docs folder.
 
-First run also hands the Engineer one worksheet that saves `.claude/settings.local.json` with the workspaces folder in `permissions.additionalDirectories` and allow rules for the gate and the VCS commands, so background Spawns don't stall on prompts. The skill never edits settings itself.
+First run also hands the Engineer one worksheet that saves `.claude/settings.local.json` with the workspaces folder in `permissions.additionalDirectories` and allow rules for the gate and the VCS commands, so background Spawns don't stall on prompts. Pushes are the exception: a rule's `*` matches any text, so no allow rule can keep a push off main (`release/*` also matches `release/v1:main`); an ask rule makes every push prompt instead, auto mode included. That prompt is a checkpoint, not a guard, since rules match the command as written: what keeps agents off main is the server's protection of it, which first run checks and, if it's missing, recommends turning on. The skill never edits settings itself, local or on the server.
 
 | Section › key | Default | Meaning |
 |---|---|---|
@@ -97,7 +97,7 @@ First run also hands the Engineer one worksheet that saves `.claude/settings.loc
 | Repository › gate | — | exactly what CI runs, all of it; after the build lead's critique, before a slice's first push |
 | Repository › light gate | — | for restacks and fix rounds; CI stays the enforcement |
 | Branches › strategy | integration | `integration` (one branch per release, fed by slice PRs; one PR into main at release end) or `trunk` (a PR per slice into main, the Engineer's; milestone QA reviews what merged, and its fixes are new PRs) |
-| Branches › integration, slice | `release/{release}`, `{team}/{release}-{n}-{part}` | branch name patterns; `{release}` is the version as `Release › version format` writes it, `{team}` the team's name with `/` as `-` |
+| Branches › integration, slice | `release/{release}`, `{team}/{release}-{n}-{part}` | branch name patterns (an off-cycle branch matches none); `{release}` is the version as `Release › version format` writes it, `{team}` the team's name with `/` as `-`; the integration branch is cut and pushed before slice 1 |
 | Branches › fix | `{team}/{release}-m{n}-fix` | a milestone fix round's branch, merged into the integration branch like a slice |
 | Branches › engineer reviews | main | PRs into these are the Engineer's to review and merge; the Orchestrator merges the rest (slice and fix PRs) once the slice checks pass and CI ran green |
 | Branches › merge slice, merge main | merge, squash | merge method for each kind of PR; a squashed release PR is one commit on main |
@@ -107,7 +107,7 @@ First run also hands the Engineer one worksheet that saves `.claude/settings.loc
 | Release › documents | design | the release document set: one design document, or e.g. pdd, tdd, plan |
 | Release › format | markdown | `markdown` with Mermaid, or `typst` |
 | Lanes (table) | — | per-lane effort overrides; a build or subsystem Model pins programmers (never security-nature tasks or any other role) |
-| Limits › max lanes | 2 | lanes running at once (a lead and its running programmers, or one reviewer; a milestone review is one); a documents-only lane counts; each build lead's programmer budget fits inside |
+| Limits › max lanes | 2 | lanes running at once (a lead and its running programmers, or one reviewer); a documents-only lane counts; each build lead's programmer budget fits inside |
 | Limits › small lanes | 4 | allowed when every lane is one or two agents on a short slice |
 | Limits › internal after | 3 | new retrospectives that wake the internal team |
 | Reviews › release reviews | on | compliance, architecture and security at each release's end, before the last milestone's QA |
