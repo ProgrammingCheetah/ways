@@ -4,14 +4,14 @@ Run around every `teams:planner` run (lead, QA, each resume), in its planning wo
 
 **Before the run**
 
-1. Confirm `<ws>` is clean: `git status --porcelain --ignored` prints nothing (git), or `jj st` reports no changes (jj). Not clean: recreate the workspace at the base branch's tip.
+1. Run `git status --porcelain --ignored` (git) or `jj st` (jj) in `<ws>` and keep its output: ignored files a checkout generates are expected. Tracked changes: recreate the workspace at the base branch's tip.
 2. Create an empty marker file outside every repo, e.g. `<workspaces folder>/.scratch/planner-<team>-<run>.mark`. Its modification time is the line the run must not cross.
 
 **After the run**
 
-3. List everything in `<ws>` modified after the marker, outside `.git` and `.jj`. Directories count: adding or deleting a file changes its directory's time, so this catches deletions and ignored files too.
-   - bash or zsh: `find <ws> -newer <mark> -not -path '*/.git/*' -not -path '*/.jj/*' -not -name .git -not -name .jj`
-   - PowerShell: `$t=(Get-Item <mark>).LastWriteTime; Get-ChildItem <ws> -Recurse -Force | Where-Object { $_.LastWriteTime -gt $t -and $_.FullName -notmatch '[\\/]\.(git|jj)([\\/]|$)' }`
-4. Repeat step 1's status command.
+3. List everything in `<ws>` changed after the marker, outside `.git` and `.jj`. Directories count: adding or deleting a file changes its directory's time, so this catches deletions and ignored files too.
+   - bash or zsh: `find <ws> -cnewer <mark> -not -path '*/.git/*' -not -path '*/.jj/*' -not -name .git -not -name .jj` (`-cnewer`: a write can restore a file's modified time, not its change time)
+   - PowerShell: `$t=(Get-Item <mark>).LastWriteTime; @(Get-Item <ws>) + @(Get-ChildItem <ws> -Recurse -Force) | Where-Object { $_.LastWriteTime -gt $t -and $_.FullName -notmatch '[\\/]\.(git|jj)([\\/]|$)' }`
+4. Run step 1's status command again and compare it with the kept output.
 
-**On any change** (step 3 lists anything, or step 4 isn't clean): stop the slice, show the Engineer what changed (the list, and `git diff` or `jj diff`), don't save the plan, and recreate the workspace before the next run. Writes outside `<ws>` are not detected.
+**On any change** (step 3 lists anything, or step 4 differs): stop the slice, show the Engineer what changed (the list, and `git diff` or `jj diff`), don't save the plan, and recreate the workspace before the next run; in jj, first `jj abandon` the workspace's working-copy commit, which already snapshotted the write. Writes outside `<ws>` are not detected.
