@@ -11,7 +11,7 @@ style = []                       # e.g. ["docs/style.md"]
 decisions = ""                   # e.g. "docs/adr/"
 vcs = "git"                      # git | jj
 main = "main"
-workspaces = "../{repo}-workspaces"
+workspaces = "../{repo}-workspaces"  # one per branch, named after it (/ as -)
 gate = ""                        # exactly what CI runs
 light_gate = ""
 
@@ -53,12 +53,13 @@ compliance_triggers = ["personal data", "payments", "accessibility", "a new depe
 bot = ""
 comment_prefix = "Claude:"
 
+# A team: a named lead and QA. Programmers aren't listed: each is short-lived, named by the
+# Orchestrator for one task. Review teams list their standing reviewers.
 [[team]]
 name = "internal"
 mission = "Finds the most effective way for the teams to work and spend their time"
 owns = []
 lead = ""
-programmers = []
 qa = ""
 
 [[team]]
@@ -66,7 +67,7 @@ name = "compliance"
 mission = "Release review: what the project is legally bound to follow"
 owns = []
 lead = ""
-programmers = []                 # reviewers
+reviewers = []
 qa = ""
 
 [[team]]
@@ -74,7 +75,7 @@ name = "architects"
 mission = "Release review: correct architecture"
 owns = []
 lead = ""
-programmers = []                 # reviewers
+reviewers = []
 qa = ""
 
 [[team]]
@@ -82,5 +83,5 @@ name = "security"
 mission = "Every security-triggered slice, big merges, and the release review"
 owns = []
 lead = ""
-programmers = []                 # reviewers
+reviewers = []
 qa = ""

@@ -1,6 +1,6 @@
 # teams
 
-One Claude session is the **Orchestrator**, the tech lead. Standing teams of background agents (**Spawns**: a lead, programmers and a QA each) plan, build and review. **The Engineer** is the Product Owner and decides every domain fork. The Orchestrator is the Engineer's single interface: agents never reach the Engineer directly.
+One Claude session is the **Orchestrator**, the tech lead. Teams of background agents (**Spawns**) plan, build and review: each team has a standing, named lead and QA, and its programmers are short-lived, spawned for one task and ended when it's done. **The Engineer** is the Product Owner and decides every domain fork. The Orchestrator is the Engineer's single interface: agents never reach the Engineer directly.
 
 | Part | What it is |
 |---|---|
@@ -26,7 +26,9 @@ flowchart TD
   I -->|release done| J[Release reviews and retros]
 ```
 
-Every arrow into a new box hands a document to **freshly spawned** agents: names and roles persist, context doesn't. Documents that reach the Engineer (the design document, the Groundwork) carry their QA's challenges and the author's resolutions. A slice plan reaches the Engineer only for a domain fork, a one-way door, or a change to a signed document. A fix or small change outside a release starts at the slice plan, on the same bar; its PR into main is still the Engineer's review.
+Every arrow into a new box hands a document to **freshly spawned** agents: leads' and QA's names and roles persist, context doesn't. Documents that reach the Engineer (the design document, the Groundwork) carry their QA's challenges and the author's resolutions. A slice plan reaches the Engineer only for a domain fork, a one-way door, or a change to a signed document. A fix or small change outside a release starts at the slice plan, on the same bar; its PR into main is still the Engineer's review.
+
+**Why programmers are short-lived.** The Orchestrator is cheap; recreating context is not. A resumed Spawn re-reads its whole context, and one that waits past the prompt cache's lifetime rewrites its whole cache when it wakes. So a programmer gets one task (a slice or part of one) and a narrow brief, is spawned only when it can start now, and ends at its report. A fix round goes to a fresh programmer briefed with the findings, the branch and its diff, in the same workspace. A blocked piece ends the programmer with the question in its report. Leads and QA keep the clean-context-per-phase rule.
 
 ## How the roles reach the main session
 
@@ -56,7 +58,7 @@ All run Opus. To change a lane's model or effort in one project, set it in the t
 
 ## The teams file
 
-This pack's whole configuration for a project is **`.claude/TEAMS.md`**: settings, the roster and opt-outs, in fixed sections the Orchestrator reads by name. `/teams:orchestrate` offers to create it on first run (`skills/orchestrate/first-run.md`), asking once with every answer pre-filled from what it detects, and never regenerates it over your edits. `.claude/TEAMS.yaml` and `.claude/TEAMS.toml` work too, with the same settings under snake_case keys (`skills/orchestrate/teams-file.toml`); if more than one exists the Orchestrator warns and reads Markdown, then YAML, then TOML. Before writing anything, first run adds `.claude/settings.local.json` to the repo's exclude file (`git rev-parse --git-path info/exclude`), and in a repo that isn't the Engineer's also the teams file, `CLAUDE.local.md` and the docs folder.
+This pack's whole configuration for a project is **`.claude/TEAMS.md`**: settings, the teams and opt-outs, in fixed sections the Orchestrator reads by name. `/teams:orchestrate` offers to create it on first run (`skills/orchestrate/first-run.md`), asking once with every answer pre-filled from what it detects, and never regenerates it over your edits. `.claude/TEAMS.yaml` and `.claude/TEAMS.toml` work too, with the same settings under snake_case keys (`skills/orchestrate/teams-file.toml`); if more than one exists the Orchestrator warns and reads Markdown, then YAML, then TOML. Before writing anything, first run adds `.claude/settings.local.json` to the repo's exclude file (`git rev-parse --git-path info/exclude`), and in a repo that isn't the Engineer's also the teams file, `CLAUDE.local.md` and the docs folder.
 
 First run also hands the Engineer one worksheet that saves `.claude/settings.local.json` with the workspaces folder in `permissions.additionalDirectories` and allow rules for the gate and the VCS commands, so background Spawns don't stall on prompts. The skill never edits settings itself.
 
@@ -68,7 +70,7 @@ First run also hands the Engineer one worksheet that saves `.claude/settings.loc
 | Repository › decisions | — | where the project records decisions |
 | Repository › vcs | git | `git` or `jj` |
 | Repository › main | main | the default branch, never pushed to directly |
-| Repository › workspaces | `../{repo}-workspaces` | one workspace per programmer, named after them, plus planning workspaces |
+| Repository › workspaces | `../{repo}-workspaces` | one workspace per branch, named after it, reused by its reviewers and fix rounds, plus planning workspaces |
 | Repository › gate | — | exactly what CI runs, all of it; before a slice's first push and before QA |
 | Repository › light gate | — | for restacks and fix rounds; CI stays the enforcement |
 | Branches › strategy | integration | `integration` (a feature branch cut at main's tip, fed by slice PRs, its own PR opening when every slice is in) or `trunk` (one PR per slice into main) |
@@ -89,7 +91,7 @@ First run also hands the Engineer one worksheet that saves `.claude/settings.loc
 | Reviews › compliance triggers | personal data; payments; accessibility; a new dependency's license | a slice touching one calls compliance in early; first run fits them to the project |
 | Reviews › bot | — | a review bot requested on PRs into the Engineer's branches |
 | Reviews › comment prefix | `Claude:` | starts every comment posted through the Engineer's accounts |
-| Teams (table) | internal, compliance, architects, security, plus the project's teams | mission, owned paths, named lead, programmers, QA |
+| Teams (table) | internal, compliance, architects, security, plus the project's teams | mission, owned paths, named lead and QA, review teams' reviewers; programmers aren't listed |
 | Shared ground | — | files no team owns, touched one Spawn at a time |
 | Opt-outs | — | the internal team, nodes or release reviews, each with the date and the Engineer's words |
 

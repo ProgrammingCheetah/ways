@@ -1,6 +1,6 @@
 {
   "name": "teams",
-  "description": "The Orchestrator and its Spawns: standing agent teams (lead, programmers, QA) run through a release lifecycle — design document, team roadmaps and claims, a Groundwork plan, read-only slice plans, build, review, release reviews — while the Engineer decides every domain fork.",
+  "description": "The Orchestrator and its Spawns: agent teams (a standing lead and QA, short-lived programmers) run through a release lifecycle — design document, team roadmaps and claims, a Groundwork plan, read-only slice plans, build, review, release reviews — while the Engineer decides every domain fork.",
   "author": {
     "name": "ProgrammingCheetah"
   },
