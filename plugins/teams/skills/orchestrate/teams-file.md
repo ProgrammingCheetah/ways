@@ -57,9 +57,9 @@
 | glue | `teams:machinery` | — | — |
 
 <!-- A Model or Effort set here is passed as the Agent call's model or effort; — = the agent file's.
-     Leads and QA are always Opus; only programmer models are the lead's choice or a teams-file pin:
-     a Model never changes a lead's or QA's. A build or subsystem Model pins every programmer to it
-     (e.g. opus only); — = the build lead picks sonnet or opus per task. -->
+     Only programmers may run on Sonnet: a build or subsystem Model pins every programmer to it
+     (e.g. opus only); — = the build lead picks sonnet or opus per task. Security-nature work and
+     every other role are always Opus, whatever is set here (their Effort may still be set). -->
 
 ## Limits
 

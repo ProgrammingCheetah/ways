@@ -47,7 +47,7 @@ argument-hint: "[what to do next, e.g. 'scope release v0.2']"
 | subsystem | `teams:myth` | high | long, fully specified subsystem builds |
 | glue | `teams:machinery` | medium | creating and removing workspaces, deterministic housekeeping |
 
-Nothing runs at low effort. A Model or Effort in the teams file's **Lanes** table goes on the Agent call as `model` or `effort`. **Leads and QA are always Opus; only programmer models are the lead's choice or a teams-file pin:** pass `model: "opus"` on every lead and QA spawn; a build or subsystem Model pins programmers. Name the model and cost when you launch an expensive Spawn.
+Nothing runs at low effort. A Model or Effort in the teams file's **Lanes** table goes on the Agent call as `model` or `effort`. **Only programmers may run on Sonnet** (the build lead's choice per task, or a build or subsystem Model pin); **security-nature work and every other role are always Opus:** pass `model: "opus"` on every other spawn. Name the model and cost when you launch an expensive Spawn.
 
 ## 4. The release lifecycle
 

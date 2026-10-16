@@ -35,9 +35,9 @@ documents = ["design"]
 format = "markdown"              # markdown | typst
 
 [lanes]                          # model / effort passed to the Agent call; {} = the agent file's
-# Leads and QA are always Opus; only programmer models are the lead's choice or a teams-file pin:
-# a model never changes a lead's or QA's. build / subsystem model pins every programmer to it,
+# Only programmers may run on Sonnet: build / subsystem model pins every programmer to it,
 # e.g. build = { model = "opus" }; {} = the build lead picks sonnet or opus per task.
+# Security-nature work and every other role are always Opus, whatever is set (effort may be set).
 plan = {}
 judgment = {}
 build = {}

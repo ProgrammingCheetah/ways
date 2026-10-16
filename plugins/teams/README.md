@@ -54,7 +54,7 @@ Why not the alternatives: a `SessionStart` hook needs a shell or an executable o
 | subsystem | `teams:myth` | high | its own workspace | long, fully specified subsystem builds |
 | glue | `teams:machinery` | medium | workspaces, branches | creating workspaces, removing them (build output included) after merge, committing release documents from a docs workspace |
 
-Every agent file says Opus. **Leads and QA are always Opus; only programmer models are the lead's choice or a teams-file pin.** To change a lane's model or effort in one project, set it in the teams file's **Lanes** table; it's passed on each Agent call, but a Model there never changes a lead's or QA's, and a build or subsystem Model pins every programmer to it (e.g. Opus only).
+Every agent file says Opus. **Only programmers may run on Sonnet** (the build lead's choice per task, or a teams-file pin); **security-nature work and every other role are always Opus.** To change a lane's effort in one project, set it in the teams file's **Lanes** table; it's passed on each Agent call. A Model there applies only to programmers: a build or subsystem Model pins every programmer to it (e.g. Opus only), except security-nature tasks, which stay on Opus.
 
 **How read-only the planner is.** Plugin agents ignore `permissionMode`, so the planner can't be put in plan mode. Its `tools` allowlist is `Read`, `Glob`, `Grep`, `Bash`, `PowerShell`, `WebFetch`, `WebSearch`, `ToolSearch` (which loads the web tools where they're deferred) and `SubagentHandback` (which delivers its report). LSP is left out: a language server can write cache files into the planning workspace and trip the check below. Every editing tool, every way to start or steer another agent (except through the shell), MCP tools and any tool Claude Code adds later are out. One hole stays, by the Engineer's choice: the shell can still write, and it's kept for git history and read-only commands. So every planner run (lead, QA, each resume) happens in a clean planning workspace at the base branch's tip, never the Engineer's checkout, and the Orchestrator runs `skills/orchestrate/planner-check.md` around it: a marker file before, then a list of everything in the workspace modified after the marker (outside `.git` and `.jj`, ignored files and deletions included), plus the workspace's own VCS status. It works in git, in jj secondary workspaces that have no `.git`, and in bash, zsh or PowerShell. Any change stops the slice, the Engineer sees what changed, and the plan isn't saved. Writes outside that workspace aren't detected.
 
@@ -84,7 +84,7 @@ First run also hands the Engineer one worksheet that saves `.claude/settings.loc
 | Release › stages | — | e.g. pre-alpha, alpha, beta, release |
 | Release › documents | design | the release document set: one design document, or e.g. pdd, tdd, plan |
 | Release › format | markdown | `markdown` with Mermaid, or `typst` |
-| Lanes (table) | — | per-lane model and effort overrides; never a lead's or QA's model; a build or subsystem Model pins programmers |
+| Lanes (table) | — | per-lane effort overrides; a build or subsystem Model pins programmers (never security-nature tasks or any other role) |
 | Limits › max lanes | 2 | lanes running at once (a lead, its running programmers and QA); a documents-only lane counts; each build lead's programmer budget fits inside |
 | Limits › small lanes | 4 | allowed when every lane is one or two agents on a short slice |
 | Limits › internal after | 3 | new retrospectives that wake the internal team |
