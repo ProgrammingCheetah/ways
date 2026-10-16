@@ -18,12 +18,13 @@ gate = ""                        # exactly what CI runs
 light_gate = ""
 
 [branches]
-strategy = "integration"         # integration | trunk
-integration = "feature/{slug}"
-slice = "feature/{slug}-{n}-{part}"
+strategy = "integration"         # integration (one branch per release, one PR into main at its end) | trunk (a PR per slice into main; QA after merge)
+integration = "release/{release}"  # {release}: the version as release.version_format writes it
+slice = "{team}/{release}-{n}-{part}"  # {team}: / as -
+fix = "{team}/{release}-m{n}-fix"     # a milestone fix round's branch
 engineer_reviews = ["main"]
 merge_slice = "merge"            # merge | squash | rebase
-merge_main = "squash"
+merge_main = "squash"            # a squashed release PR is one commit on main; "merge" keeps its slices
 
 [tracker]
 kind = "none"                    # none | github | jira | linear | other
@@ -52,20 +53,25 @@ small_lanes = 4
 internal_after = 3
 
 [reviews]
-release_reviews = true
+release_reviews = true           # compliance, architecture and security at each release's end, before its last QA
 security_triggers = ["authentication", "authorization and permissions", "sessions, tokens, secrets and keys", "cryptography", "untrusted input", "trust boundaries", "network egress", "personal data storage"]
 compliance_triggers = ["personal data", "payments", "accessibility", "a new dependency's license"]
 bot = ""
 comment_prefix = "Claude:"
 
-# A team: a named lead and QA. Programmers aren't listed: each is short-lived, spawned and
-# named by its build lead for one task. Review teams list their standing reviewers.
+# A team: a named lead. The "qa" row is the top-level QA and the architects' lead is the architect: both stand beside the Orchestrator.
+# Programmers aren't listed: each is short-lived, spawned and named by its build lead for one task. Review teams list their standing reviewers.
+[[team]]
+name = "qa"
+mission = "Top-level QA: documents for the Engineer, every milestone, every PR into main"
+owns = []
+lead = ""
+
 [[team]]
 name = "internal"
 mission = "Finds the most effective way for the teams to work and spend their time"
 owns = []
 lead = ""
-qa = ""
 
 [[team]]
 name = "compliance"
@@ -73,20 +79,17 @@ mission = "Release review: what the project is legally bound to follow"
 owns = []
 lead = ""
 reviewers = []
-qa = ""
 
 [[team]]
 name = "architects"
-mission = "Release review: correct architecture"
+mission = "Reviews every milestone, before QA; release review: correct architecture"
 owns = []
 lead = ""
 reviewers = []
-qa = ""
 
 [[team]]
 name = "security"
-mission = "Every security-triggered slice, big merges, and the release review"
+mission = "Every security-triggered slice (its plan, then its code), and the release review"
 owns = []
 lead = ""
 reviewers = []
-qa = ""
