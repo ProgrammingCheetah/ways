@@ -2,10 +2,10 @@
 # prefers TOML. A .claude/TEAMS.yaml uses these same keys and nesting. Every value is the default.
 
 shared_ground = []               # lockfiles, migrations, generated files, root config, CI
-opt_outs = []                    # e.g. [{ what = "nodes", date = "2026-10-16", words = "..." }]
+opt_outs = []                    # internal team, nodes, release reviews, main's protection; e.g. [{ what = "nodes", date = "2026-10-16", words = "..." }]
 
 [repository]
-owner = "engineer"               # engineer (committed) | others (kept out of git)
+owner = "engineer"               # engineer (owner is your forge login or an org in WAYS_OWN_ORGS; committed) | others (kept out of git)
 docs = ".teams"                  # outside .claude/, whose writes always prompt
 style = []                       # e.g. ["docs/style.md"]
 decisions = ""                   # e.g. "docs/adr/"
