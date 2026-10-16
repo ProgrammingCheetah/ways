@@ -1,8 +1,8 @@
 # Release <version>: <one-line what it delivers>
 
-<date> · <author> · QA: <qa name> · **Draft until the Engineer signs it.**
+<date> · <author> · QA: <qa name> (a second fresh designer, not the author) · **Draft until the Engineer signs it.**
 
-<!-- One document by default. If [teams.release].documents splits it (for example product, technical
+<!-- One document by default. If the teams file's `Release › documents` splits it (for example product, technical
      and delivery documents), each section below goes to the document that owns it. -->
 
 ## Summary

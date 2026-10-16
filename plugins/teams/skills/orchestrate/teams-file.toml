@@ -6,7 +6,7 @@ opt_outs = []                    # e.g. [{ what = "nodes", date = "2026-10-16", 
 
 [repository]
 owner = "engineer"               # engineer (committed) | others (kept out of git)
-docs = ".claude/teams"
+docs = ".teams"                  # outside .claude/, whose writes always prompt
 style = []                       # e.g. ["docs/style.md"]
 decisions = ""                   # e.g. "docs/adr/"
 vcs = "git"                      # git | jj
@@ -48,8 +48,8 @@ internal_after = 3
 
 [reviews]
 release_reviews = true
-security_triggers = ["authentication", "sessions and tokens", "trust boundaries", "network egress", "the private/public data boundary"]
-compliance_triggers = ["personal data", "age or adult content", "copyright or takedowns", "payments or tax", "accessibility", "a new dependency's license"]
+security_triggers = ["authentication", "authorization and permissions", "sessions, tokens, secrets and keys", "cryptography", "untrusted input", "trust boundaries", "network egress", "personal data storage"]
+compliance_triggers = ["personal data", "payments", "accessibility", "a new dependency's license"]
 bot = ""
 comment_prefix = "Claude:"
 
@@ -59,4 +59,28 @@ mission = "Finds the most effective way for the teams to work and spend their ti
 owns = []
 lead = ""
 programmers = []
+qa = ""
+
+[[team]]
+name = "compliance"
+mission = "Release review: what the project is legally bound to follow"
+owns = []
+lead = ""
+programmers = []                 # reviewers
+qa = ""
+
+[[team]]
+name = "architects"
+mission = "Release review: correct architecture"
+owns = []
+lead = ""
+programmers = []                 # reviewers
+qa = ""
+
+[[team]]
+name = "security"
+mission = "Every security-triggered slice, big merges, and the release review"
+owns = []
+lead = ""
+programmers = []                 # reviewers
 qa = ""

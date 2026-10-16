@@ -13,6 +13,10 @@
 
 <Slice 1 is the smallest increment that works end to end; each later slice grows it.>
 
+## Diagram: our part
+
+<Mermaid, about 12 boxes at most, labels of 5 words or fewer: this team's components and its seams with other teams. Pending decisions drawn as pending.>
+
 ## Our concerns
 
 <What this team owns in the release (paths, contracts, data), and what it deliberately leaves to others.>
@@ -27,9 +31,9 @@
 
 ---
 
-<!-- claims.md, one file per release, shared by every team. Append; never edit another team's row. -->
+<!-- claims.md, one file per release, shared by every team. The claimant appends a row; only the addressed team writes Status and Answer. A counter goes back to the claimant, who accepts it or answers. -->
 
 # Claims: release <version>
 
-| # | From (team) | To (team) | What we need | By slice | Status (open, accepted, countered, routed) | Answer |
+| # | From (team) | To (team) | What we need | By slice | Status (open, countered, accepted, routed) | Answer |
 |---|---|---|---|---|---|---|

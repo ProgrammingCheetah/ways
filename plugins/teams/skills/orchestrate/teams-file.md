@@ -8,13 +8,13 @@
 
 | Key | Value | Notes |
 |---|---|---|
-| owner | engineer | `engineer` (the Engineer's own repo: this file is committed) or `others` (kept out of git) |
-| docs | `.claude/teams` | queue, releases/, retros/ live here |
+| owner | engineer | `engineer` (the Engineer's own repo: this file and the docs are committed) or `others` (both kept out of git) |
+| docs | `.teams` | queue, releases/, retros/ live here (outside `.claude/`, whose writes always prompt) |
 | style | — | the project's style rules, read by every agent, e.g. `docs/style.md` |
 | decisions | — | where the project records decisions, e.g. `docs/adr/`; — = the rulings files only |
 | vcs | git | `git` or `jj` |
 | main | main | the default branch; never pushed to directly |
-| workspaces | `../<repo>-workspaces` | one workspace per programmer, named after them |
+| workspaces | `../{repo}-workspaces` | one workspace per programmer, named after them |
 | gate | — | exactly what CI runs, all of it |
 | light gate | — | optional, for restacks and fix rounds; — = the gate |
 
@@ -71,8 +71,8 @@
 | Key | Value | Notes |
 |---|---|---|
 | release reviews | on | compliance, architecture and security at the end of each release |
-| security triggers | authentication; sessions and tokens; trust boundaries; network egress; the private/public data boundary | a slice that touches one gets a security review |
-| compliance triggers | personal data; age or adult content; copyright or takedowns; payments or tax; accessibility; a new dependency's license | a slice that touches one calls compliance in early |
+| security triggers | authentication; authorization and permissions; sessions, tokens, secrets and keys; cryptography; untrusted input; trust boundaries; network egress; personal data storage | a slice that touches one gets a security review; first run fits these to the project |
+| compliance triggers | personal data; payments; accessibility; a new dependency's license | a slice that touches one calls compliance in early; first run fits these to the project |
 | bot | — | a review bot requested on PRs into the Engineer's branches, e.g. copilot |
 | comment prefix | `Claude:` | starts every comment posted through the Engineer's accounts |
 
