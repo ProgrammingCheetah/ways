@@ -19,7 +19,7 @@
     {
       "name": "nodes",
       "source": "./plugins/nodes",
-      "description": "The NODE.inf.json node tree: chart a repository so agents load a path's context from the root down."
+      "description": "The NODE.inf.json node tree: chart a repository so agents load a path's context from the root down. Node files stay local; settings and refs can be committed."
     }
   ]
 }
