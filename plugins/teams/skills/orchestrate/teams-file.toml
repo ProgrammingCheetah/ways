@@ -5,7 +5,7 @@ shared_ground = []               # lockfiles, migrations, generated files, root 
 opt_outs = []                    # internal team, nodes, release reviews, main's protection; e.g. [{ what = "nodes", date = "2026-10-16", words = "..." }]
 
 [repository]
-owner = "engineer"               # engineer (owner is your forge login or an org in WAYS_OWN_ORGS; a fork counts by its parent's owner, never its own; committed) | others (kept out of git)
+owner = "engineer"               # engineer (no remote, or the owner is your forge login or an org in WAYS_OWN_ORGS; a fork counts by its parent's owner, never its own; committed) | others (kept out of git)
 docs = ".teams"                  # outside .claude/, whose writes always prompt
 style = []                       # e.g. ["docs/style.md"]
 decisions = ""                   # e.g. "docs/adr/"
