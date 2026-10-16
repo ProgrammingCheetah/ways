@@ -1,0 +1,16 @@
+{
+  "name": "teams",
+  "description": "The Orchestrator and its Spawns: standing agent teams (lead, programmers, QA) run through a release lifecycle — design document, team roadmaps and claims, a Groundwork plan, read-only slice plans, build, review, release reviews — while the Engineer decides every domain fork.",
+  "author": {
+    "name": "ProgrammingCheetah"
+  },
+  "homepage": "https://github.com/ProgrammingCheetah/orchestration-kit/tree/main/plugins/teams",
+  "repository": "https://github.com/ProgrammingCheetah/orchestration-kit",
+  "keywords": [
+    "orchestration",
+    "subagents",
+    "teams",
+    "workflow",
+    "release"
+  ]
+}
