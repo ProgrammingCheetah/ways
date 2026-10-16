@@ -7,7 +7,8 @@
      | # | Timeline phase | Slices merged | Commit | Architect report | QA report | Fix rounds | Demo |
      A squashed release PR leaves these commits on no branch; GitHub keeps them under the PR's refs/pull/<n>/head.
   2. Point the release's review workspace, `<workspaces>/review-<version>`, at the commit, on no branch (teams:machinery;
-     created at milestone 1, reused after). Not clean is gray: stop, a planted bug may remain.
+     created at milestone 1, reused after). Not clean is gray: stop, a planted bug may remain. QA plants bugs there,
+     so no other agent uses it while QA runs; one needed meanwhile gets its own workspace at the commit.
   3. The architect first, fresh, changing nothing: the design's architecture and the Groundwork's seams. Drift a later
      timeline phase would build on is a must-fix; the rest is a request for the next release.
      Then QA, fresh, briefed with the architect's report: each slice against its saved plan; defects, across slices too;
@@ -21,8 +22,8 @@
      flagged, and its fix round gets a security review.
   5. Fix rounds: one fresh build lead per team with its findings, on `Branches › fix` cut from the integration tip; its
      critique, the gate and, when triggered, a security review; merge it like a slice. After the fix PRs merge, point
-     the review workspace at the new integration tip, then resume the architect (for its findings) and QA to re-run
-     each proof.
+     the review workspace at the new integration tip, then resume the architect (for its findings) and, after it
+     reports, QA to re-run each proof.
   6. Meanwhile the next timeline phase's slice plans may run, and a team that finishes early plans ahead, read-only, and
      waits. Its builds start once this milestone's must-fixes merge; a plan written meanwhile is checked against the fix
      diff first, and a changed seam sends it back to its lead.
@@ -33,7 +34,8 @@
   must-fix is fixed or accepted in writing. Reports: reviews/m<n>-architect.md and reviews/m<n>-qa.md. After the release
   PR merges, remove the review workspace by name, on the Engineer's word.
   With `trunk` there is no integration branch: the range is the release's merged slice PRs (each merge's diff), not a
-  commit range, and fixes are PRs into main. Off-cycle work: QA alone, on its one PR's diff. -->
+  commit range, and fixes are PRs into main. Off-cycle work: QA alone, on its branch's diff in its workspace, before
+  its PR opens; that workspace must then be clean, as in step 2. -->
 
 ## Summary
 
