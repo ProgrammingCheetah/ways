@@ -41,12 +41,12 @@ Besides `/teams:orchestrate`, eight routines (they absorb what a separate `ship`
 |---|---|---|
 | `/teams:my-queue` | The Engineer's queue (`<docs>/queue.md`, open questions, live PRs) as Ready, Incoming, Questions, Waiting and Optional tables, each row with an ID, weight and blocker. Read-only. | the Engineer asks what's theirs |
 | `/teams:catch-me-up` | A short briefing from the queue, the release folder, rulings and VCS history: where things stand, why, what's missing, what's next. Read-only. | after a gap |
-| `/teams:cleanup` | Reports every git worktree or jj workspace with its merge evidence and cleanliness; after one confirmation, runs `Repository › teardown` and removes only the merged, remote-gone, clean ones; keeps and reports the rest. | step 9 |
+| `/teams:cleanup` | Reports every git worktree or jj workspace with its merge evidence and cleanliness; after one confirmation, runs `Repository › teardown` and removes only the merged, remote-gone, clean ones; keeps and reports the rest. Without a teams file it only reports. | **Clean up** |
 | `/teams:critique` | Two passes over a diff: the right thing built (against the plan or ticket), built right (against the codebase's own patterns); fix or ask per finding. | the review loop before a PR |
 | `/teams:document` | Doc comments on what changed, in each language's style and placement. Docs only. | definition of done |
-| `/teams:prepare-pr` | One branch to an open PR: commits, rebase, the gate, a leased push, the PR body, the review bot. Never merges. | step 8 |
-| `/teams:address-comments` | Triages a PR's review comments (fix, decline, propose, escalate), routes fixes through the lanes, re-gates and pushes. Security comments are never declined. | step 8 |
-| `/teams:retrospective` | A retro grounded in commits, PRs and reviews: a team's, in `retro-template.md`'s shape, or Claude's own over a time range. Saved in `<docs>/retros/`. | retrospectives |
+| `/teams:prepare-pr` | One branch to an open PR: commits, rebase, the gate, a leased push, the PR body, the review bot. Never merges. In the lifecycle a `teams:machinery` Spawn runs it. | **PR and merge** |
+| `/teams:address-comments` | Triages a PR's review comments (fix, decline, propose, escalate), routes fixes through the lanes, re-gates and pushes. Security comments are never declined. | **PR and merge** |
+| `/teams:retrospective` | A retro grounded in commits, PRs and reviews: a team's, in `retro-template.md`'s shape, a team QA's log (`<team> <feature> qa`), or Claude's own over a time range. Saved in `<docs>/retros/`. | retrospectives |
 
 ## How the roles reach the main session
 
@@ -68,7 +68,7 @@ Why not the alternatives: a `SessionStart` hook needs a shell or an executable o
 | judgment | `teams:designer` | xhigh | documents, its own workspace | release documents, roadmaps, the Groundwork, QA of code and documents, reviews, every security review |
 | build | `teams:builder` | high | its own workspace | approved plans to green code |
 | subsystem | `teams:myth` | high | its own workspace | long, fully specified subsystem builds |
-| glue | `teams:machinery` | medium | workspaces, branches | creating workspaces, removing merged ones with `/teams:cleanup`, committing release documents from a docs workspace |
+| glue | `teams:machinery` | medium | workspaces, branches | creating workspaces, removing merged ones with `/teams:cleanup`, committing release documents from a docs workspace, opening PRs with `/teams:prepare-pr` |
 
 Every agent file says Opus. **Only programmers may run on Sonnet** (the build lead's choice per task, or a teams-file pin); **security-nature work and every other role are always Opus.** To change a lane's effort in one project, set it in the teams file's **Lanes** table; it's passed on each Agent call. A Model there applies only to programmers: a build or subsystem Model pins every programmer to it (e.g. Opus only), except security-nature tasks, which stay on Opus.
 

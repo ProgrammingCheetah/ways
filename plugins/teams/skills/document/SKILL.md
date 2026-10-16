@@ -10,7 +10,7 @@ Add or refresh documentation on the items the diff touched. **Docs only: never c
 
 ## 0. Config
 
-Read the teams file (`.claude/TEAMS.md`, else `.claude/TEAMS.yaml`, else `.claude/TEAMS.toml`) at the root of this checkout; if absent and this is a secondary workspace, at the root of the main checkout (git: the first path `git worktree list` prints; jj: the folder holding the `.jj` directory that this workspace's `.jj/repo` file points to). Use `Repository › main`, `vcs`, `style` and `light gate` / `gate`, and the project's CLAUDE.md. `Repository › style` names the project's style rules, which may set documentation rules: read them.
+Read the teams file (`.claude/TEAMS.md`, else `.claude/TEAMS.yaml`, else `.claude/TEAMS.toml`) at the root of this checkout; if absent and this is a secondary workspace, at the root of the main checkout (git: the first path `git worktree list` prints; jj: `jj workspace root --name default`). Use `Repository › main`, `vcs`, `style` and `light gate` / `gate`, and the project's CLAUDE.md. `Repository › style` names the project's style rules, which may set documentation rules: read them.
 
 No teams file: a `.jj/` folder means jj; the default branch comes from `gh repo view --json defaultBranchRef` or `git symbolic-ref refs/remotes/origin/HEAD`. Ask the Engineer once only for what detection can't settle. Run by a Spawn (no Engineer to ask): put the question in the report.
 
@@ -21,7 +21,7 @@ No teams file: a `.jj/` folder means jj; the default branch comes from `gh repo 
 | Argument | git | jj |
 |---|---|---|
 | empty | `git diff HEAD` (staged and unstaged) plus `git diff <remote main>...HEAD` (the branch's commits); `git ls-files --others --exclude-standard` lists new untracked files, which are all new | `jj diff -r "<remote main>..@"` (the branch's commits and the working copy together; jj snapshots new files itself) |
-| `staged` | `git diff --cached` | no staging area in jj, so it doesn't apply; say so and use the empty form, or `jj diff -r @-` for the last commit |
+| `staged` | `git diff --cached` | doesn't apply: jj has no staging area, the working copy is a commit. Treat `staged` as the current change: `jj diff -r @` |
 | a range | `git diff <range>` (e.g. `main..HEAD`, `HEAD~3`) | `jj diff -r "<revset>"` (e.g. `main..@`, `@-`) |
 | path(s) | add `-- <path>…` to any form above | add the paths as filesets to any form above (`jj diff -r @ a.txt`) |
 

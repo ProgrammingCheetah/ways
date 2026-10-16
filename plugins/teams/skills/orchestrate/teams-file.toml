@@ -12,7 +12,8 @@ decisions = ""                   # e.g. "docs/adr/"
 vcs = "git"                      # git | jj
 main = "main"
 workspaces = "../{repo}-workspaces"  # one per branch, named after it (/ as -)
-teardown = []                    # run in a workspace before /teams:cleanup removes it, e.g. ["docker compose -p {name} down -v"]; {name} = folder name, {path} = absolute path
+teardown = []                    # run in a workspace before /teams:cleanup removes it, one element per command, e.g. ["docker compose -p {name} down -v"]
+                                 # {name} = folder name, {path} = absolute path; both substituted single-quoted, so don't quote them
 gate = ""                        # exactly what CI runs
 light_gate = ""
 

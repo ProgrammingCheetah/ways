@@ -1,6 +1,6 @@
 ---
 name: catch-me-up
-description: Brief the Engineer on where the project stands: what we were doing, the context, what's missing, what's next. Read-only; writes nothing, starts no work. Use after a gap: /teams:catch-me-up
+description: Brief the Engineer on where the project stands: what we were doing, the context, what's missing, what's next. Read-only, starts no work. Use after a gap or on "where were we?"
 argument-hint: (none)
 ---
 
@@ -10,7 +10,7 @@ A **spoken briefing** of the project's current state. Read-only: it writes nothi
 
 ## 0. Config
 
-Read the teams file (`.claude/TEAMS.md`, else `.claude/TEAMS.yaml`, else `.claude/TEAMS.toml`) at the root of this checkout; if absent and this is a secondary workspace, at the root of the main checkout (git: the first path `git worktree list` prints; jj: the folder holding the `.jj` directory that this workspace's `.jj/repo` file points to). Use `Repository › docs` (`<docs>`, resolved from the main checkout's root), `vcs`, `main`, `decisions` and `workspaces`, and `Release › version format`.
+Read the teams file (`.claude/TEAMS.md`, else `.claude/TEAMS.yaml`, else `.claude/TEAMS.toml`) at the root of this checkout; if absent and this is a secondary workspace, at the root of the main checkout (git: the first path `git worktree list` prints; jj: `jj workspace root --name default`). Use `Repository › docs` (`<docs>`, resolved from the main checkout's root), `vcs`, `main`, `decisions` and `workspaces`, and `Release › version format`.
 
 No teams file: say so in one line and brief from the project's CLAUDE.md, its decisions folder if one is obvious, the VCS history and the open PRs. A `.jj/` folder means jj; the default branch comes from `gh repo view --json defaultBranchRef` or `git symbolic-ref refs/remotes/origin/HEAD`.
 
@@ -18,7 +18,7 @@ No teams file: say so in one line and brief from the project's CLAUDE.md, its de
 
 Skip anything already loaded this session. Never read whole source files or whole documents, only the parts that explain the current work.
 
-1. **The queue:** `<docs>/queue.md`. Its latest status note is "what we were just doing"; its top items are "what's next".
+1. **The queue:** `<docs>/queue.md`. Its latest status note (the newest entry under its `## Status` heading) is "what we were just doing"; its top items are "what's next".
 2. **The current release folder,** `<docs>/releases/<version>/`. Current = the release the latest status note names, else the most recently modified folder. Read `scope.md`, then name the phase by the last of these that exists:
    - release documents only: design review;
    - `signoff.md`: signed;
@@ -31,8 +31,9 @@ Skip anything already loaded this session. Never read whole source files or whol
 3. **Signed files:** for each id in `signoff.md`, run `git hash-object <file>` and compare. Read-only: never pass `-w`. It works in a jj repo too. A changed signed file is a finding.
 4. **Decisions:** the newest entries under `Repository › decisions`, only as far back as needed to explain the current work. The newest file in `<docs>/retros/`, if it touches the current work.
 5. **VCS:**
-   - git: `git status --short`, `git branch --show-current`, `git log --oneline -15 <main>`, `git worktree list`.
-   - jj: `jj status`, `jj log -r "ancestors(<main>, 15)"`, `jj workspace list`, `jj bookmark list`.
+   - git: `git status --short`, `git branch --show-current`, `git log --oneline -15 origin/<main>`, `git worktree list`.
+   - jj: `jj status`, `jj log -r "ancestors(<main>@origin, 15)"`, `jj workspace list`, `jj bookmark list`.
+   - No remote: use the local `<main>`. This skill doesn't fetch, so the remote view is as of the last fetch; say so in the briefing.
    - Open PRs: `gh pr list --state open` (another forge: its CLI's equivalent). `gh` absent or failing: say in one line that PRs weren't checked; never invent PR state.
 
    Workspaces under `Repository › workspaces` are work in flight.
