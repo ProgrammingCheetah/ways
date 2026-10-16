@@ -41,9 +41,9 @@ Optional files: `.chartignore` (gitignore syntax, seeded once) keeps directories
 
 ## In someone else's repository
 
-The tree is a set of files in the repo. Before its first write in a repository, `/nodes:chart` asks: commit them, keep them local-only, or not now. It pre-selects commit only when there is no remote or the remote's owner is the signed-in forge user; otherwise local-only.
+The tree is a set of files in the repo. Before its first write in a repository, `/nodes:chart` asks: commit them, keep them local-only, or not now. It pre-selects commit only when there is no remote or the remote's owner is the signed-in forge user; in a repository that isn't yours, or when it can't tell, it pre-selects local-only. "Not now" writes nothing to the repository; it is remembered in Claude's project memory, outside the repository, when the project has one, so `/nodes:familiarize` stops offering.
 
-Local-only writes `NODE.json`, `NODE.toml` and `.chartignore` into the repo's exclude file before anything else: git's `info/exclude` (`git rev-parse --git-path info/exclude`, which also serves jj colocated with git), or, in jj without colocation, `info/exclude` in the git directory `.jj/repo/store/git_target` names. `nodes` still reads every node; nothing shows in `git status` or `jj st`, and each run untracks any of the three that got tracked anyway. Know two things about it:
+Local-only writes `NODE.json`, `NODE.toml` and `.chartignore` into the repo's exclude file before anything else: git's `info/exclude` (`git rev-parse --git-path info/exclude`, which also serves jj colocated with git), or, in jj without colocation, `info/exclude` in the git directory `.jj/repo/store/git_target` names (absolute, or relative to `.jj/repo/store/`). `nodes` still reads every node; nothing shows in `git status` or `jj st`, and each run untracks any of the three that the tree itself got tracked by mistake. Files of those names the repository already tracks are its own: they are left alone and reported. Know two things about it:
 
 - Excluded files are ignored files: `git clean -x` or `-X` deletes the whole tree, and nothing backs it up.
 - It is one copy, in that checkout only, shared by every branch. Other worktrees and clones don't have it.
@@ -66,7 +66,7 @@ What any agent (a `teams` Spawn, say) runs, with no skill loaded. Always pass `-
 
 No tree yet: `/nodes:chart`.
 
-**A local-only tree** lives only in the main checkout. Agents working in other worktrees or clones read it from there, read-only (`nodes --root <main checkout> chain <path>`), and don't edit nodes; after each merge, the main session re-charts in the main checkout (`/nodes:chart --diff`). Whether a tree is local-only: `git check-ignore -q NODE.json` succeeds (jj: `jj file list NODE.json` prints nothing).
+**A local-only tree** lives only in the main checkout. Agents working in other worktrees or clones read it from there, read-only (`nodes --root <main checkout> chain <path>`), and don't edit nodes; after each merge, the main session re-charts in the main checkout (`/nodes:chart --diff`). Whether a tree is local-only: `git check-ignore -q NODE.json` succeeds (jj: `jj file list NODE.json` lists nothing; its "No matching entries" warning is expected).
 
 ## Updating
 

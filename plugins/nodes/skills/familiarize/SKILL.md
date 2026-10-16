@@ -11,7 +11,7 @@ Cold-start warm-up. Build a working picture of the project from its **node tree*
 
 In order, skipping any that don't exist:
 
-1. Root `CLAUDE.md` and every per-directory `CLAUDE.md` (Glob `**/CLAUDE.md`, skipping ignored and dependency directories).
+1. Root `CLAUDE.md` and every per-directory `CLAUDE.md` (Glob `**/CLAUDE.md`; Glob ignores `.gitignore`, so drop hits under `node_modules`, `target` and other ignored or dependency directories).
 2. Root `NODE.toml`, this pack's settings. Wherever this skill says `nodes …`, run `[tool].run …`; missing → plain `nodes` (this skill never writes the file).
 3. The docs the root `CLAUDE.md` names as authoritative (headings only for long ones), and the file at `[refs].index` when set (id + status + title per page, no bodies).
 4. The project's memory index (`MEMORY.md`) if it has one, then any memory about the file layout or structure.
@@ -20,7 +20,7 @@ In order, skipping any that don't exist:
 
 The tree is a **lookup service**, not context to carry around: load the nodes a path needs, nothing more. Run every `nodes` command with `--root <top>` (the repository's top level, or the working directory outside one): without it `nodes` reads the nearest ancestor's tree instead.
 
-- **No tree** means no `NODE.json` at `<top>` (check with your file tools; `nodes` won't say). Then, if the binary answers with 0.6.0 or later, invoke `/nodes:chart` (Skill tool): it asks first, and "not now" leaves you without a tree, which is fine — carry on.
+- **No tree** means no `NODE.json` at `<top>` (check with your file tools; `nodes` won't say). Then, if the binary answers with 0.6.0 or later and no memory says the tree was declined, invoke `/nodes:chart` (Skill tool): it asks first, and "not now" leaves you without a tree, which is fine — carry on.
 - `nodes tree` is the whole map, one line per node (name + `short`); `nodes get <path> is` gives the full sentence; `nodes get . notes` shows the tree's own conventions.
 - Find what's in play: `git status --short` / `jj st`, the current branch or bookmark, `git log --oneline -10` / `jj log`, the work in flight. For each directory touched, `nodes chain <path>` (root → … → node). Only those paths, never the whole tree.
 - Later questions: `nodes find <term>` (the chart), `nodes grep <term>` (the files), `nodes resolve <name>` (a half-remembered path), `nodes recent [path]`, `nodes ls --type <T>` / `--category <C>`, `nodes refs <page>`. Reach for them instead of re-reading.
