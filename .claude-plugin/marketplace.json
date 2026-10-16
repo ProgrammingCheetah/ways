@@ -1,0 +1,25 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "ways",
+  "description": "Ways of working for Claude Code, one plugin per way. No plugin requires another.",
+  "owner": {
+    "name": "ProgrammingCheetah"
+  },
+  "plugins": [
+    {
+      "name": "teams",
+      "source": "./plugins/teams",
+      "description": "The Orchestrator and its Spawns: standing agent teams run through a release lifecycle while the Engineer decides every domain fork."
+    },
+    {
+      "name": "handoff",
+      "source": "./plugins/handoff",
+      "description": "How Claude hands the Engineer something to do: a short worksheet of numbered steps."
+    },
+    {
+      "name": "nodes",
+      "source": "./plugins/nodes",
+      "description": "The NODE.json node tree: chart a repository so agents load a path's context from the root down."
+    }
+  ]
+}

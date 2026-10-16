@@ -1,0 +1,86 @@
+# .claude/TEAMS.toml: the same configuration as the Markdown teams file, for an Engineer who
+# prefers TOML. A .claude/TEAMS.yaml uses these same keys and nesting. Every value is the default.
+
+shared_ground = []               # lockfiles, migrations, generated files, root config, CI
+opt_outs = []                    # e.g. [{ what = "nodes", date = "2026-10-16", words = "..." }]
+
+[repository]
+owner = "engineer"               # engineer (committed) | others (kept out of git)
+docs = ".teams"                  # outside .claude/, whose writes always prompt
+style = []                       # e.g. ["docs/style.md"]
+decisions = ""                   # e.g. "docs/adr/"
+vcs = "git"                      # git | jj
+main = "main"
+workspaces = "../{repo}-workspaces"
+gate = ""                        # exactly what CI runs
+light_gate = ""
+
+[branches]
+strategy = "integration"         # integration | trunk
+integration = "feature/{slug}"
+slice = "feature/{slug}-{n}-{part}"
+engineer_reviews = ["main"]
+merge_slice = "merge"            # merge | squash | rebase
+merge_main = "squash"
+
+[tracker]
+kind = "none"                    # none | github | jira | linear | other
+project = ""
+commit_format = ""
+
+[release]
+version_format = "v{version}"
+stages = []
+documents = ["design"]
+format = "markdown"              # markdown | typst
+
+[lanes]                          # model / effort passed to the Agent call; {} = the agent file's
+plan = {}
+judgment = {}
+build = {}
+subsystem = {}
+glue = {}
+
+[limits]
+max_lanes = 2
+small_lanes = 4
+internal_after = 3
+
+[reviews]
+release_reviews = true
+security_triggers = ["authentication", "authorization and permissions", "sessions, tokens, secrets and keys", "cryptography", "untrusted input", "trust boundaries", "network egress", "personal data storage"]
+compliance_triggers = ["personal data", "payments", "accessibility", "a new dependency's license"]
+bot = ""
+comment_prefix = "Claude:"
+
+[[team]]
+name = "internal"
+mission = "Finds the most effective way for the teams to work and spend their time"
+owns = []
+lead = ""
+programmers = []
+qa = ""
+
+[[team]]
+name = "compliance"
+mission = "Release review: what the project is legally bound to follow"
+owns = []
+lead = ""
+programmers = []                 # reviewers
+qa = ""
+
+[[team]]
+name = "architects"
+mission = "Release review: correct architecture"
+owns = []
+lead = ""
+programmers = []                 # reviewers
+qa = ""
+
+[[team]]
+name = "security"
+mission = "Every security-triggered slice, big merges, and the release review"
+owns = []
+lead = ""
+programmers = []                 # reviewers
+qa = ""

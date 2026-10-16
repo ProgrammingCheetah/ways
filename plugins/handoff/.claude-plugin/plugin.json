@@ -1,0 +1,14 @@
+{
+  "name": "handoff",
+  "description": "How Claude hands the Engineer something to do: a very short worksheet with numbered steps, one action each, exact commands or click paths, a \"Done when\" per step, and a final \"Tell me\" line.",
+  "author": {
+    "name": "ProgrammingCheetah"
+  },
+  "homepage": "https://github.com/ProgrammingCheetah/ways/tree/main/plugins/handoff",
+  "repository": "https://github.com/ProgrammingCheetah/ways",
+  "keywords": [
+    "worksheet",
+    "instructions",
+    "how-to"
+  ]
+}
