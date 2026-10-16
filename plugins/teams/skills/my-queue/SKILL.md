@@ -1,6 +1,6 @@
 ---
 name: my-queue
-description: Show the Engineer's queue as five tables (Ready, Incoming, Questions, Waiting, Optional) with weight and blocker, built from the queue file and live open PRs. Read-only. E.g. /teams:my-queue
+description: The Engineer's queue as five tables (Ready, Incoming, Questions, Waiting, Optional), each row weighted, from the queue file and live PRs. Read-only. Use for "what do you need from me?"
 argument-hint: (none)
 ---
 
@@ -10,18 +10,19 @@ A read-only snapshot of everything that is the Engineer's to do, decide or watch
 
 ## 0. Config
 
-Read the teams file (`.claude/TEAMS.md`, else `.claude/TEAMS.yaml`, else `.claude/TEAMS.toml`) at the root of this checkout; if absent and this is a secondary workspace, at the root of the main checkout (git: the first path `git worktree list` prints; jj: the folder holding the `.jj` directory that this workspace's `.jj/repo` file points to). Use `Repository › docs` (`<docs>`, resolved from the main checkout's root), `Branches › engineer reviews` (the branches whose PRs are the Engineer's) and `Reviews › bot`.
+Read the teams file (`.claude/TEAMS.md`, else `.claude/TEAMS.yaml`, else `.claude/TEAMS.toml`) at the root of this checkout; if absent and this is a secondary workspace, at the root of the main checkout (git: the first path `git worktree list` prints; jj: `jj workspace root --name default`). Use `Repository › docs` (`<docs>`, resolved from the main checkout's root), `Branches › engineer reviews` (the branches whose PRs are the Engineer's), `Reviews › bot` and `Reviews › comment prefix` (`<prefix>`, default `Claude:`).
 
 No teams file: say so in one line and build from the forge alone. The Engineer's branch is the default branch (`gh repo view --json defaultBranchRef`, or `git symbolic-ref refs/remotes/origin/HEAD`), so the list is the open PRs into it.
 
 ## 1. Gather (cheap; verify, don't trust)
 
 Skip anything absent:
-1. `<docs>/queue.md`, the queue the Orchestrator keeps. Struck-through items (`~~…~~`) or items marked done are done; skip them. If it already uses the headings Ready, Incoming, Questions, Waiting, Optional, start from them, still checked against live state.
+1. `<docs>/queue.md`, the queue the Orchestrator keeps (its shape is `/teams:orchestrate`'s `queue-template.md`: the five headings plus a `## Status` section, newest note first). Struck-through items (`~~…~~`) or items marked done are done; skip them. If it already uses the headings Ready, Incoming, Questions, Waiting, Optional, start from them, still checked against live state.
 2. **Open questions:** use the Grep tool for `Claude's answer (` in the current release folder, `<docs>/releases/<version>/`. Current = the release the queue's latest status note names, else the most recently modified folder. A question already answered in a `rulings-*.md` there is not open.
-3. **Live PRs, which win over every file.** GitHub: `gh pr list --state open --json number,title,baseRefName,headRefName,isDraft,mergeable,statusCheckRollup,reviewDecision,latestReviews,url`, plus `-R OWNER/REPO` for any PR in another repo the queue names. `gh` absent or failing: say in one line what wasn't checked; never invent PR or CI state. Another forge: its CLI's equivalent.
+3. **Live PRs, which win over every file.** GitHub: `gh pr list --state open --json number,title,baseRefName,headRefName,isDraft,mergeable,statusCheckRollup,reviewDecision,latestReviews,reviewRequests,url`, plus `-R OWNER/REPO` for any PR in another repo the queue names. `gh` absent or failing: say in one line what wasn't checked; never invent PR or CI state. Another forge: its CLI's equivalent.
    - A PR into an engineer-reviews branch is the Engineer's to review once its checks are green. While they run, it is Incoming. Draft, marked "hold merge", failing checks or a merge conflict: Waiting.
-   - With `Reviews › bot` set and its review not in `latestReviews` yet, say so in the row.
+   - For PRs into engineer-reviews branches, also run `gh pr view <n> --json comments`. A comment starting `<prefix> hold merge` with no later `<prefix> hold lifted` means "hold merge".
+   - With `Reviews › bot` set, expect its review only when `reviewRequests` or `latestReviews` names it. Requested and not yet in `latestReviews`: say so in the row. Neither names it: the bot wasn't requested (prepare-pr writes `Review bot: not requested (<reason>)` in the PR body, which is the waiver), so no wait and no flag.
    - A PR into any other branch is never the Engineer's (the Orchestrator merges those): leave it out unless the queue names it.
 4. **Agents in flight:** whatever this session knows is running. Never predict a running agent's result.
 
