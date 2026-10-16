@@ -6,7 +6,7 @@ argument-hint: "[staged | <range> | <path>…; default: uncommitted changes plus
 
 # /teams:critique: judge the diff against what was asked and what the codebase already does
 
-Reviews changed code for **fit with the request, fit with existing patterns, quality and duplication**. Not bug-hunting (that is `/code-review`). The stance is a senior reviewer who knows the codebase: prefer reusing what exists, weigh quality honestly, and **be willing to find nothing**. Runs solo, or in the teams lifecycle on a branch before its PR.
+Reviews changed code for **fit with the request, fit with existing patterns, quality and duplication**. Not bug-hunting (that is `/code-review`). The stance is a senior reviewer who knows the codebase: prefer reusing what exists, weigh quality honestly, and **be willing to find nothing**. Runs solo, or in the teams lifecycle as the build lead's own pass on its slice diff before it pushes (**Build**).
 
 ## Inputs
 
@@ -29,7 +29,7 @@ Add `--stat` or `--name-only` (both tools accept both) to list the files before 
 
 ## Step 0: what "the right thing" is measured against
 
-- **Teams lifecycle:** the slice plan for this branch, `<docs>/releases/<version>/plans/<team>-<slice>.md` (match the branch name or slice; the version is the one the plan or brief names, else the newest folder under `<docs>/releases/`), and the signed release documents (`Release › documents`, with `signoff.md`). Several plans fit: ask the Engineer; a Spawn names the one it assumed.
+- **Teams lifecycle:** the slice plan for this branch, `<docs>/releases/<version>/plans/<team>-<slice>.md` (match the branch name or slice; the version is the one the plan or brief names, else the newest folder under `<docs>/releases/`), and the signed release documents (`Release › documents`, with `signoff.md`). Several plans fit: ask the Engineer; a Spawn names the one it assumed. A milestone fix round: the findings it fixes, in `<docs>/releases/<version>/reviews/m<n>-*.md`.
 - **Solo:** the ticket (the tracker's tools when present; `Tracker › kind` = `github`: `gh issue view <n> --comments`, the number from the branch name or the PR), else the PR description (`gh pr view --json title,body`), else the Engineer's ask in this conversation. `gh` absent or failing: say in one line what wasn't read.
 - **Nothing found:** run phase 1 against the Engineer's ask, or skip it and say so. Never invent requirements.
 

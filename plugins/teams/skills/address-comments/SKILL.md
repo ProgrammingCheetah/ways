@@ -7,7 +7,7 @@ model: opus
 
 # /teams:address-comments: triage and close out PR review feedback
 
-Once the PR is open (`/teams:prepare-pr`) and reviews have landed (the review bot, if any, and human reviewers), turn the comments into a decision-ready triage: weigh each one honestly, act on the clear ones, hand the judgment calls to the Engineer, **never silently wave off a security comment or break the branch.** It runs before the merge. It doesn't replace the review loop before the PR (QA, code review, the security review when triggered); it closes the loop on what review catches after.
+Once the PR is open (`/teams:prepare-pr`) and reviews have landed (the review bot, if any, and human reviewers), turn the comments into a decision-ready triage: weigh each one honestly, act on the clear ones, hand the judgment calls to the Engineer, **never silently wave off a security comment or break the branch.** It runs before the merge. It doesn't replace the review loop before the PR (in the lifecycle: the slice checks, milestone QA and release reviews; solo: critique, code review, the security review when triggered); it closes the loop on what review catches after.
 
 ## Input
 
@@ -21,7 +21,7 @@ Read from the teams file (`.claude/TEAMS.md`, else `.claude/TEAMS.yaml`, else `.
 
 - `Reviews › bot`, `Reviews › security triggers`, `Reviews › comment prefix`
 - `Repository › gate`, `Repository › light gate`, `Repository › vcs`
-- `Branches › engineer reviews`, `Tracker › commit format`
+- `Branches › engineer reviews, integration, fix`, `Tracker › commit format`
 - the **Lanes** table (Model and Effort pins)
 
 **No teams file:** no bot; the security triggers and the comment prefix (`Claude:`) take the template defaults (authentication; authorization and permissions; sessions, tokens, secrets and keys; cryptography; untrusted input; trust boundaries; network egress; personal data storage); the gate is what the CI config runs (`.github/workflows/*.yml` or the forge's equivalent); a `.jj/` folder means jj. Ask the Engineer once, in one round, only for what detection can't settle (a Spawn puts the question in its report).
@@ -51,7 +51,7 @@ Read from the teams file (`.claude/TEAMS.md`, else `.claude/TEAMS.yaml`, else `.
      | Propose, Escalate | the Engineer |
 4. **Hold the merge first.** Before any fix lands on the open PR, mark it draft (`gh pr ready <N> --undo`) or, where drafts aren't available, comment ``gh pr comment <N> --body "<prefix> hold merge: review fixes in progress"``, without asking. From here on, every report says whether the fix is pushed.
 5. **Act by verdict.**
-   - **Fix.** Under `/teams:orchestrate`, the fixes are a fix round (the lifecycle's **Review** step, where fix rounds are defined): a fresh build lead (`teams:designer`) gets the findings, the branch and the workspace, and spawns fresh programmers per the agent column; the Orchestrator runs the security re-reviews. Steps 6–7 then belong to the fix round: give its build lead the fetched tip (step 2) as the lease; lift the hold once the fix round's reviewers verify. Solo: apply them directly, or spawn the recommended agent when the `teams:` agents are available.
+   - **Fix.** Under `/teams:orchestrate`, the fixes are a fix round (the lifecycle's **Slice merge** step, where fix rounds are defined; on a release PR, the fix branch is `Branches › fix`, cut from the integration tip and merged back like a slice): a fresh build lead (`teams:designer`) gets the findings, the branch and the workspace, and spawns fresh programmers per the agent column; the Orchestrator runs the security re-reviews. Steps 6–7 then belong to the fix round: give its build lead the fetched tip (step 2) as the lease; lift the hold once the fix round's reviewers verify. Solo: apply them directly, or spawn the recommended agent when the `teams:` agents are available.
    - **Decline.** A one-line reason starting with the comment prefix; it goes out through the Engineer's account. **The bot's comments:** post without asking, then resolve the thread. **Human reviewers' comments:** collect every decline and ask the Engineer once, all of them in one yes, before posting any; reply only, never resolve a human's thread. The Engineer may lift either rule. A Spawn posts nothing on human threads and lists those declines in its report for that confirmation.
      Reply: `gh api graphql -f query='mutation($t:ID!,$b:String!){addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$t,body:$b}){comment{url}}}' -f t=<thread id> -f b="<prefix> <reason>"`
      Resolve (the bot's threads only): `gh api graphql -f query='mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{isResolved}}}' -f t=<thread id>`
@@ -61,7 +61,7 @@ Read from the teams file (`.claude/TEAMS.md`, else `.claude/TEAMS.yaml`, else `.
 6. **Re-gate and push, if anything was fixed.** Run the light gate (the gate when unset), green on exit code **and** output. Fixes go in meaningful commits (`Tracker › commit format` when set). Push keyed to the fetched tip:
    - git: `git push --force-with-lease=<branch>:<fetched tip> origin <branch>`
    - jj: `jj git push --bookmark <bookmark>` (it refuses if the remote moved since the fetch)
-   A refused push: stop and report; don't re-fetch and retry over someone else's work. Then lift the hold: `gh pr ready <N>` if you made it a draft (leave a PR that was already a draft alone), or ``gh pr comment <N> --body "<prefix> hold lifted"``.
+   A refused push: stop and report; don't re-fetch and retry over someone else's work. Then lift the hold: `gh pr ready <N>` if you made it a draft (leave a PR that was already a draft alone), or ``gh pr comment <N> --body "<prefix> hold lifted"``. On a release PR (an integration branch into main) nothing is pushed here: the fix PR merges into the integration branch, which updates the release PR; lift the hold once it merges.
 7. **One pass.** A push can trigger the bot again. Don't loop re-requesting review; a later round is a new run.
 
 ## Output
