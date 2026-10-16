@@ -11,7 +11,7 @@ No scripts, no hooks: the skills run the same on Linux, macOS and Windows. No ot
 
 ## Install
 
-With the `ways` marketplace added (`claude plugin marketplace add https://github.com/ProgrammingCheetah/orchestration-kit.git`): `claude plugin install nodes@ways`, or `/plugin install nodes@ways` inside a session. Then the binary.
+With the `ways` marketplace added (`claude plugin marketplace add https://github.com/ProgrammingCheetah/ways.git`): `claude plugin install nodes@ways`, or `/plugin install nodes@ways` inside a session. Then the binary.
 
 ## The `nodes` binary
 

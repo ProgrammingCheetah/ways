@@ -37,7 +37,7 @@ In a repo the Engineer doesn't own, a pack's project files go in the repo's excl
    `git --version`
    Done when: it prints a version number.
 3. **Add** the marketplace.
-   `claude plugin marketplace add https://github.com/ProgrammingCheetah/orchestration-kit.git`
+   `claude plugin marketplace add https://github.com/ProgrammingCheetah/ways.git`
    Done when: the output ends with `Successfully added marketplace: ways (declared in user settings)`.
 4. **Install** the teams pack.
    `claude plugin install teams@ways`

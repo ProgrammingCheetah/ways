@@ -4,8 +4,8 @@
   "author": {
     "name": "ProgrammingCheetah"
   },
-  "homepage": "https://github.com/ProgrammingCheetah/orchestration-kit/tree/main/plugins/teams",
-  "repository": "https://github.com/ProgrammingCheetah/orchestration-kit",
+  "homepage": "https://github.com/ProgrammingCheetah/ways/tree/main/plugins/teams",
+  "repository": "https://github.com/ProgrammingCheetah/ways",
   "keywords": [
     "orchestration",
     "subagents",
