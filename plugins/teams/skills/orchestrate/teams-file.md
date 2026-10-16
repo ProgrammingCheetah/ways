@@ -15,6 +15,7 @@
 | vcs | git | `git` or `jj` |
 | main | main | the default branch; never pushed to directly |
 | workspaces | `../{repo}-workspaces` | one workspace per branch, named after it (`/` as `-`); its reviewers and fix rounds reuse it |
+| teardown | — | optional: commands run inside a workspace before `/teams:cleanup` removes it, e.g. `docker compose -p {name} down -v` (`{name}`: the workspace folder's name; `{path}`: its absolute path) |
 | gate | — | exactly what CI runs, all of it |
 | light gate | — | optional, for restacks and fix rounds; — = the gate |
 
