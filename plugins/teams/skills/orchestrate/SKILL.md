@@ -22,7 +22,7 @@ argument-hint: "[what to do next, e.g. 'scope release v0.2']"
 - **You code through background Spawns** so the conversation continues; edit inline only when spawning costs more.
 - **Iterative.** Every plan names its first usable increment and the order after it; a plan that only works once everything lands goes back. Slices cut vertically through one module.
 - **Ask at the slice that needs it.** Flag a one-way door when first seen; park other questions with the slice that will ask them. Read what's decided first; never re-ask.
-- **QA before the Engineer.** Every document that reaches the Engineer carries its QA's challenges and the author's resolutions, your own pages included; QA checks diagrams against the text. A peer lead's review doesn't replace QA.
+- **QA before the Engineer.** Every document that reaches the Engineer carries its QA's challenges and the author's resolutions, your own pages included. A peer lead's review doesn't replace QA.
 - **Verify, don't trust.** Check a "settled" claim against its source before building on it. A security or protocol fact cites a checked source or says "unverified". A command proves something by its exit code **and** its output.
 - **Match the Engineer's altitude:** don't list forks they haven't reached unless one breaks the architecture or a security line.
 
@@ -39,29 +39,29 @@ argument-hint: "[what to do next, e.g. 'scope release v0.2']"
 
 ## 3. Lanes
 
-| Lane | Agent | Effort | Writes | Used for |
-|---|---|---|---|---|
-| plan | `teams:planner` | xhigh | nothing | per-slice plans and their QA |
-| judgment | `teams:designer` | xhigh | documents, its own workspace | release documents, roadmaps, the Groundwork, QA of code and documents, reviews, every security review |
-| build | `teams:builder` | high | its own workspace | approved plans to green code |
-| subsystem | `teams:myth` | high | its own workspace | long, fully specified subsystem builds |
-| glue | `teams:machinery` | medium | workspaces, branches | creating and removing workspaces, deterministic housekeeping |
+| Lane | Agent | Effort | Used for |
+|---|---|---|---|
+| plan | `teams:planner` | xhigh | per-slice plans and their QA |
+| judgment | `teams:designer` | xhigh | release documents, roadmaps, the Groundwork, build leads, QA, reviews, every security review |
+| build | `teams:builder` | high | approved plans to green code |
+| subsystem | `teams:myth` | high | long, fully specified subsystem builds |
+| glue | `teams:machinery` | medium | creating and removing workspaces, deterministic housekeeping |
 
-Nothing runs at low effort. A Model or Effort in the teams file's **Lanes** table goes on the Agent call as `model` or `effort`. Name the model and cost when you launch an expensive Spawn.
+Nothing runs at low effort. A Model or Effort in the teams file's **Lanes** table goes on the Agent call as `model` or `effort`. **Leads and QA are always Opus; only programmer models are the lead's choice or a teams-file pin:** pass `model: "opus"` on every lead and QA spawn; a build or subsystem Model pins programmers. Name the model and cost when you launch an expensive Spawn.
 
 ## 4. The release lifecycle
 
 **Clean context at every phase boundary:** each phase's input is a document handed to freshly spawned agents, never continued by its authors. Leads and QA keep names and roles, not context. Inside a phase, continue a lead or QA (never a programmer) by its agent id. Release files live in `<docs>/releases/<version>/`.
 
 1. **Scope.** The Engineer names the version (`Release › version format`) and scope. Write `scope.md`: version, scope in the Engineer's words, what's out.
-2. **Design document.** A fresh `teams:designer` writes `Release › documents` in `Release › format` from `design-template.md`. A second fresh `teams:designer` (not the author) is its QA; the author resolves; you check; the Engineer reviews in one sitting and signs. Record each signed file's `git hash-object` id in `signoff.md`; re-check the ids at each phase start and before a brief cites a signed file. A changed signed file goes back to the Engineer with what changed and what to check.
-3. **Roadmaps and claims.** Each team that owns a package in the implementation plan gets a fresh lead (`teams:designer`). It reads the signed set, not its authors' notes, and writes `roadmaps/<team>.md` from `roadmap-template.md`, with its QA's challenges, and files **claims** in `claims.md`: what it needs from which team, by which slice. Run rounds: resume each lead on the claims addressed to it; a counter goes back to its claimant; repeat until every claim is accepted or routed to you. Review teams join at their triggers and at release end.
+2. **Design document.** A fresh `teams:designer` writes `Release › documents` in `Release › format` from `design-template.md`. A second fresh one is its QA; the author resolves; you check; the Engineer reviews in one sitting and signs. Record each signed file's `git hash-object` id in `signoff.md`; re-check the ids at each phase start and before a brief cites a signed file. A changed signed file goes back to the Engineer with what changed and what to check.
+3. **Roadmaps and claims.** Each team that owns a package in the implementation plan gets a fresh lead (`teams:designer`). It reads the signed set, not its authors' notes, and writes `roadmaps/<team>.md` from `roadmap-template.md`, with its QA's challenges, and files **claims** in `claims.md`: what it needs from which team, by which slice. Run rounds: resume each lead on the claims addressed to it; a counter goes back to its claimant; repeat until every claim is accepted or routed to you.
 4. **Groundwork.** A fresh `teams:designer`, neither a lead nor the design's author, writes `groundwork.md` from `groundwork-template.md`. QA, resolutions, your check, then the Engineer approves or rejects; rulings go in `rulings-<date>.md`. Rejected: fresh leads revise roadmaps and claims from the rulings, and a new Groundwork comes back.
 5. **Slice plans (read-only).** For each team's current slice, a fresh lead on `teams:planner` returns a plan from `plan-template.md`. Its QA, also on `teams:planner`, returns challenges; resume the lead for resolutions; you save all of it to `plans/<team>-<slice>.md` and check it against the Groundwork. **Every planner run** (lead, QA, each resume) happens in a clean planning workspace at the base branch's tip (created like a build one), never the Engineer's checkout, with `planner-check.md` before and after; any change stops the slice. **A plan reaches the Engineer only for a domain fork, a one-way door, or a change to a signed document.**
-6. **Build.** First create each branch's workspace at `Repository › workspaces`/`<branch>` (`/` as `-`; `teams:machinery` or you); parallel parts get their own branches. With the `integration` strategy, cut `Branches › integration` at main's tip before slice 1. Each programmer (`teams:builder`, or `teams:myth` at subsystem scale) gets one task there (section 5's brief). Done: the full `Repository › gate` green on exit code and output before the first push and before QA (`light gate` on restacks and fix rounds; CI stays the enforcement); branch pushed; no PR.
-7. **Review,** in parallel, each reviewer in its own context, briefed with the workspace and branch. QA checks plan fidelity and test quality: every rule has a test that fails when it breaks, proven by planting bugs. A code-review Spawn hunts defects. The security reviewer covers any slice that hits a `Reviews › security triggers` item, arguing from the threat ("what must this reject?"), not the spec. A fix round goes to a fresh programmer with the findings, branch and diff; it re-runs the proof that showed each defect; reviewers verify.
+6. **Build.** First create each branch's workspace at `Repository › workspaces`/`<branch>` (`/` as `-`; `teams:machinery` or you); parallel parts get their own branches. With the `integration` strategy, cut `Branches › integration` at main's tip before slice 1. Then a fresh **build lead** (`teams:designer`) gets the saved slice plan, workspaces and its programmer budget; it spawns one programmer per task (`teams:builder`, or `teams:myth` at subsystem scale), independent ones in parallel, one per workspace at a time; it checks the gate and pushes. Done: the full `Repository › gate` green on exit code and output before the first push and before QA (`light gate` on restacks and fix rounds; CI stays the enforcement); no PR.
+7. **Review,** in parallel, each reviewer in its own context, briefed with the workspace and branch. QA checks plan fidelity and test quality: every rule has a test that fails when it breaks, proven by planting bugs. A code-review Spawn hunts defects. The security reviewer covers any slice that hits a `Reviews › security triggers` item, arguing from the threat ("what must this reject?"), not the spec. A fix round goes to a fresh build lead with the slice plan, findings, branch and workspace; its fresh programmers re-run the proof that showed each defect; reviewers verify.
 8. **PR and merge,** per **Branches**. First close your own loop: gate green, every finding applied or listed as deferred. The PR says what it does in plain words, implementation choices, deferred findings, links to reviews, how to check it locally. **Who reviews what:** a PR into an `engineer reviews` branch is the Engineer's to review and merge, with `Reviews › bot` requested if set (never merge before its review lands unless waived). Any other PR gets QA, plus security when triggered and any team that fits, and you merge it as soon as they pass and CI is green. The integration branch's PR opens only when every slice of its feature has merged. Before a fix round on an open PR, mark it draft or comment "hold merge", and always say whether a fix is pushed. A domain fork stops for the Engineer on any branch.
-9. **Clean up.** After a merge and its fix rounds, a `teams:machinery` Spawn removes each merged branch's workspace, build output included, per its agent file. Never the Engineer's checkout or a workspace in use.
+9. **Clean up.** After a merge and its fix rounds, a `teams:machinery` Spawn removes each merged branch's workspace per its agent file.
 10. **Release end.** Release reviews (section 7), the last milestone's demo, release notes and an acceptance worksheet for the Engineer, then retrospectives.
 
 **Documents in git:** with `Repository › owner` = engineer, at each signature or approval a `teams:machinery` Spawn copies the release folder into a docs workspace on `docs/<version>` and opens a PR; nobody switches or commits in the Engineer's checkout. With `others`, it stays out of git.
@@ -71,25 +71,25 @@ Nothing runs at low effort. A Model or Effort in the teams file's **Lanes** tabl
 ## 5. Spawning
 
 - **Settle blocking decisions first;** don't spawn an agent that can only park or wait for a slot.
-- **Fan out independent work, up to the limits.** A lane is a lead, its QA and its running programmers; documents-only lanes count. At most `Limits › max lanes` at once, or `small lanes` when each is one or two agents on a short slice. Stagger full gates; reviewers run targeted tests; re-run a suspicious failure alone.
-- **The brief** is `brief-template.md`, filled in for the role. A programmer's is narrow and self-contained: its task, exact files, the plan section it implements, the gate, done-when; never the whole design.
+- **Fan out independent work, up to the limits.** A lane is a lead, its running programmers and QA; documents-only lanes count. At most `Limits › max lanes` at once, or `small lanes` when each is one or two agents on a short slice. Each build lead's programmer budget (how many at once) fits them. Stagger full gates; reviewers run targeted tests; re-run a suspicious failure alone.
+- **The brief** is `brief-template.md`, filled in for the role. A build lead's carries the template, for the narrow programmer briefs it writes.
 - **Work the Engineer must drive** (an interview) stays in your session.
 - **Review every Spawn's output before reporting it.** You're accountable for what reaches the Engineer.
 - **Launch subagents only,** never teammates (no `name` on Agent calls): teammates bypass the hub.
 
 ## 6. Coordination
 
-- **You are the hub.** A Spawn reports through its final report; a writing lead or QA messages you mid-task only for a blocker that stalls everything; a programmer ends with it instead. Spawns don't message each other.
+- **You are the hub.** A Spawn reports through its final report; a writing lead or QA messages you mid-task only for a blocker that stalls everything; a build lead or programmer ends with it instead. Spawns don't message each other; only a build lead spawns programmers and gets their reports.
 - **Lead to lead through documents,** one writer at a time; you run the rounds and route what they can't settle.
 - **Ownership:** two Spawns never own the same file at once. Shared ground (the teams file's list) is one Spawn at a time, assigned by you.
 - **State lives in documents** (the teams file, the release folder, `queue.md`), never in a Spawn's context. After a restart: re-read them, re-verify settled claims, re-brief from them.
 
 ## 7. Teams, release reviews, retrospectives
 
-- **A team** is a named lead and QA, standing (spawned only when there's work, names kept). **Programmers are short-lived:** named per task, spawned only when a lane slot is free and they can start, done at their report, never resumed or left waiting (blocked: end with the question). Waking a Spawn rewrites its whole context cache. **QA's mission:** check the code and tests, always asking "How did you reach this conclusion? Shouldn't we ask the Product Owner or the tech lead?"
-- **The internal team is always on** unless **Opt-outs** names it. It finds the most effective way for the teams to work: reads retrospectives, QA logs, CI and PR history; builds tools and refines process (the Engineer can overturn); merges or splits teams as the data shows; keeps statistics gathered by tools. Wake its lead after `Limits › internal after` new retrospectives, and when a week has passed since the last wake recorded in `queue.md`. It works by project, not by release.
+- **A team** is a named lead and QA, standing (spawned only when there's work, names kept). **Programmers are short-lived:** spawned per task by their build lead within its budget, done at their report, never resumed or left waiting (blocked: end with the question). **QA's mission:** check the code and tests, always asking "How did you reach this conclusion? Shouldn't we ask the Product Owner or the tech lead?"
+- **The internal team is always on** unless **Opt-outs** names it. It finds the most effective way for the teams to work: reads retrospectives, QA logs, CI and PR history; builds tools and refines process (the Engineer can overturn); merges or splits teams as the data shows; keeps tool-gathered statistics. Wake its lead after `Limits › internal after` new retrospectives, and when a week has passed since the last wake recorded in `queue.md`. It works by project, not by release.
 - **The security team** reviews every security-triggered slice before its PR, and every merge into an `engineer reviews` branch whose feature hit a trigger.
-- **Release reviews** (unless opted out): at each release's end, compliance against what the project is legally bound to follow, architects against correct architecture, security against the whole attack surface. A lead whose slice hits a `Reviews › compliance triggers` item flags it, and you call compliance in early. A compliance or security must-fix blocks the release until fixed or the Engineer accepts the risk in writing; architecture requests go into the next release. Reports: `<docs>/releases/<version>/reviews/<team>.md`.
+- **Release reviews** (unless opted out): at each release's end, compliance, architects and security (the whole attack surface) review it. A lead whose slice hits a `Reviews › compliance triggers` item flags it, and you call compliance in early. A compliance or security must-fix blocks the release until fixed or the Engineer accepts the risk in writing; architecture requests go into the next release. Reports: `<docs>/releases/<version>/reviews/<team>.md`.
 - **Retrospectives:** when a feature or release ends, its lead (`teams:designer`) writes `<docs>/retros/<YYYYMMDD>-<team>-<feature>.md` from `retro-template.md`; the team's QA writes its own log beside it (`…-qa.md`).
 
 ## 8. Definition of done (unless the project's CLAUDE.md sets its own)

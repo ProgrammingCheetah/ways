@@ -1,6 +1,6 @@
 # teams
 
-One Claude session is the **Orchestrator**, the tech lead. Teams of background agents (**Spawns**) plan, build and review: each team has a standing, named lead and QA, and its programmers are short-lived, spawned for one task and ended when it's done. **The Engineer** is the Product Owner and decides every domain fork. The Orchestrator is the Engineer's single interface: agents never reach the Engineer directly.
+One Claude session is the **Orchestrator**, the tech lead. Teams of background agents (**Spawns**) plan, build and review: each team has a standing, named lead and QA, and its programmers are short-lived, spawned by a build lead for one task and ended when it's done. **The Engineer** is the Product Owner and decides every domain fork. The Orchestrator is the Engineer's single interface: agents never reach the Engineer directly.
 
 | Part | What it is |
 |---|---|
@@ -30,6 +30,8 @@ Every arrow into a new box hands a document to **freshly spawned** agents: leads
 
 **Why programmers are short-lived.** The Orchestrator is cheap; recreating context is not. A resumed Spawn re-reads its whole context, and one that waits past the prompt cache's lifetime rewrites its whole cache when it wakes. So a programmer gets one task (a slice or part of one) and a narrow brief, is spawned only when it can start now, and ends at its report. A fix round goes to a fresh programmer briefed with the findings, the branch and its diff, in the same workspace. A blocked piece ends the programmer with the question in its report. Leads and QA keep the clean-context-per-phase rule.
 
+**Leads spawn programmers.** After a slice plan is saved, the Orchestrator spawns a fresh **build lead** (`teams:designer`) with the saved plan (the planner lead is read-only and can't spawn), its workspaces and branches, and a programmer budget: how many programmers it may run at once, sized so the lanes stay inside the teams file's Limits. A lane is a build lead, its running programmers and its QA. The build lead splits the slice into tasks, spawns one programmer per task (`teams:builder`, or `teams:myth` at subsystem scale) with a narrow brief, running independent tasks in parallel, one per workspace at a time. It reviews their reports, checks the gate and pushes, then reports to the Orchestrator. It picks each programmer's model: `sonnet` for a fully specified, bounded, non-security task; `opus` for security-nature work (always), an ambiguous or cross-cutting task, the Myth, and a task whose Sonnet attempt still has must-fixes after two fix rounds. A fix round is a fresh build lead with the plan, the findings, the branch and workspace, spawning fresh programmers. Reviews stay with the Orchestrator, independent of the lead. Spawn and hand-back between a build lead and its programmers is the only Spawn-to-Spawn traffic.
+
 ## How the roles reach the main session
 
 On its first run in a project, `/teams:orchestrate` writes one line into the project's `CLAUDE.md` (the Engineer's own repo) or `CLAUDE.local.md` (anyone else's, kept out of git):
@@ -52,7 +54,7 @@ Why not the alternatives: a `SessionStart` hook needs a shell or an executable o
 | subsystem | `teams:myth` | high | its own workspace | long, fully specified subsystem builds |
 | glue | `teams:machinery` | medium | workspaces, branches | creating workspaces, removing them (build output included) after merge, committing release documents from a docs workspace |
 
-All run Opus. To change a lane's model or effort in one project, set it in the teams file's **Lanes** table; the Orchestrator passes it on each Agent call.
+Every agent file says Opus. **Leads and QA are always Opus; only programmer models are the lead's choice or a teams-file pin.** To change a lane's model or effort in one project, set it in the teams file's **Lanes** table; it's passed on each Agent call, but a Model there never changes a lead's or QA's, and a build or subsystem Model pins every programmer to it (e.g. Opus only).
 
 **How read-only the planner is.** Plugin agents ignore `permissionMode`, so the planner can't be put in plan mode. Its `tools` allowlist is `Read`, `Glob`, `Grep`, `Bash`, `PowerShell`, `WebFetch`, `WebSearch`, `ToolSearch` (which loads the web tools where they're deferred) and `SubagentHandback` (which delivers its report). LSP is left out: a language server can write cache files into the planning workspace and trip the check below. Every editing tool, every way to start or steer another agent (except through the shell), MCP tools and any tool Claude Code adds later are out. One hole stays, by the Engineer's choice: the shell can still write, and it's kept for git history and read-only commands. So every planner run (lead, QA, each resume) happens in a clean planning workspace at the base branch's tip, never the Engineer's checkout, and the Orchestrator runs `skills/orchestrate/planner-check.md` around it: a marker file before, then a list of everything in the workspace modified after the marker (outside `.git` and `.jj`, ignored files and deletions included), plus the workspace's own VCS status. It works in git, in jj secondary workspaces that have no `.git`, and in bash, zsh or PowerShell. Any change stops the slice, the Engineer sees what changed, and the plan isn't saved. Writes outside that workspace aren't detected.
 
@@ -82,8 +84,8 @@ First run also hands the Engineer one worksheet that saves `.claude/settings.loc
 | Release › stages | — | e.g. pre-alpha, alpha, beta, release |
 | Release › documents | design | the release document set: one design document, or e.g. pdd, tdd, plan |
 | Release › format | markdown | `markdown` with Mermaid, or `typst` |
-| Lanes (table) | — | per-lane model and effort overrides |
-| Limits › max lanes | 2 | lanes running at once; a documents-only lane counts |
+| Lanes (table) | — | per-lane model and effort overrides; never a lead's or QA's model; a build or subsystem Model pins programmers |
+| Limits › max lanes | 2 | lanes running at once (a lead, its running programmers and QA); a documents-only lane counts; each build lead's programmer budget fits inside |
 | Limits › small lanes | 4 | allowed when every lane is one or two agents on a short slice |
 | Limits › internal after | 3 | new retrospectives that wake the internal team |
 | Reviews › release reviews | on | compliance, architecture and security at each release's end |

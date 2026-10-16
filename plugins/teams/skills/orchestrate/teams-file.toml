@@ -35,6 +35,9 @@ documents = ["design"]
 format = "markdown"              # markdown | typst
 
 [lanes]                          # model / effort passed to the Agent call; {} = the agent file's
+# Leads and QA are always Opus; only programmer models are the lead's choice or a teams-file pin:
+# a model never changes a lead's or QA's. build / subsystem model pins every programmer to it,
+# e.g. build = { model = "opus" }; {} = the build lead picks sonnet or opus per task.
 plan = {}
 judgment = {}
 build = {}
@@ -53,8 +56,8 @@ compliance_triggers = ["personal data", "payments", "accessibility", "a new depe
 bot = ""
 comment_prefix = "Claude:"
 
-# A team: a named lead and QA. Programmers aren't listed: each is short-lived, named by the
-# Orchestrator for one task. Review teams list their standing reviewers.
+# A team: a named lead and QA. Programmers aren't listed: each is short-lived, spawned and
+# named by its build lead for one task. Review teams list their standing reviewers.
 [[team]]
 name = "internal"
 mission = "Finds the most effective way for the teams to work and spend their time"

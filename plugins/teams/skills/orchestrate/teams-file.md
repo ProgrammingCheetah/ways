@@ -56,7 +56,10 @@
 | subsystem | `teams:myth` | — | — |
 | glue | `teams:machinery` | — | — |
 
-<!-- A Model or Effort set here is passed as the Agent call's model or effort; — = the agent file's. -->
+<!-- A Model or Effort set here is passed as the Agent call's model or effort; — = the agent file's.
+     Leads and QA are always Opus; only programmer models are the lead's choice or a teams-file pin:
+     a Model never changes a lead's or QA's. A build or subsystem Model pins every programmer to it
+     (e.g. opus only); — = the build lead picks sonnet or opus per task. -->
 
 ## Limits
 
@@ -65,6 +68,8 @@
 | max lanes | 2 | lanes running at once |
 | small lanes | 4 | allowed when every lane is small: one or two agents on a short slice |
 | internal after | 3 | new retrospectives that wake the internal team's lead |
+
+<!-- The Orchestrator gives each build lead a programmer budget (how many at once) that fits these. -->
 
 ## Reviews
 
@@ -78,7 +83,7 @@
 
 ## Teams
 
-The Orchestrator is the tech lead; the Engineer is Product Owner, manager and stakeholder. A team is a named lead and QA, spawned only when there's work. Programmers aren't listed: each is short-lived, named by the Orchestrator for one task, and ends when it's done. Review teams list their standing reviewers.
+The Orchestrator is the tech lead; the Engineer is Product Owner, manager and stakeholder. A team is a named lead and QA, spawned only when there's work. Programmers aren't listed: each is short-lived, spawned and named by its build lead for one task, and ends when it's done. Review teams list their standing reviewers.
 
 | Team | Mission | Owns (paths) | Lead | Reviewers | QA |
 |---|---|---|---|---|---|
