@@ -14,7 +14,7 @@ Every directory is a node. A node's `NODE.inf.json` describes that directory **a
 
 **Any OS.** `nodes`, `git` and `jj` run the same in Bash or PowerShell. Where the shell mangles the JSON in `nodes set` (Windows PowerShell 5.1 drops inner double quotes), edit the file with your file tools, then `nodes fmt <file>`.
 
-**Secondary checkouts.** A linked git worktree (from `<top>`, `git rev-parse --path-format=absolute --git-common-dir` differs from `… --git-dir`; the main worktree is the common directory's parent) or a jj workspace (`.jj/repo` is a file naming the main checkout's `.jj/repo`) never gets its own tree: it reads the main checkout's. There, before any question or write, reply `Not charted: this is a secondary checkout; chart <main checkout> instead.` and stop.
+**Secondary checkouts.** A linked git worktree (from `<top>`, `git rev-parse --path-format=absolute --git-common-dir` differs from `… --git-dir`; the main worktree is the common directory's parent) or a jj workspace (`.jj/repo` is a file holding the path of the main checkout's `.jj/repo`, relative to the workspace's own `.jj/` directory) never gets its own tree: it reads the main checkout's. There, before any question or write, reply `Not charted: this is a secondary checkout; chart <main checkout> instead.` and stop.
 
 ## Arguments
 
@@ -179,11 +179,11 @@ A node's `refs` are not in its file: `nodes add-ref` / `rm-ref` / `set <path> re
 - **Category words are free, so keep them few.** Reuse the words the tree already uses (`nodes --json ls`) before coining one, and prefer these: `project`, `source`, `ui`, `schema`, `tests`, `generated`, `tooling`, `infrastructure`, `config`, `docs`, `design`, `identity`, `education`, `finance`, `housing`, `work`, `health`, `legal`, `art`, `media`, `inbox`, `archive`, `index`. A new one is a short common noun.
 - Every field is always present. `nodes check` refuses unknown keys, a `path` that disagrees with the file's location, a `node: true` entry without a reachable child node, and a child node its parent doesn't list.
 - Terse: one sentence per entry, about 25 entries in all. Prose too big for a doc comment goes in `notes`, with a one-line summary left in the file.
-- The **root** node's first `notes` are the tree's own conventions: each `[root].notes` entry verbatim; then the reading rule (to understand a path, load `nodes chain <path>`; `node: false` entries are fully described by their `fs` line); then, only when `[refs].index` is set and no `[root].notes` entry already says it, the pointer rule (code comments state facts plainly; every pointer from code to a page lives in the nearest node's `refs`).
+- The **root** node's first `notes` are the tree's own conventions: each `[root].notes` entry verbatim; then the reading rule (to understand a path, load `nodes chain <path>`; `node: false` entries are fully described by their `fs` line); then, only when `[refs].index` is set, `[root].local = false` (the Engineer's own repo: the pack doesn't override another team's comment conventions) and no `[root].notes` entry already says it, the pointer rule (code comments state facts plainly; every pointer from code to a page lives in the nearest node's `refs`).
 
 ## 6. Validate, then report
 
-Run `[tool].check`; it must be green (warnings allowed) before the report. A warning means a ref cites a page the index marks superseded: re-point it per `[refs].on_superseded` (unset → to the page that replaced it) rather than accept it. Then a short table only:
+Run `[tool].check`; it must be green (warnings allowed) before the report. A warning means one of two things, and neither is accepted as is: a ref cites a page the index marks superseded — re-point it per `[refs].on_superseded` (unset → to the page that replaced it); or `NODE.refs.json` cites pages for a directory no node charts — move those refs to the node that holds what they govern (`add-ref` there, `rm-ref` the old). Then a short table only:
 
 ```
 | node | action |
@@ -193,4 +193,4 @@ Run `[tool].check`; it must be green (warnings allowed) before the report. A war
 | src/old/NODE.inf.json | deleted (dir gone) |
 ```
 
-Then one line: `N nodes, M stale re-charted, migrated, NODE.toml seeded, .chartignore seeded, local-only, check green` (each clause only when true; or `unchanged`), plus any file §0 untracked and, after a migration in commit mode, `commit the removed NODE.json files, NODE.refs.json and the .gitignore line`. Nothing else.
+Then one line: `N nodes, M stale re-charted, migrated, NODE.toml seeded, .chartignore seeded, local-only, check green` (each clause only when true; or `unchanged`), plus any file §0 untracked and, after a migration in commit mode, `commit the removed NODE.json files, NODE.refs.json and the .gitignore line`. Whenever this run changed a committed `NODE.refs.json` (any `add-ref` / `rm-ref`), add `NODE.refs.json changed: the Engineer's to commit (a PR)` — a tracked file left modified here blocks the next pull that touches it. Nothing else.
