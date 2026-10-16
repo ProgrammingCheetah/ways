@@ -1,6 +1,6 @@
 # Teams: <project>
 
-<!-- The teams plugin's whole configuration for this project: settings, roster, opt-outs.
+<!-- The teams plugin's whole configuration for this project: settings, teams, opt-outs.
      Section titles and keys are fixed; the Orchestrator reads them by name. Edit values freely.
      "—" means unset. Written once by /teams:orchestrate; never regenerated over your edits. -->
 
@@ -14,7 +14,7 @@
 | decisions | — | where the project records decisions, e.g. `docs/adr/`; — = the rulings files only |
 | vcs | git | `git` or `jj` |
 | main | main | the default branch; never pushed to directly |
-| workspaces | `../{repo}-workspaces` | one workspace per programmer, named after them |
+| workspaces | `../{repo}-workspaces` | one workspace per branch, named after it (`/` as `-`); its reviewers and fix rounds reuse it |
 | gate | — | exactly what CI runs, all of it |
 | light gate | — | optional, for restacks and fix rounds; — = the gate |
 
@@ -56,7 +56,10 @@
 | subsystem | `teams:myth` | — | — |
 | glue | `teams:machinery` | — | — |
 
-<!-- A Model or Effort set here is passed as the Agent call's model or effort; — = the agent file's. -->
+<!-- A Model or Effort set here is passed as the Agent call's model or effort; — = the agent file's.
+     Only programmers may run on Sonnet: a build or subsystem Model pins every programmer to it
+     (e.g. opus only); — = the build lead picks sonnet or opus per task. Security-nature work and
+     every other role are always Opus, whatever is set here (their Effort may still be set). -->
 
 ## Limits
 
@@ -65,6 +68,8 @@
 | max lanes | 2 | lanes running at once |
 | small lanes | 4 | allowed when every lane is small: one or two agents on a short slice |
 | internal after | 3 | new retrospectives that wake the internal team's lead |
+
+<!-- The Orchestrator gives each build lead a programmer budget (how many at once) that fits these. -->
 
 ## Reviews
 
@@ -78,15 +83,15 @@
 
 ## Teams
 
-The Orchestrator is the tech lead; the Engineer is Product Owner, manager and stakeholder. A team is one lead, 2–3 programmers and one QA; members keep their names and are spawned only when there's work.
+The Orchestrator is the tech lead; the Engineer is Product Owner, manager and stakeholder. A team is a named lead and QA, spawned only when there's work. Programmers aren't listed: each is short-lived, spawned and named by its build lead for one task, and ends when it's done. Review teams list their standing reviewers.
 
-| Team | Mission | Owns (paths) | Lead | Programmers | QA |
+| Team | Mission | Owns (paths) | Lead | Reviewers | QA |
 |---|---|---|---|---|---|
-| <team> | <one line> | `<path/**>` | <Name> | <Name>, <Name> | <Name> |
-| internal | Finds the most effective way for the teams to work and spend their time | — | <Name> | <Name>, <Name> | <Name> |
-| compliance | Release review: what the project is legally bound to follow | — | <Name> | <Name> (reviewer) | <Name> |
-| architects | Release review: correct architecture | — | <Name> | <Name> (reviewer) | <Name> |
-| security | Every security-triggered slice, big merges, and the release review | — | <Name> | <Name> (reviewer) | <Name> |
+| <team> | <one line> | `<path/**>` | <Name> | — | <Name> |
+| internal | Finds the most effective way for the teams to work and spend their time | — | <Name> | — | <Name> |
+| compliance | Release review: what the project is legally bound to follow | — | <Name> | <Name> | <Name> |
+| architects | Release review: correct architecture | — | <Name> | <Name> | <Name> |
+| security | Every security-triggered slice, big merges, and the release review | — | <Name> | <Name> | <Name> |
 
 **Shared ground** (no team owns it; one Spawn at a time, assigned by the Orchestrator): <lockfiles, migrations, generated files, root config, CI>.
 

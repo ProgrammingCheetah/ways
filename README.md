@@ -6,7 +6,7 @@ A Claude Code plugin marketplace of **ways of working**: one plugin per way, eac
 
 | Pack | Status | What it is |
 |---|---|---|
-| `teams` | built | The Orchestrator and its Spawns: standing agent teams (lead, programmers, QA) run through a release lifecycle (design document, team roadmaps and claims, a Groundwork plan, read-only slice plans, build, review, release reviews) while the Engineer decides every domain fork. [README](plugins/teams/README.md) |
+| `teams` | built | The Orchestrator and its Spawns: agent teams (a standing lead and QA, short-lived programmers) run through a release lifecycle (design document, team roadmaps and claims, a Groundwork plan, read-only slice plans, build, review, release reviews) while the Engineer decides every domain fork. [README](plugins/teams/README.md) |
 | `handoff` | built | How Claude hands the Engineer something to do: a short worksheet of numbered steps. [README](plugins/handoff/README.md) |
 | `nodes` | built | The NODE.json node tree: chart a repository so agents load a path's context from the root down. Needs the `nodes` binary. `teams` offers it at setup. [README](plugins/nodes/README.md) |
 | `ship` | roadmap | One branch from written to merged: the local gate equals CI, the review loop closed before the PR, the PR body, review bots and fix rounds, force-push and merge-queue discipline. |
