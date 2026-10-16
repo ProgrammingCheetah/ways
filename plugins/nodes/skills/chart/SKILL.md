@@ -1,6 +1,6 @@
 ---
 name: chart
-description: Chart a repository (or any directory tree) as a tree of nodes — one NODE.inf.json per directory that carries information beyond its parent — so an agent understands any path by loading the chain of nodes from the root down (`nodes chain <path>`). Two passes like a compiler (understand bottom-up, write top-down), incremental on re-runs, honors .chartignore, writes only through the `nodes` tool so every file is canonical; the project's settings live in a root NODE.toml it seeds. Node files are gitignored (`**/*.inf.json`); a tree's refs live in one committed NODE.refs.json at its root. Asks before its first write in a repository whether its settings and refs are committed or kept local-only, and before charting a fresh clone in full; never charts a worktree or jj workspace. /nodes:familiarize is the read-only counterpart. Use to build or refresh the node tree, or preview it without writing (e.g. /nodes:chart, /nodes:chart src/domain, /nodes:chart --full, /nodes:chart --dry).
+description: Chart a repository (or any directory tree) as a tree of nodes — one NODE.inf.json per directory that carries information beyond its parent — so an agent understands any path by loading the chain of nodes from the root down (`nodes chain <path>`). Two passes like a compiler (understand bottom-up, write top-down), incremental on re-runs, honors .chartignore, writes only through the `nodes` tool so every file is canonical; the project's settings live in a root NODE.toml it seeds. A tree's refs live in one NODE.refs.json at its root. Asks before its first write in a repository whether to commit the tree or keep it local-only, and before charting a checkout that has the settings but no nodes; never charts a worktree or jj workspace of a local-only tree. /nodes:familiarize is the read-only counterpart. Use to build or refresh the node tree, or preview it without writing (e.g. /nodes:chart, /nodes:chart src/domain, /nodes:chart --full, /nodes:chart --dry).
 argument-hint: "[path] [--full] [--dry] [--diff [base]]"
 ---
 
@@ -14,7 +14,7 @@ Every directory is a node. A node's `NODE.inf.json` describes that directory **a
 
 **Any OS.** `nodes`, `git` and `jj` run the same in Bash or PowerShell. Where the shell mangles the JSON in `nodes set` (Windows PowerShell 5.1 drops inner double quotes), edit the file with your file tools, then `nodes fmt <file>`.
 
-**Secondary checkouts.** A linked git worktree (from `<top>`, `git rev-parse --path-format=absolute --git-common-dir` differs from `… --git-dir`; the main worktree is the common directory's parent) or a jj workspace (`.jj/repo` is a file holding the path of the main checkout's `.jj/repo`, relative to the workspace's own `.jj/` directory) never gets its own tree: it reads the main checkout's. There, before any question or write, reply `Not charted: this is a secondary checkout; chart <main checkout> instead.` and stop.
+**Secondary checkouts.** A committed tree is in every checkout: chart it in a worktree or workspace as anywhere, and its node changes ship with that branch. A local-only tree lives only in the main checkout, whose untracked files never travel. So a linked git worktree (from `<top>`, `git rev-parse --path-format=absolute --git-common-dir` differs from `… --git-dir`; the main worktree is the common directory's parent) or a jj workspace (`.jj/repo` is a file holding the path of the main checkout's `.jj/repo`, relative to the workspace's own `.jj/` directory) that holds no tree while its main checkout does never gets one of its own: there, before any question or write, reply `Not charted: this is a secondary checkout of a local-only tree; chart <main checkout> instead.` and stop.
 
 ## Arguments
 
@@ -24,15 +24,15 @@ Every directory is a node. A node's `NODE.inf.json` describes that directory **a
 | `/nodes:chart <path>` | chart (or update) that subtree only, then propagate one level up; no root tree yet → chart the root first |
 | `/nodes:chart --full` | ignore `charted` dates and rebuild every node |
 | `/nodes:chart --dry` | preview: do everything up to the writes, print the plan, write **nothing** (combines with a path, `--full`, `--diff`) |
-| `/nodes:chart --diff [base]` | stale set = directories touched since `base`, a branch or a commit (below); no scan. Re-charts what a branch touched (or, given a commit, what changed since it), in this checkout |
+| `/nodes:chart --diff [base]` | stale set = directories touched since `base`, a branch or a commit (below); no scan. Re-charts what a branch touched (or, given a commit, what changed since it). In a committed tree, run it before opening a PR, so node changes ship with the code they describe |
 
-`--diff` in git: `git diff --name-only <base>...HEAD`, plus `git diff --name-only HEAD` (uncommitted) and `git ls-files --others --exclude-standard` (new, untracked); `base` defaults to `origin/HEAD`, else `main`, else `master`. In jj: `jj diff --from 'fork_point(<base> | @)' --name-only`; `base` defaults to `trunk()`, or the local `main` bookmark when `trunk()` resolves to `root()` (no remote). `base` may be a commit: after pulling a merge, pass main's commit from before the pull (git: `ORIG_HEAD` straight after the pull; jj: the trunk commit id recorded before fetching), since the default base then shows nothing.
+`--diff` in git: `git diff --name-only <base>...HEAD`, plus `git diff --name-only HEAD` (uncommitted) and `git ls-files --others --exclude-standard` (new, untracked); `base` defaults to `origin/HEAD`, else `main`, else `master`. In jj: `jj diff --from 'fork_point(<base> | @)' --name-only`; `base` defaults to `trunk()`, or the local `main` bookmark when `trunk()` resolves to `root()` (no remote). `base` may be a commit: after pulling a merge into a local-only tree's main checkout, pass main's commit from before the pull (git: `ORIG_HEAD` straight after the pull; jj: the trunk commit id recorded before fetching), since the default base then shows nothing.
 
 ## Dry run (`--dry`)
 
-On a tree from before `nodes` 0.7.0 (a root `NODE.json`), report that it needs migrating (a real run does it) and stop. Otherwise run §1–§4 — read config, apply ignore rules, detect mode, understand bottom-up — but **write nothing**: no `NODE.toml`, `.chartignore`, `.gitignore` or exclude lines or `NODE.inf.json`, no `nodes init` / `set` / `classify` / `add-ref` / `touch` / `fmt` / `migrate`, and ask no question. Would-be seeds are held in memory and used as if present. Instead of §5–§6, print:
+On a tree from before `nodes` 0.7.0 (a root `NODE.json`), report that it needs migrating (a real run does it) and stop. Otherwise run §1–§4 — read config, apply ignore rules, detect mode, understand bottom-up — but **write nothing**: no `NODE.toml`, `.chartignore`, exclude lines, `.gitignore` edit or `NODE.inf.json`, no `nodes set` / `classify` / `add-ref` / `touch` / `fmt` / `migrate`, and ask no question. Would-be seeds are held in memory and used as if present. Instead of §5–§6, print:
 
-1. **Seeds**: each file that would be created, with its full contents. In a new repository add `commit or local-only: asked on the real run`, and the `.gitignore` line (commit) or exclude lines (local-only) each would add.
+1. **Seeds**: each file that would be created, with its full contents. In a new repository add `commit or local-only: asked on the real run`, and the exclude lines local-only would add. For a committed tree, each ignore line the real run would delete or ask about (§0).
 2. **The plan**, one row per directory considered:
 
 ```
@@ -51,19 +51,34 @@ On a tree from before `nodes` 0.7.0 (a root `NODE.json`), report that it needs m
 
 ## 0. The first write: whose repository
 
-The node files themselves are never committed: `**/*.inf.json` keeps every `NODE.inf.json` out of version control, so a tree lives in the checkout where it was charted. Its refs are another matter: `nodes` keeps them in one `NODE.refs.json` at the tree's root (§ The node schema). What this section decides is where that line, the refs file and the pack's two settings files (`NODE.toml`, `.chartignore`) go.
+A tree is a set of files in the repository: a `NODE.inf.json` per node, one `NODE.refs.json` at the root holding every node's refs (§ The node schema), and this pack's `NODE.toml` and `.chartignore`. This section decides whether they are committed with the code or kept out of version control — all four together.
 
 In a repository (git or jj) with neither `NODE.toml` nor a root `NODE.inf.json`, `NODE.refs.json` or `NODE.json`, this question comes **before anything else**, and nothing is written before the answer:
 
-> Chart this repository? **commit** its settings / keep it all **local-only** / **not now**
+> Chart this repository? **commit** the tree / keep it **local-only** / **not now**
 
-Pre-fill **commit** only when there is no remote, or the remote's owner is the signed-in forge user (e.g. `gh api user --jq .login`); otherwise, or when you can't tell, pre-fill **local-only**. **Not now** → write nothing to the repository, reply `Not charted.` and stop; if the project has a Claude memory directory (it lives outside the repository), save a project memory "node tree declined, <date>: offer /nodes:chart only when asked" so `/nodes:familiarize` stops offering. With no memory directory there is nowhere outside the repository to keep it: say so, and the offer returns next session. Otherwise record the answer as `[root].local`. For an existing tree, `local` is `true` when its settings aren't tracked: `git check-ignore -q NODE.toml` succeeds, or (jj) `jj file list NODE.toml` lists nothing (its "No matching entries" warning is expected); no `NODE.toml` yet → the same test on its root `NODE.json` or `NODE.refs.json`.
+Pre-fill **commit** only when there is no remote, or the remote's owner is the signed-in forge user (e.g. `gh api user --jq .login`); otherwise, or when you can't tell, pre-fill **local-only**. **Not now** → write nothing to the repository, reply `Not charted.` and stop; if the project has a Claude memory directory (it lives outside the repository), save a project memory "node tree declined, <date>: offer /nodes:chart only when asked" so `/nodes:familiarize` stops offering. With no memory directory there is nowhere outside the repository to keep it: say so, and the offer returns next session. Otherwise record the answer as `[root].local`. For an existing tree, `local` is `true` only when each of its root files that exists — `NODE.toml`, `NODE.refs.json`, `.chartignore`, `NODE.inf.json`, `NODE.json` — is ignored: `git -C <top> check-ignore <those files>` prints every one of them (it never prints a tracked file), or (jj, run from `<top>`) `jj file list <those files>` lists none of them (its "No matching entries" warning is expected). One of them tracked, or not ignored, means committed, whichever file it is.
 
-**Commit.** Your **first** write is `nodes --root <top> init`: it adds `**/*.inf.json` to `<top>/.gitignore` (only if missing) and seeds no node. Only then seed anything, and run no jj command in between (jj snapshots, and so tracks, any file not yet ignored). `NODE.toml`, `.chartignore`, `NODE.refs.json` (once the tree cites a page) and the `.gitignore` line are the repository's to commit. A tree from before 0.7.0 skips `init`: §3's `migrate` writes the line.
+**This skill never adds to `.gitignore`.** `nodes` 0.7.0's `init` and `migrate` add `**/*.inf.json` to it unless given `--no-gitignore`; from 0.7.1 they add it only when given `--gitignore`. Every call here passes `--no-gitignore`, which both accept.
 
-**Local-only.** The `.gitignore` is never written, by you or by `nodes`. The exclude file is `git rev-parse --git-path info/exclude` (git, and jj colocated with git); in jj without colocation it is `info/exclude` under the git directory that `.jj/repo/store/git_target` names, an absolute path or one relative to `.jj/repo/store/`. Can't resolve it → stop before any write. Your **first** write is its lines `**/*.inf.json`, `NODE.refs.json`, `NODE.toml` and `.chartignore`, each only if missing, with your file tools; only then seed anything, and run no jj command in between. Another VCS has no known local-only route: say so plainly, and write only on a yes.
+**Commit.** Every file of the tree is tracked and ships with the code it describes: a clone, a worktree and CI all have it, and `nodes check` there checks the whole tree.
 
-**Every run** in a repository checks that nothing the tree keeps out got tracked: any `*.inf.json` (`git -C <top> ls-files '*.inf.json'` / `jj file list 'root-glob:**/*.inf.json'`, so the current directory doesn't narrow the search), and, local-only, `NODE.toml`, `.chartignore` or `NODE.refs.json` at any depth. Added by this tree (git: not in `HEAD`, so `git ls-tree -r --name-only HEAD -- <f>` prints nothing; jj: `jj file list -r @- <f>` lists nothing) → untrack it (`git rm --cached <f>` / `jj file untrack <f>`) and say so. Already in `HEAD` / `@-` → it is the repository's own: never untrack it; tell the Engineer it exists.
+**Every commit-mode run**, after its writes and before the report (§6), checks that no tree file is ignored, at any depth, mounts included: `git -C <top> ls-files -o -i --exclude-standard -- '*.inf.json' '*NODE.refs.json' '*NODE.toml' '*.chartignore'` lists nothing. For each file it lists, `git -C <top> check-ignore -v <file>` names the line that keeps it out. (jj without git: run both with `git --git-dir=<dir> --work-tree=<top>` in place of `git -C <top>`, `<dir>` being the git directory `.jj/repo/store/git_target` names; **Local-only** below.)
+
+- `**/*.inf.json` in the `.gitignore` at the tree's root or a mount's root (`nodes` `init` and `migrate` write it): delete it, and say so, when the repository is the Engineer's own (the pre-fill test above) or the line isn't committed yet (run from `<top>`, `git show HEAD:<that file>` / `jj file show -r @- <that file>` doesn't print it, or fails).
+- One of this pack's own exclude lines (**Local-only** below), left by an earlier local-only run: delete them, and say so, when the repository is the Engineer's own.
+- Otherwise, for either kind, ask first (the pack's exclude lines as one question), changing nothing before the answer:
+
+  > `<file>` line N keeps the node files out of version control. Remove it? **yes** / **keep**
+
+  **Keep** → leave it: those node files stay in this checkout only, as in a local-only tree. Save a project memory saying so, as for **Not now**, so later runs report the line instead of asking.
+- Any other line is the repository's own: report it and stop.
+
+Re-run the check after each deletion: a line of lower precedence may sit behind the first.
+
+**Local-only.** Nothing of the tree enters version control, and `.gitignore` is never written. The exclude file is `git rev-parse --git-path info/exclude` (git, and jj colocated with git); in jj without colocation it is `info/exclude` under the git directory that `.jj/repo/store/git_target` names, an absolute path or one relative to `.jj/repo/store/`. Can't resolve it → stop before any write. Your **first** write is its lines `**/*.inf.json`, `NODE.refs.json`, `NODE.toml` and `.chartignore`, each only if missing, with your file tools; only then seed anything, and run no jj command in between (jj snapshots, and so tracks, any file not yet excluded). Another VCS has no known local-only route: say so plainly, and write only on a yes.
+
+**Every local-only run** checks that nothing of the tree got tracked: any `*.inf.json` (`git -C <top> ls-files '*.inf.json'` / `jj file list 'root-glob:**/*.inf.json'`, so the current directory doesn't narrow the search), and `NODE.toml`, `.chartignore` or `NODE.refs.json` at any depth. Added by this tree (git: not in `HEAD`, so `git ls-tree -r --name-only HEAD -- <f>` prints nothing; jj: `jj file list -r @- <f>` lists nothing) → untrack it (`git rm --cached <f>` / `jj file untrack <f>`) and say so. Already in `HEAD` / `@-` → it is the repository's own: never untrack it; tell the Engineer it exists.
 
 ## 1. Project settings — `NODE.toml`
 
@@ -84,7 +99,7 @@ kind = ""                # what a page is here (e.g. "design page", "spec")
 on_superseded = ""       # how a ref to a superseded page is re-pointed (a command or a sentence)
 
 [root]
-local = false            # true: NODE.toml, .chartignore and NODE.refs.json stay out of version control too (§0); node files never enter it
+local = false            # true: the whole tree (nodes, NODE.refs.json, NODE.toml, .chartignore) stays out of version control (§0)
 notes = []               # tree-wide conventions, pinned verbatim as the root node's first notes
 ```
 
@@ -113,8 +128,8 @@ __pycache__/
 
 ## 3. Detect mode
 
-- **Old tree first.** A tree from before `nodes` 0.7.0 keeps its nodes in `NODE.json` files; `nodes` reads it (with a note on stderr) but refuses every write but `classify` until `nodes --root <top> migrate`. That renames every node to `NODE.inf.json`, moves every node's `refs` into `NODE.refs.json`, turns pre-0.6.0 `categories` into tags, and adds `**/*.inf.json` to `.gitignore`. Local-only: add the exclude lines (§0) **first**, then run `nodes --root <top> migrate --no-gitignore`. Commit: the old `NODE.json` files leave version control as deletions, with the `.gitignore` line and the new `NODE.refs.json`; say in the report that they are the Engineer's to commit. A node from before 0.4.0 (no `type`) stops `migrate`: `nodes classify <path> <type> <category>…` those first, from each node's own `is` and `fs` (classify writes an old file in place), then migrate. Inside a mount, use `--root <mount>`.
-- Root `NODE.inf.json` exists → **update mode**; missing → **full mode**. A fresh clone of a charted repository has `NODE.toml` or `NODE.refs.json` but no nodes: unless the Engineer asked for this chart, ask first, writing nothing before the answer:
+- **Old tree first.** A tree from before `nodes` 0.7.0 keeps its nodes in `NODE.json` files; `nodes` reads it (with a note on stderr) but refuses every write but `classify` until `nodes --root <top> migrate`. That renames every node to `NODE.inf.json`, moves every node's `refs` into `NODE.refs.json` and turns pre-0.6.0 `categories` into tags; run it as `nodes --root <top> migrate --no-gitignore` (§0). Local-only: add the exclude lines (§0) **first**. Commit: the renames (each `NODE.json` deleted, a `NODE.inf.json` added) and the new `NODE.refs.json` are the Engineer's to commit (git stages them as renames with `git add -A`); say so in the report. A node from before 0.4.0 (no `type`) stops `migrate`: `nodes classify <path> <type> <category>…` those first, from each node's own `is` and `fs` (classify writes an old file in place), then migrate. Inside a mount, use `--root <mount>`.
+- Root `NODE.inf.json` exists → **update mode**; missing → **full mode**. A checkout that has `NODE.toml` or `NODE.refs.json` but no nodes (a clone of a repository whose node files an earlier run kept out of git; §0's commit route takes the ignore line out, or asks): unless the Engineer asked for this chart, ask first, writing nothing before the answer:
 
   > Chart this checkout in full? **yes** / **not now**
 
@@ -183,7 +198,7 @@ A node's `refs` are not in its file: `nodes add-ref` / `rm-ref` / `set <path> re
 
 ## 6. Validate, then report
 
-Run `[tool].check`; it must be green (warnings allowed) before the report. A warning means one of two things, and neither is accepted as is: a ref cites a page the index marks superseded — re-point it per `[refs].on_superseded` (unset → to the page that replaced it); or `NODE.refs.json` cites pages for a directory no node charts — move those refs to the node that holds what they govern (`add-ref` there, `rm-ref` the old). Then a short table only:
+In commit mode, run §0's ignore check first. Run `[tool].check`; it must be green (warnings allowed) before the report. A warning means one of two things, and neither is accepted as is: a ref cites a page the index marks superseded — re-point it per `[refs].on_superseded` (unset → to the page that replaced it); or `NODE.refs.json` cites pages for a directory no node charts — move those refs to the node that holds what they govern (`add-ref` there, `rm-ref` the old). Then a short table only:
 
 ```
 | node | action |
@@ -193,4 +208,4 @@ Run `[tool].check`; it must be green (warnings allowed) before the report. A war
 | src/old/NODE.inf.json | deleted (dir gone) |
 ```
 
-Then one line: `N nodes, M stale re-charted, migrated, NODE.toml seeded, .chartignore seeded, local-only, check green` (each clause only when true; or `unchanged`), plus any file §0 untracked and, after a migration in commit mode, `commit the removed NODE.json files, NODE.refs.json and the .gitignore line`. Whenever this run changed a committed `NODE.refs.json` (any `add-ref` / `rm-ref`), add `NODE.refs.json changed: the Engineer's to commit (a PR)` — a tracked file left modified here blocks the next pull that touches it. Nothing else.
+Then one line: `N nodes, M stale re-charted, migrated, NODE.toml seeded, .chartignore seeded, local-only, check green` (each clause only when true; or `unchanged`), plus any file §0 untracked, and any ignore line §0 deleted or kept. Git shows the node files a deletion un-ignored as untracked (`git add -A` stages them): they are the Engineer's to commit with that change; jj tracks them itself. In a committed tree, the node files and `NODE.refs.json` this run changed are this branch's work, to commit with it; on the default branch (`main`), add `tree changed: the Engineer's to commit (a PR)`, since a tracked file left modified there blocks the next pull that touches it. Nothing else.
