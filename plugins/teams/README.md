@@ -5,6 +5,7 @@ One Claude session is the **Orchestrator**, the tech lead. Teams of background a
 | Part | What it is |
 |---|---|
 | `skills/orchestrate/` | `/teams:orchestrate`: the way of working, loaded by the Orchestrator every session, plus `first-run.md`, `planner-check.md` and the templates it hands out |
+| `skills/` (eight more) | Routines that also work alone: see **Skills** below |
 | `agents/` | The five lanes: `teams:planner`, `teams:designer`, `teams:builder`, `teams:myth`, `teams:machinery` |
 
 No scripts, no hooks, no programs: it runs the same on Linux, macOS and Windows (Claude Code 2.1.292 or later, which passes `effort` on Agent calls). It needs no other plugin. The `nodes` plugin is offered at setup with an opt-out; the agent board is used when its tools are present.
@@ -32,6 +33,21 @@ Every arrow into a new box hands a document to **freshly spawned** agents: leads
 
 **Leads spawn programmers.** After a slice plan is saved, the Orchestrator spawns a fresh **build lead** (`teams:designer`) with the saved plan (the planner lead is read-only and can't spawn), its workspaces and branches, and a programmer budget: how many programmers it may run at once, sized so the lanes stay inside the teams file's Limits. A lane is a build lead, its running programmers and its QA. The build lead splits the slice into tasks, spawns one programmer per task (`teams:builder`, or `teams:myth` at subsystem scale) with a narrow brief, running independent tasks in parallel, one per workspace at a time. It reviews their reports, checks the gate and pushes, then reports to the Orchestrator. It picks each programmer's model: `sonnet` for a fully specified, bounded, non-security task; `opus` for security-nature work (always), an ambiguous or cross-cutting task, the Myth, and a task whose Sonnet attempt still has must-fixes after two fix rounds. A fix round is a fresh build lead with the plan, the findings, the branch and workspace, spawning fresh programmers. Reviews stay with the Orchestrator, independent of the lead. Spawn and hand-back between a build lead and its programmers is the only Spawn-to-Spawn traffic.
 
+## Skills
+
+Besides `/teams:orchestrate`, eight routines (they absorb what a separate `ship` pack was to hold). Each works on its own, without the Orchestrator and without a teams file: it reads the teams file when there is one, else detects what it needs (CI config, default branch, git or jj) and asks once for the rest. The read-only ones change nothing.
+
+| Skill | What it does | Lifecycle |
+|---|---|---|
+| `/teams:my-queue` | The Engineer's queue (`<docs>/queue.md`, open questions, live PRs) as Ready, Incoming, Questions, Waiting and Optional tables, each row with an ID, weight and blocker. Read-only. | the Engineer asks what's theirs |
+| `/teams:catch-me-up` | A short briefing from the queue, the release folder, rulings and VCS history: where things stand, why, what's missing, what's next. Read-only. | after a gap |
+| `/teams:cleanup` | Reports every git worktree or jj workspace with its merge evidence and cleanliness; after one confirmation, runs `Repository › teardown` and removes only the merged, remote-gone, clean ones; keeps and reports the rest. | step 9 |
+| `/teams:critique` | Two passes over a diff: the right thing built (against the plan or ticket), built right (against the codebase's own patterns); fix or ask per finding. | the review loop before a PR |
+| `/teams:document` | Doc comments on what changed, in each language's style and placement. Docs only. | definition of done |
+| `/teams:prepare-pr` | One branch to an open PR: commits, rebase, the gate, a leased push, the PR body, the review bot. Never merges. | step 8 |
+| `/teams:address-comments` | Triages a PR's review comments (fix, decline, propose, escalate), routes fixes through the lanes, re-gates and pushes. Security comments are never declined. | step 8 |
+| `/teams:retrospective` | A retro grounded in commits, PRs and reviews: a team's, in `retro-template.md`'s shape, or Claude's own over a time range. Saved in `<docs>/retros/`. | retrospectives |
+
 ## How the roles reach the main session
 
 On its first run in a project, `/teams:orchestrate` writes one line into the project's `CLAUDE.md` (the Engineer's own repo) or `CLAUDE.local.md` (anyone else's, kept out of git):
@@ -52,7 +68,7 @@ Why not the alternatives: a `SessionStart` hook needs a shell or an executable o
 | judgment | `teams:designer` | xhigh | documents, its own workspace | release documents, roadmaps, the Groundwork, QA of code and documents, reviews, every security review |
 | build | `teams:builder` | high | its own workspace | approved plans to green code |
 | subsystem | `teams:myth` | high | its own workspace | long, fully specified subsystem builds |
-| glue | `teams:machinery` | medium | workspaces, branches | creating workspaces, removing them (build output included) after merge, committing release documents from a docs workspace |
+| glue | `teams:machinery` | medium | workspaces, branches | creating workspaces, removing merged ones with `/teams:cleanup`, committing release documents from a docs workspace |
 
 Every agent file says Opus. **Only programmers may run on Sonnet** (the build lead's choice per task, or a teams-file pin); **security-nature work and every other role are always Opus.** To change a lane's effort in one project, set it in the teams file's **Lanes** table; it's passed on each Agent call. A Model there applies only to programmers: a build or subsystem Model pins every programmer to it (e.g. Opus only), except security-nature tasks, which stay on Opus.
 
@@ -73,6 +89,7 @@ First run also hands the Engineer one worksheet that saves `.claude/settings.loc
 | Repository › vcs | git | `git` or `jj` |
 | Repository › main | main | the default branch, never pushed to directly |
 | Repository › workspaces | `../{repo}-workspaces` | one workspace per branch, named after it, reused by its reviewers and fix rounds, plus planning workspaces |
+| Repository › teardown | — | commands run inside a workspace before `/teams:cleanup` removes it (`{name}`, `{path}`), e.g. tearing down its containers |
 | Repository › gate | — | exactly what CI runs, all of it; before a slice's first push and before QA |
 | Repository › light gate | — | for restacks and fix rounds; CI stays the enforcement |
 | Branches › strategy | integration | `integration` (a feature branch cut at main's tip, fed by slice PRs, its own PR opening when every slice is in) or `trunk` (one PR per slice into main) |
