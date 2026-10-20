@@ -89,10 +89,10 @@ First run also hands the Engineer one worksheet that saves `.claude/settings.loc
 | Section › key | Default | Meaning |
 |---|---|---|
 | Repository › owner | engineer | `engineer`: the repo is yours by the test in "Whose repo" above; the file and docs are committed and the pointer goes in `CLAUDE.md`. `others`: all stay out of git |
-| Repository › docs | `.teams` | where `queue.md`, `releases/<version>/` and `retros/` live; outside `.claude/`, whose writes always prompt |
+| Repository › docs | `.teams` | where `queue.md`, `releases/<version>/`, `retros/` and `team-config-rulings.md` live; outside `.claude/`, whose writes always prompt |
 | Repository › style | — | the project's style rules, read by every agent |
 | Repository › decisions | — | where the project records decisions |
-| Repository › config dir | `.` | root of this pack's configuration files, relative to the project root; each team's Config resolves against it |
+| Repository › config dir | `.` | root of the configuration files the teams file names (today: the team config files), relative to the project root; the teams file itself stays in `.claude/`; each team's Config resolves against it |
 | Repository › vcs | git | `git` or `jj` |
 | Repository › main | main | the default branch, never pushed to directly |
 | Repository › workspaces | `../{repo}-workspaces` | one workspace per branch, named after it, reused by its reviewers and fix rounds, plus planning workspaces |

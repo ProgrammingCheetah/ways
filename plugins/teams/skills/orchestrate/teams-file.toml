@@ -9,7 +9,8 @@ owner = "engineer"               # engineer (no remote, or the owner is your for
 docs = ".teams"                  # outside .claude/, whose writes always prompt
 style = []                       # e.g. ["docs/style.md"]
 decisions = ""                   # e.g. "docs/adr/"
-config_dir = "."                 # root of this pack's configuration files, relative to the project root; [[team]] config_file resolves against it
+config_dir = "."                 # root of the configuration files this file names (today: [[team]] config_file), relative to the project root;
+                                 # this file itself stays in .claude/
 vcs = "git"                      # git | jj
 main = "main"
 workspaces = "../{repo}-workspaces"  # one per branch, named after it (/ as -)

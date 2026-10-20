@@ -10,10 +10,10 @@
 | Key | Value | Notes |
 |---|---|---|
 | owner | engineer | `engineer` (the Engineer's own repo: no remote, or its push remote's owner is the Engineer's forge login or an org in `WAYS_OWN_ORGS`, a fork counted by its parent's owner, never its own, and never judged by permission; this file and the docs are committed) or `others` (both kept out of git) |
-| docs | `.teams` | queue, releases/, retros/ live here (outside `.claude/`, whose writes always prompt) |
+| docs | `.teams` | queue, releases/, retros/ and team-config-rulings.md live here (outside `.claude/`, whose writes always prompt) |
 | style | — | the project's style rules, read by every agent, e.g. `docs/style.md` |
 | decisions | — | where the project records decisions, e.g. `docs/adr/`; — = the rulings files only |
-| config dir | `.` | root of this pack's configuration files, relative to the project root; each team's Config (**Teams**) resolves against it |
+| config dir | `.` | root of the configuration files the teams file names (today: the team config files), relative to the project root; the teams file itself stays in `.claude/`; each team's Config (**Teams**) resolves against it |
 | vcs | git | `git` or `jj` |
 | main | main | the default branch; never pushed to directly |
 | workspaces | `../{repo}-workspaces` | one workspace per branch, named after it (`/` as `-`); its reviewers and fix rounds reuse it |

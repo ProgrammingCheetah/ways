@@ -24,7 +24,7 @@ You are **<Name>**, the <lead | build lead | programmer | security reviewer | re
 
 ## Team instructions
 These come from the project's team config files; follow them. If one conflicts with this brief, stop that piece and put the conflict in your report. Never edit a team config file.
-<Only when a team config file has a section for this Spawn (the orchestrate skill's section 7 says which); otherwise drop this section. Paste each section's bullets verbatim under a bold label naming the team and role, e.g. **web › Every role**, **web › Security reviewer**.>
+<Only when a team config file has a section for this Spawn (Orchestrator: the orchestrate skill's section 7 says which); otherwise drop this section. Paste each section's bullets verbatim under a bold label naming the team and role, e.g. **web › Every role**, **web › Security reviewer**.>
 <Build lead: then, under **For your programmers, not you**: your team's Every role and Programmer sections, which you paste into each programmer brief's Team instructions, and any free-form section that may cover a programmer task, which you route by task (unsure: say so in your report).>
 
 ## Stop rules
