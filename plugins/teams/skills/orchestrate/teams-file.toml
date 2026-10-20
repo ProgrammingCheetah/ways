@@ -9,6 +9,8 @@ owner = "engineer"               # engineer (no remote, or the owner is your for
 docs = ".teams"                  # outside .claude/, whose writes always prompt
 style = []                       # e.g. ["docs/style.md"]
 decisions = ""                   # e.g. "docs/adr/"
+config_dir = "."                 # root of the configuration files this file names (today: [[team]] config_file), relative to the project root;
+                                 # this file itself stays in .claude/
 vcs = "git"                      # git | jj
 main = "main"
 workspaces = "../{repo}-workspaces"  # one per branch, named after it (/ as -)
@@ -61,23 +63,28 @@ comment_prefix = "Claude:"
 
 # A team: a named lead. The "qa" row is the top-level QA and the architects' lead is the architect: both stand beside the Orchestrator.
 # Programmers aren't listed: each is short-lived, spawned and named by its build lead for one task. Review teams list their standing reviewers.
+# config_file: the team config file (its Roles and their special instructions, shaped by team-config.toml), relative to
+# repository.config_dir, in this file's format; "" = none.
 [[team]]
 name = "qa"
 mission = "Top-level QA: documents for the Engineer, every milestone, every PR into main"
 owns = []
 lead = ""
+config_file = ""                 # e.g. "teams/qa.toml"
 
 [[team]]
 name = "internal"
 mission = "Finds the most effective way for the teams to work and spend their time"
 owns = []
 lead = ""
+config_file = ""
 
 [[team]]
 name = "compliance"
 mission = "Release review: what the project is legally bound to follow"
 owns = []
 lead = ""
+config_file = ""
 reviewers = []
 
 [[team]]
@@ -85,6 +92,7 @@ name = "architects"
 mission = "Reviews every milestone, before QA; release review: correct architecture"
 owns = []
 lead = ""
+config_file = ""
 reviewers = []
 
 [[team]]
@@ -92,4 +100,5 @@ name = "security"
 mission = "Every security-triggered slice (its plan, then its code), and the release review"
 owns = []
 lead = ""
+config_file = ""
 reviewers = []

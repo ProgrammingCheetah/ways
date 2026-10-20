@@ -89,9 +89,10 @@ First run also hands the Engineer one worksheet that saves `.claude/settings.loc
 | Section › key | Default | Meaning |
 |---|---|---|
 | Repository › owner | engineer | `engineer`: the repo is yours by the test in "Whose repo" above; the file and docs are committed and the pointer goes in `CLAUDE.md`. `others`: all stay out of git |
-| Repository › docs | `.teams` | where `queue.md`, `releases/<version>/` and `retros/` live; outside `.claude/`, whose writes always prompt |
+| Repository › docs | `.teams` | where `queue.md`, `releases/<version>/`, `retros/` and `team-config-rulings.md` live; outside `.claude/`, whose writes always prompt |
 | Repository › style | — | the project's style rules, read by every agent |
 | Repository › decisions | — | where the project records decisions |
+| Repository › config dir | `.` | root of the configuration files the teams file names (today: the team config files), relative to the project root; the teams file itself stays in `.claude/`; each team's Config resolves against it |
 | Repository › vcs | git | `git` or `jj` |
 | Repository › main | main | the default branch, never pushed to directly |
 | Repository › workspaces | `../{repo}-workspaces` | one workspace per branch, named after it, reused by its reviewers and fix rounds, plus planning workspaces |
@@ -117,9 +118,11 @@ First run also hands the Engineer one worksheet that saves `.claude/settings.loc
 | Reviews › compliance triggers | personal data; payments; accessibility; a new dependency's license | a slice touching one calls compliance in early; first run fits them to the project |
 | Reviews › bot | — | a review bot requested on PRs into the Engineer's branches |
 | Reviews › comment prefix | `Claude:` | starts every comment posted through the Engineer's accounts |
-| Teams (table) | qa, internal, compliance, architects, security, plus the project's teams | mission, owned paths, a named lead (the qa row's is the top-level QA; the architects' is the architect), review teams' reviewers; programmers aren't listed |
+| Teams (table) | qa, internal, compliance, architects, security, plus the project's teams | mission, owned paths, a named lead (the qa row's is the top-level QA; the architects' is the architect), review teams' reviewers, and an optional config file (Config; `config_file` in TOML and YAML); programmers aren't listed |
 | Shared ground | — | files no team owns, touched one Spawn at a time |
 | Opt-outs | — | the internal team, nodes, release reviews or main's protection, each with the date and the Engineer's words |
+
+**Team config files.** A team's Config names its own file, relative to `Repository › config dir`, in the teams file's format (`skills/orchestrate/team-config.md`, or `team-config.toml` for TOML and YAML): the team's Roles and the special instructions each must follow. Its sections default to the pack's: Every role (all the team's Spawns), then lead, build lead, programmer, security reviewer, release reviewer, top-level QA and architect; any other name is a free-form role for a special occasion, never an error, and the Orchestrator asks when it can't tell whose brief one covers, recording the answer. At every brief, the Orchestrator re-reads the files and pastes into the brief, verbatim, the Spawn's own team's Every role and role sections, plus, for a reviewer, its role's section from each team whose work it reviews; a build lead passes Every role and Programmer on to its programmers. The instructions add to a brief and never loosen the pack's rules: the Orchestrator leaves out one that would and asks you. A named file that's missing or unreadable stops that team's Spawns until it's fixed or the row is cleared. No agent edits these files; first run only writes the ones you name that don't exist yet.
 
 ## Optional integrations
 
