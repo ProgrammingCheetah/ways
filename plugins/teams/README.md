@@ -92,7 +92,7 @@ First run also hands the Engineer one worksheet that saves `.claude/settings.loc
 | Repository › docs | `.teams` | where `queue.md`, `releases/<version>/` and `retros/` live; outside `.claude/`, whose writes always prompt |
 | Repository › style | — | the project's style rules, read by every agent |
 | Repository › decisions | — | where the project records decisions |
-| Repository › config dir | `.` | root of the team config files, relative to the project root |
+| Repository › config dir | `.` | root of this pack's configuration files, relative to the project root; each team's Config resolves against it |
 | Repository › vcs | git | `git` or `jj` |
 | Repository › main | main | the default branch, never pushed to directly |
 | Repository › workspaces | `../{repo}-workspaces` | one workspace per branch, named after it, reused by its reviewers and fix rounds, plus planning workspaces |
@@ -122,7 +122,7 @@ First run also hands the Engineer one worksheet that saves `.claude/settings.loc
 | Shared ground | — | files no team owns, touched one Spawn at a time |
 | Opt-outs | — | the internal team, nodes, release reviews or main's protection, each with the date and the Engineer's words |
 
-**Team config files.** A team's Config names its own file, relative to `Repository › config dir`, in the teams file's format (`skills/orchestrate/team-config.md`, or `team-config.toml` for TOML and YAML): the team's Roles and the special instructions each must follow. Its roles default to the pack's (every role, lead, build lead, programmer, security reviewer, release reviewer, top-level QA, architect); any other name is a free-form role for a special occasion, never an error, and the Orchestrator asks when it can't tell whose brief one covers. The Orchestrator re-reads the file at every brief for the team and pastes the every-role section and the Spawn's role into it verbatim; a build lead passes the programmer section on to its programmers. The instructions add to a brief and never loosen the pack's rules: one that would goes to you first. A named file that's missing stops that team's Spawns until it's fixed. The Orchestrator never edits these files; first run only writes the ones you name that don't exist yet.
+**Team config files.** A team's Config names its own file, relative to `Repository › config dir`, in the teams file's format (`skills/orchestrate/team-config.md`, or `team-config.toml` for TOML and YAML): the team's Roles and the special instructions each must follow. Its sections default to the pack's: Every role (all the team's Spawns), then lead, build lead, programmer, security reviewer, release reviewer, top-level QA and architect; any other name is a free-form role for a special occasion, never an error, and the Orchestrator asks when it can't tell whose brief one covers, recording the answer. At every brief, the Orchestrator re-reads the files and pastes into the brief, verbatim, the Spawn's own team's Every role and role sections, plus, for a reviewer, its role's section from each team whose work it reviews; a build lead passes Every role and Programmer on to its programmers. The instructions add to a brief and never loosen the pack's rules: the Orchestrator leaves out one that would and asks you. A named file that's missing or unreadable stops that team's Spawns until it's fixed or the row is cleared. No agent edits these files; first run only writes the ones you name that don't exist yet.
 
 ## Optional integrations
 

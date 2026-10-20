@@ -13,7 +13,7 @@
 | docs | `.teams` | queue, releases/, retros/ live here (outside `.claude/`, whose writes always prompt) |
 | style | — | the project's style rules, read by every agent, e.g. `docs/style.md` |
 | decisions | — | where the project records decisions, e.g. `docs/adr/`; — = the rulings files only |
-| config dir | `.` | root of the team config files (**Teams** › Config), relative to the project root |
+| config dir | `.` | root of this pack's configuration files, relative to the project root; each team's Config (**Teams**) resolves against it |
 | vcs | git | `git` or `jj` |
 | main | main | the default branch; never pushed to directly |
 | workspaces | `../{repo}-workspaces` | one workspace per branch, named after it (`/` as `-`); its reviewers and fix rounds reuse it |
