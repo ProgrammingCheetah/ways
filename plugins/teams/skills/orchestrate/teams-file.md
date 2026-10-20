@@ -63,7 +63,32 @@
 <!-- A Model or Effort set here is passed as the Agent call's model or effort; — = the agent file's.
      Only programmers may run on Sonnet: a build or subsystem Model pins every programmer to it
      (e.g. opus only); — = the build lead picks sonnet or opus per task. Security-nature work and
-     every other role are always Opus, whatever is set here (their Effort may still be set). -->
+     every other role are always Opus, whatever is set here (their Effort may still be set).
+     A role assigned to a runner below runs there instead, and none of this applies to it. -->
+
+## Runners
+
+<!-- Optional: models outside Claude, run through their own command-line tool. Define each runner once, then assign roles.
+     Command: run in the role's workspace; {prompt} is substituted single-quoted (don't quote it) with a line pointing the
+     runner at its brief file; its standard output is the report. Give it access to the folders its briefs name and a timeout
+     long enough for the role, e.g. gemini · `agy -p {prompt} --model gemini-4-argon --effort high --print-timeout 60m --add-dir <workspaces folder>`.
+     Its own tool's permissions apply, not Claude Code's: set them so it can work unattended and never push.
+     A role with no runner, or —, runs on Claude. The glue lane can't take a runner: it runs the pack's own skills. -->
+
+| Runner | Command | Notes |
+|---|---|---|
+| — | — | |
+
+| Role | Runner |
+|---|---|
+| lead | — |
+| build lead | — |
+| programmer | — |
+| security reviewer | — |
+| release reviewer | — |
+| top-level QA | — |
+| architect | — |
+| document author | — |
 
 ## Limits
 

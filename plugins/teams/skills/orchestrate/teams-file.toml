@@ -3,6 +3,10 @@
 
 shared_ground = []               # lockfiles, migrations, generated files, root config, CI
 opt_outs = []                    # internal team, nodes, release reviews, main's protection; e.g. [{ what = "nodes", date = "2026-10-16", words = "..." }]
+runner = []                      # optional: models outside Claude, through their own CLI, each defined once and assigned in [runs]; e.g.
+                                 # [{ name = "gemini", command = "agy -p {prompt} --model gemini-4-argon --effort high --print-timeout 60m --add-dir /abs/workspaces" }]
+                                 # command: run in the role's workspace; {prompt} substituted single-quoted (don't quote it), pointing at the
+                                 # brief file; stdout is the report. Its own tool's permissions apply, not Claude Code's: unattended, never pushes.
 
 [repository]
 owner = "engineer"               # engineer (no remote, or the owner is your forge login or an org in WAYS_OWN_ORGS; a fork counts by its parent's owner, never its own; committed) | others (kept out of git)
@@ -48,6 +52,11 @@ judgment = {}
 build = {}
 subsystem = {}
 glue = {}
+# A role assigned to a runner ([runs]) runs there instead, and none of this applies to it.
+
+[runs]                           # optional: role = runner name; a role left out runs on Claude
+# Roles: lead, build_lead, programmer, security_reviewer, release_reviewer, top_level_qa, architect, document_author.
+# The glue lane can't take a runner: it runs the pack's own skills. e.g. top_level_qa = "gemini"
 
 [limits]
 max_lanes = 2
