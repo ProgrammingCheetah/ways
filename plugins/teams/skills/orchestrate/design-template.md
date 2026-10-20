@@ -11,6 +11,8 @@
 
 ## Goals and non-goals
 
+<Each goal names the objective it serves (O1… in the signed `objectives.md`); every objective has one. Non-goals carry its Out of scope over, plus any the design adds.>
+
 ## Features
 
 <Per feature: who it's for, what they can do, and "done when" as a check the Engineer could run by hand.>

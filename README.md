@@ -6,7 +6,7 @@ A Claude Code plugin marketplace of **ways of working**: one plugin per way, eac
 
 | Pack | Status | What it is |
 |---|---|---|
-| `teams` | built | The Orchestrator and its Spawns: agent teams (a standing lead, short-lived programmers; QA and an architect at the top) run through a release lifecycle (design document, team roadmaps and claims, a Groundwork plan, read-only slice plans, build, milestone QA, release reviews, one PR into main) while the Engineer decides every domain fork. Its routines also work alone: the Engineer's queue, catch-up briefings, workspace cleanup, critique, docs, PR preparation, review triage and retrospectives. [README](plugins/teams/README.md) |
+| `teams` | built | The Orchestrator and its Spawns: agent teams (a standing lead, short-lived programmers; QA and an architect at the top) run through a release lifecycle (objectives, design document, team roadmaps and claims, a Groundwork plan, read-only slice plans, build, milestone QA, release reviews, one PR into main) while the Engineer decides every domain fork. Its routines also work alone: the Engineer's queue, catch-up briefings, workspace cleanup, critique, docs, PR preparation, review triage and retrospectives. [README](plugins/teams/README.md) |
 | `handoff` | built | How Claude hands the Engineer something to do: a short worksheet of numbered steps. [README](plugins/handoff/README.md) |
 | `nodes` | built | The NODE.inf.json node tree: chart a repository so agents load a path's context from the root down. Needs the `nodes` binary. `teams` offers it at setup. [README](plugins/nodes/README.md) |
 | `decide` | roadmap | A domain decision from question to record: check what's already decided, state the objectives, research, weigh the options, record the ruling and keep the records in sync. |
@@ -66,7 +66,7 @@ To get worksheets like this one from Claude in every project, also run `claude p
 
 ```
 .claude-plugin/marketplace.json   the catalog: name "ways"
-plugins/teams/                    /teams:orchestrate and its templates, eight more skills, the five agent lanes
+plugins/teams/                    /teams:orchestrate and its templates, nine more skills, the five agent lanes
 plugins/handoff/                  /handoff:how-to
 plugins/nodes/                    the nodes pack
 ```

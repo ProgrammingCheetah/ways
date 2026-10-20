@@ -5,7 +5,7 @@ One Claude session is the **Orchestrator**, the tech lead. Teams of background a
 | Part | What it is |
 |---|---|
 | `skills/orchestrate/` | `/teams:orchestrate`: the way of working, loaded by the Orchestrator every session, plus `first-run.md`, `planner-check.md`, `runners.md` (read only when a role runs outside Claude) and the templates it hands out |
-| `skills/` (eight more) | Routines that also work alone: see **Skills** below |
+| `skills/` (nine more) | Routines that also work alone: see **Skills** below |
 | `agents/` | The five lanes: `teams:planner`, `teams:designer`, `teams:builder`, `teams:myth`, `teams:machinery` |
 
 No scripts, no hooks, no programs: it runs the same on Linux, macOS and Windows (Claude Code 2.1.292 or later, which passes `effort` on Agent calls). It needs no other plugin. The `nodes` plugin is offered at setup with an opt-out; the agent board is used when its tools are present.
@@ -14,7 +14,7 @@ No scripts, no hooks, no programs: it runs the same on Linux, macOS and Windows 
 
 ```mermaid
 flowchart TD
-  A[Scope under a version] --> B[Design document]
+  A[Objectives under a version] -->|QA, Engineer signs| B[Design document]
   B -->|QA, Engineer signs| C[Team roadmaps and claims]
   C --> D[Groundwork plan]
   D -->|Engineer rejects| C
@@ -29,20 +29,21 @@ flowchart TD
   J -->|Engineer merges| K[Release notes and retros]
 ```
 
-Every arrow into a new box hands a document to **freshly spawned** agents: names and roles persist, context doesn't. Documents that reach the Engineer (the design document, the Groundwork) carry the top-level QA's challenges and the author's resolutions. A slice plan reaches the Engineer only for a domain fork, a one-way door, or a change to a signed document. A fix or small change outside a release starts at the slice plan, on the same bar; its PR into main gets QA, then the Engineer's review.
+Every arrow into a new box hands a document to **freshly spawned** agents: names and roles persist, context doesn't. Documents that reach the Engineer (the objectives, the design document, the Groundwork) carry the top-level QA's challenges and the author's resolutions. A slice plan reaches the Engineer only for a domain fork, a one-way door, or a change to a signed document. A fix or small change outside a release starts at the slice plan, on the same bar; its PR into main gets QA, then the Engineer's review.
 
 **Why programmers are short-lived.** The Orchestrator is cheap; recreating context is not. A resumed Spawn re-reads its whole context, and one that waits past the prompt cache's lifetime rewrites its whole cache when it wakes. So a programmer gets one task (a slice or part of one) and a narrow brief, is spawned only when it can start now, and ends at its report. A fix round goes to a fresh programmer briefed with the findings, the branch and its diff, in the same workspace. A blocked piece ends the programmer with the question in its report. Leads and QA keep the clean-context-per-phase rule.
 
-**Why QA is at the top.** QA stands beside the Orchestrator and the architect, not inside each team: it reviews what reaches the Engineer (the design document, the Groundwork, every PR into main) and each milestone's cumulative diff, starting from the architect's report. Per slice there's only the gate, the build lead's own critique of its diff before it pushes, and a security review when a trigger fires: security never waits for a milestone. A QA per slice re-read the release documents for every slice and saw one slice at a time; at the top it reads them once a milestone and sees how the slices fit. QA is fresh at each milestone and carries forward its log, not its context: a context resumed after the prompt cache expires is rewritten whole, and it would still hold reads of code that later fix rounds changed. Within a milestone it's resumed, to re-run its proofs. A release is a version scoped at the lifecycle's first step; off-cycle work covers the rest.
+**Why QA is at the top.** QA stands beside the Orchestrator and the architect, not inside each team: it reviews what reaches the Engineer (the objectives, the design document, the Groundwork, every PR into main) and each milestone's cumulative diff, starting from the architect's report. Per slice there's only the gate, the build lead's own critique of its diff before it pushes, and a security review when a trigger fires: security never waits for a milestone. A QA per slice re-read the release documents for every slice and saw one slice at a time; at the top it reads them once a milestone and sees how the slices fit. QA is fresh at each milestone and carries forward its log, not its context: a context resumed after the prompt cache expires is rewritten whole, and it would still hold reads of code that later fix rounds changed. Within a milestone it's resumed, to re-run its proofs. A release is a version whose objectives are signed at the lifecycle's first step; off-cycle work covers the rest.
 
 **Leads spawn programmers.** After a slice plan is saved, the Orchestrator spawns a fresh **build lead** (`teams:designer`) with the saved plan (the planner lead is read-only and can't spawn), its workspaces and branches, and a programmer budget: how many programmers it may run at once, sized so the lanes stay inside the teams file's Limits. A lane is a build lead and its running programmers. The build lead splits the slice into tasks, spawns one programmer per task (`teams:builder`, or `teams:myth` at subsystem scale) with a narrow brief, running independent tasks in parallel, one per workspace at a time. It reviews their reports, runs the critique on the slice diff and settles each finding, checks the gate and pushes, then reports to the Orchestrator. It picks each programmer's model: `sonnet` for a fully specified, bounded, non-security task; `opus` for security-nature work (always), an ambiguous or cross-cutting task, the Myth, and a task whose Sonnet attempt still has must-fixes after two fix rounds. A fix round is a fresh build lead with the plan, the findings, the branch and workspace, spawning fresh programmers. Security reviews and milestone QA stay with the Orchestrator, independent of the lead. Spawn and hand-back between a build lead and its programmers is the only Spawn-to-Spawn traffic.
 
 ## Skills
 
-Besides `/teams:orchestrate`, eight routines (they absorb what a separate `ship` pack was to hold). Each works on its own, without the Orchestrator and without a teams file: it reads the teams file when there is one, else detects what it needs (CI config, default branch, git or jj) and asks once for the rest. The read-only ones change nothing.
+Besides `/teams:orchestrate`, nine routines (they absorb what a separate `ship` pack was to hold). Each works on its own, without the Orchestrator and without a teams file: it reads the teams file when there is one, else detects what it needs (CI config, default branch, git or jj) and asks once for the rest. The read-only ones change nothing.
 
 | Skill | What it does | Lifecycle |
 |---|---|---|
+| `/teams:objectives` | Interviews the Engineer one section at a time (why, objectives with an "Achieved when" check and a priority, in and out of scope, constraints, assumptions and risks), writes the release's `objectives.md`, has fresh QA challenge it and records the signature. The interview stays in the main session. | **Objectives** |
 | `/teams:my-queue` | The Engineer's queue (`<docs>/queue.md`, open questions, live PRs) as Ready, Incoming, Questions, Waiting and Optional tables, each row with an ID, weight and blocker. Read-only. | the Engineer asks what's theirs |
 | `/teams:catch-me-up` | A short briefing from the queue, the release folder, rulings and VCS history: where things stand, why, what's missing, what's next. Read-only. | after a gap |
 | `/teams:cleanup` | Reports every git worktree or jj workspace with its merge evidence and cleanliness; after one confirmation, runs `Repository › teardown` and removes only the merged, remote-gone, clean ones; keeps and reports the rest. Without a teams file it only reports. | **Clean up** |

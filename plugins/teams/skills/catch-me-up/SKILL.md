@@ -19,9 +19,11 @@ No teams file: say so in one line and brief from the project's CLAUDE.md, its de
 Skip anything already loaded this session. Never read whole source files or whole documents, only the parts that explain the current work.
 
 1. **The queue:** `<docs>/queue.md`. Its latest status note (the newest entry under its `## Status` heading) is "what we were just doing"; its top items are "what's next".
-2. **The current release folder,** `<docs>/releases/<version>/`. Current = the release the latest status note names, else the most recently modified folder. Read `scope.md`, then name the phase by the last of these that exists:
-   - release documents only: design review;
-   - `signoff.md`: signed;
+2. **The current release folder,** `<docs>/releases/<version>/`. Current = the release the latest status note names, else the most recently modified folder. Read `objectives.md` (a release older than it has `scope.md`), then name the phase by the last of these that holds:
+   - `objectives.md` only, or not yet in `signoff.md`: objectives (interview, QA or signature);
+   - `objectives.md` in `signoff.md`, no release documents: design next;
+   - release documents not yet in `signoff.md`: design review;
+   - release documents in `signoff.md`: signed;
    - `roadmaps/` and `claims.md`: roadmaps and claims;
    - `groundwork.md`: Groundwork;
    - `plans/`: slice plans, so build is next or under way;
