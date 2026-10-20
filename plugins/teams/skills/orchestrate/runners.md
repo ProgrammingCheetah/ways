@@ -16,28 +16,29 @@ Read when the teams file's **Runners** assigns any role to a runner: a model out
    The steps:
    1. Install the tool and sign in.
    2. Check the runner's model is listed (agy: `agy models`).
-   3. In the tool's own settings, allow exactly the commands its roles run, as whole-command rules:
+   3. In the tool's own settings, allow every command its roles run, as narrow prefix rules, and deny what must never run. A command allowed by no rule and denied by none ends a headless run with no report (agy, tested), so the allow list must be complete:
       - every role: the read-only commands its lane uses (e.g. `rg`, `ls`, `cat`, `head`), and `nodes` when in use;
       - git: `status`, `diff`, `log`, `show`, `add`, `commit`, `fetch`, `merge` (a branch behind its base merges it in); jj: `st`, `diff`, `log`, `show`, `file list`, `describe`, `new`, `commit`, `git fetch`;
-      - reviewers and QA: the project's targeted test commands; writing roles: also the gate and light gate as written.
+      - reviewers and QA: the project's targeted test commands; writing roles: also the gate and light gate as written, and `git rm` (or jj's equivalent) for deleting files;
+      - file writes in the folder a run works in (agy: `write_file(./)`, which the trial showed allows writes there and refuses them outside; writes aren't auto-allowed);
+      - deny: pushes (`git push`, `jj git push`), `gh`, `sudo`, `rm -rf`, `git reset --hard`, and writes into `.git/`, `.jj/` and `~/.ssh`. A denied command doesn't end the run: the runner reports the refusal.
 
-      Example for agy: `command(regex:^git (status|diff|log|show|add|commit|fetch|merge)( .*)?$)`; how agy anchors its regex is unverified, and the trial checks it. Never a bare tool rule (agy: `command(git)` or `command(jj)` also allows a push). Never `gh`. Never an allow-everything flag (agy: `--dangerously-skip-permissions`).
+      agy: `"allow": ["command(git status)", …]` and `"deny": ["command(git push)", …]` under `permissions`. A `command(…)` rule matches word by word as a prefix, and deny beats allow. Never a bare tool rule (`command(git)` or `command(jj)` also allows a push). Never an allow-everything flag (agy: `--dangerously-skip-permissions`).
 
    Done when: the model is listed and the rules are saved.
 3. **Your trial,** in the exact form a run uses (section 2), so it also tests auto mode on your `cd … &&` command:
    1. Make a throwaway git repository `<workspaces>/.scratch/runner-trial/repo`, with a bare remote beside it.
    2. Put a probe file in the run folder's `inputs/`.
-   3. Write a brief that asks the runner to quote the probe's first line, run `git status`, commit one new file, then try `git push`.
+   3. Write a brief that does what its roles do: quote the probe's first line, run `git status`, plant a bug by editing a tracked file and `git restore` it; for writing roles, also commit one new file. Then try `git push`.
 
    Passed when all of these hold:
-   - the run exits 0;
-   - `report.md` quotes the line;
-   - the commit exists;
+   - `report.md` quotes the line and reports every step, the push refused;
+   - the workspace ends clean (writing roles: the commit exists);
    - the bare remote is unchanged;
    - a second run doesn't know the first (runs are fresh);
    - a third, with the tool's timeout set very short (agy: `--print-timeout 5s`) on a long task, fails as a timeout.
 
-   Record in `<docs>/runner-trials.md`: the date, the result, each run's exit code, and the exact text the tool wrote to `errors.log` for the refused push (its **refusal notice**) and for the timeout and any error (its **failure markers**). Failed: show the Engineer, and its roles stay on Claude until a trial passes.
+   Record in `<docs>/runner-trials.md`: the date, the result, each run's exit code, and the exact text the tool wrote for the refused push (its **refusal notice**) and to `errors.log` for the timeout and any run that ended early (its **failure markers**). agy, tested: every case exits 0; a tool no rule covers writes `no output produced — a tool required the` and leaves no report; a timeout writes `print timeout after` and may leave a partial one; a deny rule's refusal shows in the report (`Matches user-configured deny rule.`). Failed: show the Engineer, and its roles stay on Claude until a trial passes.
 
 ## 2. A run
 
@@ -52,13 +53,13 @@ Read when the teams file's **Runners** assigns any role to a runner: a model out
 - **Failed** when any of these holds:
   - it exits non-zero;
   - `report.md` is empty;
-  - `errors.log` holds one of the runner's failure markers from `<docs>/runner-trials.md`;
-  - a refused tool (its refusal notice in `errors.log`) kept the role from its work, as its report says. Other refusals don't fail the run: note them in your review, and when one recurs, hand the Engineer the rule to add;
+  - `errors.log` holds one of the runner's failure markers from `<docs>/runner-trials.md` (a timeout's partial report is never a report);
+  - a refused tool (its refusal notice) kept the role from its work, as its report says. Other refusals don't fail the run: note them in your review. A run that ended on a tool no rule covers: hand the Engineer the rule to add, or the deny;
   - its command asks for structured output and the status isn't success (agy `--output-format json`: `status` = `SUCCESS`).
 
   Retry once as attempt `n+1`. Failed again: run the role on Claude in its lane as usual, and tell the Engineer, naming both run folders. A failed writing run's leftovers stay in its workspace: the next brief names them (the status, and the diff from the recorded commit).
 - **Roles that don't commit, in a workspace** (every role but programmers and build leads):
-  - Before each run, record the workspace's status and commit. After it, check both are unchanged: every reviewer reverts its planted bugs and proof files (an exploit test, a failing case) before reporting, so its workspace ends as it began.
+  - Before each run, record the workspace's status and commit. After it, check both are unchanged: every reviewer reverts its planted bugs and proof files (an exploit test, a failing case) before reporting, so its workspace ends as it began. The brief says to plant them by editing tracked files only and revert with the VCS (`git restore`, `jj restore`): agy has no delete tool, and deleting a new file would take `rm`.
   - Planner leads and plan security challenges also get `planner-check.md` around every run. Keep its marker outside the run folder and the workspace, and also check the run folder for changes beyond `report.md` and `errors.log`.
   - Any change stops that piece and goes to the Engineer, as the check says.
   - A separate read-only runner for these roles is safer (agy: `--mode plan`; whether it holds in headless runs is unverified).
