@@ -16,7 +16,12 @@ Read when the teams file's **Runners** assigns any role to a runner: a model out
    The steps:
    1. Install the tool and sign in.
    2. Check the runner's model is listed (agy: `agy models`).
-   3. In the tool's own settings, allow exactly the commands its roles run, as whole-command rules: `git status`, `diff`, `log`, `show`, `add`, `commit`, the gate and light gate as written, and `nodes` when in use. Example for agy: `command(regex:^git (status|diff|log|show|add|commit)( .*)?$)`; how agy anchors its regex is unverified, and the trial checks it. Never a bare tool rule (agy: `command(git)` also allows `git push`). Never `gh`. Never an allow-everything flag (agy: `--dangerously-skip-permissions`).
+   3. In the tool's own settings, allow exactly the commands its roles run, as whole-command rules:
+      - every role: the read-only commands its lane uses (e.g. `rg`, `ls`, `cat`, `head`), and `nodes` when in use;
+      - git: `status`, `diff`, `log`, `show`, `add`, `commit`, `fetch`, `merge` (a branch behind its base merges it in); jj: `st`, `diff`, `log`, `show`, `file list`, `describe`, `new`, `commit`, `git fetch`;
+      - reviewers and QA: the project's targeted test commands; writing roles: also the gate and light gate as written.
+
+      Example for agy: `command(regex:^git (status|diff|log|show|add|commit|fetch|merge)( .*)?$)`; how agy anchors its regex is unverified, and the trial checks it. Never a bare tool rule (agy: `command(git)` or `command(jj)` also allows a push). Never `gh`. Never an allow-everything flag (agy: `--dangerously-skip-permissions`).
 
    Done when: the model is listed and the rules are saved.
 3. **Your trial,** in the exact form a run uses (section 2), so it also tests auto mode on your `cd … &&` command:
@@ -29,14 +34,15 @@ Read when the teams file's **Runners** assigns any role to a runner: a model out
    - `report.md` quotes the line;
    - the commit exists;
    - the bare remote is unchanged;
-   - a second run doesn't know the first (runs are fresh).
+   - a second run doesn't know the first (runs are fresh);
+   - a third, with the tool's timeout set very short (agy: `--print-timeout 5s`) on a long task, fails as a timeout.
 
-   Record in `<docs>/runners.md`: the date, the result, and the exact text the tool wrote to `errors.log` for the refused push and for any error. That text is the runner's failure markers. Failed: show the Engineer, and its roles stay on Claude until a trial passes.
+   Record in `<docs>/runner-trials.md`: the date, the result, each run's exit code, and the exact text the tool wrote to `errors.log` for the refused push (its **refusal notice**) and for the timeout and any error (its **failure markers**). Failed: show the Engineer, and its roles stay on Claude until a trial passes.
 
 ## 2. A run
 
-- **Its folder:** `<workspaces>/.scratch/<its name>/<n>/`, `n` the attempt number from 1, never reused. Copy into `inputs/` every file the brief names outside the role's workspace, and name the copies in the brief. That covers release documents, plans, templates, style rules, the lane's agent file, and whole skill folders, where `${CLAUDE_SKILL_DIR}` means the copy. Write the brief there as `brief.md`.
-- **Where it works:** its workspace. A role with none (a document author, a roadmap lead, document QA, a retrospective) works in its run folder and writes its document there, or returns it as its report. You review it and copy it into `<docs>`. Nobody commits in the Engineer's checkout.
+- **Its folder:** `<workspaces>/.scratch/<its name>/<n>/`, `n` the attempt number from 1, never reused. Copy into `inputs/` every file the brief names outside the role's workspace, and name the copies in the brief. That covers release documents, plans, templates and style rules. A skill the brief names: copy the plugin's whole `skills/` folder to `inputs/skills/`, keeping its layout so a skill's `${CLAUDE_SKILL_DIR}/..` paths resolve, and say in the brief that `${CLAUDE_SKILL_DIR}` means `<run folder>/inputs/skills/<that skill>`. Write the brief there as `brief.md`.
+- **Where it works:** its workspace. A build lead on a runner with several workspaces works one per run: each round runs it once per workspace. A role with none (a document author, a roadmap lead, document QA, a retrospective) works in its run folder and writes its document there, or returns it as its report. You review it and copy it into `<docs>`. Nobody commits in the Engineer's checkout.
 - **The command:** substitute `{prompt}` with `Read your brief at <run folder>/brief.md and follow it. Your last message is your report.` and `{dir}` with the run folder, both single-quoted. A path holding `'`: don't start it; run the role on Claude. The command must start a fresh conversation, never resuming or attaching to one (agy: no `--continue`, `--conversation` or `--project`).
 - **Running it:**
   - For a writing role, record its workspace's commit first.
@@ -46,12 +52,13 @@ Read when the teams file's **Runners** assigns any role to a runner: a model out
 - **Failed** when any of these holds:
   - it exits non-zero;
   - `report.md` is empty;
-  - `errors.log` holds one of the runner's failure markers from `<docs>/runners.md`;
+  - `errors.log` holds one of the runner's failure markers from `<docs>/runner-trials.md`;
+  - a refused tool (its refusal notice in `errors.log`) kept the role from its work, as its report says. Other refusals don't fail the run: note them in your review, and when one recurs, hand the Engineer the rule to add;
   - its command asks for structured output and the status isn't success (agy `--output-format json`: `status` = `SUCCESS`).
 
   Retry once as attempt `n+1`. Failed again: run the role on Claude in its lane as usual, and tell the Engineer, naming both run folders. A failed writing run's leftovers stay in its workspace: the next brief names them (the status, and the diff from the recorded commit).
 - **Roles that don't commit, in a workspace** (every role but programmers and build leads):
-  - Before each run, record the workspace's status and commit. After it, check both are unchanged; QA reverts its planted bugs, so its workspace ends as it began.
+  - Before each run, record the workspace's status and commit. After it, check both are unchanged: every reviewer reverts its planted bugs and proof files (an exploit test, a failing case) before reporting, so its workspace ends as it began.
   - Planner leads and plan security challenges also get `planner-check.md` around every run. Keep its marker outside the run folder and the workspace, and also check the run folder for changes beyond `report.md` and `errors.log`.
   - Any change stops that piece and goes to the Engineer, as the check says.
   - A separate read-only runner for these roles is safer (agy: `--mode plan`; whether it holds in headless runs is unverified).

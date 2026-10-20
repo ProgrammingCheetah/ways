@@ -4,7 +4,7 @@ One Claude session is the **Orchestrator**, the tech lead. Teams of background a
 
 | Part | What it is |
 |---|---|
-| `skills/orchestrate/` | `/teams:orchestrate`: the way of working, loaded by the Orchestrator every session, plus `first-run.md`, `planner-check.md` and the templates it hands out |
+| `skills/orchestrate/` | `/teams:orchestrate`: the way of working, loaded by the Orchestrator every session, plus `first-run.md`, `planner-check.md`, `runners.md` (read only when a role runs outside Claude) and the templates it hands out |
 | `skills/` (eight more) | Routines that also work alone: see **Skills** below |
 | `agents/` | The five lanes: `teams:planner`, `teams:designer`, `teams:builder`, `teams:myth`, `teams:machinery` |
 
