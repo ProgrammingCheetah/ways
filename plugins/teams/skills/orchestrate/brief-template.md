@@ -22,6 +22,10 @@ You are **<Name>**, the <lead | build lead | programmer | security reviewer | re
 ## Scope
 <What to plan, write, build or review.> **Not in scope:** <what belongs to other slices or teams>.
 
+## Team instructions
+Your team's config file sets these; follow them. If one conflicts with this brief, stop that piece and put the conflict in your report.
+<Only when your team has a config file with sections for this role: paste its every-role section and this role's, verbatim; otherwise drop this section. Build lead: also its programmer section, which you paste here in each programmer brief.>
+
 ## Stop rules
 - A domain fork (a name, an invariant, a boundary, behaviour the documents don't settle): stop that piece, finish what isn't blocked, and put the question in your report with options and your pre-filled answer. <Lead, QA or the architect:> You'll be resumed with the ruling. <Build lead or programmer:> Then end your run; the ruling goes to a fresh one. Never decide it yourself.
 - A blocker that stalls everything: <lead, QA or the architect in a writing lane:> message the Orchestrator (`main`); <build lead, programmer or read-only lane:> return early with the blocker as your report. A build lead or programmer never waits for an answer.

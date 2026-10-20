@@ -13,6 +13,7 @@
 | docs | `.teams` | queue, releases/, retros/ live here (outside `.claude/`, whose writes always prompt) |
 | style | — | the project's style rules, read by every agent, e.g. `docs/style.md` |
 | decisions | — | where the project records decisions, e.g. `docs/adr/`; — = the rulings files only |
+| config dir | `.` | root of the team config files (**Teams** › Config), relative to the project root |
 | vcs | git | `git` or `jj` |
 | main | main | the default branch; never pushed to directly |
 | workspaces | `../{repo}-workspaces` | one workspace per branch, named after it (`/` as `-`); its reviewers and fix rounds reuse it |
@@ -86,16 +87,16 @@
 
 ## Teams
 
-The Orchestrator is the tech lead; the Engineer is Product Owner, manager and stakeholder. A team is a named lead, spawned only when there's work. The qa row is the top-level QA and the architects' lead is the architect: both stand beside the Orchestrator, at every milestone and the release. Programmers aren't listed: each is short-lived, spawned and named by its build lead for one task, and ends when it's done. Review teams list their standing reviewers.
+The Orchestrator is the tech lead; the Engineer is Product Owner, manager and stakeholder. A team is a named lead, spawned only when there's work. The qa row is the top-level QA and the architects' lead is the architect: both stand beside the Orchestrator, at every milestone and the release. Programmers aren't listed: each is short-lived, spawned and named by its build lead for one task, and ends when it's done. Review teams list their standing reviewers. Config is the team's config file (its Roles and the special instructions each must follow, shaped by the pack's `team-config.md`), relative to `Repository › config dir`, in this file's format; — = none.
 
-| Team | Mission | Owns (paths) | Lead | Reviewers |
-|---|---|---|---|---|
-| <team> | <one line> | `<path/**>` | <Name> | — |
-| qa | Top-level QA: documents for the Engineer, every milestone, every PR into main | — | <Name> | — |
-| internal | Finds the most effective way for the teams to work and spend their time | — | <Name> | — |
-| compliance | Release review: what the project is legally bound to follow | — | <Name> | <Name> |
-| architects | Reviews every milestone, before QA; release review: correct architecture | — | <Name> | <Name> |
-| security | Every security-triggered slice (its plan, then its code), and the release review | — | <Name> | <Name> |
+| Team | Mission | Owns (paths) | Lead | Reviewers | Config |
+|---|---|---|---|---|---|
+| <team> | <one line> | `<path/**>` | <Name> | — | — |
+| qa | Top-level QA: documents for the Engineer, every milestone, every PR into main | — | <Name> | — | — |
+| internal | Finds the most effective way for the teams to work and spend their time | — | <Name> | — | — |
+| compliance | Release review: what the project is legally bound to follow | — | <Name> | <Name> | — |
+| architects | Reviews every milestone, before QA; release review: correct architecture | — | <Name> | <Name> | — |
+| security | Every security-triggered slice (its plan, then its code), and the release review | — | <Name> | <Name> | — |
 
 **Shared ground** (no team owns it; one Spawn at a time, assigned by the Orchestrator): <lockfiles, migrations, generated files, root config, CI>.
 
