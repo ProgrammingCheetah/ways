@@ -63,7 +63,33 @@
 <!-- A Model or Effort set here is passed as the Agent call's model or effort; — = the agent file's.
      Only programmers may run on Sonnet: a build or subsystem Model pins every programmer to it
      (e.g. opus only); — = the build lead picks sonnet or opus per task. Security-nature work and
-     every other role are always Opus, whatever is set here (their Effort may still be set). -->
+     every other role are always Opus, whatever is set here (their Effort may still be set).
+     A role assigned to a runner below runs there instead, and none of this applies to it. -->
+
+## Runners
+
+<!-- Optional: models outside Claude, run through their own command-line tool; the skill's runners.md says how. Define each
+     runner once, then assign roles. Command: run where the role works; {prompt} (a line pointing it at its brief) and {dir}
+     (its run folder, holding the brief and copies of what the brief names) are substituted single-quoted, so don't quote them;
+     its standard output is the report. Never add wider folders, and give it a timeout long enough for the role, e.g.
+     gemini · `agy -p {prompt} --add-dir {dir} --model gemini-4-argon --effort high --print-timeout 60m` (check the model with `agy models`).
+     Its own tool's permissions apply, not Claude Code's. A role with no runner, or —, runs on Claude.
+     The glue lane can't take a runner: it pushes, opens and merges PRs, and removes workspaces. -->
+
+| Runner | Command | Notes |
+|---|---|---|
+| — | — | |
+
+| Role | Runner |
+|---|---|
+| lead | — |
+| build lead | — |
+| programmer | — |
+| security reviewer | — |
+| release reviewer | — |
+| top-level QA | — |
+| architect | — |
+| document author | — |
 
 ## Limits
 
@@ -102,6 +128,6 @@ The Orchestrator is the tech lead; the Engineer is Product Owner, manager and st
 
 ## Opt-outs
 
-<!-- One line each: what, the date, the Engineer's words. Recognised: internal team, nodes, release reviews, main's protection. -->
+<!-- One line each: what, the date, the Engineer's words. Recognised: internal team, nodes, release reviews, main's protection, runners. -->
 
 - —

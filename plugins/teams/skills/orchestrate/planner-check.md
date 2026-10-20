@@ -1,6 +1,6 @@
 # The planner check
 
-Run around every `teams:planner` run (lead, each resume) and every plan security challenge, in its planning workspace `<ws>`. It works the same in git, in jj (including secondary workspaces, which have no `.git`), and with no VCS at all.
+Run around every `teams:planner` run (lead, each resume) and every plan security challenge, on Claude or on a runner (`runners.md` adds its run folder), in its planning workspace `<ws>`. It works the same in git, in jj (including secondary workspaces, which have no `.git`), and with no VCS at all.
 
 **Before the run**
 
