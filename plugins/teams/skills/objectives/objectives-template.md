@@ -4,7 +4,8 @@
 
 <!-- Written by /teams:objectives from the Engineer's answers: their words, lightly edited, never invented.
      Objectives are outcomes (what changes for someone), not features; features go under In scope, each serving an objective.
-     The design document builds on this file once it's signed: its goals trace to O1…, its non-goals carry Out over. -->
+     The design document builds on this file once it's signed: its goals trace to O1…, its non-goals carry Out over,
+     and its Decisions and One-way doors take up what this file parks. -->
 
 ## Summary
 
@@ -51,11 +52,9 @@
 
 ## Questions for the Engineer
 
-**Q1. <question in plain words>**
+— none
 
-**Claude's answer (<date>; the Engineer adjusts):** <answer and why>.
-
-**Engineer:**
+<!-- Step 6 adds each challenge routed to the Engineer here, numbered Q1…, in the shape the skill gives. -->
 
 ## QA challenges
 

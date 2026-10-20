@@ -43,7 +43,7 @@ Besides `/teams:orchestrate`, nine routines (they absorb what a separate `ship` 
 
 | Skill | What it does | Lifecycle |
 |---|---|---|
-| `/teams:objectives` | Interviews the Engineer one section at a time (why, objectives with an "Achieved when" check and a priority, in and out of scope, constraints, assumptions and risks), writes the release's `objectives.md`, has fresh QA challenge it and records the signature. The interview stays in the main session. | **Objectives** |
+| `/teams:objectives` | Interviews the Engineer one section at a time into the release's `objectives.md` (what it's for, how each objective is checked, what's in and out), has fresh QA challenge it and records the signature. The interview stays in the main session; a small release keeps a one-paragraph `scope.md`. | **Objectives** |
 | `/teams:my-queue` | The Engineer's queue (`<docs>/queue.md`, open questions, live PRs) as Ready, Incoming, Questions, Waiting and Optional tables, each row with an ID, weight and blocker. Read-only. | the Engineer asks what's theirs |
 | `/teams:catch-me-up` | A short briefing from the queue, the release folder, rulings and VCS history: where things stand, why, what's missing, what's next. Read-only. | after a gap |
 | `/teams:cleanup` | Reports every git worktree or jj workspace with its merge evidence and cleanliness; after one confirmation, runs `Repository › teardown` and removes only the merged, remote-gone, clean ones; keeps and reports the rest. Without a teams file it only reports. | **Clean up** |
