@@ -54,7 +54,7 @@
 
 — none
 
-<!-- Step 6 adds each challenge routed to the Engineer here, numbered Q1…, in the shape the skill gives. -->
+<!-- Step 6 replaces "— none" with each challenge routed to the Engineer, numbered Q1…, in the shape the skill's step 6 gives. -->
 
 ## QA challenges
 

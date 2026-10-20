@@ -31,7 +31,8 @@
      queue.md.
   The last milestone is the release end: compliance, security and the architects' release review (with its reviewers,
   standing in for the architect's pass) run first, in parallel; then QA, briefed with all of them, also checks that every
-  must-fix is fixed or accepted in writing, and runs each must objective's "Achieved when" check: a failing one is a must-fix. Reports: reviews/m<n>-architect.md and reviews/m<n>-qa.md. After the release
+  must-fix is fixed or accepted in writing, and runs each must objective's "Achieved when" check: a failing one is a must-fix; one it can't run is reported
+  not run, for the demo or the Engineer to settle before the release PR. Reports: reviews/m<n>-architect.md and reviews/m<n>-qa.md. After the release
   PR merges, remove the review workspace by name, on the Engineer's word.
   With `trunk` there is no integration branch: the range is the release's merged slice PRs (each merge's diff), not a
   commit range, and fixes are PRs into main. Off-cycle work: QA alone, on its branch's diff in its workspace, before

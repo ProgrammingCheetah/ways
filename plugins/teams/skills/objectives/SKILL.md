@@ -19,10 +19,11 @@ No teams file: say so in one line. Test whether the repo is the Engineer's own a
 ## 1. The version
 
 - From the argument; else ask, pre-filled with the next version after the newest folder under `<docs>/releases/`, in `Release › version format`. A line after the version is the Engineer's first answer to **Why**.
-- **A small release** (the Engineer calls it one, e.g. a patch) gets no interview: write a one-paragraph `scope.md` (version, scope in the Engineer's words, what's out), unsigned and without QA, and stop.
-- **`scope.md` already there:** that release runs on it to the end; say so and stop. Its design is checked against its Features' "done when" instead.
+- **A small release** (the Engineer calls it one, e.g. a patch) gets no interview: write a one-paragraph `scope.md` (version, scope in the Engineer's words, what's out), unsigned and without QA; under the Orchestrator, add a status note in `queue.md`; then stop.
+- **`scope.md` already there:** that release runs on it to the end; say so and stop. Its design is checked against `scope.md`'s scope and what's out, and its acceptance against the design's Features' "done when".
 - **`objectives.md` there, not in `signoff.md`:** resume where it stopped. One of the six interview sections still holding the template's placeholder: carry on from the first such section. All six filled, the Summary still a placeholder: step 4. Summary written, no QA challenges: step 5. Challenges, no resolutions: step 6. Otherwise: step 7.
-- **`objectives.md` in `signoff.md`:** a change to a signed document. Move the file's QA challenges, QA resolutions and Signed sections under `## Earlier rounds`, as `### Round <n> (signed <date>)`, and copy into that entry the signed text of each section before you first edit it. Interview only the sections the Engineer wants changed, then run steps 5 to 7. If release documents are signed too, list which parts of them rest on what changed: they go back to the Engineer with it.
+- **`objectives.md` in `signoff.md`, its id matching the row:** a change to a signed document. Add `## Earlier rounds` at the end of the file if missing, and move into it, as `### Round <n> (signed <date>)`, the contents of the QA challenges, QA resolutions and Signed sections, leaving those sections empty; copy into that entry the signed text of each section before you first edit it. Interview only the sections the Engineer wants changed, then run steps 5 to 7.
+- **In `signoff.md`, its id no longer matching:** with a round open (the newest `### Round` entry and `## Signed` empty), a change under way: ask which sections are still to change and carry on, then no QA challenges: step 5; challenges, no resolutions: step 6; otherwise step 7. With no round open, the file was edited outside this skill: tell the Engineer, then open a round as above, taking the signed text from VCS history where it's there. If release documents are signed too, list which parts of them rest on what changed: they go back to the Engineer with it.
 
 ## 2. Read before asking (cheap; skip what's absent)
 
@@ -67,7 +68,7 @@ A challenge proposes, with why; QA never rewrites the Engineer's words. On a cha
 
 Paste QA's report under `## QA challenges`, and resolve each challenge by number under `## QA resolutions`:
 - **Resolved:** wording or a traceability link that doesn't change what the Engineer meant; fix it in place.
-- **Routed to the Engineer:** anything that changes an objective, a check (a number or threshold they didn't give included), a scope line, a priority or a constraint; it becomes a question under **Questions for the Engineer**, pre-filled `Claude's answer (<date>; the Engineer adjusts)`, with an empty **Engineer:** line.
+- **Routed to the Engineer:** anything that changes an objective, a check (a number or threshold they didn't give included), a scope line, a priority or a constraint; it becomes a question under **Questions for the Engineer** (replacing its "— none"): a `**Q<n>. <the question>**` line, a `**Claude's answer (<date>; the Engineer adjusts):** <answer and why>.` line, and an empty `**Engineer:**` line.
 - **Rejected:** with a source.
 
 Refresh the Summary's question count, and check your resolutions against the report before the Engineer sees them.
