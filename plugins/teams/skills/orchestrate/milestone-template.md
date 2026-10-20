@@ -13,7 +13,7 @@
      timeline phase would build on is a must-fix; the rest is a request for the next release.
      Then QA, fresh, briefed with the architect's report: each slice against its saved plan; defects, across slices too;
      tests: every rule has a test that fails when it breaks, proven by planting bugs, each reverted before reporting.
-     Brief both (brief-template.md) with the signed release documents, the Groundwork, the rulings, every saved slice
+     Brief both (brief-template.md) with the signed release documents and objectives.md, the Groundwork, the rulings, every saved slice
      plan of the timeline phase, milestones.md, both reports from the last milestone, and QA's last log. Each reads the
      new range (`<last commit>..<commit>`) whole and uses the cumulative range (git `git diff <main>...<commit>`; jj: the
      equivalent, checked by running it) by --stat and for the hunks a finding needs; the last milestone reads the whole
@@ -31,7 +31,8 @@
      queue.md.
   The last milestone is the release end: compliance, security and the architects' release review (with its reviewers,
   standing in for the architect's pass) run first, in parallel; then QA, briefed with all of them, also checks that every
-  must-fix is fixed or accepted in writing. Reports: reviews/m<n>-architect.md and reviews/m<n>-qa.md. After the release
+  must-fix is fixed or accepted in writing, and runs each must objective's "Achieved when" check: a failing one is a must-fix; one it can't run is reported
+  not run, for the demo or the Engineer to settle before the release PR. Reports: reviews/m<n>-architect.md and reviews/m<n>-qa.md. After the release
   PR merges, remove the review workspace by name, on the Engineer's word.
   With `trunk` there is no integration branch: the range is the release's merged slice PRs (each merge's diff), not a
   commit range, and fixes are PRs into main. Off-cycle work: QA alone, on its branch's diff in its workspace, before

@@ -11,6 +11,8 @@
 
 ## Goals and non-goals
 
+<Each goal names the objective it serves (O1… in the signed `objectives.md`); every objective has one. Non-goals carry its Out of scope over, plus any the design adds. A release on `scope.md` states its goals from that.>
+
 ## Features
 
 <Per feature: who it's for, what they can do, and "done when" as a check the Engineer could run by hand.>
@@ -39,9 +41,13 @@
 
 ## One-way doors
 
+<Each of `objectives.md`'s One-way doors seen, plus any the design finds.>
+
 ## Risks, and what to cut first
 
 ## Decisions
+
+<Each of `objectives.md`'s Questions for the design is decided here or parked with a reason.>
 
 **D1. <decision in plain words>**
 - A. <option>

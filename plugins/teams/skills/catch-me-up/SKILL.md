@@ -10,7 +10,7 @@ A **spoken briefing** of the project's current state. Read-only: it writes nothi
 
 ## 0. Config
 
-Read the teams file (`.claude/TEAMS.md`, else `.claude/TEAMS.yaml`, else `.claude/TEAMS.toml`) at the root of this checkout; if absent and this is a secondary workspace, at the root of the main checkout (git: the first path `git worktree list` prints; jj: `jj workspace root --name default`). Use `Repository › docs` (`<docs>`, resolved from the main checkout's root), `vcs`, `main`, `decisions` and `workspaces`, and `Release › version format`.
+Read the teams file (`.claude/TEAMS.md`, else `.claude/TEAMS.yaml`, else `.claude/TEAMS.toml`) at the root of this checkout; if absent and this is a secondary workspace, at the root of the main checkout (git: the first path `git worktree list` prints; jj: `jj workspace root --name default`). Use `Repository › docs` (`<docs>`, resolved from the main checkout's root), `vcs`, `main`, `decisions` and `workspaces`, and `Release › version format` and `documents`.
 
 No teams file: say so in one line and brief from the project's CLAUDE.md, its decisions folder if one is obvious, the VCS history and the open PRs. A `.jj/` folder means jj; the default branch comes from `gh repo view --json defaultBranchRef` or `git symbolic-ref refs/remotes/origin/HEAD`.
 
@@ -19,9 +19,11 @@ No teams file: say so in one line and brief from the project's CLAUDE.md, its de
 Skip anything already loaded this session. Never read whole source files or whole documents, only the parts that explain the current work.
 
 1. **The queue:** `<docs>/queue.md`. Its latest status note (the newest entry under its `## Status` heading) is "what we were just doing"; its top items are "what's next".
-2. **The current release folder,** `<docs>/releases/<version>/`. Current = the release the latest status note names, else the most recently modified folder. Read `scope.md`, then name the phase by the last of these that exists:
-   - release documents only: design review;
-   - `signoff.md`: signed;
+2. **The current release folder,** `<docs>/releases/<version>/`. Current = the release the latest status note names, else the most recently modified folder. Read `objectives.md` (a small release, or one begun before objectives, has `scope.md`), then name the phase by the last of these that holds:
+   - `objectives.md` not yet in `signoff.md`: objectives (interview, QA or signature);
+   - `scope.md`, or `objectives.md` in `signoff.md`, and no release documents: design next;
+   - release documents not yet in `signoff.md`: design review;
+   - release documents in `signoff.md`: signed;
    - `roadmaps/` and `claims.md`: roadmaps and claims;
    - `groundwork.md`: Groundwork;
    - `plans/`: slice plans, so build is next or under way;
@@ -29,7 +31,7 @@ Skip anything already loaded this session. Never read whole source files or whol
    - `reviews/` with `compliance.md`, `architects.md` or `security.md`: release reviews.
 
    Then the newest `rulings-*.md` there.
-3. **Signed files:** for each id in `signoff.md`, run `git hash-object <file>` and compare. Read-only: never pass `-w`. It works in a jj repo too. A changed signed file is a finding.
+3. **Signed files:** for each row of `signoff.md`'s table (not its History), run `git hash-object <file>` and compare. Read-only: never pass `-w`. It works in a jj repo too. A changed signed file is a finding.
 4. **Decisions:** the newest entries under `Repository › decisions`, only as far back as needed to explain the current work. The newest file in `<docs>/retros/`, if it touches the current work.
 5. **VCS:**
    - git: `git status --short`, `git branch --show-current`, `git log --oneline -15 origin/<main>`, `git worktree list`.
@@ -58,6 +60,6 @@ Short prose and short lists, no padding, no headers beyond these five:
 2. **What we've been doing:** the last few units of work (PRs or commits), newest first, one line each.
 3. **Context:** the why behind the current work: the ruling or decision that shaped it, one or two sentences. Cite the ruling file or decision record by path and title, not ids alone. Don't re-explain settled history.
 4. **Missing:** the findings from step 2, open questions without a ruling, claims or plan items not yet resolved, anything the status note flags as open.
-5. **Next steps:** concrete actions in order. The first is what to do the moment the briefing ends. Name a fitting skill where one applies: `/teams:my-queue` for the full queue, `/teams:orchestrate` to resume the lifecycle, `/teams:cleanup` for merged workspaces.
+5. **Next steps:** concrete actions in order. The first is what to do the moment the briefing ends. Name a fitting skill where one applies: `/teams:my-queue` for the full queue, `/teams:orchestrate` to resume the lifecycle, `/teams:objectives` to resume or change a release's objectives, `/teams:cleanup` for merged workspaces.
 
 Then stop. **Do not start the work.** The Engineer decides what happens next.

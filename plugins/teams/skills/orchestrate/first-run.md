@@ -37,4 +37,4 @@ Read once per project, when no `.claude/TEAMS.*` exists. Everything here is aske
 
    With a runner, the worksheet adds no Claude Code rule for it: its runs start `cd … &&`, which an allow rule doesn't settle, so auto mode's classifier decides, as for Spawns. Its setup (in someone else's repo, the owners' consent first; then its own worksheet and your trial) follows `runners.md` section 1, before its first run.
 7. **nodes, when chosen:** if `nodes --version` doesn't answer 0.7.0 or later, or the `nodes` plugin's skills (e.g. `/nodes:chart`) are absent, hand a worksheet: `claude plugin install nodes@ways`, then the binary, either from https://github.com/ZurNetwork/nodes/releases (Linux and macOS builds) or `cargo install --git https://github.com/ZurNetwork/nodes --locked --tag <the latest tag, which you look up and write in>`. On Windows only the `cargo` route exists. If the Engineer declines, record the opt-out.
-8. **Ask for the first release's scope,** or the off-cycle work, and run the lifecycle.
+8. **Ask for the first release's version,** and run `/teams:objectives` for it, or take the off-cycle work; then run the lifecycle.
