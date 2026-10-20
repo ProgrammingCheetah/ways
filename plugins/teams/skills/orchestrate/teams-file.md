@@ -68,12 +68,13 @@
 
 ## Runners
 
-<!-- Optional: models outside Claude, run through their own command-line tool. Define each runner once, then assign roles.
-     Command: run in the role's workspace; {prompt} is substituted single-quoted (don't quote it) with a line pointing the
-     runner at its brief file; its standard output is the report. Give it access to the folders its briefs name and a timeout
-     long enough for the role, e.g. gemini · `agy -p {prompt} --model gemini-4-argon --effort high --print-timeout 60m --add-dir <workspaces folder>`.
-     Its own tool's permissions apply, not Claude Code's: set them so it can work unattended and never push.
-     A role with no runner, or —, runs on Claude. The glue lane can't take a runner: it runs the pack's own skills. -->
+<!-- Optional: models outside Claude, run through their own command-line tool; the skill's runners.md says how. Define each
+     runner once, then assign roles. Command: run where the role works; {prompt} (a line pointing it at its brief) and {dir}
+     (its run folder, holding the brief and copies of what the brief names) are substituted single-quoted, so don't quote them;
+     its standard output is the report. Never add wider folders, and give it a timeout long enough for the role, e.g.
+     gemini · `agy -p {prompt} --add-dir {dir} --model gemini-4-argon --effort high --print-timeout 60m` (check the model with `agy models`).
+     Its own tool's permissions apply, not Claude Code's. A role with no runner, or —, runs on Claude.
+     The glue lane can't take a runner: it pushes, opens and merges PRs, and removes workspaces. -->
 
 | Runner | Command | Notes |
 |---|---|---|
@@ -127,6 +128,6 @@ The Orchestrator is the tech lead; the Engineer is Product Owner, manager and st
 
 ## Opt-outs
 
-<!-- One line each: what, the date, the Engineer's words. Recognised: internal team, nodes, release reviews, main's protection. -->
+<!-- One line each: what, the date, the Engineer's words. Recognised: internal team, nodes, release reviews, main's protection, runners. -->
 
 - —
