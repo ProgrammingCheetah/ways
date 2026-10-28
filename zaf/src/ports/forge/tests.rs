@@ -53,6 +53,7 @@ fn checks_and_review_comments_read_back() {
             path: "src/export.rs".to_owned(),
             line: Some(40),
         }),
+        head: Some("abc123".to_owned()),
     };
     forge
         .add_review_comment(pr, comment.clone())

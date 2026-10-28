@@ -4,6 +4,7 @@
 //! `.zaf/spawn.state`, the spawner's file, gives what is running.
 //! The guard line is whatever `zaf guard` last wrote.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use super::guard::{self, GuardError, GuardState};
@@ -64,7 +65,7 @@ pub struct Launch {
     pub started_at: Option<String>,
 }
 
-/// The slots: how many there are and how many are free.
+/// The slots: how many there are and how many are free (a slot is one distinct running instance).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct Slots {
     /// The manifest's `[spawn] slots`.
@@ -134,7 +135,12 @@ pub fn status(board: &dyn Board, state_dir: &Path, slots: u32) -> Result<Status,
         .collect();
     let questions = board.questions()?.into_iter().map(ticket_line).collect();
     let running = state.launches;
-    let in_use = u32::try_from(running.len()).unwrap_or(u32::MAX);
+    // A batch of tasks shares one instance and one slot: count instances, not entries.
+    let instances: BTreeSet<&str> = running
+        .iter()
+        .map(|launch| launch.instance.as_str())
+        .collect();
+    let in_use = u32::try_from(instances.len()).unwrap_or(u32::MAX);
     Ok(Status {
         ready,
         claimed,

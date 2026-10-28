@@ -92,7 +92,8 @@ fn settings_carry_the_forbidden_commands_as_denies_and_the_gate_as_allows() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state = dir.path().join(".zaf");
     let manifest = manifest(
-        "[gate]\nfull = \"just gate\"\ntests = \"cargo test -p {crate} {name}\"\n\
+        "[requires]\njj = \"*\"\ngh = \">=2\"\ncargo = \"*\"\n\
+         [gate]\nfull = \"just gate\"\ntests = \"cargo test -p {crate} {name}\"\n\
          [forbidden]\ncommands = [\"git push\", \"rm -rf\"]\n",
     );
     init(&state, &manifest).expect("generates");
@@ -128,7 +129,8 @@ fn settings_carry_the_forbidden_commands_as_denies_and_the_gate_as_allows() {
 fn an_allow_that_is_forbidden_is_dropped() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state = dir.path().join(".zaf");
-    init(&state, &manifest("[forbidden]\ncommands = [\"gh *\"]\n")).expect("generates");
+    let forbidding = manifest("[requires]\ngh = \"*\"\n[forbidden]\ncommands = [\"gh *\"]\n");
+    init(&state, &forbidding).expect("generates");
     let settings = settings(&state, "lean");
     assert!(!strings(&settings["permissions"]["allow"]).contains(&"Bash(gh *)"));
 }
@@ -190,4 +192,35 @@ fn existing_session_folders_are_left_alone() {
     fs::write(&kept, "x").expect("writes");
     init(&state, &manifest("")).expect("second");
     assert_eq!(fs::read_to_string(kept).expect("reads"), "x");
+}
+
+#[test]
+fn the_allow_list_comes_from_requires_not_from_the_pack() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    init(
+        &state,
+        &manifest("[requires]\nmake = \"*\"\njj = \">=0.20\"\nzaf = \"2.0.0\"\n"),
+    )
+    .expect("generates");
+    for profile in ["lean", "build"] {
+        let settings = settings(&state, profile);
+        assert_eq!(
+            strings(&settings["permissions"]["allow"]),
+            ["Bash(zaf *)", "Bash(jj *)", "Bash(make *)"],
+            "{profile}: zaf once, each required tool, nothing else"
+        );
+    }
+}
+
+#[test]
+fn a_project_requiring_nothing_allows_only_zaf_and_its_gate() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    init(&state, &manifest("[gate]\nfull = \"make check\"\n")).expect("generates");
+    let settings = settings(&state, "lean");
+    assert_eq!(
+        strings(&settings["permissions"]["allow"]),
+        ["Bash(zaf *)", "Bash(make check)"]
+    );
 }

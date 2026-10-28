@@ -88,6 +88,10 @@ impl Forge for SharedForge {
         self.0.review_comments(pr)
     }
 
+    fn head(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
+        self.0.head(pr)
+    }
+
     fn scanning_alerts(&self, pr: PrNumber) -> Result<Vec<ScanningAlert>, PortError> {
         self.0.scanning_alerts(pr)
     }
@@ -148,6 +152,21 @@ pub(super) fn located(author: &str, body: &str, path: &str, line: u32) -> Review
             path: path.to_owned(),
             line: Some(line),
         }),
+        head: None,
+    }
+}
+
+/// A located comment made on a given commit.
+pub(super) fn located_on(
+    author: &str,
+    body: &str,
+    path: &str,
+    line: u32,
+    head: &str,
+) -> ReviewComment {
+    ReviewComment {
+        head: Some(head.to_owned()),
+        ..located(author, body, path, line)
     }
 }
 

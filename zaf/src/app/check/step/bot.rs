@@ -1,6 +1,10 @@
 //! `bot:<login>`: wait until the login has posted on the pull request, then read
 //! its line comments as findings.
 //!
+//! When the forge reports the pull request's current head, only comments made
+//! on that commit count (a comment with no commit id does not); a forge that
+//! reports none gets any comment by the login.
+//!
 //! A comment is a must-fix when a line of its body mentions a "potential issue"
 //! or "security" marker (case ignored), a note otherwise. Its title is the first
 //! other non-blank line, stripped of markdown emphasis; its place is the
@@ -26,10 +30,16 @@ pub(super) fn run(
 ) -> Result<Vec<Finding>, PortError> {
     let forge = ports.forge()?;
     loop {
+        // The head is read each round: a push while waiting makes the earlier review stale.
+        let head = forge.head(context.pr)?;
         let comments: Vec<ReviewComment> = forge
             .review_comments(context.pr)?
             .into_iter()
             .filter(|comment| comment.author.as_ref().eq_ignore_ascii_case(login.as_ref()))
+            .filter(|comment| {
+                head.as_ref()
+                    .is_none_or(|head| comment.head.as_ref() == Some(head))
+            })
             .collect();
         if !comments.is_empty() {
             let findings = comments

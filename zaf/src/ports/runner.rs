@@ -1,5 +1,6 @@
 //! Runners: run a role with a profile and capture what it produced.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use super::PortError;
@@ -16,6 +17,8 @@ pub struct RunRequest {
     pub prompt: String,
     /// The directory it runs in.
     pub dir: PathBuf,
+    /// Environment for the run, applied after every other layer, so it wins.
+    pub env: BTreeMap<String, String>,
 }
 
 /// What a run produced.

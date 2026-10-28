@@ -7,7 +7,7 @@ use serde::Deserialize;
 use super::GhCommand;
 use super::command::number_from_url;
 use super::rows::{
-    CheckBucket, CheckRow, LineCommentRow, NumberRow, PrStateRow, ReviewRow, UserRow,
+    CheckBucket, CheckRow, LineCommentRow, NumberRow, PrHeadRow, PrStateRow, ReviewRow, UserRow,
 };
 use crate::domain::Location;
 use crate::ports::{
@@ -162,6 +162,7 @@ impl Forge for GithubForge {
                 author: author(review.user),
                 body,
                 location: None,
+                head: review.commit_id,
             };
             dated.push((parse_time(&submitted_at)?, comment));
         }
@@ -174,11 +175,20 @@ impl Forge for GithubForge {
                 author: author(line.user),
                 body: line.body,
                 location: Some(location),
+                head: line.commit_id,
             };
             dated.push((parse_time(&line.created_at)?, comment));
         }
         dated.sort_by_key(|(at, _)| *at);
         Ok(dated.into_iter().map(|(_, comment)| comment).collect())
+    }
+
+    fn head(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
+        let number = bare(pr);
+        let pull: PrHeadRow = self
+            .gh
+            .json(&["pr", "view", &number, "--json", "headRefOid"])?;
+        Ok(pull.head_ref_oid.filter(|head| !head.is_empty()))
     }
 
     fn scanning_alerts(&self, pr: PrNumber) -> Result<Vec<ScanningAlert>, PortError> {

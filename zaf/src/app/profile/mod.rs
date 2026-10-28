@@ -172,8 +172,12 @@ fn claude_md(project: Option<&str>) -> Vec<u8> {
     text.into_bytes()
 }
 
-/// The template with the manifest's parts merged in: the gate commands as allows, the
+/// The template with the manifest's parts merged in: `zaf`, every `[requires]` tool and the
+/// gate commands as allows (so the pack names no tool of its own), the
 /// forbidden commands as denies, and the model and effort of the roles using the profile.
+/// The one tool rule the pack itself adds: the verbs every role runs.
+const ZAF_ALLOW: &str = "Bash(zaf *)";
+
 fn settings_for(
     profile: Profile,
     template: &str,
@@ -196,6 +200,13 @@ fn settings_for(
             .collect(),
         _ => Vec::new(),
     };
+    allow.push(ZAF_ALLOW.to_owned());
+    allow.extend(
+        manifest
+            .requires
+            .keys()
+            .map(|tool| format!("Bash({tool} *)")),
+    );
     for command in gate_commands(manifest) {
         allow.push(allow_rule(command));
     }

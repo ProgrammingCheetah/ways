@@ -93,6 +93,7 @@ fn the_port_returns_the_exit_code_and_the_report_as_transcript() {
         profile: Profile::Lean,
         prompt: "read the brief".to_owned(),
         dir: dir.path().to_path_buf(),
+        env: std::collections::BTreeMap::new(),
     };
     let process = runner("echo {prompt}; exit 2");
     let port: &dyn Runner = &process;
@@ -107,6 +108,7 @@ fn request(role: &str, profile: Profile, dir: &Path) -> RunRequest {
         profile,
         prompt: "read the brief".to_owned(),
         dir: dir.to_path_buf(),
+        env: std::collections::BTreeMap::new(),
     }
 }
 
@@ -186,4 +188,33 @@ fn an_unwritable_directory_is_a_backend_failure() {
 fn single_quote_escapes_embedded_quotes() {
     assert_eq!(single_quote("a b"), "'a b'");
     assert_eq!(single_quote("it's"), r"'it'\''s'");
+}
+
+#[test]
+fn the_requests_environment_wins_over_every_layer() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let role = RoleRun::new(CommandLine::from(
+        "printf '%s %s %s' \"$MODEL\" \"$ZAF_INSTANCE\" \"$EXTRA\"",
+    ))
+    .with_env("MODEL", "from-role");
+    let process = runner("true")
+        .with_env("ZAF_INSTANCE", "from-runner")
+        .with_profile_env(Profile::Lean, "ZAF_INSTANCE", "from-profile")
+        .with_role(RoleName::from("keeper"), role);
+    let mut request = request("keeper", Profile::Lean, dir.path());
+    request
+        .env
+        .insert("MODEL".to_owned(), "from-request".to_owned());
+    request.env.insert(
+        "ZAF_INSTANCE".to_owned(),
+        "team instance 1 on #2".to_owned(),
+    );
+    request
+        .env
+        .insert("EXTRA".to_owned(), "only-request".to_owned());
+    let output = process.run(&request).expect("a run");
+    assert_eq!(
+        output.transcript,
+        "from-request team instance 1 on #2 only-request"
+    );
 }

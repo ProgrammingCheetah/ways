@@ -118,6 +118,7 @@ fn request(dir: &Path) -> RunRequest {
         profile: Profile::Lean,
         prompt: String::new(),
         dir: dir.to_owned(),
+        env: std::collections::BTreeMap::new(),
     }
 }
 

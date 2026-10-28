@@ -145,6 +145,7 @@ command = \"echo local-model\"
             profile: Profile::Lean,
             prompt: String::new(),
             dir: dir.to_owned(),
+            env: std::collections::BTreeMap::new(),
         };
         runner.run(&request).expect("run").transcript
     }

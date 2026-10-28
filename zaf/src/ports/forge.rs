@@ -70,6 +70,8 @@ pub struct ReviewComment {
     pub body: String,
     /// Where it points, when it is on a line.
     pub location: Option<Location>,
+    /// The commit it was made on, when the forge says.
+    pub head: Option<String>,
 }
 
 text_newtype! {
@@ -118,6 +120,9 @@ pub trait Forge {
 
     /// The pull request's review comments, oldest first.
     fn review_comments(&self, pr: PrNumber) -> Result<Vec<ReviewComment>, PortError>;
+
+    /// The commit id the pull request's head is at now, when the forge reports one.
+    fn head(&self, pr: PrNumber) -> Result<Option<String>, PortError>;
 
     /// The open code scanning alerts for the pull request's head ref.
     fn scanning_alerts(&self, pr: PrNumber) -> Result<Vec<ScanningAlert>, PortError>;

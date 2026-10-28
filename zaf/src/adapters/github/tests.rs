@@ -721,12 +721,12 @@ fn checks_map_gh_buckets_and_none_reported_is_empty() {
 fn review_comments_merge_reviews_and_line_comments_oldest_first() {
     let fake = FakeGh::new();
     let lines = r#"[[
-        {"user":{"login":"reviewer"},"body":"Name this binding.","path":"src/export.rs","line":12,"created_at":"2027-01-15T08:10:00Z"}
+        {"user":{"login":"reviewer"},"body":"Name this binding.","path":"src/export.rs","line":12,"created_at":"2027-01-15T08:10:00Z","commit_id":"abc123"}
     ],[
         {"user":null,"body":"Outdated.","path":"src/old.rs","line":null,"created_at":"2027-01-15T08:00:00Z"}
     ]]"#;
     let reviews = r#"[[
-        {"user":{"login":"reviewer"},"body":"Close; two nits.","submitted_at":"2027-01-15T08:05:00Z"},
+        {"user":{"login":"reviewer"},"body":"Close; two nits.","submitted_at":"2027-01-15T08:05:00Z","commit_id":"def456"},
         {"user":{"login":"bot"},"body":"","submitted_at":"2027-01-15T08:06:00Z"},
         {"user":{"login":"reviewer"},"body":"Draft.","submitted_at":null}
     ]]"#;
@@ -740,11 +740,13 @@ fn review_comments_merge_reviews_and_line_comments_oldest_first() {
                 path: "src/old.rs".to_owned(),
                 line: None,
             }),
+            head: None,
         },
         ReviewComment {
             author: Author::from("reviewer"),
             body: "Close; two nits.".to_owned(),
             location: None,
+            head: Some("def456".to_owned()),
         },
         ReviewComment {
             author: Author::from("reviewer"),
@@ -753,6 +755,7 @@ fn review_comments_merge_reviews_and_line_comments_oldest_first() {
                 path: "src/export.rs".to_owned(),
                 line: Some(12),
             }),
+            head: Some("abc123".to_owned()),
         },
     ];
     assert_eq!(
@@ -838,6 +841,24 @@ fn merge_merges_once_and_a_merged_pr_is_quiet() {
         argv(&["pr", "view", "8", "--json", "state", "--repo", REPO]),
     ];
     assert_eq!(fake.calls(), expected_calls);
+}
+
+#[test]
+fn head_reads_the_pull_requests_head_commit() {
+    let fake = FakeGh::new();
+    fake.on("pr view 7 *", r#"{"headRefOid":"abc123"}"#)
+        .on("pr view 8 *", r#"{"headRefOid":""}"#)
+        .on("pr view 9 *", "{}");
+    let forge = fake.forge();
+    assert_eq!(forge.head(PrNumber::from(7)), Ok(Some("abc123".to_owned())));
+    assert_eq!(
+        forge.head(PrNumber::from(8)),
+        Ok(None),
+        "an empty id is none"
+    );
+    assert_eq!(forge.head(PrNumber::from(9)), Ok(None));
+    let expected_call = argv(&["pr", "view", "7", "--json", "headRefOid", "--repo", REPO]);
+    assert_eq!(fake.calls()[0], expected_call);
 }
 
 #[test]

@@ -81,6 +81,8 @@ pub(super) struct LineCommentRow {
     pub path: String,
     pub line: Option<u32>,
     pub created_at: String,
+    #[serde(default)]
+    pub commit_id: Option<String>,
 }
 
 /// A review from `repos/{repo}/pulls/{n}/reviews`; a pending one has no `submitted_at`.
@@ -90,4 +92,13 @@ pub(super) struct ReviewRow {
     #[serde(default)]
     pub body: Option<String>,
     pub submitted_at: Option<String>,
+    #[serde(default)]
+    pub commit_id: Option<String>,
+}
+
+/// A pull request read only by its head commit.
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct PrHeadRow {
+    #[serde(rename = "headRefOid", default)]
+    pub head_ref_oid: Option<String>,
 }

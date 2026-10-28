@@ -1,8 +1,61 @@
+use std::sync::Arc;
+
 use super::*;
 use crate::app::status;
 use crate::domain::{InstanceNumber, TaskLabel};
 use crate::fakes::{FakeBoard, FakeRunner};
-use crate::ports::{RunOutput, Ticket};
+use crate::ports::{ClaimOutcome, ClaimRecord, NewQuestion, RunOutput, Ticket};
+
+/// Lends one fake board to every launch thread.
+struct SharedBoard(Arc<FakeBoard>);
+
+impl Board for SharedBoard {
+    fn ready(&self) -> Result<Vec<Ticket>, PortError> {
+        self.0.ready()
+    }
+    fn task(&self, number: IssueNumber) -> Result<Ticket, PortError> {
+        self.0.task(number)
+    }
+    fn claim(&self, task: IssueNumber, instance: &Instance) -> Result<ClaimOutcome, PortError> {
+        self.0.claim(task, instance)
+    }
+    fn heartbeat(&self, task: IssueNumber, instance: &Instance) -> Result<(), PortError> {
+        self.0.heartbeat(task, instance)
+    }
+    fn claims(&self) -> Result<Vec<ClaimRecord>, PortError> {
+        self.0.claims()
+    }
+    fn release(&self, task: IssueNumber) -> Result<(), PortError> {
+        self.0.release(task)
+    }
+    fn label(&self, task: IssueNumber, label: TaskLabel) -> Result<(), PortError> {
+        self.0.label(task, label)
+    }
+    fn comment(&self, issue: IssueNumber, body: &str) -> Result<(), PortError> {
+        self.0.comment(issue, body)
+    }
+    fn report(&self, task: IssueNumber, instance: &Instance, body: &str) -> Result<(), PortError> {
+        self.0.report(task, instance, body)
+    }
+    fn questions(&self) -> Result<Vec<Ticket>, PortError> {
+        self.0.questions()
+    }
+    fn open_question(&self, question: &NewQuestion) -> Result<IssueNumber, PortError> {
+        self.0.open_question(question)
+    }
+    fn record_ruling(&self, question: IssueNumber, ruling: &str) -> Result<(), PortError> {
+        self.0.record_ruling(question, ruling)
+    }
+}
+
+/// Lends one fake runner to every launch thread.
+struct SharedRunner(Arc<FakeRunner>);
+
+impl Runner for SharedRunner {
+    fn run(&self, request: &RunRequest) -> Result<RunOutput, PortError> {
+        self.0.run(request)
+    }
+}
 
 const MANIFEST: &str = r#"
 [project]
@@ -66,6 +119,7 @@ fn context(state_dir: &Path) -> LaunchContext {
         state_dir: state_dir.to_owned(),
         project: "bookshelf".to_owned(),
         profile: Profile::Build,
+        env: BTreeMap::new(),
     }
 }
 
@@ -356,4 +410,111 @@ fn the_team_profile_comes_from_the_manifest() {
         .expect("manifest parses");
     assert_eq!(team_profile(&lean), Profile::Lean);
     assert_eq!(Settings::from(&lean).batch, 2);
+}
+
+#[test]
+fn a_launch_puts_its_environment_on_the_request() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let board = board();
+    let runner = FakeRunner::default();
+    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, OWN_PID).expect("prepares");
+    let context = LaunchContext {
+        env: BTreeMap::from([
+            (
+                "ZAF_INSTANCE".to_owned(),
+                "team instance 1 on #2".to_owned(),
+            ),
+            ("ZAF_VERSION".to_owned(), "0.3.0".to_owned()),
+        ]),
+        ..context(&state_dir)
+    };
+    launch(&board, &runner, &context, &prepared.plan.launches[0]).expect("records the run");
+    let requests = runner.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].env, context.env);
+}
+
+#[test]
+fn launches_run_in_parallel_threads_and_all_are_joined() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let board = Arc::new(board());
+    let runner = Arc::new(FakeRunner::default());
+    for _ in 0..2 {
+        runner.record(
+            team(),
+            RunOutput {
+                exit_code: 0,
+                transcript: "done\n".to_owned(),
+            },
+        );
+    }
+    let prepared = prepare(&*board, &state_dir, &manifest(), &|_| true, OWN_PID).expect("prepares");
+    assert_eq!(prepared.plan.launches.len(), 2);
+    let jobs: Vec<_> = prepared
+        .plan
+        .launches
+        .iter()
+        .map(|planned| {
+            let env = BTreeMap::from([("ZAF_INSTANCE".to_owned(), planned.instance.to_string())]);
+            (
+                planned,
+                LaunchContext {
+                    env,
+                    ..context(&state_dir)
+                },
+            )
+        })
+        .collect();
+    let ports = || -> Result<LaunchPorts, PortError> {
+        Ok((
+            Box::new(SharedBoard(Arc::clone(&board))),
+            Box::new(SharedRunner(Arc::clone(&runner))),
+        ))
+    };
+
+    let results = launch_all(&jobs, &ports);
+
+    assert_eq!(results.len(), 2);
+    let done: Vec<Launched> = results.into_iter().map(|r| r.expect("launches")).collect();
+    assert_eq!(done[0].instance, instance(1, 2));
+    assert_eq!(done[1].instance, instance(2, 12));
+    assert!(done.iter().all(|d| d.exit == LaunchExit::Code(0)));
+    assert!(
+        load(&state_dir).expect("loads").instances().is_empty(),
+        "every slot is freed when the tick returns, none lost to a racing write"
+    );
+    let mut seen: Vec<String> = runner
+        .requests()
+        .into_iter()
+        .map(|request| request.env["ZAF_INSTANCE"].clone())
+        .collect();
+    seen.sort();
+    assert_eq!(seen, ["team instance 1 on #2", "team instance 2 on #12"]);
+    assert_eq!(board.comments(IssueNumber::from(2)).len(), 2);
+    assert_eq!(board.comments(IssueNumber::from(12)).len(), 2);
+}
+
+#[test]
+fn a_thread_without_ports_frees_its_slot_and_reports() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let board = board();
+    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, OWN_PID).expect("prepares");
+    let jobs: Vec<_> = prepared
+        .plan
+        .launches
+        .iter()
+        .map(|planned| (planned, context(&state_dir)))
+        .collect();
+    let ports =
+        || -> Result<LaunchPorts, PortError> { Err(PortError::Unavailable("no gh".to_owned())) };
+    let results = launch_all(&jobs, &ports);
+    assert!(
+        results
+            .iter()
+            .all(|r| matches!(r, Err(SpawnError::Port(_))))
+    );
+    assert!(load(&state_dir).expect("loads").instances().is_empty());
 }

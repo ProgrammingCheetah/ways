@@ -13,6 +13,7 @@ struct PullRequest {
     checks: Vec<Check>,
     comments: Vec<ReviewComment>,
     alerts: Vec<ScanningAlert>,
+    head: Option<String>,
     merged: bool,
 }
 
@@ -23,7 +24,7 @@ struct State {
 }
 
 /// A forge held in memory. Arrange reviews with [`FakeForge::set_checks`]
-/// [`FakeForge::add_review_comment`] and [`FakeForge::set_scanning_alerts`].
+/// [`FakeForge::add_review_comment`], [`FakeForge::set_head`] and [`FakeForge::set_scanning_alerts`].
 #[derive(Debug, Default)]
 pub struct FakeForge {
     state: Mutex<State>,
@@ -56,6 +57,13 @@ impl FakeForge {
     ) -> Result<(), PortError> {
         let mut state = self.state();
         state.pull_mut(pr)?.alerts = alerts;
+        Ok(())
+    }
+
+    /// Sets the commit id a pull request's head is at; a new one reports none.
+    pub fn set_head(&self, pr: PrNumber, head: Option<&str>) -> Result<(), PortError> {
+        let mut state = self.state();
+        state.pull_mut(pr)?.head = head.map(str::to_owned);
         Ok(())
     }
 
@@ -95,6 +103,7 @@ impl Forge for FakeForge {
             checks: Vec::new(),
             comments: Vec::new(),
             alerts: Vec::new(),
+            head: None,
             merged: false,
         };
         state.pulls.insert(number, pull);
@@ -109,6 +118,11 @@ impl Forge for FakeForge {
     fn review_comments(&self, pr: PrNumber) -> Result<Vec<ReviewComment>, PortError> {
         let mut state = self.state();
         Ok(state.pull_mut(pr)?.comments.clone())
+    }
+
+    fn head(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
+        let mut state = self.state();
+        Ok(state.pull_mut(pr)?.head.clone())
     }
 
     fn scanning_alerts(&self, pr: PrNumber) -> Result<Vec<ScanningAlert>, PortError> {

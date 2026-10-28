@@ -348,6 +348,7 @@ fn try_rung(
         profile: Profile::Lean,
         prompt: prompt.to_owned(),
         dir,
+        env: std::collections::BTreeMap::new(),
     };
     let output = match runner.run(&request) {
         Ok(output) => output,

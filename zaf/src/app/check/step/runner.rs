@@ -46,6 +46,7 @@ pub(super) fn run(
         profile: Profile::Review,
         prompt: format!("Follow the brief at {}.", brief_path.display()),
         dir: context.dir.clone(),
+        env: std::collections::BTreeMap::new(),
     };
     let output = runner.run(&request)?;
     if output.exit_code != 0 {

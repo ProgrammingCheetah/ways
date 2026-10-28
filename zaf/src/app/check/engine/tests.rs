@@ -25,6 +25,10 @@ impl Forge for SharedForge {
         self.0.review_comments(pr)
     }
 
+    fn head(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
+        self.0.head(pr)
+    }
+
     fn scanning_alerts(&self, pr: PrNumber) -> Result<Vec<ScanningAlert>, PortError> {
         self.0.scanning_alerts(pr)
     }

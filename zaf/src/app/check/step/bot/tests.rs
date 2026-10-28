@@ -1,5 +1,5 @@
 use super::*;
-use crate::app::check::step::tests::{ForgePorts, context, forge_with_pr, located};
+use crate::app::check::step::tests::{ForgePorts, context, forge_with_pr, located, located_on};
 use crate::app::check::{Engine, EngineSettings, StepStatus, Verdict};
 use crate::domain::Location;
 use std::path::PathBuf;
@@ -59,6 +59,7 @@ fn a_review_gives_one_must_fix_and_one_note() {
         author: Author::from("review-bot"),
         body: "Actionable comments posted: 2".to_owned(),
         location: None,
+        head: None,
     };
     for comment in [
         located("review-bot", must, "src/export.rs", 40),
@@ -140,4 +141,83 @@ fn a_review_that_lands_later_is_waited_for() {
     late.join().expect("late thread");
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].message, "Late nit");
+}
+
+#[test]
+fn a_review_of_an_older_head_is_not_waited_on_when_the_head_is_known() {
+    let (forge, pr) = forge_with_pr();
+    forge.set_head(pr, Some("new")).expect("head");
+    let stale = located_on("review-bot", "**Old nit**", "src/export.rs", 3, "old");
+    forge.add_review_comment(pr, stale).expect("comment");
+    let ports = ForgePorts(Arc::clone(&forge));
+    let login = Author::from("review-bot");
+    let outcome = run(
+        &source(),
+        &login,
+        &ports,
+        &context(pr, Duration::from_millis(40)),
+    );
+    assert!(
+        matches!(outcome, Err(PortError::Unavailable(_))),
+        "{outcome:?}"
+    );
+
+    let fresh = located_on("review-bot", "**New nit**", "src/export.rs", 5, "new");
+    forge.add_review_comment(pr, fresh).expect("comment");
+    let found = run(
+        &source(),
+        &login,
+        &ports,
+        &context(pr, Duration::from_secs(1)),
+    )
+    .expect("step");
+    let messages: Vec<&str> = found.iter().map(|f| f.message.as_str()).collect();
+    assert_eq!(messages, ["New nit"], "only the review of the current head");
+}
+
+#[test]
+fn the_head_is_read_again_each_round() {
+    let (forge, pr) = forge_with_pr();
+    forge.set_head(pr, Some("old")).expect("head");
+    let comment = located_on("review-bot", "**Nit**", "src/export.rs", 3, "new");
+    forge.add_review_comment(pr, comment).expect("comment");
+    let ports = ForgePorts(Arc::clone(&forge));
+    let pusher = {
+        let forge = Arc::clone(&forge);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(40));
+            forge.set_head(pr, Some("new")).expect("head");
+        })
+    };
+    let login = Author::from("review-bot");
+    let found = run(
+        &source(),
+        &login,
+        &ports,
+        &context(pr, Duration::from_secs(5)),
+    )
+    .expect("step");
+    pusher.join().expect("pusher thread");
+    assert_eq!(
+        found.len(),
+        1,
+        "waited until the head caught up with the review"
+    );
+}
+
+#[test]
+fn without_a_reported_head_any_comment_by_the_login_counts() {
+    let (forge, pr) = forge_with_pr();
+    let comment = located_on("review-bot", "**Any nit**", "src/export.rs", 3, "whatever");
+    forge.add_review_comment(pr, comment).expect("comment");
+    let ports = ForgePorts(forge);
+    let login = Author::from("review-bot");
+    let found = run(
+        &source(),
+        &login,
+        &ports,
+        &context(pr, Duration::from_secs(1)),
+    )
+    .expect("step");
+    assert_eq!(found.len(), 1);
 }

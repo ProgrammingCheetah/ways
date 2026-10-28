@@ -14,8 +14,9 @@
 mod state;
 pub mod tick;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 use std::time::SystemTime;
 
 pub use state::{SpawnState, load, save};
@@ -217,6 +218,8 @@ pub struct LaunchContext {
     pub project: String,
     /// The team role's profile.
     pub profile: Profile,
+    /// The environment the launch's process runs with, on its [`RunRequest`].
+    pub env: BTreeMap<String, String>,
 }
 
 /// How a launched instance ended.
@@ -251,6 +254,18 @@ pub struct Launched {
     pub run_dir: PathBuf,
 }
 
+/// Held while a launch reads, changes and writes `.zaf/spawn.state`, so launches
+/// running in parallel threads do not overwrite one another's entries.
+static STATE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Loads the state, applies `change` and saves it, all under [`STATE_LOCK`].
+fn update(state_dir: &Path, change: impl FnOnce(&mut SpawnState)) -> Result<(), SpawnError> {
+    let _held = STATE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut state = load(state_dir)?;
+    change(&mut state);
+    save(state_dir, &state)
+}
+
 /// Runs one reserved launch to its exit and frees its slot.
 ///
 /// The standing brief is `<state dir>/roles/team.md` when present, else the
@@ -267,9 +282,7 @@ pub fn launch(
     let (run_dir, request) = match started {
         Ok(started) => started,
         Err(error) => {
-            let mut state = load(&context.state_dir)?;
-            state.finish(&instance);
-            save(&context.state_dir, &state)?;
+            update(&context.state_dir, |state| state.finish(&instance))?;
             return Err(error);
         }
     };
@@ -288,14 +301,58 @@ pub fn launch(
         planned.instance.epic,
         &exit_marker(&instance, &exit.status()),
     )?;
-    let mut state = load(&context.state_dir)?;
-    state.finish(&instance);
-    save(&context.state_dir, &state)?;
+    update(&context.state_dir, |state| state.finish(&instance))?;
     Ok(Launched {
         instance: planned.instance.clone(),
         tasks: planned.tasks.clone(),
         exit,
         run_dir,
+    })
+}
+
+/// A way to get a board and a runner of one's own, for a launch thread.
+pub type PortsFn<'a> = dyn Fn() -> Result<LaunchPorts, PortError> + Sync + 'a;
+
+/// The board and the runner one launch thread works with.
+pub type LaunchPorts = (Box<dyn Board>, Box<dyn Runner>);
+
+/// Runs the planned launches in parallel, one thread each, and joins them all.
+///
+/// Each job is a launch with the context it runs under (its own environment).
+/// A thread builds its own board and runner with `ports`, so the ports need not
+/// be shared; the state file is shared and updated under a lock. The results
+/// come back in the jobs' order. A thread that cannot get its ports frees the
+/// launch's slot and reports the failure.
+pub fn launch_all(
+    jobs: &[(&PlannedLaunch, LaunchContext)],
+    ports: &PortsFn<'_>,
+) -> Vec<Result<Launched, SpawnError>> {
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = jobs
+            .iter()
+            .map(|(planned, context)| {
+                scope.spawn(move || match ports() {
+                    Ok((board, runner)) => {
+                        launch(board.as_ref(), runner.as_ref(), context, planned)
+                    }
+                    Err(error) => {
+                        let instance = planned.instance.to_string();
+                        update(&context.state_dir, |state| state.finish(&instance))?;
+                        Err(SpawnError::Port(error))
+                    }
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| {
+                handle.join().unwrap_or_else(|_| {
+                    Err(SpawnError::Port(PortError::Backend(
+                        "a launch thread panicked".to_owned(),
+                    )))
+                })
+            })
+            .collect()
     })
 }
 
@@ -328,16 +385,15 @@ fn start(
         })?;
         pack
     };
-    let mut state = load(&context.state_dir)?;
     let now = humantime::format_rfc3339_seconds(SystemTime::now()).to_string();
-    state.start(&instance, &now);
-    save(&context.state_dir, &state)?;
+    update(&context.state_dir, |state| state.start(&instance, &now))?;
     board.comment(planned.instance.epic, &launch_marker(&instance))?;
     let request = RunRequest {
         role: RoleName::from(TEAM_ROLE),
         profile: context.profile,
         prompt: prompt(planned, &context.project, &brief),
         dir: run_dir.clone(),
+        env: context.env.clone(),
     };
     Ok((run_dir, request))
 }

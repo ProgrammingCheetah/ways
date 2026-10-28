@@ -126,10 +126,17 @@ fn without_state_files_nothing_runs_and_the_guard_is_not_computed() {
 #[test]
 fn more_launches_than_slots_leave_none_free() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let launch = r#"{"task": 3, "instance": "programmer instance 2 on #2"}"#;
+    let launch = |task: u32, number: u32| {
+        format!(r#"{{"task": {task}, "instance": "programmer instance {number} on #2"}}"#)
+    };
     std::fs::write(
         dir.path().join(SPAWN_STATE_FILE),
-        format!(r#"{{"launches": [{launch}, {launch}, {launch}]}}"#),
+        format!(
+            r#"{{"launches": [{}, {}, {}]}}"#,
+            launch(3, 1),
+            launch(4, 2),
+            launch(5, 3)
+        ),
     )
     .expect("spawn.state");
     assert_eq!(
@@ -145,4 +152,24 @@ fn a_garbled_spawn_state_is_an_error_naming_the_file() {
     let error = status(&board(), dir.path(), 1).expect_err("garbled");
     assert!(matches!(error, StatusError::SpawnState { .. }), "{error}");
     assert!(error.to_string().contains(SPAWN_STATE_FILE));
+}
+
+#[test]
+fn a_batch_of_tasks_holds_one_slot() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = r#"{"launches": [
+        {"task": 3, "instance": "team instance 1 on #2"},
+        {"task": 4, "instance": "team instance 1 on #2"},
+        {"task": 5, "instance": "team instance 2 on #7"}
+    ]}"#;
+    std::fs::write(dir.path().join(SPAWN_STATE_FILE), state).expect("spawn.state");
+
+    let status = status(&board(), dir.path(), 4).expect("status");
+
+    assert_eq!(status.running.len(), 3, "every entry is still listed");
+    assert_eq!(
+        status.slots,
+        Slots { total: 4, free: 2 },
+        "two distinct instances hold two slots"
+    );
 }

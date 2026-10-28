@@ -3,7 +3,8 @@
 //! The manifest's command template gets `{prompt}` and `{dir}` substituted,
 //! each single-quoted for the shell, and runs under `sh -c` in the run's
 //! directory. A request's role picks the template (and any environment of its
-//! own) and its profile adds environment, on top of the runner's defaults. stdout is captured to `report.md` and stderr to `errors.log`
+//! own) and its profile adds environment, on top of the runner's defaults; the
+//! request's own environment goes on last. stdout is captured to `report.md` and stderr to `errors.log`
 //! there. A watchdog thread owns the child and kills it past the timeout.
 
 use std::collections::BTreeMap;
@@ -70,7 +71,7 @@ impl RoleRun {
 /// environment apply, and a role left out runs the runner's own command. The
 /// request's profile adds the environment set with
 /// [`with_profile_env`](Self::with_profile_env). Later layers win: the runner's
-/// environment, then the profile's, then the role's.
+/// environment, then the profile's, then the role's, then the request's own.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessRunner {
     command: CommandLine,
@@ -176,7 +177,7 @@ impl ProcessRunner {
 
 impl Runner for ProcessRunner {
     /// The transcript is `report.md`; a process ended by a signal has exit code `-1`.
-    /// The request's role selects the command template and the profile adds environment.
+    /// The request's role selects the command template; the profile and the request add environment.
     fn run(&self, request: &RunRequest) -> Result<RunOutput, PortError> {
         let role = self.roles.get(&request.role);
         let template = role.map_or(&self.command, |run| &run.command);
@@ -188,6 +189,7 @@ impl Runner for ProcessRunner {
                 .unwrap_or_default(),
         );
         env.extend(role.map(|run| run.env.clone()).unwrap_or_default());
+        env.extend(request.env.clone());
         let report = self.launch(template, &env, &request.prompt, &request.dir)?;
         let transcript = fs::read_to_string(&report.report).map_err(|error| {
             PortError::Backend(format!("cannot read {}: {error}", report.report.display()))

@@ -13,7 +13,7 @@ struct State {
 }
 
 /// A runner that replays recorded outputs per role, in the order recorded,
-/// and keeps every request it received.
+/// and keeps every request it received, environment included.
 #[derive(Debug, Default)]
 pub struct FakeRunner {
     state: Mutex<State>,

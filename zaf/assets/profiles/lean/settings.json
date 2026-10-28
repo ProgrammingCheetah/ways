@@ -1,11 +1,6 @@
 {
   "enableAllProjectMcpServers": false,
   "permissions": {
-    "allow": [
-      "Bash(cargo *)",
-      "Bash(gh *)",
-      "Bash(jj *)",
-      "Bash(zaf *)"
-    ]
+    "allow": []
   }
 }

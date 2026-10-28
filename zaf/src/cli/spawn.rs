@@ -1,19 +1,22 @@
 //! `zaf spawn --once --version <v>`: one tick of the spawner.
 //!
 //! The verb never loops: a timer runs it. It prints the plan, then runs each
-//! planned launch to its exit, one after another, and exits `2` when a launch
+//! planned launch to its exit, all in parallel (one thread each, joined before
+//! the tick returns), and exits `2` when a launch
 //! could not be recorded or its runner could not run.
 
+use std::collections::BTreeMap;
 use std::process::{Command, Stdio};
 
 use super::Cli;
 use super::board::INSTANCE_VAR;
 use super::exit::{self, BACKEND, OK, REFUSED};
 use super::slice::VERSION_VAR;
-use crate::app::spawn::{self, LaunchContext, LaunchExit, Launched, SpawnError};
+use crate::app::spawn::{self, LaunchContext, LaunchExit, LaunchPorts, Launched, SpawnError};
 use crate::composition::Composition;
 use crate::domain::Instance;
 use crate::manifest::RunnerName;
+use crate::ports::PortError;
 
 /// The runner every launch goes through.
 pub const RUNNER: &str = "claude";
@@ -37,10 +40,10 @@ pub fn run(cli: &Cli, once: bool, version: Option<&str>) -> u8 {
         Ok(board) => board,
         Err(error) => return exit::fail_composition(&path, &error),
     };
-    let runner = match composition.runner(&RunnerName::from(RUNNER)) {
-        Ok(runner) => runner,
-        Err(error) => return exit::fail_composition(&path, &error),
-    };
+    // Each launch thread builds its own runner; a missing one stops the tick here, before planning.
+    if let Err(error) = composition.runner(&RunnerName::from(RUNNER)) {
+        return exit::fail_composition(&path, &error);
+    }
     let manifest = composition.manifest();
     let state_dir = composition.state_dir();
     let prepared = match spawn::prepare(
@@ -59,16 +62,34 @@ pub fn run(cli: &Cli, once: bool, version: Option<&str>) -> u8 {
         }
         print!("{}", prepared.plan.render_text());
     }
-    let context = LaunchContext {
-        state_dir,
-        project: manifest.project.name.to_string(),
-        profile: spawn::team_profile(manifest),
+    let profile = spawn::team_profile(manifest);
+    let jobs: Vec<_> = prepared
+        .plan
+        .launches
+        .iter()
+        .map(|planned| {
+            let context = LaunchContext {
+                state_dir: state_dir.clone(),
+                project: manifest.project.name.to_string(),
+                profile,
+                env: launch_env(&planned.instance, version),
+            };
+            (planned, context)
+        })
+        .collect();
+    let ports = || -> Result<LaunchPorts, PortError> {
+        let board = composition
+            .board()
+            .map_err(|error| PortError::Unavailable(error.to_string()))?;
+        let runner = composition
+            .runner(&RunnerName::from(RUNNER))
+            .map_err(|error| PortError::Unavailable(error.to_string()))?;
+        Ok((board, runner))
     };
     let mut code = OK;
     let mut launched: Vec<Launched> = Vec::new();
-    for planned in &prepared.plan.launches {
-        set_launch_env(&planned.instance, version);
-        match spawn::launch(board.as_ref(), runner.as_ref(), &context, planned) {
+    for result in spawn::launch_all(&jobs, &ports) {
+        match result {
             Ok(done) => {
                 if let LaunchExit::Error(error) = &done.exit {
                     eprintln!("zaf {path}: {}: {error}", done.instance);
@@ -94,23 +115,11 @@ pub fn run(cli: &Cli, once: bool, version: Option<&str>) -> u8 {
 }
 
 /// The environment a launch carries for the verbs its instance runs.
-pub fn launch_env(instance: &Instance, version: &str) -> [(&'static str, String); 2] {
-    [
-        (INSTANCE_VAR, instance.to_string()),
-        (VERSION_VAR, version.to_owned()),
-    ]
-}
-
-/// Sets the launch's environment on this process, which the runner's child inherits.
-///
-/// The Runner port carries no environment, so the spawner sets its own before each run.
-fn set_launch_env(instance: &Instance, version: &str) {
-    for (name, value) in launch_env(instance, version) {
-        // SAFETY: the spawner runs its launches one after another on the main
-        // thread; no other thread is alive while the variable is set (the
-        // runner's watchdog thread is joined before `run` returns).
-        unsafe { std::env::set_var(name, value) };
-    }
+pub fn launch_env(instance: &Instance, version: &str) -> BTreeMap<String, String> {
+    BTreeMap::from([
+        (INSTANCE_VAR.to_owned(), instance.to_string()),
+        (VERSION_VAR.to_owned(), version.to_owned()),
+    ])
 }
 
 /// Whether a recorded process still runs: this one does; another is asked with `kill -0`.
@@ -162,10 +171,13 @@ mod tests {
         };
         assert_eq!(
             launch_env(&instance, "0.3.0"),
-            [
-                ("ZAF_INSTANCE", "team instance 12 on #16".to_owned()),
-                ("ZAF_VERSION", "0.3.0".to_owned()),
-            ]
+            BTreeMap::from([
+                (
+                    "ZAF_INSTANCE".to_owned(),
+                    "team instance 12 on #16".to_owned()
+                ),
+                ("ZAF_VERSION".to_owned(), "0.3.0".to_owned()),
+            ])
         );
     }
 }
