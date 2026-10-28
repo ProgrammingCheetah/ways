@@ -97,7 +97,7 @@ Each role is defined by the same eight lines. "Never" is the scope fence.
 - **Purpose:** one task, green.
 - **Model:** Sonnet 5.5 effort high by default; Opus 5.5 when the task is security-flagged, when the ticket says `model: opus`, or on the third round.
 - **Input:** `zaf brief <task>`; `zaf ask` for anything beyond it.
-- **Output:** commits on the task branch that pass `zaf verify <task>` and the light gate; a one-paragraph hand-back.
+- **Output:** commits on the task branch that pass `zaf check <task>` and the light gate; a one-paragraph hand-back.
 - **Lifecycle:** spawned by a team instance; ends on hand-back. A fix round is a fresh programmer with the task plus `zaf findings <pr>`.
 - **Budget:** 60 turns; two Sonnet rounds, then one Opus round, then the task goes to `question`.
 - **Never:** touches a path it does not own, pushes, opens a PR, reads another task, edits the corpus.
@@ -204,9 +204,9 @@ Every launch is `claude -p` (or `agy -p`) with a one-line prompt naming the role
 ### 5.2 A team instance, step by step
 1. `zaf board ready <epic>` → claim up to four with `zaf board claim`.
 2. For each task: `zaf slice open <task>` (workspace and branch), spawn a programmer with `zaf brief <task>`.
-3. On hand-back: `zaf verify <task>`; if green, `zaf slice pr <task>` opens the PR with the ticket in its title.
-4. Wait for the review layer (`zaf findings <pr> --wait`).
-5. Findings must-fix → fresh programmer with the task and the findings. Ladder: Sonnet, Sonnet, Opus, then `question`.
+3. On hand-back: `zaf check <task>`; if green, `zaf slice pr <task>` opens the PR with the ticket in its title.
+4. `zaf check <pr>`: runs the PR's configured steps, waits, returns the findings.
+5. Must-fix → fresh programmer with the task and the findings. Ladder: Sonnet, Sonnet, Opus, then `question`.
 6. Clean → `zaf slice merge <task>`: merges the integration branch in first, pushes plain, merges the PR, marks the task `done`, removes the workspace.
 7. `zaf board report <epic> "<status>"`, end.
 
@@ -247,9 +247,9 @@ One binary, `zaf` (§11.5), one page of help pasted into every standing brief, e
 | `zaf board ready|claim|report|question|ruling` | hand-crafted `gh` queries and JSON | six-line answers |
 | `zaf ask "<question>"` | reading corpus pages into a working context; asking the lead | a keeper's cited answer; the tool checks each quote exists verbatim in the cited page and re-asks on Haiku or Sonnet if the local model fails |
 | `zaf brief <task>` | the opening burst of rg, cat, ls (the biggest look-around cost) | one context pack: ticket, named corpus pages, `nodes chain` of owned paths, the style page, the help page |
-| `zaf findings <pr>` | reading PR threads turn by turn | one deduplicated list across CodeRabbit, Gemini, CodeQL, CI, each tagged must-fix or note |
+| `zaf check <target>` | reading PR threads turn by turn; hand-run reviews; the LLM QA's checklist | runs the step list configured for the target's kind (task: acceptance checks; PR: CI, CodeQL, CodeRabbit, Gemini critique, Gemini security when flagged; milestone: objectives check, release reviews, mutant score), waits inside the verb, and returns one deduplicated findings list tagged by source with an exit code: clean, must-fix present, or a step failed. `--status` reads without running. Steps are configured in `ZAF.toml` with a kind (wait on CI, wait for a bot, run a role on a runner, run a command, read scanner alerts), a `when`, a timeout and a must flag; independent steps run in parallel |
 | `zaf changes <task>` | raw `jj diff` (1.2M tokens last week) | stat first, hunks on request |
-| `zaf verify <task>` | ad-hoc test runs and reading their logs | pass or fail per acceptance line, output captured to a file first |
+| `zaf verify <task>` | ad-hoc test runs and reading their logs | the task-kind steps of `check`: pass or fail per acceptance line and per declared interface id, output captured to a file first; `zaf check <task>` is its alias |
 | `zaf slice open|pr|merge|drop` | the machinery lane | workspace, branch, PR, merge, cleanup, each one call |
 | `zaf spawn` | the Orchestrator | the tick of §5.1 |
 | `zaf asklog` | nothing today | the ask log: top pages, recurring questions, gaps |
@@ -266,7 +266,7 @@ Every spawn pays a fixed tax: its turn-one context (58k tokens median this week:
 4. **Answer from the log before spawning.** `zaf ask` returns a recent identical answer from the ask log without a process.
 5. **Lean profiles for short roles.** Keepers and programmers run `claude -p` with a dedicated settings profile: no MCP servers, no skill catalogue, a one-page CLAUDE.md. Turn-one context near 15k instead of 58k.
 6. **Identical prefixes.** Same profile, same CLAUDE.md bytes, the brief as a path in the prompt. A differing prefix is a cache write on every spawn (the $700 night).
-7. **Wait inside tools, never in turns.** `zaf findings --wait` and `zaf slice merge` block in the shell at zero tokens; a model polling at a 240k context pays a full re-read per poll.
+7. **Wait inside tools, never in turns.** `zaf check` and `zaf slice merge` block in the shell at zero tokens; a model polling at a 240k context pays a full re-read per poll.
 8. **Rounds are the hidden multiplier.** Each fix round is a fresh programmer and a fresh tax; the ladder caps at three, and the challenger exists to make round one the last.
 
 ### 7.2 The ask and the answer: one format each
@@ -336,7 +336,7 @@ The Orchestrator; standing build leads; briefs written by hand; Claude critiques
 | Phase | Work | Tokens |
 |---|---|---|
 | 0 | board repo + Epic type; CodeQL default setup; Dependabot security updates; `.coderabbit.yaml`; `ZAF.toml` | none |
-| 1 | `zaf board`, `brief`, `findings`, `verify`, `changes`, `slice` (Rust, like nodes, in its own repo) | built as tickets, dogfooded by hand-spawned instances |
+| 1 | `zaf board`, `brief`, `ask`, `check`, `changes`, `slice` (Rust, in `ways/zaf/`) | built as tickets, dogfooded by hand-spawned instances |
 | 2 | `zaf spawn`, the standing briefs per role, the pack `zaf` in the ways marketplace | one trial epic in Zurfur with a known answer |
 | 3 | retire the Orchestrator for Zurfur; `/my-queue` reads the board; teams pack stays for the work Mac | |
 | 4 | mutants nightly; release instance; `burn` and `guard` | |
