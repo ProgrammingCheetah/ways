@@ -1,0 +1,67 @@
+# zaf's own manifest: the ways repo runs the framework on itself.
+# Nothing secret here; machine-private overrides go in .zaf/local.toml (git-ignored).
+
+[project]
+name = "ways"
+
+[requires]
+jj = "*"
+gh = "*"
+
+[board]
+kind = "github-issues"
+repo = "ProgrammingCheetah/ways"
+
+[vcs]
+kind = "jj"
+
+[forge]
+kind = "github"
+repo = "ProgrammingCheetah/ways"
+
+# The design page is docs/zuri-ai-framework.md; it is not an id-indexed page set yet,
+# so the design source stays absent and `brief` carries the ticket's named pages only.
+[design]
+kind = "none"
+
+[workspaces]
+path = "../ways-ws"
+
+[branches]
+integration = "feature/{version}"
+task = "feature/{version}-{epic}-{task}"
+
+[gate]
+full = "cd zaf && cargo fmt --check && cargo build && cargo clippy --all-targets -- -D warnings && cargo test"
+light = "cd zaf && cargo fmt --check && cargo test"
+tests = "cd zaf && cargo test {name}"
+
+[runners.claude]
+command = "claude -p {prompt} --model {model} --add-dir {dir}"
+
+[roles.programmer]
+model = "sonnet"
+effort = "high"
+profile = "lean"
+turns = 60
+
+[roles.team]
+model = "opus"
+effort = "xhigh"
+profile = "build"
+turns = 200
+batch = 4
+
+[check.pr]
+steps = ["ci"]
+
+[ask]
+ladder = ["haiku", "sonnet"]
+max = 5
+
+[spawn]
+slots = 2
+guard = [70, 85, 95]
+
+[isolation]
+kind = "process"
