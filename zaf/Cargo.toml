@@ -1,0 +1,27 @@
+[package]
+name = "zaf"
+version = "0.1.0"
+edition = "2024"
+description = "The verb set of the AI framework: one project-blind binary over a board, a VCS, a forge, a design source, runners and a gate."
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "zaf"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.6", features = ["derive"] }
+derive_more = { version = "2.1", features = ["display", "from", "as_ref"] }
+humantime = "2.3.0"
+semver = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1"
+strum = { version = "0.28", features = ["derive"] }
+thiserror = "2.0"
+toml = "1.1"
+
+[dev-dependencies]
+tempfile = "3.27.0"

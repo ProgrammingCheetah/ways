@@ -1,0 +1,6 @@
+runs 1  turns 3  est $16
+model               turns  cache write   cache read   output   est $
+claude-opus-5-5         3         2.1M         4.1M    0.20M      16
+
+model       est $ turns   ctx1   ctxN    out  run
+opus-5-5     15.6     3  2000k  2150k   200k  main: Plan the export module for the demo

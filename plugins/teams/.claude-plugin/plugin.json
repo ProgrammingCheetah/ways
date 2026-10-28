@@ -1,13 +1,14 @@
 {
   "name": "teams",
-  "description": "The Orchestrator and its Spawns: agent teams (a standing lead, short-lived programmers; QA and an architect at the top) run through a release lifecycle while the Engineer decides every domain fork, plus routines that also work alone: objectives, queue, catch-up, cleanup, critique, docs, PR preparation, review triage, retrospectives.",
+  "version": "2.0.0",
+  "description": "Standing briefs for the instances the zaf spawner launches (team, programmer, keeper, planning, challenger, release), each opening with the zaf interface page; a session-start zaf doctor check; and routines for the Engineer's design session: objectives, queue, catch-up, docs, retrospectives.",
   "author": {
     "name": "ProgrammingCheetah"
   },
   "homepage": "https://github.com/ProgrammingCheetah/ways/tree/main/plugins/teams",
   "repository": "https://github.com/ProgrammingCheetah/ways",
   "keywords": [
-    "orchestration",
+    "zaf",
     "subagents",
     "teams",
     "workflow",

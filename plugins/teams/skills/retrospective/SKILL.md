@@ -1,38 +1,16 @@
 ---
 name: retrospective
-description: Evidence-based retro: a team lead's after a feature or release, the top-level QA's log after a milestone, or Claude's on its own recent work. E.g. /teams:retrospective api v0.2, /teams:retrospective qa v0.2 m1, or /teams:retrospective last 2 weeks.
-argument-hint: "<team> <feature or release>  |  qa <version> m<n>  |  [time range, default: last 2 weeks]"
+description: Evidence-based retro of Claude's own recent work, from commits, PRs and review feedback. A release's retro is the release instance's, from board statistics. E.g. /teams:retrospective, /teams:retrospective last 2 weeks.
+argument-hint: "[time range, default: last 2 weeks]"
 ---
 
 # /teams:retrospective: reflect on the work, from evidence
 
-Ground every point in a commit, PR or file, not in impressions. Honest, constructive, specific: concrete examples over generalities. Three modes, picked from the arguments.
+Ground every point in a commit, PR or file, not in impressions. Honest, constructive, specific: concrete examples over generalities. A release's retrospective is not this skill's: the release instance writes it from board statistics (`zaf report`, `zaf asklog`).
 
-**Config:** read these from the teams file: `Repository › docs`, `vcs`, `main`, and the **Teams** table. It is `.claude/TEAMS.md`, else `.claude/TEAMS.yaml`, else `.claude/TEAMS.toml`, at the root of this checkout; if absent and this is a secondary workspace, at the root of the main checkout (git: the first path `git worktree list` prints; jj: `jj workspace root --name default`). Without a teams file, detect: a `.jj/` folder means jj, else git; the default branch from `gh repo view --json defaultBranchRef` or `git symbolic-ref refs/remotes/origin/HEAD`. `<docs>` is `Repository › docs` from the main checkout's root.
+**Config:** read `Repository › docs`, `vcs` and `main` from the teams file when one exists (`.claude/TEAMS.md`, else `.claude/TEAMS.yaml`, else `.claude/TEAMS.toml`, at the root of this checkout; if absent and this is a secondary workspace, at the root of the main checkout: git, the first path `git worktree list` prints; jj, `jj workspace root --name default`). Without one, detect: a `.jj/` folder means jj, else git; the default branch from `gh repo view --json defaultBranchRef` or `git symbolic-ref refs/remotes/origin/HEAD`. `<docs>` is `Repository › docs` from the main checkout's root.
 
-## Which mode
-
-- The first argument is `qa` (the **Teams** table's qa row), followed by a release and a milestone (`m<n>`): **QA mode**.
-- The first argument names another team in the **Teams** table (not `qa`: QA writes milestone logs, not team retros), followed by a feature or release: **team mode**.
-- Anything else (empty, or a time range such as "last 2 weeks" or "since May 1"): **self mode**.
-
-## Team mode: `/teams:retrospective <team> <feature or release>`
-
-Run by the team's lead (`teams:designer`) when a feature or release ends. Fast: a few lines each.
-
-1. **Gather** (read-only): the feature's commits and PRs (its branch names, `Branches › integration`, `slice` and `fix`, or the PRs the Orchestrator names), their review comments and fix rounds, the release folder `<docs>/releases/<version>/` (plans, reviews, rulings), QA's milestone logs for the release, and the programmers' reported blockers (from your brief).
-2. **Write** the lead's part of `${CLAUDE_SKILL_DIR}/../orchestrate/retro-template.md` (the part above its `---`): header (date, `Lead:` your name from **Teams**), then **Went well**, **Cost time or tokens**, **Try next**. Every point cites a commit, PR or file. Programmers' blockers are input; polish is not.
-3. **Save** to `<docs>/retros/<YYYYMMDD>-<team>-<feature>.md` without asking. Don't write a QA log: the top-level QA writes one per milestone, in QA mode.
-
-## QA mode: `/teams:retrospective qa <version> m<n>`
-
-Run by the top-level QA (`teams:designer`) at the end of each milestone, after its fix rounds.
-
-1. **Gather** (read-only): the milestone's row in `<docs>/releases/<version>/milestones.md` (its range and fix rounds), its reports (`reviews/m<n>-architect.md`, `reviews/m<n>-qa.md`), the saved slice plans of its timeline phase, and your last milestone's log.
-2. **Write** the part of `${CLAUDE_SKILL_DIR}/../orchestrate/retro-template.md` below its `---`: header (date, `QA:` your name from the **Teams** table's qa row), then **What I caught, and how**, **Checks I ran by hand more than once**, **What slipped past me**, **Look at next milestone**. Every point cites a commit, PR or file.
-3. **Save** to `<docs>/retros/<YYYYMMDD>-qa-<version>-m<n>.md` without asking. The next milestone's fresh QA is briefed with it.
-
-## Self mode: `/teams:retrospective [time range]`
+## Claude's retro: `/teams:retrospective [time range]`
 
 Claude's own first-person retro. Range: the argument, else the last 2 weeks.
 
@@ -54,6 +32,6 @@ Claude's own first-person retro. Range: the argument, else the last 2 weeks.
 - **What I should change:** concrete, actionable changes to how I approach future work.
 - **Path forward:** what's in progress, what needs follow-up, how I can better support the team.
 
-## Lessons (after writing, either mode)
+## Lessons (after writing)
 
 A retro whose lessons never reach the project's memory is write-only. Offer to carry each **durable, new** lesson into the project's memory or `CLAUDE.md`; the Engineer says yes first, lesson by lesson. Update an existing note rather than duplicating it; skip lessons already captured and one-off ones. If nothing is genuinely new, say so instead of inventing one. Run by a Spawn: list the candidate lessons in the report instead of writing them.

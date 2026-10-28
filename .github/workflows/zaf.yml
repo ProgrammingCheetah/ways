@@ -1,0 +1,62 @@
+name: zaf
+
+on:
+  pull_request:
+    paths:
+      - "zaf/**"
+      - ".github/workflows/zaf.yml"
+  push:
+    branches: [main]
+    paths:
+      - "zaf/**"
+      - ".github/workflows/zaf.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zaf-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: zaf
+
+env:
+  JJ_VERSION: v0.46.0
+  JJ_USER: zaf-ci
+  JJ_EMAIL: zaf-ci@example.invalid
+
+jobs:
+  gate:
+    name: gate (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: zaf
+      - name: Install jj (the Vcs adapter's tests drive a real jj)
+        shell: bash
+        run: |
+          case "${{ runner.os }}-${{ runner.arch }}" in
+            Linux-X64)  target=x86_64-unknown-linux-musl ;;
+            Linux-ARM64) target=aarch64-unknown-linux-musl ;;
+            macOS-ARM64) target=aarch64-apple-darwin ;;
+            macOS-X64)  target=x86_64-apple-darwin ;;
+            *) echo "no jj build for ${{ runner.os }}-${{ runner.arch }}" >&2; exit 1 ;;
+          esac
+          curl -sSfL "https://github.com/jj-vcs/jj/releases/download/${JJ_VERSION}/jj-${JJ_VERSION}-${target}.tar.gz" | tar -xz -C "$RUNNER_TEMP" ./jj
+          install -m 0755 "$RUNNER_TEMP/jj" /usr/local/bin/jj
+          jj --version
+      - run: cargo fmt --check
+      - run: cargo build --locked
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
