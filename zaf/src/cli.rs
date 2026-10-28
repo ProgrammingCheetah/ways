@@ -22,6 +22,7 @@ pub mod profile;
 pub mod report;
 pub mod setup;
 pub mod slice;
+pub mod spawn;
 pub mod status;
 
 pub use exit::NOT_IMPLEMENTED;
@@ -101,6 +102,9 @@ pub enum Verb {
         /// One tick, then exit.
         #[arg(long)]
         once: bool,
+        /// The milestone's version the launched instances build (`ZAF_VERSION`).
+        #[arg(long)]
+        version: Option<String>,
     },
     /// The ask log: top pages, recurring questions, gaps.
     Asklog,
@@ -246,8 +250,8 @@ pub fn dispatch(cli: &Cli) -> u8 {
         Verb::Status => status::run(cli),
         Verb::Report(args) => report::run(cli, args),
         Verb::Guard => guard::run(cli),
+        Verb::Spawn { once, version } => spawn::run(cli, *once, version.as_deref()),
         Verb::Profile { action } => profile::run(cli, action),
-        Verb::Spawn { .. } => exit::not_built(&cli.verb.path()),
     }
 }
 

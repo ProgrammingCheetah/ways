@@ -61,6 +61,7 @@ const BUILT: &[&str] = &[
     "slice pr",
     "slice merge",
     "slice drop",
+    "spawn",
     "status",
     "verify",
 ];
