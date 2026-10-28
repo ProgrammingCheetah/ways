@@ -256,7 +256,14 @@ One binary, `zaf` (§11.5), one page of help pasted into every standing brief, e
 | `zaf burn` | the ad-hoc script of 2026-10-27 | the weekly per-role table |
 | `zaf guard` | nothing today | the budget state the spawner reads |
 
-Rules: deterministic; exit code plus structured output, never a model's reading; a failure stays inside its verb; configuration per project in `ZAF.toml` (board repo, integration branch pattern, gate commands, slot script, runner commands, trigger list), so the pack stays generic.
+Rules: deterministic; exit code plus structured output, never a model's reading; a failure stays inside its verb.
+
+### 7.0 Per-project isolation
+The binary and the pack are the only shared things. Everything else lives in the project, and one project's instances never see another's:
+- `ZAF.toml`, committed: board repo, branch patterns, gate and light gate, slot script, runner commands, corpus dir and index, trigger list, the `check` step lists per target kind, the ask ladder, batch size, slots, the escalation ladder, previews. Absent keys take the pack's defaults, so two projects run the same binary with different pipelines.
+- `.zaf/`, git-ignored: `local.toml` (private overrides: weekly budget, machine paths), `roles/` (per-role project instructions pasted into briefs, what TEAMS › Config did), `profiles/`, `asklog.jsonl`, `runs/<instance>/`, `spawn.state`.
+- One spawner timer per project, running `zaf spawn --once` from that project's root with that project's slots, budget and board.
+- Nothing secret in `ZAF.toml`, so a public repo can commit it; everything private sits in `.zaf/`, which a private-papers check can guard.
 
 ### 7.1 Spawn rules: where repeated spawning gets expensive
 Every spawn pays a fixed tax: its turn-one context (58k tokens median this week: system prompt, tool list, CLAUDE.md chain, memory index, skills, brief) times its turns. The rules that keep the tax small:
@@ -298,7 +305,7 @@ q3: not settled
 Rules: `settled`, `not settled` or `conflict` (two live pages disagree: both ids, a ticket). Sixty words per answer. One verbatim quote per page cited, which the tool checks against the page; a failed check discards the answer and re-asks on the next model in the ladder. Only pages whose index status is `decided` or `current`; a superseded page is never cited. No advice, no code, no "probably". The log line holds the ask, the answer, the model that answered and the check result.
 
 ### 7.3 Context profiles: a saved context per role
-Turn-one context is what the process loads before the brief: system prompt, tool definitions, CLAUDE.md chain, memory index, skill catalogue. A profile fixes all of it, so every spawn of a role starts from the same bytes (a cache hit) and loads only what the role may use. Mechanism: a config directory per profile (`CLAUDE_CONFIG_DIR`), each with its own settings, global CLAUDE.md, memory folder and enabled plugins; the spawner sets it per role. Flag names to confirm on the installed `claude`.
+Turn-one context is what the process loads before the brief: system prompt, tool definitions, CLAUDE.md chain, memory index, skill catalogue. A profile fixes all of it, so every spawn of a role starts from the same bytes (a cache hit) and loads only what the role may use. Mechanism: a config directory per profile under the project's `.zaf/profiles/` (`CLAUDE_CONFIG_DIR`), each with its own settings, CLAUDE.md, memory folder and enabled plugins; the spawner sets it per role. Profiles are per project because their CLAUDE.md, memory and skills are. Flag names to confirm on the installed `claude`.
 
 | Profile | Roles | Loads | Target turn-one |
 |---|---|---|---|
