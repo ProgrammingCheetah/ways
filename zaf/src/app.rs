@@ -4,6 +4,9 @@
 //! traits of [`crate::ports`], never an adapter; [`crate::composition`] hands
 //! the live ones in and [`crate::fakes`] the test ones.
 
+pub mod ask;
+pub mod asklog;
 pub mod board;
+pub mod brief;
 pub mod changes;
 pub mod slice;
