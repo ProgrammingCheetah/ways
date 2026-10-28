@@ -4,5 +4,7 @@
 //! an absent one removes its check steps instead of failing them.
 
 pub mod design;
+pub mod gate;
 pub mod github;
+pub mod jj;
 pub mod runner;
