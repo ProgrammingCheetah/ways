@@ -10,4 +10,7 @@ pub mod board;
 pub mod brief;
 pub mod changes;
 pub mod check;
+pub mod doctor;
+pub mod init;
+pub mod setup;
 pub mod slice;

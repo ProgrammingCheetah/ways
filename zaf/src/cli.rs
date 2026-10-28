@@ -14,7 +14,10 @@ pub mod board;
 pub mod brief;
 pub mod changes;
 pub mod check;
+pub mod doctor;
 pub mod exit;
+pub mod init;
+pub mod setup;
 pub mod slice;
 
 pub use exit::NOT_IMPLEMENTED;
@@ -233,14 +236,12 @@ pub fn dispatch(cli: &Cli) -> u8 {
         Verb::Verify { task } => check::verify(cli, *task),
         Verb::Slice { action } => slice::run(cli, action),
         Verb::Asklog => asklog::run(cli),
-        Verb::Spawn { .. }
-        | Verb::Status
-        | Verb::Report
-        | Verb::Guard
-        | Verb::Init { .. }
-        | Verb::Doctor
-        | Verb::Setup
-        | Verb::Profile { .. } => exit::not_built(&cli.verb.path()),
+        Verb::Init { from_teams } => init::run(cli, *from_teams),
+        Verb::Doctor => doctor::run(cli),
+        Verb::Setup => setup::run(cli),
+        Verb::Spawn { .. } | Verb::Status | Verb::Report | Verb::Guard | Verb::Profile { .. } => {
+            exit::not_built(&cli.verb.path())
+        }
     }
 }
 
