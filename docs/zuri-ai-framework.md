@@ -169,7 +169,7 @@ The ask log is the corpus's own analytics: the pages consulted most, the questio
 Goal: <one sentence, the user-visible or system-visible outcome>
 Owned paths: <files or folders this task may change; nothing else>
 Interfaces: <new or changed ports, types, routes; who defines, who consumes>
-Corpus pages: <ids>
+Design pages: <ids>
 Architecture: <module id>, <interface ids this task defines or consumes>
 Acceptance:
   - <checkable statement>
