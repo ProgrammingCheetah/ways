@@ -16,9 +16,12 @@ pub mod changes;
 pub mod check;
 pub mod doctor;
 pub mod exit;
+pub mod guard;
 pub mod init;
+pub mod report;
 pub mod setup;
 pub mod slice;
+pub mod status;
 
 pub use exit::NOT_IMPLEMENTED;
 
@@ -103,7 +106,7 @@ pub enum Verb {
     /// Board, running instances, slots, guard and open questions, on one screen.
     Status,
     /// The weekly table: tokens per role, findings by source, rounds per task, cycle time.
-    Report,
+    Report(report::ReportArgs),
     /// The budget state the spawner reads.
     Guard,
     /// Write a minimal manifest by asking.
@@ -239,9 +242,10 @@ pub fn dispatch(cli: &Cli) -> u8 {
         Verb::Init { from_teams } => init::run(cli, *from_teams),
         Verb::Doctor => doctor::run(cli),
         Verb::Setup => setup::run(cli),
-        Verb::Spawn { .. } | Verb::Status | Verb::Report | Verb::Guard | Verb::Profile { .. } => {
-            exit::not_built(&cli.verb.path())
-        }
+        Verb::Status => status::run(cli),
+        Verb::Report(args) => report::run(cli, args),
+        Verb::Guard => guard::run(cli),
+        Verb::Spawn { .. } | Verb::Profile { .. } => exit::not_built(&cli.verb.path()),
     }
 }
 

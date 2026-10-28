@@ -1,0 +1,10 @@
+runs 2  turns 7  est $33
+model               turns  cache write   cache read   output   est $
+claude-sonnet-5-5       4         4.5M        12.7M    0.52M      18
+claude-opus-5-5         3         2.1M         4.1M    0.20M      16
+
+subagent runs 1: median 4 turns, context 4000k at turn 1 -> 4510k at the end; fixed part 93% of context reads, growth 7%
+
+model       est $ turns   ctx1   ctxN    out  run
+sonnet-5-5   17.8     4  4000k  4510k   520k  sub: Build the export module as specified
+opus-5-5     15.6     3  2000k  2150k   200k  main: Plan the export module for the demo

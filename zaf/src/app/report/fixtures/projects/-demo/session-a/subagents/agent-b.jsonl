@@ -1,0 +1,5 @@
+{"type":"user","message":{"role":"user","content":"Build the export module as specified"}}
+{"type":"assistant","message":{"id":"msg_b1","model":"claude-sonnet-5-5","usage":{"input_tokens":8,"cache_creation_input_tokens":4000000,"cache_read_input_tokens":0,"output_tokens":80000}}}
+{"type":"assistant","message":{"id":"msg_b2","model":"claude-sonnet-5-5","usage":{"input_tokens":4,"cache_creation_input_tokens":200000,"cache_read_input_tokens":4000000,"output_tokens":150000}}}
+{"type":"assistant","message":{"id":"msg_b3","model":"claude-sonnet-5-5","usage":{"input_tokens":4,"cache_creation_input_tokens":300000,"cache_read_input_tokens":4200000,"output_tokens":250000}}}
+{"type":"assistant","message":{"id":"msg_b4","model":"claude-haiku-5-5","usage":{"input_tokens":6,"cache_creation_input_tokens":10000,"cache_read_input_tokens":4500000,"output_tokens":40000}}}

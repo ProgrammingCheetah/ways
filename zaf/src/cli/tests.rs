@@ -52,12 +52,15 @@ const BUILT: &[&str] = &[
     "changes",
     "check",
     "doctor",
+    "guard",
     "init",
+    "report",
     "setup",
     "slice open",
     "slice pr",
     "slice merge",
     "slice drop",
+    "status",
     "verify",
 ];
 
