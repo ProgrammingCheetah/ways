@@ -226,8 +226,9 @@ fn task_reads_one_issue_and_a_failure_carries_stderr() {
     )
     .fail_on(
         "issue view 9 *",
-        "Could not resolve to an issue with the number of 9.",
-    );
+        "GraphQL: Could not resolve to an Issue with the number of 9.",
+    )
+    .fail_on("issue view 10 *", "HTTP 502: bad gateway");
     let expected_ticket = Ticket {
         number: IssueNumber::from(3),
         epic: Some(IssueNumber::from(1)),
@@ -236,14 +237,41 @@ fn task_reads_one_issue_and_a_failure_carries_stderr() {
         label: Some(TaskLabel::Blocked),
     };
     assert_eq!(fake.board().task(IssueNumber::from(3)), Ok(expected_ticket));
-    let missing_issue_error = PortError::Backend(
-        "gh issue view: Could not resolve to an issue with the number of 9.".to_owned(),
+    let missing_issue_error = PortError::NotFound(
+        "gh issue view: GraphQL: Could not resolve to an Issue with the number of 9.".to_owned(),
     );
     assert_eq!(
         fake.board().task(IssueNumber::from(9)),
         Err(missing_issue_error)
     );
-    assert_eq!(fake.calls(), [view("3"), view("9")]);
+    let failed_call_error = PortError::Backend("gh issue view: HTTP 502: bad gateway".to_owned());
+    assert_eq!(
+        fake.board().task(IssueNumber::from(10)),
+        Err(failed_call_error)
+    );
+    assert_eq!(fake.calls(), [view("3"), view("9"), view("10")]);
+}
+
+#[test]
+fn every_call_on_a_missing_issue_is_not_found() {
+    let fake = FakeGh::new();
+    let gone = "GraphQL: Could not resolve to an Issue with the number of 9.";
+    fake.fail_on("issue *", gone);
+    let board = fake.board();
+    let missing = IssueNumber::from(9);
+    let results = [
+        board.task(missing).map(drop),
+        board.claim(missing, &instance(1)).map(drop),
+        board.heartbeat(missing, &instance(1)),
+        board.release(missing),
+        board.label(missing, TaskLabel::Done),
+        board.comment(missing, "Blocked."),
+        board.report(missing, &instance(1), "working"),
+        board.record_ruling(missing, "Title only."),
+    ];
+    for result in results {
+        assert!(matches!(result, Err(PortError::NotFound(_))), "{result:?}");
+    }
 }
 
 #[test]

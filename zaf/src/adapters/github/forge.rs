@@ -26,7 +26,7 @@ pub struct GithubForge {
 
 /// The bare number gh takes, without the `#` a [`PrNumber`] displays with.
 fn bare(pr: PrNumber) -> String {
-    pr.to_string().trim_start_matches('#').to_owned()
+    pr.get().to_string()
 }
 
 impl From<CheckBucket> for CheckState {

@@ -16,6 +16,7 @@ struct Issue {
     claim: Option<ClaimRecord>,
     door: bool,
     ruling: Option<String>,
+    closed: bool,
 }
 
 #[derive(Debug, Default)]
@@ -39,6 +40,7 @@ impl FakeBoard {
             claim: None,
             door: false,
             ruling: None,
+            closed: false,
         };
         self.state().issues.insert(ticket.number, issue);
     }
@@ -67,6 +69,14 @@ impl FakeBoard {
             .issues
             .get(&question)
             .map(|issue| (issue.door, issue.ruling.clone()))
+    }
+
+    /// Whether an issue is closed, as recording a ruling closes a question.
+    pub fn is_closed(&self, issue: IssueNumber) -> bool {
+        self.state()
+            .issues
+            .get(&issue)
+            .is_some_and(|issue| issue.closed)
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
@@ -211,6 +221,7 @@ impl Board for FakeBoard {
             claim: None,
             door: question.door,
             ruling: None,
+            closed: false,
         };
         state.issues.insert(number, issue);
         Ok(number)
@@ -226,9 +237,12 @@ impl Board for FakeBoard {
             ))),
             None => {
                 issue.ruling = Some(ruling.to_owned());
-                issue.ticket.label = Some(TaskLabel::Done);
+                issue.closed = true;
                 Ok(())
             }
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

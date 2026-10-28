@@ -53,17 +53,16 @@ fn template_fields_are_read_into_their_types() {
 }
 
 #[test]
-fn older_label_and_optional_style_round_trip() {
-    let older = FILLED_TEMPLATE
-        .replace("Design pages:", "Corpus pages:")
+fn optional_style_and_a_security_trigger_round_trip() {
+    let varied = FILLED_TEMPLATE
         .replace("Security trigger: no", "Security trigger: yes auth tokens")
         .replace(
             "Blocked by: #3, #5",
             "Blocked by: —\nStyle: the house style page",
         );
-    let first: TaskTemplate = older
+    let first: TaskTemplate = varied
         .parse()
-        .unwrap_or_else(|error| panic!("the older label parses: {error}"));
+        .unwrap_or_else(|error| panic!("the varied template parses: {error}"));
     let expected_trigger = SecurityTrigger::Yes("auth tokens".to_owned());
     assert_eq!(first.design_pages, "1001, 1002");
     assert_eq!(first.security_trigger, expected_trigger);
@@ -97,8 +96,8 @@ fn unknown_field_is_named_with_its_line() {
 }
 
 #[test]
-fn duplicate_field_is_rejected_even_under_the_older_label() {
-    let doubled = format!("{FILLED_TEMPLATE}Corpus pages: 1003\n");
+fn duplicate_field_is_rejected() {
+    let doubled = format!("{FILLED_TEMPLATE}Design pages: 1003\n");
     let duplicate_error = TaskTemplateError::DuplicateField(TaskField::DesignPages);
     assert_eq!(doubled.parse::<TaskTemplate>(), Err(duplicate_error));
 }

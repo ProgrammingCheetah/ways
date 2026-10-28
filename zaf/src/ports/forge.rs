@@ -21,6 +21,13 @@ use crate::newtype::text_newtype;
 #[display("#{_0}")]
 pub struct PrNumber(u64);
 
+impl PrNumber {
+    /// The bare number, for adapters that address pull requests numerically.
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
 text_newtype! {
     /// The name of a check run (`ci`, a scanner, a bot).
     CheckName

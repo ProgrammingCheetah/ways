@@ -2,7 +2,8 @@
 //!
 //! The manifest's command template gets `{prompt}` and `{dir}` substituted,
 //! each single-quoted for the shell, and runs under `sh -c` in the run's
-//! directory. stdout is captured to `report.md` and stderr to `errors.log`
+//! directory. A request's role picks the template (and any environment of its
+//! own) and its profile adds environment, on top of the runner's defaults. stdout is captured to `report.md` and stderr to `errors.log`
 //! there. A watchdog thread owns the child and kills it past the timeout.
 
 use std::collections::BTreeMap;
@@ -12,6 +13,7 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::domain::{Profile, RoleName};
 use crate::manifest::CommandLine;
 use crate::ports::{PortError, RunOutput, RunRequest, Runner};
 
@@ -37,11 +39,44 @@ pub struct ProcessReport {
     pub elapsed: Duration,
 }
 
+/// The command template and environment one role runs with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoleRun {
+    command: CommandLine,
+    env: BTreeMap<String, String>,
+}
+
+impl RoleRun {
+    /// A role run by a command template, with no environment of its own.
+    pub fn new(command: CommandLine) -> Self {
+        Self {
+            command,
+            env: BTreeMap::new(),
+        }
+    }
+
+    /// Adds an environment variable for this role's runs.
+    #[must_use]
+    pub fn with_env(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.env.insert(name.into(), value.into());
+        self
+    }
+}
+
 /// A runner that spawns the manifest's command for a role.
+///
+/// [`Runner::run`] looks the request's role up among the roles added with
+/// [`with_role`](Self::with_role): that role's command template and
+/// environment apply, and a role left out runs the runner's own command. The
+/// request's profile adds the environment set with
+/// [`with_profile_env`](Self::with_profile_env). Later layers win: the runner's
+/// environment, then the profile's, then the role's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessRunner {
     command: CommandLine,
     env: BTreeMap<String, String>,
+    roles: BTreeMap<RoleName, RoleRun>,
+    profiles: BTreeMap<Profile, BTreeMap<String, String>>,
     timeout: Duration,
 }
 
@@ -51,6 +86,8 @@ impl ProcessRunner {
         Self {
             command,
             env: BTreeMap::new(),
+            roles: BTreeMap::new(),
+            profiles: BTreeMap::new(),
             timeout,
         }
     }
@@ -63,9 +100,41 @@ impl ProcessRunner {
         self
     }
 
-    /// Runs the command in `dir` and waits; a timeout is [`PortError::Unavailable`].
+    /// Runs a role with its own command template and environment instead of the runner's own.
+    #[must_use]
+    pub fn with_role(mut self, role: RoleName, run: RoleRun) -> Self {
+        self.roles.insert(role, run);
+        self
+    }
+
+    /// Adds an environment variable for every run with `profile`.
+    #[must_use]
+    pub fn with_profile_env(
+        mut self,
+        profile: Profile,
+        name: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
+        self.profiles
+            .entry(profile)
+            .or_default()
+            .insert(name.into(), value.into());
+        self
+    }
+
+    /// Runs the runner's own command in `dir` and waits; a timeout is [`PortError::Unavailable`].
     pub fn execute(&self, prompt: &str, dir: &Path) -> Result<ProcessReport, PortError> {
-        let line = self.expand(prompt, dir);
+        self.launch(&self.command, &self.env, prompt, dir)
+    }
+
+    fn launch(
+        &self,
+        template: &CommandLine,
+        env: &BTreeMap<String, String>,
+        prompt: &str,
+        dir: &Path,
+    ) -> Result<ProcessReport, PortError> {
+        let line = expand(template, prompt, dir);
         let report = dir.join(REPORT_FILE);
         let errors = dir.join(ERRORS_FILE);
         let stdout = create(&report)?;
@@ -75,7 +144,7 @@ impl ProcessRunner {
             .arg("-c")
             .arg(&line)
             .current_dir(dir)
-            .envs(&self.env)
+            .envs(env)
             .stdin(Stdio::null())
             .stdout(stdout)
             .stderr(stderr);
@@ -103,22 +172,23 @@ impl ProcessRunner {
             ))),
         }
     }
-
-    fn expand(&self, prompt: &str, dir: &Path) -> String {
-        let dir = dir.to_string_lossy();
-        let template: &str = self.command.as_ref();
-        template
-            .replace("{prompt}", &single_quote(prompt))
-            .replace("{dir}", &single_quote(&dir))
-    }
 }
 
 impl Runner for ProcessRunner {
     /// The transcript is `report.md`; a process ended by a signal has exit code `-1`.
-    /// The request's role and profile are not the command's business: the spawner
-    /// picks the command and its environment from them.
+    /// The request's role selects the command template and the profile adds environment.
     fn run(&self, request: &RunRequest) -> Result<RunOutput, PortError> {
-        let report = self.execute(&request.prompt, &request.dir)?;
+        let role = self.roles.get(&request.role);
+        let template = role.map_or(&self.command, |run| &run.command);
+        let mut env = self.env.clone();
+        env.extend(
+            self.profiles
+                .get(&request.profile)
+                .cloned()
+                .unwrap_or_default(),
+        );
+        env.extend(role.map(|run| run.env.clone()).unwrap_or_default());
+        let report = self.launch(template, &env, &request.prompt, &request.dir)?;
         let transcript = fs::read_to_string(&report.report).map_err(|error| {
             PortError::Backend(format!("cannot read {}: {error}", report.report.display()))
         })?;
@@ -127,6 +197,15 @@ impl Runner for ProcessRunner {
             transcript,
         })
     }
+}
+
+/// The template with `{prompt}` and `{dir}` substituted.
+fn expand(template: &CommandLine, prompt: &str, dir: &Path) -> String {
+    let dir = dir.to_string_lossy();
+    let template: &str = template.as_ref();
+    template
+        .replace("{prompt}", &single_quote(prompt))
+        .replace("{dir}", &single_quote(&dir))
 }
 
 /// Wraps text in single quotes for a POSIX shell.

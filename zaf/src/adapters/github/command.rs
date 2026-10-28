@@ -11,10 +11,14 @@ use crate::ports::PortError;
 /// The program run; found on the `PATH` the call sees.
 const PROGRAM: &str = "gh";
 
+/// What gh's stderr says when the issue addressed does not exist.
+const MISSING_ISSUE: &str = "Could not resolve to an Issue";
+
 /// Runs `gh` against one repository and reads its output.
 ///
-/// A call that exits non-zero is a [`PortError::Backend`] carrying gh's stderr;
-/// output that is not the expected JSON is one too. A `gh` that cannot be
+/// A call that exits non-zero is a [`PortError::Backend`] carrying gh's stderr,
+/// or a [`PortError::NotFound`] when gh could not resolve the issue addressed;
+/// output that is not the expected JSON is a `Backend` error too. A `gh` that cannot be
 /// started at all is [`PortError::Unavailable`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GhCommand {
@@ -83,7 +87,12 @@ impl GhCommand {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
             let subcommand = argv.iter().take(2).copied().collect::<Vec<_>>().join(" ");
-            let failed_call_error = PortError::Backend(format!("{PROGRAM} {subcommand}: {stderr}"));
+            let message = format!("{PROGRAM} {subcommand}: {stderr}");
+            let failed_call_error = if stderr.contains(MISSING_ISSUE) {
+                PortError::NotFound(message)
+            } else {
+                PortError::Backend(message)
+            };
             return Err(failed_call_error);
         }
         String::from_utf8(output.stdout)

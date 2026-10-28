@@ -10,7 +10,7 @@ use std::fmt;
 use std::str::FromStr;
 use std::time::SystemTime;
 
-use crate::domain::{Instance, InstanceNumber, IssueNumber, RoleName};
+use crate::domain::Instance;
 
 /// A comment that is not a claim or a heartbeat.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -80,21 +80,9 @@ impl FromStr for LeaseNote {
     }
 }
 
-/// Reads an instance back from its display form, `<role> instance <n> on #<epic>`.
+/// Reads an instance back from its display form.
 fn parse_instance(text: &str) -> Result<Instance, NotANote> {
-    let (role, rest) = text.split_once(" instance ").ok_or(NotANote)?;
-    let (number, epic) = rest.split_once(" on ").ok_or(NotANote)?;
-    let number = number.parse::<u32>().map_err(|_| NotANote)?;
-    let epic = epic.parse::<IssueNumber>().map_err(|_| NotANote)?;
-    if role.is_empty() {
-        return Err(NotANote);
-    }
-    let instance = Instance {
-        role: RoleName::from(role),
-        epic,
-        number: InstanceNumber::from(number),
-    };
-    Ok(instance)
+    text.parse().map_err(|_| NotANote)
 }
 
 fn parse_time(text: &str) -> Result<SystemTime, NotANote> {

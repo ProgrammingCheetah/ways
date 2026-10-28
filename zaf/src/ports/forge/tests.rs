@@ -76,3 +76,9 @@ fn merge_is_idempotent() {
         .expect("a merged slice opens anew");
     assert_ne!(reopened, pr);
 }
+
+#[test]
+fn a_pull_request_number_gives_its_bare_value() {
+    assert_eq!(PrNumber::from(7).get(), 7);
+    assert_eq!(PrNumber::from(7).to_string(), "#7");
+}

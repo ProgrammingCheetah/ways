@@ -101,6 +101,79 @@ fn the_port_returns_the_exit_code_and_the_report_as_transcript() {
     assert_eq!(output.transcript, "read the brief\n");
 }
 
+fn request(role: &str, profile: Profile, dir: &Path) -> RunRequest {
+    RunRequest {
+        role: RoleName::from(role),
+        profile,
+        prompt: "read the brief".to_owned(),
+        dir: dir.to_path_buf(),
+    }
+}
+
+/// A runner with two roles, each its own template and environment, and a default for the rest.
+fn two_roles() -> ProcessRunner {
+    let team = RoleRun::new(CommandLine::from(
+        "printf 'team %s %s %s' {prompt} \"$HOME_DIR\" \"$MODEL\"",
+    ))
+    .with_env("HOME_DIR", "/profiles/team")
+    .with_env("MODEL", "opus");
+    let programmer = RoleRun::new(CommandLine::from(
+        "printf 'programmer %s %s %s' {prompt} \"$HOME_DIR\" \"$MODEL\"",
+    ))
+    .with_env("HOME_DIR", "/profiles/programmer");
+    runner("printf 'default %s' {prompt}")
+        .with_env("MODEL", "sonnet")
+        .with_role(RoleName::from("team"), team)
+        .with_role(RoleName::from("programmer"), programmer)
+}
+
+#[test]
+fn two_roles_resolve_to_two_templates_and_environments() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let process = two_roles();
+    let port: &dyn Runner = &process;
+    let team = port
+        .run(&request("team", Profile::Build, dir.path()))
+        .expect("a run");
+    let programmer = port
+        .run(&request("programmer", Profile::Lean, dir.path()))
+        .expect("a run");
+    assert_eq!(team.transcript, "team read the brief /profiles/team opus");
+    assert_eq!(
+        programmer.transcript,
+        "programmer read the brief /profiles/programmer sonnet"
+    );
+}
+
+#[test]
+fn a_role_left_out_runs_the_default_command() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let output = two_roles()
+        .run(&request("reviewer", Profile::Review, dir.path()))
+        .expect("a run");
+    assert_eq!(output.transcript, "default read the brief");
+}
+
+#[test]
+fn the_profile_adds_environment_and_the_role_wins_over_it() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let role = RoleRun::new(CommandLine::from("printf '%s %s' \"$CONFIG\" \"$MODEL\""))
+        .with_env("MODEL", "from-role");
+    let process = runner("true")
+        .with_env("CONFIG", "from-runner")
+        .with_profile_env(Profile::Lean, "CONFIG", "/profiles/lean")
+        .with_profile_env(Profile::Lean, "MODEL", "from-profile")
+        .with_role(RoleName::from("keeper"), role);
+    let lean = process
+        .run(&request("keeper", Profile::Lean, dir.path()))
+        .expect("a run");
+    assert_eq!(lean.transcript, "/profiles/lean from-role");
+    let build = process
+        .run(&request("keeper", Profile::Build, dir.path()))
+        .expect("a run");
+    assert_eq!(build.transcript, "from-runner from-role");
+}
+
 #[test]
 fn an_unwritable_directory_is_a_backend_failure() {
     let dir = tempfile::tempdir().expect("a temp dir");

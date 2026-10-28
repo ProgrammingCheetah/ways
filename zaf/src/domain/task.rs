@@ -7,9 +7,6 @@ use std::str::FromStr;
 use super::IssueNumber;
 
 /// A field of the task template, by the label it carries in the ticket.
-///
-/// `Design pages` also reads under its older label `Corpus pages`; it always
-/// renders as `Design pages`.
 #[derive(
     Debug,
     Clone,
@@ -34,7 +31,7 @@ pub enum TaskField {
     #[strum(to_string = "Interfaces")]
     Interfaces,
     /// `Design pages`: the pages the task builds from.
-    #[strum(to_string = "Design pages", serialize = "Corpus pages")]
+    #[strum(to_string = "Design pages")]
     DesignPages,
     /// `Architecture`: module and interface ids.
     #[strum(to_string = "Architecture")]

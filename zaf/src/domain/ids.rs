@@ -11,6 +11,9 @@ pub enum IdError {
     /// The text is not a page id: empty, or holding whitespace, a comma or a parenthesis.
     #[error("`{0}` is not a page id")]
     PageId(String),
+    /// The text is not an instance such as `programmer instance 3 on #12`.
+    #[error("`{0}` is not an instance")]
+    Instance(String),
 }
 
 /// The number of an issue on the board: an epic, a task or a question.

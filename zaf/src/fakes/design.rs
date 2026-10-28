@@ -32,15 +32,20 @@ impl Design for FakeDesign {
         self.pages().get(id).cloned().ok_or_else(|| not_found(id))
     }
 
-    /// Matches pages whose title or text holds every word of the query, ignoring case.
+    /// Matches what [`DirDesign`](crate::adapters::design::DirDesign) matches: pages with a line
+    /// of text that holds the whole query, ignoring case, in id order. An empty query is rejected.
     fn search(&self, query: &str) -> Result<Vec<PageId>, PortError> {
-        let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+        if query.trim().is_empty() {
+            return Err(PortError::Rejected("an empty search query".to_owned()));
+        }
+        let needle = query.to_lowercase();
         let matches = self
             .pages()
             .values()
             .filter(|page| {
-                let haystack = format!("{} {}", page.title, page.text).to_lowercase();
-                words.iter().all(|word| haystack.contains(word.as_str()))
+                page.text
+                    .lines()
+                    .any(|line| line.to_lowercase().contains(&needle))
             })
             .map(|page| page.id.clone())
             .collect();
@@ -54,3 +59,6 @@ impl Design for FakeDesign {
             .ok_or_else(|| not_found(id))
     }
 }
+
+#[cfg(test)]
+mod tests;
