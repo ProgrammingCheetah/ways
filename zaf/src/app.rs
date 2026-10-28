@@ -13,6 +13,7 @@ pub mod check;
 pub mod doctor;
 pub mod guard;
 pub mod init;
+pub mod profile;
 pub mod report;
 pub mod setup;
 pub mod slice;

@@ -54,6 +54,7 @@ const BUILT: &[&str] = &[
     "doctor",
     "guard",
     "init",
+    "profile init",
     "report",
     "setup",
     "slice open",

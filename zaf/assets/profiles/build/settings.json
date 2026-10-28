@@ -1,0 +1,12 @@
+{
+  "autoCompactWindow": 150000,
+  "enableAllProjectMcpServers": false,
+  "permissions": {
+    "allow": [
+      "Bash(cargo *)",
+      "Bash(gh *)",
+      "Bash(jj *)",
+      "Bash(zaf *)"
+    ]
+  }
+}

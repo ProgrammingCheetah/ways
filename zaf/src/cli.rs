@@ -18,6 +18,7 @@ pub mod doctor;
 pub mod exit;
 pub mod guard;
 pub mod init;
+pub mod profile;
 pub mod report;
 pub mod setup;
 pub mod slice;
@@ -245,7 +246,8 @@ pub fn dispatch(cli: &Cli) -> u8 {
         Verb::Status => status::run(cli),
         Verb::Report(args) => report::run(cli, args),
         Verb::Guard => guard::run(cli),
-        Verb::Spawn { .. } | Verb::Profile { .. } => exit::not_built(&cli.verb.path()),
+        Verb::Profile { action } => profile::run(cli, action),
+        Verb::Spawn { .. } => exit::not_built(&cli.verb.path()),
     }
 }
 
