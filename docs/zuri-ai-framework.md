@@ -398,7 +398,7 @@ Each line: the options, then Claude's answer.
 8. **Previews:** Storybook and staging on every integration merge · on milestone only. *Claude: every merge; it is iteration point 5.*
 
 ## 12. Gaps closed on review (2026-10-27)
-1. **Dogfood.** zaf is built with the framework: ways carries its own `ZAF.toml` (board: ways issues, public; design: `repo-dir`, `docs/`). ways is a git repo, so phase 1 starts with either jj colocated in ways (Claude's pick: `jj git init --colocate`, nothing lost) or the git `Vcs` adapter built first. The Engineer rules.
+1. **Dogfood.** zaf is built with the framework: ways carries its own `ZAF.toml` (board: ways issues, public; design: `repo-dir`, `docs/`). ways is a git repo; the Engineer ruled 2026-10-27: jj colocated in ways (`jj git init --colocate`), the git `Vcs` adapter stays a later use case. Items 2 to 10 below were all accepted the same day.
 2. **Leases, not claims.** A claim carries a heartbeat (the instance touches its claim comment each turn batch); the spawner reclaims a claim with no heartbeat for the lease window, drops the slice's workspace and returns the task to `ready`.
 3. **One instance per epic at a time.** Parallelism is across epics, never within one, so no two instances share an integration state.
 4. **`zaf status`.** Board, running instances, slots, guard, open questions, on one screen. `/my-queue` reads it.
