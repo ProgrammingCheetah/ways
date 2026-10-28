@@ -25,17 +25,7 @@ pub use step::{RunnerStep, Step, StepError, StepKind};
 pub use target::{Target, TargetError};
 pub use task::{LineKind, LineStatus, TaskCheck, TaskInputs, TaskLine, check_task};
 
-use crate::manifest::CommandLine;
-use crate::ports::{GateRun, PortError};
-
-/// Runs one shell command line in the project: a `command:` step or a named test.
-///
-/// A custom shape beside [`crate::ports::Gate`]: the gate runs only the levels the
-/// manifest declares, while a check needs to run a line it composed itself.
-pub trait Shell {
-    /// Runs the line and waits; a shell that cannot start is [`PortError::Unavailable`].
-    fn run(&self, line: &CommandLine) -> Result<GateRun, PortError>;
-}
+pub use crate::ports::Shell;
 
 /// How a check ended, as the exit code says it.
 #[derive(

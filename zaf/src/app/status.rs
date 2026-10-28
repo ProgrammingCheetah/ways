@@ -1,14 +1,12 @@
 //! `zaf status`: the board, running instances, slots, guard and open questions on one screen.
 //!
-//! The board gives the ready tasks and the live claims. `.zaf/spawn.state`, the
-//! spawner's file, gives what is running and which questions are open: the Board
-//! port cannot list questions, so the spawner records the ones it raised there.
+//! The board gives the ready tasks, the live claims and the open questions.
+//! `.zaf/spawn.state`, the spawner's file, gives what is running.
 //! The guard line is whatever `zaf guard` last wrote.
 
 use std::path::{Path, PathBuf};
 
 use super::guard::{self, GuardError, GuardState};
-use crate::domain::{IssueNumber, TaskLabel};
 use crate::ports::{Board, PortError, Ticket};
 
 /// The spawner's state file under the state folder.
@@ -92,13 +90,12 @@ pub struct Status {
     pub questions: Vec<TicketLine>,
 }
 
-/// What the spawner writes to `spawn.state`: a JSON object.
+/// What the spawner writes to `spawn.state`: a JSON object. Its `questions` array, if any, is
+/// not read: the board is the source of open questions.
 #[derive(Debug, Default, serde::Deserialize)]
 struct SpawnState {
     #[serde(default)]
     launches: Vec<Launch>,
-    #[serde(default)]
-    questions: Vec<u64>,
 }
 
 fn read_spawn_state(state_dir: &Path) -> Result<SpawnState, StatusError> {
@@ -123,8 +120,7 @@ fn read_spawn_state(state_dir: &Path) -> Result<SpawnState, StatusError> {
 
 /// Reads the board, `spawn.state` and `guard.json` into one screen.
 ///
-/// A question number in `spawn.state` counts as open while its ticket still
-/// carries the `question` label; one the board no longer knows is dropped.
+/// The open questions come from the board, not from `spawn.state`.
 pub fn status(board: &dyn Board, state_dir: &Path, slots: u32) -> Result<Status, StatusError> {
     let state = read_spawn_state(state_dir)?;
     let ready = board.ready()?.into_iter().map(ticket_line).collect();
@@ -136,16 +132,7 @@ pub fn status(board: &dyn Board, state_dir: &Path, slots: u32) -> Result<Status,
             instance: claim.instance.to_string(),
         })
         .collect();
-    let mut questions = Vec::new();
-    for number in &state.questions {
-        match board.task(IssueNumber::from(*number)) {
-            Ok(ticket) if ticket.label == Some(TaskLabel::Question) => {
-                questions.push(ticket_line(ticket));
-            }
-            Ok(_) | Err(PortError::NotFound(_)) => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
+    let questions = board.questions()?.into_iter().map(ticket_line).collect();
     let running = state.launches;
     let in_use = u32::try_from(running.len()).unwrap_or(u32::MAX);
     Ok(Status {

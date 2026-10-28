@@ -16,6 +16,6 @@ pub use sections::{
     AskSection, BoardKind, BoardSection, BranchPattern, BranchesSection, CheckSection, CheckTarget,
     CommandLine, DesignKind, DesignSection, Effort, ForbiddenSection, ForgeKind, ForgeSection,
     GateSection, IsolationKind, IsolationSection, ModelName, ProjectName, ProjectSection, RepoName,
-    RoleSection, Rung, RunnerName, RunnerSection, SpawnSection, ToolName, VcsKind, VcsSection,
-    WorkspacesSection,
+    RoleSection, Rung, RunnerName, RunnerSection, SpawnSection, StyleSection, ToolName, VcsKind,
+    VcsSection, WorkspacesSection,
 };

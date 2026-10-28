@@ -17,8 +17,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::brief::{RUNS_DIR, ensure_runs_dir, named_pages};
 use crate::domain::{
-    Answer, AnsweredQuestion, Ask, AskError, IssueNumber, Profile, Question, QuestionId, RoleName,
-    TaskTemplate, Verdict,
+    Answer, AnsweredQuestion, Ask, AskError, Instance, IssueNumber, Profile, Question, QuestionId,
+    RoleName, TaskTemplate, Verdict,
 };
 use crate::manifest::Rung;
 use crate::ports::{Board, Design, Page, PortError, RunRequest, Runner};
@@ -421,7 +421,9 @@ fn run_dir(query: &AskQuery<'_>, index: usize, rung: &Rung) -> Result<PathBuf, A
             }
         })
         .collect();
-    let dir = runs.join(format!("ask-{stamp}-{index}-{name}"));
+    let dir = runs
+        .join(Instance::slug_of(query.from))
+        .join(format!("ask-{stamp}-{index}-{name}"));
     fs::create_dir_all(&dir).map_err(|source| state_error(&dir, source))?;
     Ok(dir)
 }

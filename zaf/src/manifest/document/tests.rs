@@ -1,8 +1,10 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::*;
 use crate::domain::Profile;
-use crate::manifest::{BranchPattern, CommandLine, Effort, ModelName, ProjectName, RepoName, Rung};
+use crate::manifest::{
+    BranchPattern, CommandLine, Effort, ModelName, ProjectName, RepoName, Rung, RunnerName,
+};
 
 const MINIMAL: &str = r#"
 [project]
@@ -117,6 +119,8 @@ fn project_and_board_alone_load_with_the_pack_defaults() {
         [Rung::from("haiku"), Rung::from("sonnet")]
     );
     assert_eq!(manifest.ask.max, 5);
+    assert_eq!(manifest.ask.cache_hours, 24);
+    assert_eq!(manifest.style, None);
     assert_eq!(manifest.spawn.slots, 1);
     assert_eq!(manifest.spawn.guard, [70, 85, 95]);
     assert_eq!(manifest.isolation.kind, IsolationKind::Process);
@@ -296,4 +300,82 @@ fn a_partial_section_keeps_the_defaults_it_leaves_out() {
     let manifest = load(&only_slots).expect("loads");
     assert_eq!(manifest.spawn.slots, 3);
     assert_eq!(manifest.spawn.guard, [70, 85, 95]);
+}
+
+#[test]
+fn style_cache_hours_and_runner_timeout_read_and_default() {
+    let declared = with(
+        "[style]\npath = \"docs/style.md\"\n[ask]\ncache_hours = 6\n\
+         [runners.reviewer]\ncommand = \"review\"\ntimeout_minutes = 10\n\
+         [runners.plain]\ncommand = \"plain\"\n",
+    );
+    let manifest = load(&declared).expect("loads");
+    assert_eq!(
+        manifest.style.map(|style| style.path),
+        Some(PathBuf::from("docs/style.md"))
+    );
+    assert_eq!(manifest.ask.cache_hours, 6);
+    assert_eq!(
+        manifest.ask.max, 5,
+        "a partial [ask] keeps its other defaults"
+    );
+    assert_eq!(
+        manifest.runners[&RunnerName::from("reviewer")].timeout_minutes,
+        10
+    );
+    assert_eq!(
+        manifest.runners[&RunnerName::from("plain")].timeout_minutes,
+        45
+    );
+}
+
+#[test]
+fn the_new_keys_are_checked() {
+    let absolute = with("[style]\npath = \"/home/someone/style.md\"\n");
+    assert!(matches!(
+        load(&absolute),
+        Err(ManifestError::AbsolutePath {
+            section: "style",
+            ..
+        })
+    ));
+    let no_path = with("[style]\n");
+    assert!(load(&no_path).is_err(), "[style] needs its path");
+    let no_time = with("[runners.slow]\ncommand = \"x\"\ntimeout_minutes = 0\n");
+    assert!(matches!(
+        load(&no_time),
+        Err(ManifestError::Invalid {
+            key: "timeout_minutes",
+            ..
+        })
+    ));
+    let unknown = with("[style]\npath = \"s.md\"\nformat = \"md\"\n");
+    assert!(load(&unknown).is_err(), "unknown keys still fail");
+}
+
+#[test]
+fn a_design_path_is_relative_to_the_project_and_a_sibling_defaults_to_the_repo_name() {
+    let root = Path::new("/work/bookshelf");
+    let design = |text: &str| load(&with(text)).expect("loads").design;
+    let beside = design(
+        "[design]\nkind = \"git-sibling\"\nrepo = \"example/bookshelf-design\"\npath = \"../bookshelf-design\"\n",
+    );
+    assert_eq!(
+        beside.dir(root),
+        Some(PathBuf::from("/work/bookshelf/../bookshelf-design"))
+    );
+    let defaulted =
+        design("[design]\nkind = \"git-sibling\"\nrepo = \"example/bookshelf-design.git\"\n");
+    assert_eq!(
+        defaulted.dir(root),
+        Some(PathBuf::from("/work/bookshelf-design"))
+    );
+    let inside = load(&with("[design]\nkind = \"repo-dir\"\npath = \"docs\"\n"))
+        .expect("loads")
+        .design;
+    assert_eq!(
+        inside.dir(root),
+        Some(PathBuf::from("/work/bookshelf/docs"))
+    );
+    assert_eq!(DesignSection::default().dir(root), None);
 }

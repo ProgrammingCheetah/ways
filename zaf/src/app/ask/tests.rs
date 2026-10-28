@@ -163,7 +163,11 @@ fn a_verified_answer_on_the_first_rung_is_returned() {
     let request = &requests[0];
     assert_eq!(request.role, RoleName::from(KEEPER_ROLE));
     assert_eq!(request.profile, Profile::Lean);
-    assert!(request.dir.starts_with(scene.state.path().join(RUNS_DIR)));
+    assert!(
+        request
+            .dir
+            .starts_with(scene.state.path().join(RUNS_DIR).join("programmer-3"))
+    );
     assert!(request.dir.is_dir());
     let prompt = &request.prompt;
     assert!(
@@ -182,6 +186,36 @@ fn a_verified_answer_on_the_first_rung_is_returned() {
         !prompt.contains("1002"),
         "only the named pages are preloaded"
     );
+}
+
+#[test]
+fn run_folders_are_named_by_the_askers_slug() {
+    let scene = Scene::new();
+    Scene::record(&scene.local, GOOD);
+    let questions = [ONE_QUESTION[0].to_owned()];
+    let query = AskQuery {
+        task: task(),
+        from: "Team instance 12 on #16",
+        questions: &questions,
+        max: 5,
+        root: Path::new("/project"),
+        state_dir: scene.state.path(),
+        cache_window: Duration::from_secs(DEFAULT_CACHE_HOURS * 3600),
+        now: noon(),
+    };
+    ask(&query, &scene.ports()).expect("ask");
+    let requests = scene.local.requests();
+    let folder = scene
+        .state
+        .path()
+        .join(RUNS_DIR)
+        .join("team-instance-12-on-16");
+    assert!(
+        requests[0].dir.starts_with(&folder),
+        "{:?}",
+        requests[0].dir
+    );
+    assert!(requests[0].dir.is_dir());
 }
 
 #[test]

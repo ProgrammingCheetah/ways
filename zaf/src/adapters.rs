@@ -8,3 +8,4 @@ pub mod gate;
 pub mod github;
 pub mod jj;
 pub mod runner;
+pub mod shell;

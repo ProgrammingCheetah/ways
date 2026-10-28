@@ -6,11 +6,10 @@ use super::Cli;
 use super::brief::instance;
 use super::exit::{BACKEND, OK, REFUSED, fail, fail_composition};
 
-use crate::adapters::runner::ProcessRunner;
-use crate::app::ask::{AskFailure, AskPorts, AskQuery, DEFAULT_CACHE_HOURS, LadderRung, ask};
-use crate::composition::{Composition, RUNNER_TIMEOUT};
+use crate::app::ask::{AskFailure, AskPorts, AskQuery, LadderRung, ask};
+use crate::composition::{Composition, CompositionError};
 use crate::domain::IssueNumber;
-use crate::manifest::{CommandLine, Rung, RunnerName};
+use crate::manifest::{ModelName, Rung, RunnerName};
 use crate::ports::Runner;
 
 /// The runner a model rung runs on, with `{model}` set to the rung.
@@ -58,8 +57,7 @@ pub fn run(cli: &Cli, task: IssueNumber, questions: &[String]) -> u8 {
         max: manifest.ask.max,
         root: composition.root(),
         state_dir: &state_dir,
-        // The manifest has no `[ask] cache_hours` yet; the default window applies.
-        cache_window: Duration::from_secs(DEFAULT_CACHE_HOURS * 3600),
+        cache_window: cache_window(&composition),
         now: SystemTime::now(),
     };
     match ask(&query, &ports) {
@@ -89,6 +87,11 @@ pub fn run(cli: &Cli, task: IssueNumber, questions: &[String]) -> u8 {
     }
 }
 
+/// How long an answered question is served from the log, from `[ask] cache_hours`.
+fn cache_window(composition: &Composition) -> Duration {
+    Duration::from_secs(composition.manifest().ask.cache_hours.saturating_mul(3600))
+}
+
 /// A rung naming a declared runner runs on it (`local`); any other rung is a model
 /// on `[runners.claude]`, with `{model}` substituted (`haiku`, `sonnet`).
 fn runner_for(composition: &Composition, rung: &Rung) -> Result<Box<dyn Runner>, String> {
@@ -97,14 +100,15 @@ fn runner_for(composition: &Composition, rung: &Rung) -> Result<Box<dyn Runner>,
     if runners.contains_key(&own) {
         return composition.runner(&own).map_err(|error| error.to_string());
     }
-    let section = runners
-        .get(&RunnerName::from(MODEL_RUNNER))
-        .ok_or_else(|| format!("no [runners.{rung}] and no [runners.{MODEL_RUNNER}]"))?;
-    let command = section.command.as_ref().replace("{model}", rung.as_ref());
-    // The composition root builds runners by name only; a model rung needs its
-    // `{model}` filled first, so it is built here on the same adapter and timeout.
-    let runner = ProcessRunner::new(CommandLine::from(command), RUNNER_TIMEOUT);
-    Ok(Box::new(runner))
+    let model_runner = RunnerName::from(MODEL_RUNNER);
+    composition
+        .runner_with_model(&model_runner, &ModelName::from(rung.as_ref()))
+        .map_err(|error| match error {
+            CompositionError::NoRunner(_) => {
+                format!("no [runners.{rung}] and no [runners.{MODEL_RUNNER}]")
+            }
+            other => other.to_string(),
+        })
 }
 
 #[cfg(test)]
@@ -143,6 +147,14 @@ command = \"echo local-model\"
             dir: dir.to_owned(),
         };
         runner.run(&request).expect("run").transcript
+    }
+
+    #[test]
+    fn the_cache_window_comes_from_the_manifest() {
+        let (_root, default) = composition("");
+        assert_eq!(cache_window(&default), Duration::from_secs(24 * 3600));
+        let (_root, short) = composition("\n[ask]\ncache_hours = 2\n");
+        assert_eq!(cache_window(&short), Duration::from_secs(2 * 3600));
     }
 
     #[test]

@@ -9,14 +9,14 @@ use std::sync::Arc;
 
 use super::Cli;
 use super::exit::{self, BACKEND, REFUSED};
-use crate::adapters::gate::{RUNS_DIR, ShellGate};
+use crate::adapters::gate::RUNS_DIR;
 use crate::app::check::{
     CheckRecord, Engine, EngineSettings, Shell, Step, StepPorts, Target, TaskInputs, check_task,
 };
 use crate::composition::{Composition, CompositionError};
 use crate::domain::{IssueNumber, SecurityTrigger, TaskTemplate};
-use crate::manifest::{CheckTarget, CommandLine, GateSection, RunnerName};
-use crate::ports::{Forge, Gate, GateLevel, GateRun, PortError, PrNumber, Runner};
+use crate::manifest::{CheckTarget, CommandLine, RunnerName};
+use crate::ports::{Forge, GateRun, PortError, PrNumber, Runner};
 
 /// Runs the configured check steps for a target, or reads the last result.
 pub fn run(cli: &Cli, target: &str, status: bool) -> u8 {
@@ -146,14 +146,9 @@ struct LivePorts {
 }
 
 impl Shell for LivePorts {
-    /// Runs the line through the gate adapter, so its output lands under `.zaf/runs/` too.
+    /// Runs the line through the composition's shell, at the project root.
     fn run(&self, line: &CommandLine) -> Result<GateRun, PortError> {
-        let section = GateSection {
-            full: line.clone(),
-            light: None,
-            tests: None,
-        };
-        ShellGate::new(self.composition.root(), &section).run(GateLevel::Full)
+        self.composition.shell().run(line)
     }
 }
 
@@ -244,7 +239,7 @@ mod tests {
         [gate]\nfull = \"true\"\ntests = \"test {name} = passes\"\n";
 
     #[test]
-    fn the_live_shell_runs_a_line_at_the_root_and_logs_it() {
+    fn the_live_shell_runs_a_line_at_the_project_root() {
         let dir = project(MANIFEST);
         let composition = Composition::load(dir.path()).expect("loads");
         let shell = LivePorts { composition };
@@ -252,7 +247,12 @@ mod tests {
         assert_eq!(passed.output, "hello\n");
         let failed = shell.run(&CommandLine::from("exit 4")).expect("runs");
         assert_eq!(failed.verdict, crate::ports::GateVerdict::Failed);
-        assert!(dir.path().join(RUNS_DIR).join(".gitignore").is_file());
+        let at_root = shell.run(&CommandLine::from("cat ZAF.toml")).expect("runs");
+        assert!(
+            at_root.output.starts_with("[project]"),
+            "{}",
+            at_root.output
+        );
     }
 
     #[test]

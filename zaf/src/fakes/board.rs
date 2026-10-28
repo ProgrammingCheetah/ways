@@ -15,6 +15,7 @@ struct Issue {
     reports: Vec<(Instance, String)>,
     claim: Option<ClaimRecord>,
     door: bool,
+    question: bool,
     ruling: Option<String>,
     closed: bool,
 }
@@ -39,10 +40,23 @@ impl FakeBoard {
             reports: Vec::new(),
             claim: None,
             door: false,
+            question: false,
             ruling: None,
             closed: false,
         };
         self.state().issues.insert(ticket.number, issue);
+    }
+
+    /// Puts an open question ticket on the board, labelled `question`, as `open_question` would.
+    pub fn add_question(&self, ticket: Ticket) {
+        let number = ticket.number;
+        self.add_ticket(Ticket {
+            label: Some(TaskLabel::Question),
+            ..ticket
+        });
+        if let Some(issue) = self.state().issues.get_mut(&number) {
+            issue.question = true;
+        }
     }
 
     /// The comments on an issue, oldest first.
@@ -198,6 +212,17 @@ impl Board for FakeBoard {
         Ok(())
     }
 
+    fn questions(&self) -> Result<Vec<Ticket>, PortError> {
+        let questions = self
+            .state()
+            .issues
+            .values()
+            .filter(|issue| issue.question && !issue.closed)
+            .map(|issue| issue.ticket.clone())
+            .collect();
+        Ok(questions)
+    }
+
     fn open_question(&self, question: &NewQuestion) -> Result<IssueNumber, PortError> {
         let mut state = self.state();
         state.issue_mut(question.on)?;
@@ -211,7 +236,7 @@ impl Board for FakeBoard {
             number,
             epic: None,
             title: question.text.clone(),
-            body: format!("Raised on {}.", question.on),
+            body: question.body(),
             label: Some(TaskLabel::Question),
         };
         let issue = Issue {
@@ -220,6 +245,7 @@ impl Board for FakeBoard {
             reports: Vec::new(),
             claim: None,
             door: question.door,
+            question: true,
             ruling: None,
             closed: false,
         };

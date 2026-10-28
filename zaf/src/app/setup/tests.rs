@@ -81,17 +81,13 @@ fn a_declared_sibling_design_repo_is_cloned_when_missing() {
     let root = parent.path().join("project");
     fs::create_dir(&root).expect("project dir");
     let manifest = manifest(
-        "[design]\nkind = \"git-sibling\"\nrepo = \"example/b-design\"\npath = \"b-design\"\n",
+        "[design]\nkind = \"git-sibling\"\nrepo = \"example/b-design\"\npath = \"../b-design\"\n",
     );
     let commands = FakeCommands::new().with("gh", "ok");
     let report = setup(&root, &root.join(".zaf"), &manifest, &commands).expect("sets up");
     assert_eq!(report.clone, Some(CloneOutcome::Cloned));
     let clone_call = commands.calls().into_iter().next().expect("a call");
-    let target = parent
-        .path()
-        .join("b-design")
-        .to_string_lossy()
-        .into_owned();
+    let target = root.join("../b-design").to_string_lossy().into_owned();
     assert_eq!(
         clone_call,
         ["gh", "repo", "clone", "example/b-design", target.as_str()]
@@ -111,7 +107,7 @@ fn a_failed_clone_becomes_a_worksheet_step() {
     let root = parent.path().join("project");
     fs::create_dir(&root).expect("project dir");
     let manifest = manifest(
-        "[design]\nkind = \"git-sibling\"\nrepo = \"example/b-design\"\npath = \"b-design\"\n",
+        "[design]\nkind = \"git-sibling\"\nrepo = \"example/b-design\"\npath = \"../b-design\"\n",
     );
     let commands = FakeCommands::new().failing("gh", "not logged in");
     let report = setup(&root, &root.join(".zaf"), &manifest, &commands).expect("sets up");

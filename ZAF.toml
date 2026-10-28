@@ -36,8 +36,13 @@ full = "cd zaf && cargo fmt --check && cargo build && cargo clippy --all-targets
 light = "cd zaf && cargo fmt --check && cargo test"
 tests = "cd zaf && cargo test {name}"
 
+# The repo has no style page yet; the README is the stand-in until one exists.
+[style]
+path = "README.md"
+
 [runners.claude]
 command = "claude -p {prompt} --model {model} --add-dir {dir}"
+timeout_minutes = 45
 
 [roles.programmer]
 model = "sonnet"
@@ -58,6 +63,7 @@ steps = ["ci"]
 [ask]
 ladder = ["haiku", "sonnet"]
 max = 5
+cache_hours = 24
 
 [spawn]
 slots = 2

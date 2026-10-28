@@ -1,6 +1,6 @@
 //! The sections of `ZAF.toml`, with the pack's defaults for the ones a project leaves out.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::domain::Profile;
 use crate::newtype::text_newtype;
@@ -138,6 +138,37 @@ pub struct DesignSection {
     pub index: Option<PathBuf>,
 }
 
+impl DesignSection {
+    /// Where the design pages are on disk, for a project rooted at `root`; `None` for kind `none`.
+    ///
+    /// `path` is relative to the project root, so `path = "../x-design"` lands beside the
+    /// project. A `git-sibling` without `path` defaults to `<parent of root>/<repo name>`.
+    /// Every reader of the design folder goes through this, so none can disagree.
+    pub fn dir(&self, root: &Path) -> Option<PathBuf> {
+        match self.kind {
+            DesignKind::None => None,
+            DesignKind::RepoDir => self.path.as_ref().map(|path| root.join(path)),
+            DesignKind::GitSibling => match &self.path {
+                Some(path) => Some(root.join(path)),
+                None => {
+                    let repo = self.repo.as_ref()?.as_ref();
+                    let name = repo.rsplit('/').next().unwrap_or(repo);
+                    let name = name.strip_suffix(".git").unwrap_or(name);
+                    Some(root.parent().unwrap_or(root).join(name))
+                }
+            },
+        }
+    }
+}
+
+/// `[style]`: the project's style file. Absent means the project declares none.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StyleSection {
+    /// The style file, relative to the project root.
+    pub path: PathBuf,
+}
+
 /// `[workspaces]`: where slice workspaces go.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -193,6 +224,14 @@ pub struct GateSection {
 pub struct RunnerSection {
     /// The command line.
     pub command: CommandLine,
+    /// Minutes before a run is killed. Default: 45.
+    #[serde(default = "default_runner_timeout_minutes")]
+    pub timeout_minutes: u64,
+}
+
+/// The runner timeout when `[runners.<name>]` gives none.
+fn default_runner_timeout_minutes() -> u64 {
+    45
 }
 
 /// How hard a model works on a role.
@@ -281,6 +320,8 @@ pub struct AskSection {
     pub ladder: Vec<Rung>,
     /// The most questions per ask, 1 to 5. Default: 5.
     pub max: usize,
+    /// Hours an answered question is served from the log. Default: 24.
+    pub cache_hours: u64,
 }
 
 impl Default for AskSection {
@@ -288,6 +329,7 @@ impl Default for AskSection {
         Self {
             ladder: vec![Rung::from("haiku"), Rung::from("sonnet")],
             max: crate::domain::MAX_QUESTIONS,
+            cache_hours: 24,
         }
     }
 }

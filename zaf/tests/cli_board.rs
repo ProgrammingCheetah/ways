@@ -29,6 +29,7 @@ fn project() -> Project {
             r#"[{"number":3,"title":"Import the list","labels":[{"name":"task"},{"name":"ready"}],"parent":{"number":1}},{"number":2,"title":"Export the list","labels":[{"name":"task"},{"name":"ready"}],"parent":{"number":1}}]"#,
         )
         .on("issue list --label claimed *", "[]")
+        .on("issue list --label question *", "[]")
         .on("issue view 2 *", &issue(2, "ready", ""))
         .on("issue view 4 *", &issue(4, "blocked", ""))
         .fail_on("issue view 5 *", "HTTP 502: Bad Gateway")

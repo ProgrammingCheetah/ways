@@ -258,8 +258,27 @@ impl Board for GithubBoard {
         }
     }
 
+    fn questions(&self) -> Result<Vec<Ticket>, PortError> {
+        let question = TaskLabel::Question.to_string();
+        let mut rows: Vec<IssueRow> = self.gh.json(&[
+            "issue",
+            "list",
+            "--label",
+            &question,
+            "--state",
+            "open",
+            "--limit",
+            LIST_LIMIT,
+            "--json",
+            "number,title,body,labels,parent",
+        ])?;
+        rows.retain(|row| !row.has_label(TASK_LABEL));
+        rows.sort_by_key(|row| row.number);
+        Ok(rows.iter().map(IssueRow::ticket).collect())
+    }
+
     fn open_question(&self, question: &NewQuestion) -> Result<IssueNumber, PortError> {
-        let body = format!("Raised on {}.", question.on);
+        let body = question.body();
         let question_label = TaskLabel::Question.to_string();
         let mut args = vec![
             "issue",

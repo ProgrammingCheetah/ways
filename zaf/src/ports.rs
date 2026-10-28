@@ -11,6 +11,7 @@ mod errors;
 mod forge;
 mod gate;
 mod runner;
+mod shell;
 mod vcs;
 
 pub use board::{Board, ClaimOutcome, ClaimRecord, NewQuestion, Ticket};
@@ -22,6 +23,7 @@ pub use forge::{
 };
 pub use gate::{Gate, GateLevel, GateRun, GateVerdict};
 pub use runner::{RunOutput, RunRequest, Runner};
+pub use shell::Shell;
 pub use vcs::{
     BaseMerge, BaseName, CommitId, DiffStat, FileStat, Publication, SliceName, SliceOpening, Vcs,
 };

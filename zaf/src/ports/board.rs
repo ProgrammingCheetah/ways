@@ -51,6 +51,19 @@ pub struct NewQuestion {
     pub door: bool,
 }
 
+impl NewQuestion {
+    /// The body of the ticket that carries this question: where it was raised.
+    pub fn body(&self) -> String {
+        format!("Raised on {}.", self.on)
+    }
+
+    /// Whether `ticket` is this question already open: the same text raised on the same issue.
+    /// Whether it was raised as a door does not matter; the question is the same.
+    pub fn is_asked_by(&self, ticket: &Ticket) -> bool {
+        ticket.title == self.text && ticket.body == self.body()
+    }
+}
+
 /// The board the spawner and every instance read and write.
 pub trait Board {
     /// Tasks labelled `ready`, in issue order.
@@ -81,6 +94,10 @@ pub trait Board {
 
     /// Writes the instance's status comment on a task; a second report replaces the first.
     fn report(&self, task: IssueNumber, instance: &Instance, body: &str) -> Result<(), PortError>;
+
+    /// The open question tickets, in issue order: issues labelled `question` that are not tasks.
+    /// A task waiting on a question carries the label too, and is not one.
+    fn questions(&self) -> Result<Vec<Ticket>, PortError>;
 
     /// Opens a question ticket for the Engineer and returns its number.
     fn open_question(&self, question: &NewQuestion) -> Result<IssueNumber, PortError>;

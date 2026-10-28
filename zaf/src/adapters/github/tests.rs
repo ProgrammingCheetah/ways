@@ -543,6 +543,61 @@ fn open_question_creates_a_labelled_issue() {
 }
 
 #[test]
+fn questions_lists_open_question_issues_and_skips_tasks_waiting_on_one() {
+    let fake = FakeGh::new();
+    let listed = format!(
+        "[{},{},{}]",
+        issue(9, &["question", "door"], &[], "OPEN"),
+        issue(2, &["task", "question"], &[], "OPEN"),
+        issue(7, &["question"], &[], "OPEN")
+    );
+    fake.on("issue list *", &listed);
+    let tickets = fake.board().questions().expect("questions");
+    let numbers: Vec<IssueNumber> = tickets.iter().map(|ticket| ticket.number).collect();
+    assert_eq!(numbers, [IssueNumber::from(7), IssueNumber::from(9)]);
+    assert_eq!(tickets[0].label, Some(TaskLabel::Question));
+    let expected_call = argv(&[
+        "issue",
+        "list",
+        "--label",
+        "question",
+        "--state",
+        "open",
+        "--limit",
+        "1000",
+        "--json",
+        "number,title,body,labels,parent",
+        "--repo",
+        REPO,
+    ]);
+    assert_eq!(fake.calls(), [expected_call]);
+}
+
+#[test]
+fn a_listed_question_is_the_one_that_opened_it() {
+    let fake = FakeGh::new();
+    let question = NewQuestion {
+        on: IssueNumber::from(2),
+        text: "Which columns?".to_owned(),
+        door: false,
+    };
+    let listed = serde_json::json!([{
+        "number": 7,
+        "title": question.text,
+        "body": question.body(),
+        "labels": [{ "name": "question" }],
+    }]);
+    fake.on("issue list *", &listed.to_string());
+    let tickets = fake.board().questions().expect("questions");
+    assert!(question.is_asked_by(&tickets[0]));
+    let elsewhere = NewQuestion {
+        on: IssueNumber::from(3),
+        ..question
+    };
+    assert!(!elsewhere.is_asked_by(&tickets[0]));
+}
+
+#[test]
 fn record_ruling_comments_and_closes_once() {
     let fake = FakeGh::new();
     let ruled = ["<!-- zaf:ruling -->\nTitle and author.".to_owned()];

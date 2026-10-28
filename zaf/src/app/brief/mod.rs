@@ -3,14 +3,15 @@
 //! The pack holds, in order: the ticket body, each design page the ticket names
 //! in full, `nodes chain <path>` for each owned path (or a note when no `nodes`
 //! binary is on PATH), the project's style file, and the interface help page.
-//! It is written to `.zaf/runs/<instance>/brief-<task>.md`.
+//! It is written to `.zaf/runs/<instance slug>/brief-<task>.md`, the slug being
+//! [`Instance::slug_of`] of the instance's name.
 
 use std::fmt::{self, Write as _};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::domain::{IssueNumber, PageId, TaskTemplate};
+use crate::domain::{Instance, IssueNumber, PageId, TaskTemplate};
 use crate::ports::{Board, Design, Page, PortError, Ticket};
 
 /// The interface help page every brief ends with.
@@ -107,7 +108,7 @@ pub fn brief(query: &BriefQuery<'_>, ports: &BriefPorts<'_>) -> Result<Brief, Br
 
     let runs = ensure_runs_dir(query.state_dir)
         .map_err(|source| write_error(&query.state_dir.join(RUNS_DIR), source))?;
-    let dir = runs.join(query.instance);
+    let dir = runs.join(Instance::slug_of(query.instance));
     fs::create_dir_all(&dir).map_err(|source| write_error(&dir, source))?;
     let path = dir.join(format!("brief-{}.md", query.task.get()));
     fs::write(&path, &text).map_err(|source| write_error(&path, source))?;

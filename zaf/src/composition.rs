@@ -13,10 +13,12 @@ use crate::adapters::gate::ShellGate;
 use crate::adapters::github::{GhCommand, GithubBoard, GithubForge};
 use crate::adapters::jj::JjVcs;
 use crate::adapters::runner::ProcessRunner;
+use crate::adapters::shell::SystemShell;
 use crate::manifest::{
-    BoardKind, DesignKind, ForgeKind, Manifest, ManifestError, RunnerName, VcsKind,
+    BoardKind, CommandLine, DesignKind, ForgeKind, Manifest, ManifestError, ModelName, RunnerName,
+    VcsKind,
 };
-use crate::ports::{Board, Design, Forge, Gate, Runner, Vcs};
+use crate::ports::{Board, Design, Forge, Gate, Runner, Shell, Vcs};
 
 /// The manifest's file name at the project root.
 pub const MANIFEST_FILE: &str = "ZAF.toml";
@@ -24,9 +26,9 @@ pub const MANIFEST_FILE: &str = "ZAF.toml";
 /// The local, git-ignored state folder under the project root.
 pub const STATE_DIR: &str = ".zaf";
 
-/// How long a runner may take before it is killed; the ladder's rungs are short, a
-/// review brief is long, and neither should hang the spawner forever.
-pub const RUNNER_TIMEOUT: Duration = Duration::from_secs(45 * 60);
+/// How long one shell line may take before it is killed: a command step, a named test,
+/// a tool's `--version`. A gate is longer than any of them and has its own, unbounded run.
+pub const SHELL_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
 /// Why an adapter could not be built from the manifest.
 #[derive(Debug, thiserror::Error)]
@@ -81,21 +83,37 @@ impl Composition {
         })
     }
 
-    /// Finds the project root by walking up from `start` to the nearest `ZAF.toml`.
+    /// Finds the project root by walking up from `start`.
     ///
-    /// A slice workspace under `[workspaces]` finds its project this way too,
-    /// because the workspace folder lives inside the project root.
+    /// Every directory on the way up with a `ZAF.toml` is a candidate. The root is the
+    /// topmost candidate whose `[workspaces]` path holds every candidate below it, so a
+    /// manifest copied into a slice workspace still resolves to its project; failing
+    /// that, the nearest candidate is the root.
     pub fn discover(start: &Path) -> Result<Self, CompositionError> {
-        let mut dir = Some(start);
-        while let Some(candidate) = dir {
-            if candidate.join(MANIFEST_FILE).is_file() {
-                return Ok(Self::load(candidate)?);
+        let candidates: Vec<&Path> = start
+            .ancestors()
+            .filter(|dir| dir.join(MANIFEST_FILE).is_file())
+            .collect();
+        // Nearest first; the loop below tries the topmost first.
+        for (index, candidate) in candidates.iter().enumerate().rev() {
+            let Ok(composition) = Self::load(candidate) else {
+                continue;
+            };
+            let workspaces = normalized(&candidate.join(&composition.manifest.workspaces.path));
+            let below = &candidates[..index];
+            if below
+                .iter()
+                .all(|lower| normalized(lower).starts_with(&workspaces))
+            {
+                return Ok(composition);
             }
-            dir = candidate.parent();
         }
-        Err(CompositionError::NoProject {
-            start: start.to_owned(),
-        })
+        match candidates.first() {
+            Some(nearest) => Ok(Self::load(nearest)?),
+            None => Err(CompositionError::NoProject {
+                start: start.to_owned(),
+            }),
+        }
     }
 
     /// Finds the project root from the current directory.
@@ -175,34 +193,19 @@ impl Composition {
     /// The design source the manifest names, or `None` for a project without one.
     pub fn design(&self) -> Result<Option<Box<dyn Design>>, CompositionError> {
         let section = &self.manifest.design;
-        let dir = match section.kind {
+        let (key, kind) = match section.kind {
             DesignKind::None => return Ok(None),
-            DesignKind::RepoDir => {
-                let path = section.path.clone().ok_or(CompositionError::MissingKey {
-                    section: "design",
-                    key: "path",
-                    kind: section.kind.to_string(),
-                })?;
-                self.root.join(path)
-            }
-            DesignKind::GitSibling => {
-                let repo = section.repo.clone().ok_or(CompositionError::MissingKey {
-                    section: "design",
-                    key: "repo",
-                    kind: section.kind.to_string(),
-                })?;
-                let name = repo
-                    .as_ref()
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or_else(|| repo.as_ref())
-                    .trim_end_matches(".git")
-                    .to_owned();
-                let parent = self.root.parent().unwrap_or(&self.root);
-                let sibling = section.path.clone().unwrap_or_else(|| PathBuf::from(name));
-                parent.join(sibling)
-            }
+            DesignKind::RepoDir => ("path", section.kind),
+            DesignKind::GitSibling => ("repo", section.kind),
         };
+        // The one rule for where the folder is, shared with `doctor` and `setup`.
+        let dir = section
+            .dir(&self.root)
+            .ok_or(CompositionError::MissingKey {
+                section: "design",
+                key,
+                kind: kind.to_string(),
+            })?;
         let design = DirDesign::new(dir);
         Ok(Some(Box::new(match &section.index {
             Some(index) => design.with_index(index.clone()),
@@ -238,16 +241,67 @@ impl Composition {
 
     /// The runner `[runners.<name>]` declares.
     pub fn runner(&self, name: &RunnerName) -> Result<Box<dyn Runner>, CompositionError> {
+        self.build_runner(name, None)
+    }
+
+    /// The runner `[runners.<name>]` declares, with `{model}` in its command set to `model`.
+    pub fn runner_with_model(
+        &self,
+        name: &RunnerName,
+        model: &ModelName,
+    ) -> Result<Box<dyn Runner>, CompositionError> {
+        self.build_runner(name, Some(model))
+    }
+
+    fn build_runner(
+        &self,
+        name: &RunnerName,
+        model: Option<&ModelName>,
+    ) -> Result<Box<dyn Runner>, CompositionError> {
+        Ok(Box::new(self.process_runner(name, model)?))
+    }
+
+    fn process_runner(
+        &self,
+        name: &RunnerName,
+        model: Option<&ModelName>,
+    ) -> Result<ProcessRunner, CompositionError> {
         let section = self
             .manifest
             .runners
             .get(name)
             .ok_or_else(|| CompositionError::NoRunner(name.clone()))?;
-        Ok(Box::new(ProcessRunner::new(
-            section.command.clone(),
-            RUNNER_TIMEOUT,
-        )))
+        let command = match model {
+            Some(model) => {
+                CommandLine::from(section.command.as_ref().replace("{model}", model.as_ref()))
+            }
+            None => section.command.clone(),
+        };
+        let timeout = Duration::from_secs(section.timeout_minutes * 60);
+        Ok(ProcessRunner::new(command, timeout))
     }
+
+    /// A shell that runs command lines at the project root.
+    pub fn shell(&self) -> Box<dyn Shell> {
+        Box::new(SystemShell::new(&self.root, SHELL_TIMEOUT))
+    }
+}
+
+/// The path with `.` and `..` folded away lexically, so `a/../b` compares as `b`.
+fn normalized(path: &Path) -> PathBuf {
+    let mut folded = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !folded.pop() {
+                    folded.push(component);
+                }
+            }
+            other => folded.push(other),
+        }
+    }
+    folded
 }
 
 #[cfg(test)]

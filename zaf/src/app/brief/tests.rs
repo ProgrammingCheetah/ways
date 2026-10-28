@@ -221,6 +221,25 @@ fn an_unknown_task_is_a_board_error() {
 }
 
 #[test]
+fn the_run_folder_is_the_instance_slug() {
+    let state = tempfile::tempdir().expect("temp dir");
+    let board = board_with(BODY);
+    let ports = BriefPorts {
+        board: &board,
+        design: None,
+        nodes: None,
+    };
+    let mut named = query(state.path(), None);
+    named.instance = "Team instance 12 on #16";
+
+    let brief = brief(&named, &ports).expect("brief");
+
+    let expected = state.path().join("runs/team-instance-12-on-16/brief-12.md");
+    assert_eq!(brief.path, expected);
+    assert!(expected.is_file());
+}
+
+#[test]
 fn the_instance_must_be_one_path_segment() {
     let state = tempfile::tempdir().expect("temp dir");
     let board = board_with(BODY);

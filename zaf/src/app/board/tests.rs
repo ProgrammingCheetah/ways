@@ -176,6 +176,49 @@ fn a_question_opens_a_ticket_and_the_issue_waits() {
 }
 
 #[test]
+fn asking_the_same_question_again_reuses_the_open_one() {
+    let board = board_with(&[(2, TaskLabel::Claimed), (3, TaskLabel::Ready)]);
+    let asked = NewQuestion {
+        on: IssueNumber::from(2),
+        text: "Which columns?".to_owned(),
+        door: false,
+    };
+    let first = question(&board, &asked).expect("question");
+    let again = question(&board, &asked).expect("the same question");
+    assert_eq!(again, first, "no second ticket");
+    assert_eq!(board.questions().expect("questions").len(), 1);
+    let waiting = board.task(IssueNumber::from(2)).expect("task");
+    assert_eq!(waiting.label, Some(TaskLabel::Question));
+
+    let elsewhere = NewQuestion {
+        on: IssueNumber::from(3),
+        ..asked.clone()
+    };
+    let other = question(&board, &elsewhere).expect("same text, other issue");
+    assert_ne!(other, first, "another issue is another question");
+    let reworded = NewQuestion {
+        text: "Which rows?".to_owned(),
+        ..asked.clone()
+    };
+    let third = question(&board, &reworded).expect("other text");
+    assert_ne!(third, first);
+
+    ruling(
+        &board,
+        &RulingCommand {
+            question: first,
+            ruling: "Title and author.".to_owned(),
+        },
+    )
+    .expect("ruling");
+    let reasked = question(&board, &asked).expect("asked after the ruling");
+    assert_ne!(
+        reasked, first,
+        "a ruled question is not open, so it is asked anew"
+    );
+}
+
+#[test]
 fn a_ruling_closes_the_question_once() {
     let board = board_with(&[(2, TaskLabel::Claimed)]);
     let asked = NewQuestion {

@@ -137,3 +137,39 @@ fn questions_open_and_take_one_ruling() {
     let expected_question = Some((true, Some("Title and author.".to_owned())));
     assert_eq!(board.question(question), expected_question);
 }
+
+#[test]
+fn open_questions_list_in_order_and_leave_the_waiting_task_out() {
+    let board = seeded();
+    let port: &dyn Board = &board;
+    let ask = |on: u64, text: &str| NewQuestion {
+        on: IssueNumber::from(on),
+        text: text.to_owned(),
+        door: false,
+    };
+    let first = ask(2, "Which columns?");
+    let second = ask(4, "Which quoting?");
+    let opened_first = port.open_question(&first).expect("first");
+    let opened_second = port.open_question(&second).expect("second");
+    port.label(IssueNumber::from(2), TaskLabel::Question)
+        .expect("the task waits on its question");
+    let listed: Vec<IssueNumber> = port
+        .questions()
+        .expect("questions")
+        .iter()
+        .map(|ticket| ticket.number)
+        .collect();
+    assert_eq!(
+        listed,
+        [opened_first, opened_second],
+        "the waiting task is not a question"
+    );
+    port.record_ruling(opened_first, "Title and author.")
+        .expect("ruling");
+    let remaining = port.questions().expect("questions");
+    assert_eq!(remaining.len(), 1);
+    assert!(second.is_asked_by(&remaining[0]));
+    assert!(!first.is_asked_by(&remaining[0]));
+    let same_text_elsewhere = ask(3, "Which quoting?");
+    assert!(!same_text_elsewhere.is_asked_by(&remaining[0]));
+}

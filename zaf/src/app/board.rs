@@ -100,8 +100,18 @@ pub fn report(board: &dyn Board, command: &ReportCommand) -> Result<ReportOutcom
 
 /// `zaf board question`: opens a question ticket for the Engineer and labels
 /// the issue it is raised on `question`, so that issue waits.
+///
+/// Asking the same text on the same issue again reuses the question still open
+/// instead of opening a second one, and returns its number.
 pub fn question(board: &dyn Board, command: &NewQuestion) -> Result<IssueNumber, BoardError> {
-    let number = board.open_question(command)?;
+    let open = board
+        .questions()?
+        .into_iter()
+        .find(|ticket| command.is_asked_by(ticket));
+    let number = match open {
+        Some(ticket) => ticket.number,
+        None => board.open_question(command)?,
+    };
     board.label(command.on, TaskLabel::Question)?;
     Ok(number)
 }

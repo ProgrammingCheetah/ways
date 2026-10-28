@@ -1,7 +1,7 @@
 //! `zaf setup`: prepare `.zaf/`, then hand the Engineer what it cannot do.
 
 use super::Cli;
-use super::doctor::SystemCommands;
+use super::doctor::ShellCommands;
 use super::exit::{self, OK, REFUSED};
 
 use crate::app::setup::setup;
@@ -22,7 +22,7 @@ pub fn run(cli: &Cli) -> u8 {
         composition.root(),
         &composition.state_dir(),
         composition.manifest(),
-        &SystemCommands,
+        &ShellCommands::new(composition.shell()),
     ) {
         Ok(report) => report,
         Err(error) => {

@@ -1,4 +1,5 @@
 use std::fs;
+use std::path::{Path, PathBuf};
 
 use super::fake::FakeCommands;
 use super::*;
@@ -115,7 +116,7 @@ fn a_declared_design_dir_must_exist() {
     let root = parent.path().join("project");
     fs::create_dir(&root).expect("project dir");
     let manifest = manifest(
-        "[design]\nkind = \"git-sibling\"\nrepo = \"example/b-design\"\npath = \"b-design\"\n",
+        "[design]\nkind = \"git-sibling\"\nrepo = \"example/b-design\"\npath = \"../b-design\"\n",
     );
     let before = doctor(&root, &manifest, &FakeCommands::new());
     assert_eq!(before.design.as_ref().map(|check| check.ok), Some(false));
@@ -164,4 +165,28 @@ fn the_report_serializes_as_a_table() {
     assert_eq!(json["tools"][1]["status"], "ok");
     assert_eq!(json["tools"][1]["found"], "0.23.0");
     assert_eq!(json["workspaces"]["ok"], true);
+}
+
+#[test]
+fn a_sibling_design_dir_follows_the_project_root_rule() {
+    let root = Path::new("/work/project");
+    let design = |text: &str| manifest(text).design;
+    let beside = design(
+        "[design]\nkind = \"git-sibling\"\nrepo = \"example/b-design\"\npath = \"../b-design\"\n",
+    );
+    assert_eq!(
+        design_dir(root, &beside),
+        Some(PathBuf::from("/work/project/../b-design"))
+    );
+    let defaulted = design("[design]\nkind = \"git-sibling\"\nrepo = \"example/b-design\"\n");
+    assert_eq!(
+        design_dir(root, &defaulted),
+        Some(PathBuf::from("/work/b-design"))
+    );
+    let inside = design("[design]\nkind = \"repo-dir\"\npath = \"docs\"\n");
+    assert_eq!(
+        design_dir(root, &inside),
+        Some(PathBuf::from("/work/project/docs"))
+    );
+    assert_eq!(design_dir(root, &design("")), None);
 }

@@ -8,7 +8,7 @@ use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::manifest::{DesignKind, DesignSection, Manifest, Requirement, ToolName};
+use crate::manifest::{DesignSection, Manifest, Requirement, ToolName};
 
 pub mod fake;
 
@@ -185,14 +185,10 @@ fn check_tool(commands: &dyn Commands, tool: &ToolName, requirement: &Requiremen
 
 /// Where the design folder is, as the composition root resolves it; `None` for kind `none`.
 ///
-/// A `git-sibling` path is relative to the project's parent folder, a `repo-dir` path to the project.
+/// Both ask [`DesignSection::dir`]: a `path` is relative to the project root, and a
+/// `git-sibling` without one is `<parent>/<repo name>`.
 pub fn design_dir(root: &Path, design: &DesignSection) -> Option<PathBuf> {
-    let path = design.path.as_ref()?;
-    match design.kind {
-        DesignKind::None => None,
-        DesignKind::RepoDir => Some(root.join(path)),
-        DesignKind::GitSibling => Some(root.parent().unwrap_or(root).join(path)),
-    }
+    design.dir(root)
 }
 
 /// Whether `path` is, or could be made by creating folders under, a writable folder.

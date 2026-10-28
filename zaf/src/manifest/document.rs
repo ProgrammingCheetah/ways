@@ -8,7 +8,7 @@ use super::sections::{
     AskSection, BoardKind, BoardSection, BranchesSection, CheckSection, CheckTarget, DesignKind,
     DesignSection, ForbiddenSection, ForgeKind, ForgeSection, GateSection, IsolationKind,
     IsolationSection, ProjectSection, RoleSection, RunnerName, RunnerSection, SpawnSection,
-    ToolName, VcsSection, WorkspacesSection,
+    StyleSection, ToolName, VcsSection, WorkspacesSection,
 };
 use super::{ManifestError, Requirement};
 use crate::domain::{MAX_QUESTIONS, RoleName};
@@ -33,6 +33,9 @@ pub struct Manifest {
     /// `[design]`; absent means kind `none`.
     #[serde(default)]
     pub design: DesignSection,
+    /// `[style]`; absent means the project declares no style file.
+    #[serde(default)]
+    pub style: Option<StyleSection>,
     /// `[workspaces]`.
     #[serde(default)]
     pub workspaces: WorkspacesSection,
@@ -103,12 +106,6 @@ impl Manifest {
                     self.design.kind,
                     self.design.repo.is_some(),
                 )?;
-                require_key(
-                    "design",
-                    "path",
-                    self.design.kind,
-                    self.design.path.is_some(),
-                )?;
             }
             DesignKind::RepoDir => require_key(
                 "design",
@@ -135,7 +132,12 @@ impl Manifest {
     fn validate_paths(&self) -> Result<(), ManifestError> {
         require_relative("workspaces", "path", Some(&self.workspaces.path))?;
         require_relative("design", "path", self.design.path.as_ref())?;
-        require_relative("design", "index", self.design.index.as_ref())
+        require_relative("design", "index", self.design.index.as_ref())?;
+        require_relative(
+            "style",
+            "path",
+            self.style.as_ref().map(|style| &style.path),
+        )
     }
 
     fn validate_limits(&self) -> Result<(), ManifestError> {
@@ -168,6 +170,15 @@ impl Manifest {
                 "max",
                 &format!("must be from 1 to {MAX_QUESTIONS}"),
             ));
+        }
+        for (name, runner) in &self.runners {
+            if runner.timeout_minutes == 0 {
+                return Err(invalid(
+                    "runners",
+                    "timeout_minutes",
+                    &format!("must be at least 1 (runner `{name}`)"),
+                ));
+            }
         }
         Ok(())
     }

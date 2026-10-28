@@ -1,5 +1,5 @@
 use super::*;
-use crate::domain::{Instance, InstanceNumber, RoleName, TaskLabel};
+use crate::domain::{Instance, InstanceNumber, IssueNumber, RoleName, TaskLabel};
 use crate::fakes::FakeBoard;
 
 fn ticket(number: u64, title: &str, label: TaskLabel) -> Ticket {
@@ -17,12 +17,16 @@ fn board() -> FakeBoard {
     board.add_ticket(ticket(3, "Export rows", TaskLabel::Ready));
     board.add_ticket(ticket(4, "Export header", TaskLabel::Ready));
     board.add_ticket(ticket(5, "Import rows", TaskLabel::Ready));
-    board.add_ticket(ticket(
+    board.add_question(ticket(
         9,
         "Which columns are exported?",
         TaskLabel::Question,
     ));
-    board.add_ticket(ticket(10, "Quoting rule?", TaskLabel::Done));
+    board.add_question(ticket(10, "Quoting rule?", TaskLabel::Question));
+    board
+        .record_ruling(IssueNumber::from(10), "Always quote.")
+        .expect("a ruled question closes");
+    board.add_ticket(ticket(6, "Export footer", TaskLabel::Question));
     let instance = Instance {
         role: RoleName::from("programmer"),
         epic: IssueNumber::from(2),
@@ -36,7 +40,7 @@ fn board() -> FakeBoard {
 
 const SPAWN_STATE: &str = r#"{
   "launches": [{"task": 5, "instance": "programmer instance 1 on #2", "pid": 4242, "started_at": "2026-10-28T01:00:00Z"}],
-  "questions": [9, 10, 77]
+  "questions": [10, 77]
 }"#;
 
 #[test]
@@ -73,7 +77,8 @@ fn the_screen_joins_board_spawn_state_and_guard() {
     assert_eq!(
         questions,
         [(9, "Which columns are exported?")],
-        "a ruled or unknown question is dropped"
+        "open questions come from the board: the ruled one and the waiting task are not listed, \
+         and the stale numbers in spawn.state are ignored"
     );
 
     let text = status.render_text();
@@ -111,7 +116,8 @@ fn json_carries_the_whole_screen() {
 fn without_state_files_nothing_runs_and_the_guard_is_not_computed() {
     let dir = tempfile::tempdir().expect("tempdir");
     let status = status(&board(), dir.path(), 1).expect("status");
-    assert!(status.running.is_empty() && status.questions.is_empty());
+    assert!(status.running.is_empty());
+    assert_eq!(status.questions.len(), 1, "questions need no state file");
     assert_eq!(status.slots, Slots { total: 1, free: 1 });
     assert!(status.guard.is_none());
     assert!(status.render_text().contains("guard     not computed"));

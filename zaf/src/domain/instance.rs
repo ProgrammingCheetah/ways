@@ -37,6 +37,35 @@ pub struct Instance {
     pub number: InstanceNumber,
 }
 
+impl Instance {
+    /// The instance as one folder name: `team-instance-12-on-16` for `team instance 12 on #16`.
+    pub fn slug(&self) -> String {
+        Self::slug_of(&self.to_string())
+    }
+
+    /// The folder name for an instance written as text, which need not parse as an [`Instance`]
+    /// (`local`, for a run by hand): lowercase, spaces, `#` and anything else a path
+    /// would not want become `-`, runs of `-` collapse, and nothing is left at the ends.
+    /// Text with nothing left is `unnamed`.
+    pub fn slug_of(text: &str) -> String {
+        let mut slug = String::new();
+        for character in text.chars().flat_map(char::to_lowercase) {
+            let keep = character.is_ascii_alphanumeric() || matches!(character, '_' | '.');
+            match (keep, character) {
+                (true, _) => slug.push(character),
+                (false, _) if slug.ends_with('-') => {}
+                (false, _) => slug.push('-'),
+            }
+        }
+        let slug = slug.trim_matches(|character| matches!(character, '-' | '.'));
+        if slug.is_empty() {
+            "unnamed".to_owned()
+        } else {
+            slug.to_owned()
+        }
+    }
+}
+
 impl FromStr for Instance {
     type Err = IdError;
 

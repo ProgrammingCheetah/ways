@@ -41,12 +41,12 @@ pub fn run(cli: &Cli, task: IssueNumber) -> u8 {
     let chain = nodes
         .as_deref()
         .map(|binary| move |owned: &str| nodes_chain(binary, &root, owned));
+    let style = style_file(&composition);
     let query = BriefQuery {
         task,
         instance: &instance,
         state_dir: &state_dir,
-        // The manifest has no `[style]` section yet; the pack notes that none is declared.
-        style: None,
+        style: style.as_deref(),
     };
     let ports = BriefPorts {
         board: board.as_ref(),
@@ -73,6 +73,12 @@ pub fn run(cli: &Cli, task: IssueNumber) -> u8 {
             BACKEND
         }
     }
+}
+
+/// The style file `[style] path` names, resolved against the project root.
+fn style_file(composition: &Composition) -> Option<PathBuf> {
+    let style = composition.manifest().style.as_ref()?;
+    Some(composition.root().join(&style.path))
 }
 
 /// The instance this run is for, from `ZAF_INSTANCE`, or `local`.
@@ -104,4 +110,30 @@ fn nodes_chain(binary: &Path, root: &Path, owned: &str) -> Result<String, String
     }
     let stderr = String::from_utf8_lossy(&output.stderr);
     Err(format!("{}: {}", output.status, stderr.trim()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn composition(extra: &str) -> (tempfile::TempDir, Composition) {
+        let root = tempfile::tempdir().expect("temp dir");
+        let manifest = format!(
+            "[project]\nname = \"example\"\n[board]\nkind = \"github-issues\"\nrepo = \"owner/example\"\n{extra}"
+        );
+        std::fs::write(root.path().join("ZAF.toml"), manifest).expect("manifest");
+        let composition = Composition::load(root.path()).expect("composition");
+        (root, composition)
+    }
+
+    #[test]
+    fn the_style_file_comes_from_the_manifest_and_is_absent_without_one() {
+        let (_root, none) = composition("");
+        assert_eq!(style_file(&none), None);
+        let (root, declared) = composition("[style]\npath = \"docs/style.md\"\n");
+        assert_eq!(
+            style_file(&declared),
+            Some(root.path().join("docs/style.md"))
+        );
+    }
 }
