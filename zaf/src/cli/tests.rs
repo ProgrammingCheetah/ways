@@ -50,10 +50,12 @@ const BUILT: &[&str] = &[
     "board ruling",
     "brief",
     "changes",
+    "check",
     "slice open",
     "slice pr",
     "slice merge",
     "slice drop",
+    "verify",
 ];
 
 #[test]

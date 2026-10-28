@@ -9,4 +9,5 @@ pub mod asklog;
 pub mod board;
 pub mod brief;
 pub mod changes;
+pub mod check;
 pub mod slice;
