@@ -40,7 +40,18 @@ fn every_verb_is_listed() {
 
 /// The verbs that are built: each exits by its own rules, so the sweep below skips them.
 /// A verb joins this list in the same change that builds it.
-const BUILT: &[&str] = &[];
+const BUILT: &[&str] = &[
+    "board ready",
+    "board claim",
+    "board report",
+    "board question",
+    "board ruling",
+    "changes",
+    "slice open",
+    "slice pr",
+    "slice merge",
+    "slice drop",
+];
 
 #[test]
 fn every_unbuilt_verb_exits_not_implemented() {
