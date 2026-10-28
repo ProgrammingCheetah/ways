@@ -40,6 +40,10 @@ tests = "cd zaf && cargo test {name}"
 [style]
 path = "README.md"
 
+# The pack the profiles carry: this repo's own teams plugin, copied by `zaf profile init`.
+[pack]
+path = "plugins/teams"
+
 [runners.claude]
 command = "claude -p {prompt} --model {model} --add-dir {dir}"
 timeout_minutes = 45

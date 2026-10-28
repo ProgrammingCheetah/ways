@@ -15,7 +15,7 @@ pub use requirement::{Requirement, RequirementError};
 pub use sections::{
     AskSection, BoardKind, BoardSection, BranchPattern, BranchesSection, CheckSection, CheckTarget,
     CommandLine, DesignKind, DesignSection, Effort, ForbiddenSection, ForgeKind, ForgeSection,
-    GateSection, IsolationKind, IsolationSection, ModelName, ProjectName, ProjectSection, RepoName,
-    RoleSection, Rung, RunnerName, RunnerSection, SpawnSection, StyleSection, ToolName, VcsKind,
-    VcsSection, WorkspacesSection,
+    GateSection, IsolationKind, IsolationSection, ModelName, PackSection, ProjectName,
+    ProjectSection, RepoName, RoleSection, Rung, RunnerName, RunnerSection, SpawnSection,
+    StyleSection, ToolName, VcsKind, VcsSection, WorkspacesSection,
 };

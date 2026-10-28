@@ -7,8 +7,8 @@ use std::str::FromStr;
 use super::sections::{
     AskSection, BoardKind, BoardSection, BranchesSection, CheckSection, CheckTarget, DesignKind,
     DesignSection, ForbiddenSection, ForgeKind, ForgeSection, GateSection, IsolationKind,
-    IsolationSection, ProjectSection, RoleSection, RunnerName, RunnerSection, SpawnSection,
-    StyleSection, ToolName, VcsSection, WorkspacesSection,
+    IsolationSection, PackSection, ProjectSection, RoleSection, RunnerName, RunnerSection,
+    SpawnSection, StyleSection, ToolName, VcsSection, WorkspacesSection,
 };
 use super::{ManifestError, Requirement};
 use crate::domain::{MAX_QUESTIONS, RoleName};
@@ -66,6 +66,9 @@ pub struct Manifest {
     /// `[forbidden]`.
     #[serde(default)]
     pub forbidden: ForbiddenSection,
+    /// `[pack]`; absent means the profiles carry no pack.
+    #[serde(default)]
+    pub pack: Option<PackSection>,
 }
 
 impl Manifest {
@@ -137,6 +140,11 @@ impl Manifest {
             "style",
             "path",
             self.style.as_ref().map(|style| &style.path),
+        )?;
+        require_relative(
+            "pack",
+            "path",
+            self.pack.as_ref().and_then(|pack| pack.path.as_ref()),
         )
     }
 
@@ -170,6 +178,11 @@ impl Manifest {
                 "max",
                 &format!("must be from 1 to {MAX_QUESTIONS}"),
             ));
+        }
+        if let Some(pack) = &self.pack
+            && pack.path.is_some() == pack.tag.is_some()
+        {
+            return Err(invalid("pack", "path", "or `tag`: give exactly one"));
         }
         for (name, runner) in &self.runners {
             if runner.timeout_minutes == 0 {

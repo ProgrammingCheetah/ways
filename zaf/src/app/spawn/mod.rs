@@ -10,6 +10,9 @@
 //! `<!-- zaf:launch <instance> -->` and `<!-- zaf:exit <instance> <status> -->`,
 //! the status being the exit code, `error` when the runner could not run, or
 //! `lost` for a launch whose process vanished without one.
+//!
+//! A dry run ([`plan_only`] and [`dry_run`]) plans the same tick and describes
+//! each launch it would make, writing nothing: no state, no run folder, no comment.
 
 mod state;
 pub mod tick;
@@ -321,8 +324,8 @@ pub type LaunchPorts = (Box<dyn Board>, Box<dyn Runner>);
 /// Each job is a launch with the context it runs under (its own environment).
 /// A thread builds its own board and runner with `ports`, so the ports need not
 /// be shared; the state file is shared and updated under a lock. The results
-/// come back in the jobs' order. A thread that cannot get its ports frees the
-/// launch's slot and reports the failure.
+/// come back in the jobs' order. A thread that cannot get its ports, or that
+/// panics, frees the launch's slot and reports the failure.
 pub fn launch_all(
     jobs: &[(&PlannedLaunch, LaunchContext)],
     ports: &PortsFn<'_>,
@@ -345,8 +348,12 @@ pub fn launch_all(
             .collect();
         handles
             .into_iter()
-            .map(|handle| {
+            .zip(jobs)
+            .map(|(handle, (planned, context))| {
                 handle.join().unwrap_or_else(|_| {
+                    // A panicked launch still frees its slot, so the next tick can use it.
+                    let instance = planned.instance.to_string();
+                    update(&context.state_dir, |state| state.finish(&instance))?;
                     Err(SpawnError::Port(PortError::Backend(
                         "a launch thread panicked".to_owned(),
                     )))
@@ -363,14 +370,32 @@ fn start(
     planned: &PlannedLaunch,
 ) -> Result<(PathBuf, RunRequest), SpawnError> {
     let instance = planned.instance.to_string();
-    let run_dir = context
-        .state_dir
-        .join(RUNS_DIR)
-        .join(slug(&planned.instance));
+    let (run_dir, brief, request) = request_for(context, planned);
     std::fs::create_dir_all(&run_dir).map_err(|source| SpawnError::Write {
         path: run_dir.clone(),
         source,
     })?;
+    if brief.starts_with(&run_dir) {
+        std::fs::write(&brief, TEAM_BRIEF).map_err(|source| SpawnError::Write {
+            path: brief.clone(),
+            source,
+        })?;
+    }
+    let now = humantime::format_rfc3339_seconds(SystemTime::now()).to_string();
+    update(&context.state_dir, |state| state.start(&instance, &now))?;
+    board.comment(planned.instance.epic, &launch_marker(&instance))?;
+    Ok((run_dir, request))
+}
+
+/// A launch's run folder, its standing brief and its request, touching nothing.
+///
+/// The brief is `<state dir>/roles/team.md` when present, else the pack's, which
+/// [`start`] writes into the run folder.
+fn request_for(context: &LaunchContext, planned: &PlannedLaunch) -> (PathBuf, PathBuf, RunRequest) {
+    let run_dir = context
+        .state_dir
+        .join(RUNS_DIR)
+        .join(slug(&planned.instance));
     let own = context
         .state_dir
         .join(ROLES_DIR)
@@ -378,16 +403,8 @@ fn start(
     let brief = if own.is_file() {
         own
     } else {
-        let pack = run_dir.join(BRIEF_FILE);
-        std::fs::write(&pack, TEAM_BRIEF).map_err(|source| SpawnError::Write {
-            path: pack.clone(),
-            source,
-        })?;
-        pack
+        run_dir.join(BRIEF_FILE)
     };
-    let now = humantime::format_rfc3339_seconds(SystemTime::now()).to_string();
-    update(&context.state_dir, |state| state.start(&instance, &now))?;
-    board.comment(planned.instance.epic, &launch_marker(&instance))?;
     let request = RunRequest {
         role: RoleName::from(TEAM_ROLE),
         profile: context.profile,
@@ -395,7 +412,88 @@ fn start(
         dir: run_dir.clone(),
         env: context.env.clone(),
     };
-    Ok((run_dir, request))
+    (run_dir, brief, request)
+}
+
+/// Plans one tick the way [`prepare`] does, changing nothing: launches whose process is
+/// gone are dropped in memory only (and returned as lost), and nothing is reserved.
+pub fn plan_only(
+    board: &dyn Board,
+    state_dir: &Path,
+    manifest: &Manifest,
+    alive: &dyn Fn(u32) -> bool,
+) -> Result<Prepared, SpawnError> {
+    let mut state = load(state_dir)?;
+    let lost = state.prune(alive);
+    let snapshot = snapshot(board)?;
+    let level = read_guard(state_dir)?;
+    let plan = tick::plan(&snapshot, &state, level, Settings::from(manifest));
+    Ok(Prepared { plan, lost })
+}
+
+/// What a runner would run for a request: the command line and the environment it sets.
+pub type DescribeFn<'a> =
+    dyn Fn(&RunRequest) -> Result<(String, BTreeMap<String, String>), PortError> + 'a;
+
+/// One launch a dry run would make.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct DryLaunch {
+    /// The instance.
+    pub instance: String,
+    /// Its epic.
+    pub epic: u64,
+    /// Its tasks.
+    pub tasks: Vec<u64>,
+    /// The profile it would run in.
+    pub profile_dir: PathBuf,
+    /// The environment its process would get, every layer applied.
+    pub env: BTreeMap<String, String>,
+    /// The full command line.
+    pub command: String,
+}
+
+impl DryLaunch {
+    /// The launch as indented lines under a heading.
+    pub fn render_text(&self) -> String {
+        let tasks: Vec<String> = self.tasks.iter().map(|task| format!("#{task}")).collect();
+        let mut lines = vec![
+            format!("would launch {}", self.instance),
+            format!("  epic #{}", self.epic),
+            format!("  tasks {}", tasks.join(" ")),
+            format!("  profile {}", self.profile_dir.display()),
+        ];
+        lines.extend(
+            self.env
+                .iter()
+                .map(|(name, value)| format!("  env {name}={value}")),
+        );
+        lines.push(format!("  command {}", self.command));
+        let mut out = lines.join("\n");
+        out.push('\n');
+        out
+    }
+}
+
+/// Describes each planned launch with `describe`, launching nothing and writing nothing.
+pub fn dry_run(
+    jobs: &[(&PlannedLaunch, LaunchContext)],
+    profile_dir: &Path,
+    describe: &DescribeFn<'_>,
+) -> Result<Vec<DryLaunch>, PortError> {
+    jobs.iter()
+        .map(|(planned, context)| {
+            let (_, _, request) = request_for(context, planned);
+            let (command, env) = describe(&request)?;
+            Ok(DryLaunch {
+                instance: planned.instance.to_string(),
+                epic: planned.instance.epic.get(),
+                tasks: planned.tasks.iter().map(|task| task.get()).collect(),
+                profile_dir: profile_dir.to_owned(),
+                env,
+                command,
+            })
+        })
+        .collect()
 }
 
 /// The team role's profile from the manifest; the pack's `build` when the role is absent.

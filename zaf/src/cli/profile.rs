@@ -7,7 +7,8 @@ use crate::app::profile;
 use crate::composition::Composition;
 
 /// Generates the profiles and prints each file written, or `nothing changed`; with
-/// `--json` prints the report. Exits 2 when a file cannot be written.
+/// `--json` prints the report. Exits 2 when a file cannot be written or the pack
+/// cannot be vendored.
 pub fn run(cli: &Cli, action: &ProfileAction) -> u8 {
     let path = cli.verb.path();
     let composition = match Composition::discover_here() {
@@ -15,7 +16,13 @@ pub fn run(cli: &Cli, action: &ProfileAction) -> u8 {
         Err(error) => return exit::fail_composition(&path, &error),
     };
     let ProfileAction::Init = action;
-    let report = match profile::init(&composition.state_dir(), composition.manifest()) {
+    let shell = composition.shell();
+    let report = match profile::init(
+        composition.root(),
+        &composition.state_dir(),
+        composition.manifest(),
+        shell.as_ref(),
+    ) {
         Ok(report) => report,
         Err(error) => {
             eprintln!("zaf {path}: {error}");

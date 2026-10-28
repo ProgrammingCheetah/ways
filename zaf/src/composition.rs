@@ -5,6 +5,7 @@
 //! is [`CompositionError::Absent`], which a verb turns into a skipped step or a
 //! refusal, never a crash.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -14,17 +15,22 @@ use crate::adapters::github::{GhCommand, GithubBoard, GithubForge};
 use crate::adapters::jj::JjVcs;
 use crate::adapters::runner::ProcessRunner;
 use crate::adapters::shell::SystemShell;
+use crate::app::profile::{self, CONFIG_DIR_VAR};
+use crate::domain::{Profile, RoleName};
 use crate::manifest::{
-    BoardKind, CommandLine, DesignKind, ForgeKind, Manifest, ManifestError, ModelName, RunnerName,
-    VcsKind,
+    BoardKind, CommandLine, DesignKind, Effort, ForgeKind, Manifest, ManifestError, ModelName,
+    RunnerName, VcsKind,
 };
-use crate::ports::{Board, Design, Forge, Gate, Runner, Shell, Vcs};
+use crate::ports::{Board, Design, Forge, Gate, RunRequest, Runner, Shell, Vcs};
 
 /// The manifest's file name at the project root.
 pub const MANIFEST_FILE: &str = "ZAF.toml";
 
 /// The local, git-ignored state folder under the project root.
 pub const STATE_DIR: &str = ".zaf";
+
+/// The runner a role's launch goes through: `[runners.claude]`.
+pub const ROLE_RUNNER: &str = "claude";
 
 /// How long one shell line may take before it is killed: a command step, a named test,
 /// a tool's `--version`. A gate is longer than any of them and has its own, unbounded run.
@@ -64,6 +70,9 @@ pub enum CompositionError {
     /// The manifest names no runner by that name.
     #[error("no [runners.{0}] in the manifest")]
     NoRunner(RunnerName),
+    /// The manifest names no role by that name.
+    #[error("no [roles.{0}] in the manifest")]
+    NoRole(RoleName),
 }
 
 /// A project as zaf sees it: its root, its manifest, and the adapters it names.
@@ -135,6 +144,11 @@ impl Composition {
     /// The local state folder, `<root>/.zaf`.
     pub fn state_dir(&self) -> PathBuf {
         self.root.join(STATE_DIR)
+    }
+
+    /// A profile's home, `<root>/.zaf/profiles/<profile>`: what `CLAUDE_CONFIG_DIR` points at.
+    pub fn profile_dir(&self, profile: Profile) -> PathBuf {
+        profile::home(&self.state_dir(), profile)
     }
 
     /// The project's manifest.
@@ -253,32 +267,72 @@ impl Composition {
         self.build_runner(name, Some(model))
     }
 
+    /// The runner a role launches through: `[runners.claude]` with `{model}` and `{effort}`
+    /// from `[roles.<role>]`, run inside the role's profile (`CLAUDE_CONFIG_DIR` set to
+    /// [`profile_dir`](Self::profile_dir) for requests carrying that profile).
+    pub fn runner_for_role(&self, role: &RoleName) -> Result<Box<dyn Runner>, CompositionError> {
+        Ok(Box::new(self.role_runner(role)?))
+    }
+
+    /// What [`runner_for_role`](Self::runner_for_role) would run for `request`, without
+    /// running it: the command line and the environment it sets.
+    pub fn role_launch(
+        &self,
+        request: &RunRequest,
+    ) -> Result<(String, BTreeMap<String, String>), CompositionError> {
+        let runner = self.role_runner(&request.role)?;
+        Ok((runner.command_line(request), runner.env_for(request)))
+    }
+
+    fn role_runner(&self, role: &RoleName) -> Result<ProcessRunner, CompositionError> {
+        let section = self
+            .manifest
+            .roles
+            .get(role)
+            .ok_or_else(|| CompositionError::NoRole(role.clone()))?;
+        let runner = self.process_runner(
+            &RunnerName::from(ROLE_RUNNER),
+            Some(&section.model),
+            Some(section.effort),
+        )?;
+        let home = self.profile_dir(section.profile);
+        Ok(runner.with_profile_env(
+            section.profile,
+            CONFIG_DIR_VAR,
+            home.to_string_lossy().into_owned(),
+        ))
+    }
+
     fn build_runner(
         &self,
         name: &RunnerName,
         model: Option<&ModelName>,
     ) -> Result<Box<dyn Runner>, CompositionError> {
-        Ok(Box::new(self.process_runner(name, model)?))
+        Ok(Box::new(self.process_runner(name, model, None)?))
     }
 
+    /// The runner's command with `{model}` and `{effort}` filled where given; a
+    /// placeholder left unfilled stays as written.
     fn process_runner(
         &self,
         name: &RunnerName,
         model: Option<&ModelName>,
+        effort: Option<Effort>,
     ) -> Result<ProcessRunner, CompositionError> {
         let section = self
             .manifest
             .runners
             .get(name)
             .ok_or_else(|| CompositionError::NoRunner(name.clone()))?;
-        let command = match model {
-            Some(model) => {
-                CommandLine::from(section.command.as_ref().replace("{model}", model.as_ref()))
-            }
-            None => section.command.clone(),
-        };
+        let mut command = section.command.to_string();
+        if let Some(model) = model {
+            command = command.replace("{model}", model.as_ref());
+        }
+        if let Some(effort) = effort {
+            command = command.replace("{effort}", &effort.to_string());
+        }
         let timeout = Duration::from_secs(section.timeout_minutes * 60);
-        Ok(ProcessRunner::new(command, timeout))
+        Ok(ProcessRunner::new(CommandLine::from(command), timeout))
     }
 
     /// A shell that runs command lines at the project root.

@@ -190,3 +190,74 @@ fn a_sibling_design_dir_follows_the_project_root_rule() {
     );
     assert_eq!(design_dir(root, &design("")), None);
 }
+
+fn profile_homes(root: &Path) -> (PathBuf, PathBuf) {
+    let profiles = root.join(".zaf/profiles");
+    let (lean, build) = (profiles.join("lean"), profiles.join("build"));
+    fs::create_dir_all(&lean).expect("lean");
+    fs::create_dir_all(&build).expect("build");
+    (lean, build)
+}
+
+#[test]
+fn a_profile_whose_auth_status_succeeds_has_its_login() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (lean, build) = profile_homes(dir.path());
+    let commands = FakeCommands::new().with("env", "{\"loggedIn\": true}\n");
+    let report = doctor(dir.path(), &manifest(""), &commands);
+    let lines = report.lines();
+    assert!(
+        lines.contains(&"profile lean: login ok".to_owned()),
+        "{lines:?}"
+    );
+    assert!(
+        lines.contains(&"profile build: login ok".to_owned()),
+        "{lines:?}"
+    );
+    assert_eq!(
+        commands.calls(),
+        [lean, build].map(|home| {
+            vec![
+                "env".to_owned(),
+                format!("CLAUDE_CONFIG_DIR={}", home.display()),
+                "claude".to_owned(),
+                "auth".to_owned(),
+                "status".to_owned(),
+            ]
+        })
+    );
+    assert!(report.passed());
+}
+
+#[test]
+fn a_profile_without_a_login_is_missing_with_its_fix_and_the_doctor_still_passes() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (_, build) = profile_homes(dir.path());
+    let commands = FakeCommands::new().failing("env", "{\"loggedIn\": false}\n");
+    let report = doctor(dir.path(), &manifest(""), &commands);
+    let line = report
+        .lines()
+        .into_iter()
+        .find(|line| line.starts_with("profile build:"))
+        .expect("a build line");
+    assert!(
+        line.starts_with("profile build: login missing (fix: "),
+        "{line}"
+    );
+    assert!(line.contains(&build.display().to_string()), "{line}");
+    assert!(line.contains("[auth] token_env"), "{line}");
+    assert!(report.passed(), "a missing login is reported, not failed");
+    let json = serde_json::to_value(&report).expect("serializes");
+    assert_eq!(json["logins"][1]["profile"], "build");
+    assert_eq!(json["logins"][1]["ok"], false);
+}
+
+#[test]
+fn a_profile_not_generated_yet_is_missing_without_asking() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let commands = FakeCommands::new().with("env", "ok");
+    let report = doctor(dir.path(), &manifest(""), &commands);
+    assert_eq!(report.logins.len(), 2);
+    assert!(report.logins.iter().all(|check| !check.ok));
+    assert!(commands.calls().is_empty());
+}

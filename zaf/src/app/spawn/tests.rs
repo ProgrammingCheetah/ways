@@ -518,3 +518,102 @@ fn a_thread_without_ports_frees_its_slot_and_reports() {
     );
     assert!(load(&state_dir).expect("loads").instances().is_empty());
 }
+
+#[test]
+fn a_panicking_launch_thread_frees_its_slot() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let board = board();
+    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, OWN_PID).expect("prepares");
+    let jobs: Vec<_> = prepared
+        .plan
+        .launches
+        .iter()
+        .map(|planned| (planned, context(&state_dir)))
+        .collect();
+    let ports = || -> Result<LaunchPorts, PortError> { panic!("a launch thread panics") };
+    let results = launch_all(&jobs, &ports);
+    assert!(
+        results
+            .iter()
+            .all(|r| matches!(r, Err(SpawnError::Port(PortError::Backend(_)))))
+    );
+    assert!(load(&state_dir).expect("loads").instances().is_empty());
+}
+
+#[test]
+fn a_dry_run_names_each_launch_and_its_command_line_and_writes_nothing() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let board = board();
+    let prepared = plan_only(&board, &state_dir, &manifest(), &|_| true).expect("plans");
+    assert_eq!(prepared.plan.launches.len(), 2);
+    let profile_dir = state_dir.join("profiles/build");
+    let jobs: Vec<_> = prepared
+        .plan
+        .launches
+        .iter()
+        .map(|planned| {
+            let mut context = context(&state_dir);
+            context
+                .env
+                .insert("ZAF_INSTANCE".to_owned(), planned.instance.to_string());
+            (planned, context)
+        })
+        .collect();
+    // Stands in for the composition: the command line a runner would hand to `sh -c`.
+    let home = profile_dir.display().to_string();
+    let describe = |request: &RunRequest| -> Result<(String, BTreeMap<String, String>), PortError> {
+        let mut env = request.env.clone();
+        env.insert("CLAUDE_CONFIG_DIR".to_owned(), home.clone());
+        Ok((format!("claude -p '{}' --model opus", request.prompt), env))
+    };
+    let dry = dry_run(&jobs, &profile_dir, &describe).expect("describes");
+    let text: String = dry.iter().map(DryLaunch::render_text).collect();
+    let brief = state_dir
+        .join(RUNS_DIR)
+        .join("team-instance-1-on-2")
+        .join(BRIEF_FILE);
+    let first = format!(
+        "would launch team instance 1 on #2\n  epic #2\n  tasks #3 #4\n  profile {home}\n  \
+         env CLAUDE_CONFIG_DIR={home}\n  env ZAF_INSTANCE=team instance 1 on #2\n  \
+         command claude -p 'You are team instance 1 on #2, the team instance for epic #2 of \
+         project bookshelf. Tasks: #3 #4. Read {} first and follow it exactly.' --model opus\n",
+        brief.display()
+    );
+    assert!(text.starts_with(&first), "{text}");
+    assert!(text.contains("would launch team instance 2 on #12\n  epic #12\n  tasks #13\n"));
+    assert!(
+        !state_dir.join(status::SPAWN_STATE_FILE).exists(),
+        "no state file"
+    );
+    assert!(
+        !state_dir.exists(),
+        "nothing written under the state folder"
+    );
+    assert!(board.comments(IssueNumber::from(2)).is_empty());
+    assert!(board.comments(IssueNumber::from(12)).is_empty());
+}
+
+#[test]
+fn a_dry_run_reports_a_dead_launch_as_lost_without_recording_it() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let board = board();
+    prepare(&board, &state_dir, &manifest(), &|_| true, OWN_PID).expect("reserves");
+    let before = std::fs::read(state_dir.join(status::SPAWN_STATE_FILE)).expect("state");
+    let dry = plan_only(&board, &state_dir, &manifest(), &|_| false).expect("plans");
+    assert_eq!(
+        dry.lost,
+        ["team instance 1 on #2", "team instance 2 on #12"]
+    );
+    assert_eq!(
+        std::fs::read(state_dir.join(status::SPAWN_STATE_FILE)).expect("state"),
+        before,
+        "the state is untouched"
+    );
+    assert!(
+        board.comments(IssueNumber::from(2)).is_empty(),
+        "no lost comment"
+    );
+}

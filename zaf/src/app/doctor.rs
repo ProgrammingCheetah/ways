@@ -3,11 +3,16 @@
 //! The manifest itself is validated when it loads, so a report exists only for a
 //! manifest that already parsed. Tools are asked for `<tool> --version` through
 //! [`Commands`], which tests fake and the command line backs with real processes.
+//! Each generated profile is asked whether it carries a login, by `claude auth status`
+//! run with `CLAUDE_CONFIG_DIR` set to it; a missing login is reported with its fix,
+//! never fixed, and does not fail the doctor.
 
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::app::profile::{self, CONFIG_DIR_VAR};
+use crate::composition::STATE_DIR;
 use crate::manifest::{DesignSection, Manifest, Requirement, ToolName};
 
 pub mod fake;
@@ -90,6 +95,33 @@ pub struct PathCheck {
     pub ok: bool,
 }
 
+/// Whether a profile carries a login, as `claude auth status` inside it says.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct LoginCheck {
+    /// The profile's name.
+    pub profile: String,
+    /// Its home, `CLAUDE_CONFIG_DIR` for its runs.
+    pub path: PathBuf,
+    /// Whether it is logged in; a profile not generated yet is not.
+    pub ok: bool,
+}
+
+impl LoginCheck {
+    /// `profile <name>: login ok`, or `login missing` with the fix as a worksheet line.
+    pub fn line(&self) -> String {
+        if self.ok {
+            return format!("profile {}: login ok", self.profile);
+        }
+        format!(
+            "profile {}: login missing (fix: copy .credentials.json from your Claude home into {}, \
+             or set [auth] token_env = \"<VAR>\" in .zaf/local.toml and export that token; \
+             run `zaf profile init` first if the folder is missing)",
+            self.profile,
+            self.path.display()
+        )
+    }
+}
+
 /// Everything `doctor` found.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Report {
@@ -99,6 +131,8 @@ pub struct Report {
     pub design: Option<PathCheck>,
     /// The workspaces folder, which must be creatable.
     pub workspaces: PathCheck,
+    /// One entry per generated profile; informational, it never fails the report.
+    pub logins: Vec<LoginCheck>,
 }
 
 impl Report {
@@ -122,6 +156,7 @@ impl Report {
             .map(|check| format!("{}: {}", check.tool, check.status))
             .collect();
         lines.extend(self.design.iter().map(PathCheck::line));
+        lines.extend(self.logins.iter().map(LoginCheck::line));
         lines.push(self.workspaces.line());
         lines
     }
@@ -205,7 +240,34 @@ fn creatable(path: &Path) -> bool {
     }
 }
 
-/// Checks the required tools, the design folder and the workspaces folder of a loaded manifest.
+/// Asks each generated profile under `<root>/.zaf/profiles/` whether it carries a login.
+///
+/// A profile whose folder is not there yet is missing without asking; one that is
+/// there runs `env CLAUDE_CONFIG_DIR=<home> claude auth status`, which exits 0 only
+/// when logged in.
+pub fn logins(root: &Path, manifest: &Manifest, commands: &dyn Commands) -> Vec<LoginCheck> {
+    let state_dir = root.join(STATE_DIR);
+    profile::generated(manifest)
+        .into_iter()
+        .map(|name| {
+            let path = profile::home(&state_dir, name);
+            let ok = path.is_dir() && {
+                let setting = format!("{CONFIG_DIR_VAR}={}", path.display());
+                commands
+                    .run("env", &[&setting, "claude", "auth", "status"])
+                    .is_ok_and(|output| output.success)
+            };
+            LoginCheck {
+                profile: name.to_string(),
+                path,
+                ok,
+            }
+        })
+        .collect()
+}
+
+/// Checks the required tools, the design folder, the workspaces folder and the profiles'
+/// logins of a loaded manifest.
 pub fn doctor(root: &Path, manifest: &Manifest, commands: &dyn Commands) -> Report {
     let tools = manifest
         .requires
@@ -227,6 +289,7 @@ pub fn doctor(root: &Path, manifest: &Manifest, commands: &dyn Commands) -> Repo
         tools,
         design,
         workspaces,
+        logins: logins(root, manifest, commands),
     }
 }
 

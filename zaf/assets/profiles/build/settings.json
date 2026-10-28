@@ -2,6 +2,7 @@
   "autoCompactWindow": 150000,
   "enableAllProjectMcpServers": false,
   "permissions": {
-    "allow": []
+    "allow": [],
+    "defaultMode": "acceptEdits"
   }
 }

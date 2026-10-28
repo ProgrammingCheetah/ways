@@ -379,3 +379,40 @@ fn a_design_path_is_relative_to_the_project_and_a_sibling_defaults_to_the_repo_n
     );
     assert_eq!(DesignSection::default().dir(root), None);
 }
+
+#[test]
+fn the_pack_comes_from_a_path_or_a_tag_never_both() {
+    let none = load(MINIMAL).expect("loads");
+    assert_eq!(none.pack, None);
+    let path = load(&with("[pack]\npath = \"plugins/kit\"\n")).expect("loads");
+    let pack = path.pack.expect("declared");
+    assert_eq!(
+        pack.dir(Path::new("/work/project")),
+        Some(PathBuf::from("/work/project/plugins/kit"))
+    );
+    let tag = load(&with("[pack]\ntag = \"kit--v1.2.0\"\n")).expect("loads");
+    assert_eq!(
+        tag.pack.expect("declared").tag.as_deref(),
+        Some("kit--v1.2.0")
+    );
+    for text in ["[pack]\n", "[pack]\npath = \"p\"\ntag = \"t\"\n"] {
+        assert!(
+            matches!(
+                load(&with(text)),
+                Err(ManifestError::Invalid {
+                    section: "pack",
+                    ..
+                })
+            ),
+            "{text}"
+        );
+    }
+    assert!(matches!(
+        load(&with("[pack]\npath = \"/abs/kit\"\n")),
+        Err(ManifestError::AbsolutePath {
+            section: "pack",
+            ..
+        })
+    ));
+    assert!(load(&with("[pack]\nbranch = \"x\"\n")).is_err());
+}

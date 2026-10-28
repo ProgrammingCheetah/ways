@@ -105,6 +105,9 @@ pub enum Verb {
         /// The milestone's version the launched instances build (`ZAF_VERSION`).
         #[arg(long)]
         version: Option<String>,
+        /// Plan the tick and print each launch's command line; launch nothing, write nothing.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// The ask log: top pages, recurring questions, gaps.
     Asklog,
@@ -250,7 +253,11 @@ pub fn dispatch(cli: &Cli) -> u8 {
         Verb::Status => status::run(cli),
         Verb::Report(args) => report::run(cli, args),
         Verb::Guard => guard::run(cli),
-        Verb::Spawn { once, version } => spawn::run(cli, *once, version.as_deref()),
+        Verb::Spawn {
+            once,
+            version,
+            dry_run,
+        } => spawn::run(cli, *once, version.as_deref(), *dry_run),
         Verb::Profile { action } => profile::run(cli, action),
     }
 }

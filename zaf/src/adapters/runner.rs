@@ -175,12 +175,16 @@ impl ProcessRunner {
     }
 }
 
-impl Runner for ProcessRunner {
-    /// The transcript is `report.md`; a process ended by a signal has exit code `-1`.
-    /// The request's role selects the command template; the profile and the request add environment.
-    fn run(&self, request: &RunRequest) -> Result<RunOutput, PortError> {
-        let role = self.roles.get(&request.role);
-        let template = role.map_or(&self.command, |run| &run.command);
+impl ProcessRunner {
+    /// The command template the request's role runs with: its own, or the runner's.
+    fn template_for(&self, request: &RunRequest) -> &CommandLine {
+        self.roles
+            .get(&request.role)
+            .map_or(&self.command, |run| &run.command)
+    }
+
+    /// The environment a run of `request` gets on top of the caller's, every layer applied.
+    pub fn env_for(&self, request: &RunRequest) -> BTreeMap<String, String> {
         let mut env = self.env.clone();
         env.extend(
             self.profiles
@@ -188,9 +192,33 @@ impl Runner for ProcessRunner {
                 .cloned()
                 .unwrap_or_default(),
         );
-        env.extend(role.map(|run| run.env.clone()).unwrap_or_default());
+        env.extend(
+            self.roles
+                .get(&request.role)
+                .map(|run| run.env.clone())
+                .unwrap_or_default(),
+        );
         env.extend(request.env.clone());
-        let report = self.launch(template, &env, &request.prompt, &request.dir)?;
+        env
+    }
+
+    /// The command line a run of `request` hands to `sh -c`, placeholders filled.
+    pub fn command_line(&self, request: &RunRequest) -> String {
+        expand(self.template_for(request), &request.prompt, &request.dir)
+    }
+}
+
+impl Runner for ProcessRunner {
+    /// The transcript is `report.md`; a process ended by a signal has exit code `-1`.
+    /// The request's role selects the command template; the profile and the request add environment.
+    fn run(&self, request: &RunRequest) -> Result<RunOutput, PortError> {
+        let env = self.env_for(request);
+        let report = self.launch(
+            self.template_for(request),
+            &env,
+            &request.prompt,
+            &request.dir,
+        )?;
         let transcript = fs::read_to_string(&report.report).map_err(|error| {
             PortError::Backend(format!("cannot read {}: {error}", report.report.display()))
         })?;

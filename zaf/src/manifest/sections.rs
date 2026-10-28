@@ -375,6 +375,26 @@ pub struct IsolationSection {
     pub image: Option<String>,
 }
 
+/// `[pack]`: where the pack a profile carries comes from: a local checkout or a release tag.
+///
+/// Exactly one key: `path` (the pack's folder, relative to the project root) or `tag`
+/// (a release installed from the marketplace). Absent means the profiles carry no pack.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PackSection {
+    /// The pack's folder, relative to the project root.
+    pub path: Option<PathBuf>,
+    /// The release tag installed from the marketplace.
+    pub tag: Option<String>,
+}
+
+impl PackSection {
+    /// The pack's folder on disk for a project rooted at `root`, when `path` is given.
+    pub fn dir(&self, root: &Path) -> Option<PathBuf> {
+        self.path.as_ref().map(|path| root.join(path))
+    }
+}
+
 /// `[forbidden]`: commands no profile may run. Default: none.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]

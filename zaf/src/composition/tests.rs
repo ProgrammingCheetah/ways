@@ -150,7 +150,7 @@ fn a_runner_with_a_model_has_its_command_filled_and_its_timeout_from_the_manifes
         "`runner` leaves the placeholder alone"
     );
     let built = composition
-        .process_runner(&claude, Some(&ModelName::from("haiku")))
+        .process_runner(&claude, Some(&ModelName::from("haiku")), None)
         .expect("builds");
     let expected = ProcessRunner::new(
         CommandLine::from("echo model=haiku"),
@@ -158,7 +158,7 @@ fn a_runner_with_a_model_has_its_command_filled_and_its_timeout_from_the_manifes
     );
     assert_eq!(built, expected, "timeout_minutes = 10");
     let default = composition
-        .process_runner(&RunnerName::from("local"), None)
+        .process_runner(&RunnerName::from("local"), None, None)
         .expect("builds");
     assert_eq!(
         default,
@@ -279,4 +279,58 @@ fn a_manifest_outside_the_workspaces_path_is_its_own_root() {
     let found = Composition::discover(&inner).expect("finds the nearest");
     assert_eq!(found.root(), inner.as_path());
     fs::remove_dir_all(&parent).expect("clean up");
+}
+
+#[test]
+fn a_role_runner_carries_its_profile_dir_its_model_and_its_effort() {
+    let root = scratch_dir("role");
+    // A stand-in for the model CLI: it prints what it was given and where its home is.
+    write_manifest(
+        &root,
+        &format!(
+            "{HEAD}[runners.claude]\n\
+             command = \"printf '%s|%s|%s' {{model}} {{effort}} \\\"$CLAUDE_CONFIG_DIR\\\"\"\n\
+             [roles.team]\nmodel = \"opus\"\neffort = \"xhigh\"\nprofile = \"build\"\nturns = 5\n"
+        ),
+    );
+    let composition = Composition::load(&root).expect("loads");
+    let team = RoleName::from("team");
+    let home = root.join(".zaf/profiles/build");
+    assert_eq!(composition.profile_dir(Profile::Build), home);
+    let runner = composition.runner_for_role(&team).expect("builds");
+    let request = RunRequest {
+        role: team.clone(),
+        profile: Profile::Build,
+        ..request(&root)
+    };
+    assert_eq!(
+        runner.run(&request).expect("runs").transcript,
+        format!("opus|xhigh|{}", home.display())
+    );
+    let (line, env) = composition.role_launch(&request).expect("describes");
+    assert_eq!(line, "printf '%s|%s|%s' opus xhigh \"$CLAUDE_CONFIG_DIR\"");
+    assert_eq!(
+        env,
+        std::collections::BTreeMap::from([(
+            "CLAUDE_CONFIG_DIR".to_owned(),
+            home.display().to_string()
+        )])
+    );
+    assert!(matches!(
+        composition.runner_for_role(&RoleName::from("nobody")),
+        Err(CompositionError::NoRole(_))
+    ));
+    fs::remove_dir_all(&root).expect("clean up");
+}
+
+#[test]
+fn a_role_without_the_claude_runner_has_no_runner() {
+    let root = scratch_dir("role-no-runner");
+    write_manifest(&root, HEAD);
+    let composition = Composition::load(&root).expect("loads");
+    assert!(matches!(
+        composition.runner_for_role(&RoleName::from("team")),
+        Err(CompositionError::NoRunner(name)) if name.as_ref() == ROLE_RUNNER
+    ));
+    fs::remove_dir_all(&root).expect("clean up");
 }
