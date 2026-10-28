@@ -1,0 +1,44 @@
+name: zaf
+
+on:
+  pull_request:
+    paths:
+      - "zaf/**"
+      - ".github/workflows/zaf.yml"
+  push:
+    branches: [main]
+    paths:
+      - "zaf/**"
+      - ".github/workflows/zaf.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zaf-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: zaf
+
+jobs:
+  gate:
+    name: gate (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: zaf
+      - run: cargo fmt --check
+      - run: cargo build --locked
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
