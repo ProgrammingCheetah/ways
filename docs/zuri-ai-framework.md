@@ -255,7 +255,8 @@ One binary, `zaf` (§11.5), one page of help pasted into every standing brief, e
 | `zaf slice open|pr|merge|drop` | the machinery lane | workspace, branch, PR, merge, cleanup, each one call |
 | `zaf spawn` | the Orchestrator | the tick of §5.1 |
 | `zaf asklog` | nothing today | the ask log: top pages, recurring questions, gaps |
-| `zaf burn` | the ad-hoc script of 2026-10-27 | the weekly per-role table |
+| `zaf status` | reading the board and the process list by hand | board, running instances, slots, guard, open questions, one screen |
+| `zaf report` (was `burn`) | the ad-hoc script of 2026-10-27 | the weekly table: tokens per role, findings by source, rounds per task, cycle time |
 | `zaf guard` | nothing today | the budget state the spawner reads |
 
 Rules: deterministic; exit code plus structured output, never a model's reading; a failure stays inside its verb.
@@ -395,3 +396,15 @@ Each line: the options, then Claude's answer.
 6. **The challenger:** Opus · Gemini. *Claude: Opus (revised 2026-10-27): rare and judgment-heavy, so quality wins and the budget barely notices.*
 7. **Batch size:** four · an epic at a time. *Claude: four.*
 8. **Previews:** Storybook and staging on every integration merge · on milestone only. *Claude: every merge; it is iteration point 5.*
+
+## 12. Gaps closed on review (2026-10-27)
+1. **Dogfood.** zaf is built with the framework: ways carries its own `ZAF.toml` (board: ways issues, public; design: `repo-dir`, `docs/`). ways is a git repo, so phase 1 starts with either jj colocated in ways (Claude's pick: `jj git init --colocate`, nothing lost) or the git `Vcs` adapter built first. The Engineer rules.
+2. **Leases, not claims.** A claim carries a heartbeat (the instance touches its claim comment each turn batch); the spawner reclaims a claim with no heartbeat for the lease window, drops the slice's workspace and returns the task to `ready`.
+3. **One instance per epic at a time.** Parallelism is across epics, never within one, so no two instances share an integration state.
+4. **`zaf status`.** Board, running instances, slots, guard, open questions, on one screen. `/my-queue` reads it.
+5. **Forbidden commands.** `[forbidden]` in the manifest lists commands no profile may run; every generated settings file denies them. Doors protect the design; this protects the machine.
+6. **Idempotent verbs.** Re-running any verb on an already-done state succeeds quietly (`slice open` on an existing workspace, `claim` on one's own claim, `merge` on a merged PR). Instances may retry freely.
+7. **A fake Runner for end-to-end tests.** Beside the fake adapters per port, a Runner that replays recorded transcripts runs the whole pipeline on a fixture repo in CI at zero tokens. A change to zaf or the pack proves itself there before any project sees it.
+8. **Findings by source.** `check` records which source found each finding; the weekly report (`burn` grows into `report`) shows findings by source, rounds per task and cycle time. This is the record the Gemini-versus-Opus security trial needs.
+9. **Notifications are the board's.** A question ticket assigns the Engineer; GitHub notifies. No notify code until that proves insufficient.
+10. **Migration from teams 1.x.** `queue.md` becomes the board, `TEAMS.md` becomes `ZAF.toml` plus `.zaf/roles/`, rulings files stay in the design source; `zaf init --from-teams` reads the old file. A runner that is unavailable makes its `check` step report "unavailable" and the PR waits; it never merges around a missing review.
