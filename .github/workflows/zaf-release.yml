@@ -1,0 +1,91 @@
+name: zaf-release
+
+on:
+  push:
+    tags:
+      - "zaf-v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zaf-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check Cargo.toml version matches the tag
+        shell: bash
+        run: |
+          want="${GITHUB_REF_NAME#zaf-v}"
+          have="$(grep -m1 '^version' zaf/Cargo.toml | cut -d'"' -f2)"
+          if [ "$have" != "$want" ]; then
+            echo "zaf/Cargo.toml version '$have' does not match tag '$GITHUB_REF_NAME' (expected '$want')" >&2
+            exit 1
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: zaf
+          key: ${{ matrix.target }}
+      - name: Install musl-tools
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Build
+        working-directory: zaf
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Package archive and checksum
+        shell: bash
+        run: |
+          name="zaf-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          stage="$RUNNER_TEMP/$name"
+          mkdir -p "$stage" dist
+          cp "zaf/target/${{ matrix.target }}/release/zaf" "$stage/"
+          for lic in LICENSE zaf/LICENSE; do
+            if [ -f "$lic" ]; then cp "$lic" "$stage/LICENSE"; break; fi
+          done
+          tar -czf "dist/$name.tar.gz" -C "$RUNNER_TEMP" "$name"
+          (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+          cat "dist/$name.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: dist
+          pattern: dist-*
+          merge-multiple: true
+      - name: Create the release if absent, then upload archives and sums
+        shell: bash
+        run: |
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes
+          fi
+          gh release upload "$GITHUB_REF_NAME" dist/* --clobber
