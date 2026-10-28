@@ -1,13 +1,23 @@
-//! The command line: every verb listed, each exiting 64 until it is built.
+//! The command line: every verb listed, each in its own module, exiting 64 until it is built.
 //!
-//! Terse by default, `--json` for the spawner, `--more` for depth.
+//! Terse by default, `--json` for the spawner, `--more` for depth. A verb module
+//! owns the printing and the exit code; the use case it calls lives in
+//! [`crate::app`] and sees only ports.
 
 use std::ffi::OsString;
 
 use crate::domain::IssueNumber;
 
-/// The exit code of a verb that is listed but not built yet.
-pub const NOT_IMPLEMENTED: u8 = 64;
+pub mod ask;
+pub mod asklog;
+pub mod board;
+pub mod brief;
+pub mod changes;
+pub mod check;
+pub mod exit;
+pub mod slice;
+
+pub use exit::NOT_IMPLEMENTED;
 
 /// `zaf`: the verb set of the AI framework.
 #[derive(Debug, clap::Parser)]
@@ -212,10 +222,26 @@ where
     )
 }
 
-/// Runs a parsed command line. No verb is built yet: each says so and exits 64.
+/// Runs a parsed command line: each verb goes to its module; an unbuilt one says so and exits 64.
 pub fn dispatch(cli: &Cli) -> u8 {
-    eprintln!("zaf {}: not implemented", cli.verb.path());
-    NOT_IMPLEMENTED
+    match &cli.verb {
+        Verb::Board { action } => board::run(cli, action),
+        Verb::Ask { task, questions } => ask::run(cli, *task, questions),
+        Verb::Brief { task } => brief::run(cli, *task),
+        Verb::Check { target, status } => check::run(cli, target, *status),
+        Verb::Changes { task, path } => changes::run(cli, *task, path.as_deref()),
+        Verb::Verify { task } => check::verify(cli, *task),
+        Verb::Slice { action } => slice::run(cli, action),
+        Verb::Asklog => asklog::run(cli),
+        Verb::Spawn { .. }
+        | Verb::Status
+        | Verb::Report
+        | Verb::Guard
+        | Verb::Init { .. }
+        | Verb::Doctor
+        | Verb::Setup
+        | Verb::Profile { .. } => exit::not_built(&cli.verb.path()),
+    }
 }
 
 #[cfg(test)]

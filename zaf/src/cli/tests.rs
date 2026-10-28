@@ -38,8 +38,12 @@ fn every_verb_is_listed() {
     assert_eq!(slice_actions, ["open", "pr", "merge", "drop"]);
 }
 
+/// The verbs that are built: each exits by its own rules, so the sweep below skips them.
+/// A verb joins this list in the same change that builds it.
+const BUILT: &[&str] = &[];
+
 #[test]
-fn every_verb_exits_not_implemented() {
+fn every_unbuilt_verb_exits_not_implemented() {
     let invocations: [&[&str]; 23] = [
         &["board", "ready"],
         &["board", "claim", "#2"],
@@ -67,6 +71,10 @@ fn every_verb_exits_not_implemented() {
     ];
     for invocation in invocations {
         let args = std::iter::once("zaf").chain(invocation.iter().copied());
+        let cli = <Cli as clap::Parser>::try_parse_from(args.clone()).expect("parses");
+        if BUILT.contains(&cli.verb.path().as_str()) {
+            continue;
+        }
         assert_eq!(run(args), NOT_IMPLEMENTED, "zaf {}", invocation.join(" "));
     }
 }
