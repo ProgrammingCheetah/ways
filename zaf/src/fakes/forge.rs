@@ -3,13 +3,16 @@
 use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use crate::ports::{Check, Forge, PortError, PrMerge, PrNumber, PrRequest, ReviewComment};
+use crate::ports::{
+    Check, Forge, PortError, PrMerge, PrNumber, PrRequest, ReviewComment, ScanningAlert,
+};
 
 #[derive(Debug, Clone)]
 struct PullRequest {
     request: PrRequest,
     checks: Vec<Check>,
     comments: Vec<ReviewComment>,
+    alerts: Vec<ScanningAlert>,
     merged: bool,
 }
 
@@ -20,7 +23,7 @@ struct State {
 }
 
 /// A forge held in memory. Arrange reviews with [`FakeForge::set_checks`]
-/// and [`FakeForge::add_review_comment`].
+/// [`FakeForge::add_review_comment`] and [`FakeForge::set_scanning_alerts`].
 #[derive(Debug, Default)]
 pub struct FakeForge {
     state: Mutex<State>,
@@ -42,6 +45,17 @@ impl FakeForge {
     ) -> Result<(), PortError> {
         let mut state = self.state();
         state.pull_mut(pr)?.comments.push(comment);
+        Ok(())
+    }
+
+    /// Replaces a pull request's open code scanning alerts.
+    pub fn set_scanning_alerts(
+        &self,
+        pr: PrNumber,
+        alerts: Vec<ScanningAlert>,
+    ) -> Result<(), PortError> {
+        let mut state = self.state();
+        state.pull_mut(pr)?.alerts = alerts;
         Ok(())
     }
 
@@ -80,6 +94,7 @@ impl Forge for FakeForge {
             request: request.clone(),
             checks: Vec::new(),
             comments: Vec::new(),
+            alerts: Vec::new(),
             merged: false,
         };
         state.pulls.insert(number, pull);
@@ -94,6 +109,11 @@ impl Forge for FakeForge {
     fn review_comments(&self, pr: PrNumber) -> Result<Vec<ReviewComment>, PortError> {
         let mut state = self.state();
         Ok(state.pull_mut(pr)?.comments.clone())
+    }
+
+    fn scanning_alerts(&self, pr: PrNumber) -> Result<Vec<ScanningAlert>, PortError> {
+        let mut state = self.state();
+        Ok(state.pull_mut(pr)?.alerts.clone())
     }
 
     fn merge(&self, pr: PrNumber) -> Result<PrMerge, PortError> {

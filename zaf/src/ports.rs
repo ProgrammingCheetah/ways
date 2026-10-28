@@ -18,6 +18,7 @@ pub use design::{Design, Page};
 pub use errors::PortError;
 pub use forge::{
     Author, Check, CheckName, CheckState, Forge, PrMerge, PrNumber, PrRequest, ReviewComment,
+    RuleId, ScanningAlert,
 };
 pub use gate::{Gate, GateLevel, GateRun, GateVerdict};
 pub use runner::{RunOutput, RunRequest, Runner};

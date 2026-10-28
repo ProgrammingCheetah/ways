@@ -72,6 +72,20 @@ pub struct ReviewComment {
     pub location: Option<Location>,
 }
 
+text_newtype! {
+    /// The id of the rule a code scanner flagged (`js/sql-injection`).
+    RuleId
+}
+
+/// One open code scanning alert on a pull request's head.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanningAlert {
+    /// The rule that fired.
+    pub rule: RuleId,
+    /// Where it fired, when the scanner said.
+    pub location: Option<Location>,
+}
+
 /// What a pull request is opened from and into.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrRequest {
@@ -104,6 +118,9 @@ pub trait Forge {
 
     /// The pull request's review comments, oldest first.
     fn review_comments(&self, pr: PrNumber) -> Result<Vec<ReviewComment>, PortError>;
+
+    /// The open code scanning alerts for the pull request's head ref.
+    fn scanning_alerts(&self, pr: PrNumber) -> Result<Vec<ScanningAlert>, PortError>;
 
     /// Merges the pull request; one already merged succeeds with [`PrMerge::AlreadyMerged`].
     fn merge(&self, pr: PrNumber) -> Result<PrMerge, PortError>;

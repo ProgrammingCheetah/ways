@@ -65,6 +65,35 @@ fn checks_and_review_comments_read_back() {
 }
 
 #[test]
+fn scanning_alerts_read_back_per_pull_request() {
+    let forge = FakeForge::default();
+    let port: &dyn Forge = &forge;
+    let pr = port.open_pr(&request("feature/v1-export-2")).expect("open");
+    assert_eq!(port.scanning_alerts(pr), Ok(Vec::new()));
+    let alerts = vec![
+        ScanningAlert {
+            rule: RuleId::from("js/sql-injection"),
+            location: Some(Location {
+                path: "src/export.rs".to_owned(),
+                line: Some(40),
+            }),
+        },
+        ScanningAlert {
+            rule: RuleId::from("js/unused-import"),
+            location: None,
+        },
+    ];
+    forge
+        .set_scanning_alerts(pr, alerts.clone())
+        .expect("arrange alerts");
+    assert_eq!(port.scanning_alerts(pr), Ok(alerts));
+    assert!(matches!(
+        port.scanning_alerts(PrNumber::from(99)),
+        Err(PortError::NotFound(_))
+    ));
+}
+
+#[test]
 fn merge_is_idempotent() {
     let forge = FakeForge::default();
     let port: &dyn Forge = &forge;

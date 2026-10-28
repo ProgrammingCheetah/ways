@@ -10,7 +10,8 @@ use crate::domain::{Instance, InstanceNumber, IssueNumber, Location, RoleName, T
 use crate::manifest::RepoName;
 use crate::ports::{
     Author, BaseName, Board, Check, CheckName, CheckState, ClaimOutcome, ClaimRecord, Forge,
-    NewQuestion, PortError, PrMerge, PrNumber, PrRequest, ReviewComment, SliceName, Ticket,
+    NewQuestion, PortError, PrMerge, PrNumber, PrRequest, ReviewComment, RuleId, ScanningAlert,
+    SliceName, Ticket,
 };
 
 const REPO: &str = "example/tracker";
@@ -718,6 +719,53 @@ fn review_comments_merge_reviews_and_line_comments_oldest_first() {
         ]),
     ];
     assert_eq!(fake.calls(), expected_calls);
+}
+
+#[test]
+fn scanning_alerts_read_the_open_alerts_of_the_head_ref() {
+    let fake = FakeGh::new();
+    let alerts = r#"[[
+        {"rule":{"id":"js/sql-injection"},"most_recent_instance":{"location":{"path":"src/export.rs","start_line":40}}}
+    ],[
+        {"rule":{"id":"js/unused-import"},"most_recent_instance":null},
+        {"rule":{"id":"js/path-injection"},"most_recent_instance":{"location":{"path":"src/read.rs"}}}
+    ]]"#;
+    let endpoint = format!("repos/{REPO}/code-scanning/alerts?ref=refs/pull/7/head&state=open");
+    fake.on(&format!("api {endpoint} *"), alerts);
+    let alert = |rule: &str, location: Option<Location>| ScanningAlert {
+        rule: RuleId::from(rule),
+        location,
+    };
+    let expected_alerts = vec![
+        alert(
+            "js/sql-injection",
+            Some(Location {
+                path: "src/export.rs".to_owned(),
+                line: Some(40),
+            }),
+        ),
+        alert("js/unused-import", None),
+        alert(
+            "js/path-injection",
+            Some(Location {
+                path: "src/read.rs".to_owned(),
+                line: None,
+            }),
+        ),
+    ];
+    assert_eq!(
+        fake.forge().scanning_alerts(PrNumber::from(7)),
+        Ok(expected_alerts)
+    );
+    let expected_calls = vec![argv(&["api", &endpoint, "--paginate", "--slurp"])];
+    assert_eq!(fake.calls(), expected_calls);
+
+    let disabled = FakeGh::new();
+    disabled.fail_on("api *", "Code scanning is not enabled for this repository");
+    assert!(matches!(
+        disabled.forge().scanning_alerts(PrNumber::from(7)),
+        Err(PortError::Backend(_))
+    ));
 }
 
 #[test]

@@ -6,7 +6,7 @@ use crate::fakes::{FakeForge, FakeRunner};
 use crate::manifest::CommandLine;
 use crate::ports::{
     BaseName, Check, CheckName, CheckState, GateRun, GateVerdict, PrMerge, PrRequest,
-    ReviewComment, RunOutput, RunRequest, SliceName,
+    ReviewComment, RunOutput, RunRequest, ScanningAlert, SliceName,
 };
 
 /// Lends a shared fake forge to a step's thread.
@@ -23,6 +23,10 @@ impl Forge for SharedForge {
 
     fn review_comments(&self, pr: PrNumber) -> Result<Vec<ReviewComment>, PortError> {
         self.0.review_comments(pr)
+    }
+
+    fn scanning_alerts(&self, pr: PrNumber) -> Result<Vec<ScanningAlert>, PortError> {
+        self.0.scanning_alerts(pr)
     }
 
     fn merge(&self, pr: PrNumber) -> Result<PrMerge, PortError> {

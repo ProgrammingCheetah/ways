@@ -2,6 +2,8 @@
 
 use std::time::SystemTime;
 
+use serde::Deserialize;
+
 use super::GhCommand;
 use super::command::number_from_url;
 use super::rows::{
@@ -10,7 +12,7 @@ use super::rows::{
 use crate::domain::Location;
 use crate::ports::{
     Author, Check, CheckName, CheckState, Forge, PortError, PrMerge, PrNumber, PrRequest,
-    ReviewComment,
+    ReviewComment, RuleId, ScanningAlert,
 };
 
 /// The author shown for a comment whose account was deleted, as GitHub shows it.
@@ -46,6 +48,52 @@ fn author(user: Option<UserRow>) -> Author {
 fn parse_time(text: &str) -> Result<SystemTime, PortError> {
     humantime::parse_rfc3339(text)
         .map_err(|error| PortError::Backend(format!("gh printed a bad time `{text}`: {error}")))
+}
+
+/// An alert as `repos/{repo}/code-scanning/alerts` prints it.
+#[derive(Debug, Deserialize)]
+struct AlertRow {
+    rule: RuleRow,
+    #[serde(default)]
+    most_recent_instance: Option<InstanceRow>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RuleRow {
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct InstanceRow {
+    #[serde(default)]
+    location: Option<AlertLocationRow>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AlertLocationRow {
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    start_line: Option<u32>,
+}
+
+impl From<AlertRow> for ScanningAlert {
+    fn from(row: AlertRow) -> Self {
+        let location = row
+            .most_recent_instance
+            .and_then(|instance| instance.location)
+            .and_then(|location| {
+                let path = location.path?;
+                Some(Location {
+                    path,
+                    line: location.start_line,
+                })
+            });
+        Self {
+            rule: RuleId::from(row.rule.id),
+            location,
+        }
+    }
 }
 
 impl Forge for GithubForge {
@@ -131,6 +179,13 @@ impl Forge for GithubForge {
         }
         dated.sort_by_key(|(at, _)| *at);
         Ok(dated.into_iter().map(|(_, comment)| comment).collect())
+    }
+
+    fn scanning_alerts(&self, pr: PrNumber) -> Result<Vec<ScanningAlert>, PortError> {
+        let number = bare(pr);
+        let endpoint = format!("code-scanning/alerts?ref=refs/pull/{number}/head&state=open");
+        let rows: Vec<AlertRow> = self.gh.api_list(&endpoint)?;
+        Ok(rows.into_iter().map(ScanningAlert::from).collect())
     }
 
     fn merge(&self, pr: PrNumber) -> Result<PrMerge, PortError> {
