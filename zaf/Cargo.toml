@@ -17,6 +17,7 @@ clap = { version = "4.6", features = ["derive"] }
 derive_more = { version = "2.1", features = ["display", "from", "as_ref"] }
 semver = "1.0"
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1"
 strum = { version = "0.28", features = ["derive"] }
 thiserror = "2.0"
 toml = "1.1"
