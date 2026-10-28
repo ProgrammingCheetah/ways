@@ -1,0 +1,17 @@
+{
+  "description": "At session start in a project with a ZAF.toml, run `zaf doctor` and print its table; elsewhere, do nothing.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -f \"$CLAUDE_PROJECT_DIR/ZAF.toml\" ] || exit 0; if command -v zaf >/dev/null 2>&1; then echo 'zaf doctor:'; cd \"$CLAUDE_PROJECT_DIR\" && zaf doctor 2>&1; else echo 'zaf doctor: this project has a ZAF.toml but zaf is not on PATH'; fi; exit 0",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}
