@@ -1,6 +1,6 @@
 # Release <version> objectives: <one line, in the Engineer's words>
 
-<date> · Interview: <the Orchestrator, or "Claude"> with the Engineer · QA: <qa name> (the top-level QA, fresh) · **Draft until the Engineer signs it.**
+<date> · Interview: Claude with the Engineer · QA: a fresh `teams:designer` · **Draft until the Engineer signs it.**
 
 <!-- Written by /teams:objectives from the Engineer's answers: their words, lightly edited, never invented.
      Objectives are outcomes (what changes for someone), not features; features go under In scope, each serving an objective.
