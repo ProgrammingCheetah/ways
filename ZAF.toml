@@ -25,7 +25,7 @@ repo = "ProgrammingCheetah/ways"
 kind = "none"
 
 [workspaces]
-path = "../ways-ws"
+path = ".zaf/workspaces"
 
 [branches]
 integration = "feature/{version}"
