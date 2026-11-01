@@ -183,6 +183,28 @@ fn a_batch_holds_one_slot() {
 }
 
 #[test]
+fn a_second_epic_launches_beside_a_running_two_task_instance() {
+    let state = SpawnState {
+        launches: vec![
+            running(46, "team instance 3 on #37"),
+            running(47, "team instance 3 on #37"),
+        ],
+        next_instance: 4,
+        ..SpawnState::default()
+    };
+    let board = snapshot(vec![task(60, 50, "")]);
+    let plan = plan(&board, &state, Level::Green, settings(2));
+    assert_eq!(plan.slots.running, 1);
+    assert_eq!(plan.slots.free, 1);
+    assert_eq!(plan.launches.len(), 1);
+    assert_eq!(
+        plan.launches[0].instance.to_string(),
+        "team instance 4 on #50"
+    );
+    assert!(plan.epics.is_empty());
+}
+
+#[test]
 fn a_task_without_an_epic_is_skipped() {
     let mut orphan = task(3, 2, "");
     orphan.epic = None;

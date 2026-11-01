@@ -4,10 +4,10 @@
 //! `.zaf/spawn.state`, the spawner's file, gives what is running.
 //! The guard line is whatever `zaf guard` last wrote.
 
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use super::guard::{self, GuardError, GuardState};
+use super::spawn;
 use crate::ports::{Board, PortError, Ticket};
 
 /// The spawner's state file under the state folder.
@@ -65,6 +65,15 @@ pub struct Launch {
     pub started_at: Option<String>,
 }
 
+/// A running instance and the tasks it carries.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct InstanceLine {
+    /// The instance, as `<role> instance <n> on #<epic>`.
+    pub instance: String,
+    /// Its tasks.
+    pub tasks: Vec<u64>,
+}
+
 /// The slots: how many there are and how many are free (a slot is one distinct running instance).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct Slots {
@@ -81,7 +90,11 @@ pub struct Status {
     pub ready: Vec<TicketLine>,
     /// Claims held now.
     pub claimed: Vec<ClaimLine>,
-    /// Launches running now, from `spawn.state`.
+    /// Running instances, from `spawn.state`: one slot each, however many tasks.
+    pub running_count: usize,
+    /// The running instances, each once with the tasks it carries.
+    pub instances: Vec<InstanceLine>,
+    /// Every recorded launch, one per task, from `spawn.state`.
     pub running: Vec<Launch>,
     /// The slots.
     pub slots: Slots,
@@ -91,31 +104,16 @@ pub struct Status {
     pub questions: Vec<TicketLine>,
 }
 
-/// What the spawner writes to `spawn.state`: a JSON object. Its `questions` array, if any, is
-/// not read: the board is the source of open questions.
-#[derive(Debug, Default, serde::Deserialize)]
-struct SpawnState {
-    #[serde(default)]
-    launches: Vec<Launch>,
-}
-
-fn read_spawn_state(state_dir: &Path) -> Result<SpawnState, StatusError> {
-    let path = state_dir.join(SPAWN_STATE_FILE);
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(SpawnState::default());
-        }
-        Err(source) => {
-            return Err(StatusError::SpawnState {
-                path,
-                reason: source.to_string(),
-            });
-        }
-    };
-    serde_json::from_str(&text).map_err(|error| StatusError::SpawnState {
-        path,
-        reason: error.to_string(),
+/// Reads `spawn.state` through the spawner's own reader, so the state owns the count.
+/// Its `questions` array is not used: the board is the source of open questions.
+fn read_spawn_state(state_dir: &Path) -> Result<spawn::SpawnState, StatusError> {
+    spawn::load(state_dir).map_err(|error| match error {
+        spawn::SpawnError::Read { path, reason } => StatusError::SpawnState { path, reason },
+        spawn::SpawnError::Write { path, source } => StatusError::SpawnState {
+            path,
+            reason: source.to_string(),
+        },
+        spawn::SpawnError::Port(error) => StatusError::Board(error),
     })
 }
 
@@ -134,21 +132,26 @@ pub fn status(board: &dyn Board, state_dir: &Path, slots: u32) -> Result<Status,
         })
         .collect();
     let questions = board.questions()?.into_iter().map(ticket_line).collect();
-    let running = state.launches;
-    // A batch of tasks shares one instance and one slot: count instances, not entries.
-    let instances: BTreeSet<&str> = running
-        .iter()
-        .map(|launch| launch.instance.as_str())
+    // A batch of tasks shares one instance and one slot; the state counts them.
+    let in_use = state.running();
+    let instances = state
+        .running_instances()
+        .into_iter()
+        .map(|instance| InstanceLine {
+            tasks: state.tasks_of(&instance),
+            instance: instance.to_string(),
+        })
         .collect();
-    let in_use = u32::try_from(instances.len()).unwrap_or(u32::MAX);
     Ok(Status {
         ready,
         claimed,
         slots: Slots {
             total: slots,
-            free: slots.saturating_sub(in_use),
+            free: slots.saturating_sub(u32::try_from(in_use).unwrap_or(u32::MAX)),
         },
-        running,
+        running_count: in_use,
+        instances,
+        running: state.launches,
         guard: guard::read(state_dir)?,
         questions,
     })
@@ -193,19 +196,14 @@ impl Status {
             self.questions.len(),
             numbers(self.questions.iter().map(|q| q.number))
         ));
-        line(format!("running   {}", self.running.len()));
-        for launch in &self.running {
-            let pid = launch
-                .pid
-                .map_or(String::new(), |pid| format!(" pid {pid}"));
-            let since = launch
-                .started_at
-                .as_ref()
-                .map_or(String::new(), |at| format!(" since {at}"));
-            line(format!(
-                "  #{} {}{pid}{since}",
-                launch.task, launch.instance
-            ));
+        line(format!("running   {}", self.running_count));
+        for instance in &self.instances {
+            let tasks: Vec<String> = instance
+                .tasks
+                .iter()
+                .map(|task| format!("#{task}"))
+                .collect();
+            line(format!("  {}: {}", instance.instance, tasks.join(" ")));
         }
         line(format!(
             "slots     {} free of {}",
