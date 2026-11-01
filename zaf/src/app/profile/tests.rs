@@ -59,7 +59,8 @@ const NO_PLUGINS: &str = "No plugins installed\n";
 const NO_MARKETPLACES: &str = "No marketplaces configured\n";
 /// What `claude plugin list` shows once the pack is in.
 const KIT_LISTED: &str = "Installed plugins:\n\n  \u{276f} other@shelf\n    Version: 9.9.9\n    Scope: user\n    Status: enabled\n\n  \u{276f} kit@shelf\n    Version: 1.2.3\n    Scope: user\n    Status: enabled\n";
-const SHELF_ADDED: &str = "Configured marketplaces:\n\n  \u{276f} shelf\n    Source: Directory (/somewhere)\n";
+const SHELF_ADDED: &str =
+    "Configured marketplaces:\n\n  \u{276f} shelf\n    Source: Directory (/somewhere)\n";
 
 /// `init` for a project rooted at the state folder's parent, with a shell that must stay unused.
 fn init_here(state: &Path, manifest: &Manifest) -> Result<Report, ProfileError> {
