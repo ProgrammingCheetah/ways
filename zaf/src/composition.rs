@@ -21,7 +21,7 @@ use crate::manifest::{
     BoardKind, CommandLine, DesignKind, Effort, ForgeKind, Manifest, ManifestError, ModelName,
     RunnerName, VcsKind,
 };
-use crate::ports::{Board, Design, Forge, Gate, RunRequest, Runner, Shell, Vcs};
+use crate::ports::{Board, Design, Forge, Gate, RunRequest, Runner, Shell, SliceName, Vcs};
 
 /// The manifest's file name at the project root.
 pub const MANIFEST_FILE: &str = "ZAF.toml";
@@ -238,6 +238,14 @@ impl Composition {
                 section: "gate",
             })?;
         Ok(Box::new(ShellGate::new(&self.root, section)))
+    }
+
+    /// The directory of a slice's workspace, open or not: the project root, the
+    /// `[workspaces]` path and the slice name. The manifest alone answers it, so no port is called.
+    pub fn slice_dir(&self, slice: &SliceName) -> PathBuf {
+        self.root
+            .join(&self.manifest.workspaces.path)
+            .join(slice.as_ref())
     }
 
     /// The gate run inside `dir` instead of the project root (a slice workspace).
