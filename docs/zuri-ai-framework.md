@@ -358,6 +358,8 @@ Turn-one context is what the process loads before the brief: system prompt, tool
 
 The stable part of a profile (settings, CLAUDE.md, the role's standing brief) is the cached prefix; the variable part (the ticket, the pack) comes after it in the prompt. A profile changes only by a ruling, because changing it invalidates every cached prefix at once.
 
+A profile's allow-list comes from the manifest: `zaf`, each `[requires]` tool, each `[gate]` command verbatim, and one `Bash(<tool> *)` rule for every tool a gate command invokes (the first word of each `&&`, `||`, `;` or `|` segment, skipping `cd`, `env` and shell builtins), so a programmer can run the gate's tools from its slice workspace, not only the exact line from the project root. The `[forbidden]` denies keep precedence.
+
 ### 7.4 Inside `zaf`: ports and adapters
 One crate, a library target and a thin binary, layered the way Zurfur is:
 - **domain:** the types (Epic, Task, Finding, Ask, Answer, Instance, Profile) and the formats of §7.2, with their parsers and the quote check.
