@@ -76,7 +76,7 @@ pub fn run(cli: &Cli, task: IssueNumber, questions: &[String]) -> u8 {
             OK
         }
         Err(AskFailure::Board(error) | AskFailure::Design(error)) => fail(&path, &error),
-        Err(error @ AskFailure::State { .. }) => {
+        Err(error @ (AskFailure::State { .. } | AskFailure::Exhausted(_))) => {
             eprintln!("zaf {path}: {error}");
             BACKEND
         }
