@@ -125,9 +125,13 @@ pub struct RulingCommand {
     pub ruling: String,
 }
 
-/// `zaf board ruling`: records the ruling and closes the question.
+/// `zaf board ruling`: records the ruling, closes the question and returns the task
+/// it was raised on to `ready`; that task is the one returned, if there was one.
 /// The same ruling again succeeds quietly; a different one is a conflict.
-pub fn ruling(board: &dyn Board, command: &RulingCommand) -> Result<(), BoardError> {
+pub fn ruling(
+    board: &dyn Board,
+    command: &RulingCommand,
+) -> Result<Option<IssueNumber>, BoardError> {
     Ok(board.record_ruling(command.question, &command.ruling)?)
 }
 

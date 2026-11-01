@@ -268,20 +268,35 @@ impl Board for FakeBoard {
         Ok(number)
     }
 
-    fn record_ruling(&self, question: IssueNumber, ruling: &str) -> Result<(), PortError> {
+    fn record_ruling(
+        &self,
+        question: IssueNumber,
+        ruling: &str,
+    ) -> Result<Option<IssueNumber>, PortError> {
         let mut state = self.state();
         let issue = state.issue_mut(question)?;
         match &issue.ruling {
-            Some(existing) if existing == ruling => Ok(()),
-            Some(_) => Err(PortError::Conflict(format!(
-                "{question} already has a different ruling"
-            ))),
+            Some(existing) if existing != ruling => {
+                let different_ruling_error =
+                    PortError::Conflict(format!("{question} already has a different ruling"));
+                return Err(different_ruling_error);
+            }
+            Some(_) => {}
             None => {
                 issue.ruling = Some(ruling.to_owned());
                 issue.closed = true;
-                Ok(())
             }
         }
+        let Some(task) = NewQuestion::raised_on(&issue.ticket.body) else {
+            return Ok(None);
+        };
+        let waiting = state.issue_mut(task)?;
+        if waiting.ticket.label != Some(TaskLabel::Question) {
+            return Ok(None);
+        }
+        waiting.ticket.label = Some(TaskLabel::Ready);
+        waiting.claim = None;
+        Ok(Some(task))
     }
 }
 

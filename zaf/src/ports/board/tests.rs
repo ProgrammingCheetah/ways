@@ -173,6 +173,62 @@ fn questions_open_and_take_one_ruling() {
 }
 
 #[test]
+fn a_question_body_names_the_issue_it_was_raised_on() {
+    let asked = NewQuestion {
+        on: IssueNumber::from(12),
+        text: "Which columns?".to_owned(),
+        door: false,
+    };
+    assert_eq!(
+        NewQuestion::raised_on(&asked.body()),
+        Some(IssueNumber::from(12))
+    );
+    let with_newline = format!("{}\n", asked.body());
+    assert_eq!(
+        NewQuestion::raised_on(&with_newline),
+        Some(IssueNumber::from(12))
+    );
+    assert_eq!(NewQuestion::raised_on(""), None);
+    assert_eq!(NewQuestion::raised_on("Goal: export the list"), None);
+    assert_eq!(NewQuestion::raised_on("Raised on #x."), None);
+}
+
+#[test]
+fn a_ruling_returns_the_waiting_task_to_ready_and_names_it() {
+    let board = seeded();
+    let port: &dyn Board = &board;
+    let ask = |on: u64| NewQuestion {
+        on: IssueNumber::from(on),
+        text: "Which columns?".to_owned(),
+        door: false,
+    };
+    let waiting = port.open_question(&ask(2)).expect("question");
+    port.label(IssueNumber::from(2), TaskLabel::Question)
+        .expect("the task waits");
+    let finished = port.open_question(&ask(4)).expect("question");
+    port.label(IssueNumber::from(4), TaskLabel::Done)
+        .expect("the task is done");
+    assert_eq!(
+        port.record_ruling(waiting, "Title."),
+        Ok(Some(IssueNumber::from(2)))
+    );
+    assert_eq!(
+        port.task(IssueNumber::from(2)).expect("task").label,
+        Some(TaskLabel::Ready)
+    );
+    assert_eq!(
+        port.record_ruling(waiting, "Title."),
+        Ok(None),
+        "the same ruling again changes nothing"
+    );
+    assert_eq!(port.record_ruling(finished, "Title."), Ok(None));
+    assert_eq!(
+        port.task(IssueNumber::from(4)).expect("task").label,
+        Some(TaskLabel::Done)
+    );
+}
+
+#[test]
 fn open_questions_list_in_order_and_leave_the_waiting_task_out() {
     let board = seeded();
     let port: &dyn Board = &board;

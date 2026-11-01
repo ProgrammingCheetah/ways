@@ -57,6 +57,12 @@ impl NewQuestion {
         format!("Raised on {}.", self.on)
     }
 
+    /// The issue a question ticket was raised on, read back from its [`body`](Self::body).
+    pub fn raised_on(body: &str) -> Option<IssueNumber> {
+        let rest = body.trim().strip_prefix("Raised on ")?;
+        rest.strip_suffix('.')?.parse().ok()
+    }
+
     /// Whether `ticket` is this question already open: the same text raised on the same issue.
     /// Whether it was raised as a door does not matter; the question is the same.
     pub fn is_asked_by(&self, ticket: &Ticket) -> bool {
@@ -106,7 +112,16 @@ pub trait Board {
 
     /// Records the Engineer's ruling on a question and closes it.
     /// The same ruling again succeeds quietly; a different one is a [`PortError::Conflict`].
-    fn record_ruling(&self, question: IssueNumber, ruling: &str) -> Result<(), PortError>;
+    ///
+    /// The task the question was raised on (see [`NewQuestion::raised_on`]) returns to
+    /// `ready` when it carries `question`: the label is dropped and `ready` added.
+    /// A task that is `done`, or no longer waits, is left alone.
+    /// Returns the task that was returned to `ready`, if any.
+    fn record_ruling(
+        &self,
+        question: IssueNumber,
+        ruling: &str,
+    ) -> Result<Option<IssueNumber>, PortError>;
 }
 
 #[cfg(test)]
