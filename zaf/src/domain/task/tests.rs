@@ -206,7 +206,7 @@ fn a_tab_indented_line_continues_and_a_stray_item_stays_refused() {
     );
     assert_eq!(
         stray.parse::<TaskTemplate>(),
-        Err(TaskTemplateError::StrayListItem { line: 3 })
+        Err(TaskTemplateError::StrayListItem { line: 4 })
     );
 }
 
