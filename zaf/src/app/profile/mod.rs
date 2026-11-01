@@ -405,6 +405,7 @@ fn settings_for(
     );
     for command in gate_commands(manifest) {
         allow.push(allow_rule(command));
+        allow.extend(tool_rules(command));
     }
     let mut seen = Vec::new();
     allow.retain(|rule| {
@@ -469,6 +470,31 @@ fn allow_rule(command: &CommandLine) -> String {
         }
     }
     format!("Bash({pattern})")
+}
+
+/// Words that run no tool of their own: the directory and environment words and shell builtins.
+const NO_TOOL: [&str; 24] = [
+    "cd", "env", "export", "set", "unset", "source", ".", "exit", "true", "false", "test", "[",
+    "[[", "echo", "printf", "pwd", "eval", "exec", "read", "return", "shift", "trap", "umask",
+    "builtin",
+];
+
+/// One `Bash(<tool> *)` rule per tool the command invokes, in order of appearance: the first
+/// word of each segment split on `&&`, `||`, `;` and `|` (`env` and `NAME=value` words aside),
+/// so a gate tool is allowed from any directory, not only as the verbatim line from the root.
+fn tool_rules(command: &CommandLine) -> Vec<String> {
+    command
+        .as_ref()
+        .split(['&', '|', ';', '\n'])
+        .filter_map(|segment| {
+            let tool = segment
+                .split_whitespace()
+                .find(|word| !word.contains('=') && *word != "env")?;
+            let named = !tool.starts_with(['{', '$', '(', '"', '\'']);
+            (named && !NO_TOOL.contains(&tool)).then_some(tool)
+        })
+        .map(|tool| format!("Bash({tool} *)"))
+        .collect()
 }
 
 /// Each forbidden command, bare and with any arguments, sorted.
