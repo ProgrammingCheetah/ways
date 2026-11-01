@@ -1,0 +1,29 @@
+#!/bin/sh
+# A stand-in for the `gh` CLI in unit tests; a test puts this directory first on PATH.
+#
+# $FAKE_GH_DIR holds the scene:
+#   rules        one rule per line: <glob over the joined argv> TAB <exit code> TAB <response file>
+#   <response>   what the first matching rule prints: to stdout on exit 0, to stderr otherwise
+#   calls/       where every call's argv is recorded, one file per call, arguments NUL-separated
+set -eu
+scene=${FAKE_GH_DIR:?FAKE_GH_DIR is not set}
+mkdir -p "$scene/calls"
+count=$(ls "$scene/calls" | wc -l)
+printf '%s\0' "$@" > "$scene/calls/$(printf '%05d' "$count")"
+joined="$*"
+tab=$(printf '\t')
+while IFS="$tab" read -r pattern status response; do
+    # shellcheck disable=SC2254 # the pattern is a glob on purpose
+    case "$joined" in
+        $pattern)
+            if [ "$status" = 0 ]; then
+                cat "$scene/$response"
+            else
+                cat "$scene/$response" >&2
+            fi
+            exit "$status"
+            ;;
+    esac
+done < "$scene/rules"
+echo "fake gh: no rule matches: $joined" >&2
+exit 97

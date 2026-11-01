@@ -1,137 +1,63 @@
 # teams
 
-One Claude session is the **Orchestrator**, the tech lead. Teams of background agents (**Spawns**) plan, build and review: each team has a standing, named lead, and its programmers are short-lived, spawned by a build lead for one task and ended when it's done. A standing **QA** and the **architect** work beside the Orchestrator, at every milestone and at the release's end. **The Engineer** is the Product Owner and decides every domain fork. The Orchestrator is the Engineer's single interface: agents never reach the Engineer directly.
+The standing briefs of the instances that build a project, one per role, plus the routines the Engineer runs in the design session. The work itself runs through `zaf`, the project-blind binary of verbs: the board is the queue, the spawner launches the instances, and every project word comes from the project's `ZAF.toml` or the ticket. Nothing in this pack names a project.
 
 | Part | What it is |
 |---|---|
-| `skills/orchestrate/` | `/teams:orchestrate`: the way of working, loaded by the Orchestrator every session, plus `first-run.md`, `planner-check.md`, `runners.md` (read only when a role runs outside Claude) and the templates it hands out |
-| `skills/` (nine more) | Routines that also work alone: see **Skills** below |
-| `agents/` | The five lanes: `teams:planner`, `teams:designer`, `teams:builder`, `teams:myth`, `teams:machinery` |
+| `agents/` | Six role briefs: `teams:team`, `teams:programmer`, `teams:keeper`, `teams:planning`, `teams:challenger`, `teams:release`; plus `teams:designer`, the design session's judgment lane |
+| `hooks/hooks.json` | At session start in a project with a `ZAF.toml`, runs `zaf doctor` and prints its table; elsewhere it does nothing |
+| `skills/` | `/teams:objectives`, `/teams:my-queue`, `/teams:catch-me-up`, `/teams:document`, `/teams:retrospective` |
 
-No scripts, no hooks, no programs: it runs the same on Linux, macOS and Windows (Claude Code 2.1.292 or later, which passes `effort` on Agent calls). It needs no other plugin. The `nodes` plugin is offered at setup with an opt-out; the agent board is used when its tools are present.
+## The role briefs
 
-## The lifecycle
+Each brief is an agent of this pack and runs as the session's main thread (`claude --agent teams:<role>`) or, for a programmer, as a team instance's subagent. Each is under a page: purpose, input, output, lifecycle, budget, never-list, and the verbs it runs in order.
 
-```mermaid
-flowchart TD
-  A[Objectives under a version] -->|QA, Engineer signs| B[Design document]
-  B -->|QA, Engineer signs| C[Team roadmaps and claims]
-  C --> D[Groundwork plan]
-  D -->|Engineer rejects| C
-  D -->|QA, Engineer approves| E[Read-only slice plan]
-  E --> F[Build, critique, gate]
-  F -->|security if triggered| G[Merge into release branch]
-  G -->|next slice| E
-  G -->|phase done| H[Architect, then QA]
-  H -->|next phase| E
-  G -->|last phase done| I[Release reviews, then QA]
-  I --> J[One PR into main]
-  J -->|Engineer merges| K[Release notes and retros]
-```
-
-Every arrow into a new box hands a document to **freshly spawned** agents: names and roles persist, context doesn't. Documents that reach the Engineer (the objectives, the design document, the Groundwork) carry the top-level QA's challenges and the author's resolutions. A slice plan reaches the Engineer only for a domain fork, a one-way door, or a change to a signed document. A fix or small change outside a release starts at the slice plan, on the same bar; its PR into main gets QA, then the Engineer's review.
-
-**Why programmers are short-lived.** The Orchestrator is cheap; recreating context is not. A resumed Spawn re-reads its whole context, and one that waits past the prompt cache's lifetime rewrites its whole cache when it wakes. So a programmer gets one task (a slice or part of one) and a narrow brief, is spawned only when it can start now, and ends at its report. A fix round goes to a fresh programmer briefed with the findings, the branch and its diff, in the same workspace. A blocked piece ends the programmer with the question in its report. Leads and QA keep the clean-context-per-phase rule.
-
-**Why QA is at the top.** QA stands beside the Orchestrator and the architect, not inside each team: it reviews what reaches the Engineer (the objectives, the design document, the Groundwork, every PR into main) and each milestone's cumulative diff, starting from the architect's report. Per slice there's only the gate, the build lead's own critique of its diff before it pushes, and a security review when a trigger fires: security never waits for a milestone. A QA per slice re-read the release documents for every slice and saw one slice at a time; at the top it reads them once a milestone and sees how the slices fit. QA is fresh at each milestone and carries forward its log, not its context: a context resumed after the prompt cache expires is rewritten whole, and it would still hold reads of code that later fix rounds changed. Within a milestone it's resumed, to re-run its proofs. A release is a version whose objectives are signed at the lifecycle's first step; off-cycle work covers the rest.
-
-**Leads spawn programmers.** After a slice plan is saved, the Orchestrator spawns a fresh **build lead** (`teams:designer`) with the saved plan (the planner lead is read-only and can't spawn), its workspaces and branches, and a programmer budget: how many programmers it may run at once, sized so the lanes stay inside the teams file's Limits. A lane is a build lead and its running programmers. The build lead splits the slice into tasks, spawns one programmer per task (`teams:builder`, or `teams:myth` at subsystem scale) with a narrow brief, running independent tasks in parallel, one per workspace at a time. It reviews their reports, runs the critique on the slice diff and settles each finding, checks the gate and pushes, then reports to the Orchestrator. It picks each programmer's model: `sonnet` for a fully specified, bounded, non-security task; `opus` for security-nature work (always), an ambiguous or cross-cutting task, the Myth, and a task whose Sonnet attempt still has must-fixes after two fix rounds. A fix round is a fresh build lead with the plan, the findings, the branch and workspace, spawning fresh programmers. Security reviews and milestone QA stay with the Orchestrator, independent of the lead. Spawn and hand-back between a build lead and its programmers is the only Spawn-to-Spawn traffic.
-
-## Skills
-
-Besides `/teams:orchestrate`, nine routines (they absorb what a separate `ship` pack was to hold). Each works on its own, without the Orchestrator and without a teams file: it reads the teams file when there is one, else detects what it needs (CI config, default branch, git or jj) and asks once for the rest. The read-only ones change nothing.
-
-| Skill | What it does | Lifecycle |
+| Role | Launched by | Does |
 |---|---|---|
-| `/teams:objectives` | Interviews the Engineer one section at a time into the release's `objectives.md` (what it's for, how each objective is checked, what's in and out), has fresh QA challenge it and records the signature. The interview stays in the main session; a small release keeps a one-paragraph `scope.md`. | **Objectives** |
-| `/teams:my-queue` | The Engineer's queue (`<docs>/queue.md`, open questions, live PRs) as Ready, Incoming, Questions, Waiting and Optional tables, each row with an ID, weight and blocker. Read-only. | the Engineer asks what's theirs |
-| `/teams:catch-me-up` | A short briefing from the queue, the release folder, rulings and VCS history: where things stand, why, what's missing, what's next. Read-only. | after a gap |
-| `/teams:cleanup` | Reports every git worktree or jj workspace with its merge evidence and cleanliness; after one confirmation, runs `Repository › teardown` and removes only the merged, remote-gone, clean ones; keeps and reports the rest. Without a teams file it only reports. | **Clean up** |
-| `/teams:critique` | Two passes over a diff: the right thing built (against the plan or ticket), built right (against the codebase's own patterns); fix or ask per finding. | **Build**: the build lead's pass before it pushes |
-| `/teams:document` | Doc comments on what changed, in each language's style and placement. Docs only. | definition of done |
-| `/teams:prepare-pr` | One branch to an open PR: commits, the base merged in if behind (a rebase only where the project's own rules want one), the gate, a plain push that can't overwrite work, the PR body, the review bot. Never merges. In the lifecycle a `teams:machinery` Spawn runs it. | **Slice merge**, **Release end** |
-| `/teams:address-comments` | Triages a PR's review comments (fix, decline, propose, escalate), routes fixes through the lanes, re-gates and pushes. Security comments are never declined. | **Release end**, and any PR into the Engineer's branches |
-| `/teams:retrospective` | A retro grounded in commits, PRs and reviews: a team's, in `retro-template.md`'s shape, the top-level QA's milestone log (`qa <version> m<n>`), or Claude's own over a time range. Saved in `<docs>/retros/`. | retrospectives, **Milestone QA** |
+| team | the spawner | claims up to four ready tasks of one epic, spawns a programmer per task, checks, publishes and merges each, reports on the epic |
+| programmer | a team instance | one task, one round, green in its own workspace; asks the keeper for anything beyond its pack |
+| keeper | `zaf ask` | answers one to five design questions with verbatim quotes, or `not settled`; its rules are zaf's own keeper prompt, which this brief points to and never restates |
+| planning | the spawner | turns a signed epic into exact tasks in the task template |
+| challenger | the spawner | comments on every planned task that is not exact, before the Engineer signs the epic |
+| release | the spawner | checks a milestone's musts, gathers the release reviews and a retrospective, then files tasks or merges and tags |
 
-## How the roles reach the main session
-
-On its first run in a project, `/teams:orchestrate` writes one line into the project's `CLAUDE.md` (the Engineer's own repo) or `CLAUDE.local.md` (anyone else's, kept out of git):
+**One prefix.** Every brief opens with the exact bytes of zaf's interface page (`zaf/assets/interface.md` in the zaf source, also the Interface section of every `zaf brief` pack), so every instance's prompt shares a cached prefix. When that page changes, paste it again into all six, right after the frontmatter, and check:
 
 ```
-**Way of working: teams.** The main session is the Orchestrator: it loads the `teams:orchestrate` skill at the start of each session and again after compaction, and follows it. A Spawn (any subagent) skips this line and follows its brief.
+for r in team programmer keeper planning challenger release; do f=agents/$r.md; l=$(awk '/^---$/{c++; if(c==2){print NR; exit}}' $f); tail -n +$((l+1)) $f | head -c $(wc -c < interface.md) | cmp -s - interface.md && echo "$r ok" || echo "$r differs"; done
 ```
 
-Claude Code loads that file into every session in the project and re-reads the project's CLAUDE.md after compaction, so the Orchestrator reloads the skill when it needs to. Nothing to paste, no process to run, and the line names the skill rather than a file path, so plugin updates never break it. Projects without the line are untouched.
+## Launching an instance
 
-Why not the alternatives: a `SessionStart` hook needs a shell or an executable on the work computer and would fire in every project; a forced output style collides with any other plugin's forced style (the first one loaded wins) and overrides the Engineer's own; the plugin `agent` setting replaces Claude Code's whole system prompt in every session; a skill description alone leaves loading to chance.
+**The spawner.** `zaf spawn --once` runs one tick and exits; a timer runs it over and over. Each tick launches, within the slots and the budget guard: a team instance for a signed epic with ready, unclaimed tasks; a planning instance for a signed epic with no tasks (or a ruling newer than its plan); a challenger for a planned epic; a release instance for a milestone whose epics are all done. It sets `ZAF_INSTANCE` and `ZAF_VERSION` and starts the role's agent, `teams:<role>`, with the model, effort, turns and profile `ZAF.toml` gives that role.
 
-## Lanes
+**By hand.** The Engineer runs one the same way, from the project root, with the two variables set:
 
-| Lane | Agent | Effort | Writes | Used for |
-|---|---|---|---|---|
-| plan | `teams:planner` | xhigh | nothing | per-slice plans |
-| judgment | `teams:designer` | xhigh | documents, its own workspace | release documents, roadmaps, the Groundwork, build leads, the top-level QA and the architect, reviews, every security review |
-| build | `teams:builder` | high | its own workspace | approved plans to green code |
-| subsystem | `teams:myth` | high | its own workspace | long, fully specified subsystem builds |
-| glue | `teams:machinery` | medium | workspaces, branches | creating workspaces, removing merged ones with `/teams:cleanup`, committing release documents from a docs workspace, opening PRs with `/teams:prepare-pr` |
+```
+cd <project root>
+export ZAF_INSTANCE="team instance <n> on #<epic>" ZAF_VERSION=<version>
+claude --agent teams:team "Epic #<epic>."
+```
 
-Every agent file says Opus. **Only programmers may run on Sonnet** (the build lead's choice per task, or a teams-file pin); **security-nature work and every other role are always Opus.** To change a lane's effort in one project, set it in the teams file's **Lanes** table; it's passed on each Agent call. A Model there applies only to programmers: a build or subsystem Model pins every programmer to it (e.g. Opus only), except security-nature tasks, which stay on Opus.
+Swap the role and the prompt for the others: `teams:planning` or `teams:challenger` with `"Epic #<epic>."`, `teams:release` with the milestone, its issue and its `objectives.md`. Add `-p` to run it unattended. A programmer by hand needs its task opened first: `zaf slice open <task>`, `zaf brief <task>`, then `claude --agent teams:programmer "Task #<task>, round 1. Pack: <pack path>. Workspace: <workspace path>."`. `zaf board claim` and `zaf board report` refuse to run without `ZAF_INSTANCE`.
 
-**Runners: models outside Claude.** The teams file's **Runners** defines each runner once, as a command for its own command-line tool (e.g. Gemini through Antigravity CLI: `agy -p {prompt} --add-dir {dir} --model gemini-4-argon --effort high --print-timeout 60m`, the model checked with `agy models`), and assigns roles to it: lead, build lead, programmer, security reviewer, release reviewer, top-level QA, architect or document author; never the glue lane, which pushes, opens and merges PRs and removes workspaces. An assigned role runs there instead of on Claude, and the model rules above don't apply to it. The procedure is `skills/orchestrate/runners.md`. Before a runner's first run: in someone else's repo, the owners' consent (pre-filled no); a worksheet for you (install and sign in, check the model, allow exactly the commands its roles run in the tool's own settings, never a push); then the Orchestrator's trial run, which also records the tool's failure markers. Each run gets its own folder holding the brief and copies of what it names, works in the role's workspace (or that folder), and its output is the report; a failed run is retried once, then the role runs on Claude and you're told. Runs are always fresh (the last report goes in the next brief); each brief carries its lane's agent file; read-only roles are checked for changes after every run; a slice whose build lead or programmers are on a runner builds in rounds, the Orchestrator running the programmers; a runner commits but never pushes. It works under its own tool's permissions, not Claude Code's, so the deny rules don't reach inside it (main's protection on the server still does), and everything it can read goes to its provider.
+**Before the first launch:** `zaf` on PATH, a `ZAF.toml` (`zaf init`), `zaf setup`, and a clean `zaf doctor`, which this pack's hook prints at every session start in the project. Claude Code 2.1.296 or later (the team brief sets `autoCompactWindow`).
 
-**How read-only the planner is.** Plugin agents ignore `permissionMode`, so the planner can't be put in plan mode. Its `tools` allowlist is `Read`, `Glob`, `Grep`, `Bash`, `PowerShell`, `WebFetch`, `WebSearch`, `ToolSearch` (which loads the web tools where they're deferred) and `SubagentHandback` (which delivers its report). LSP is left out: a language server can write cache files into the planning workspace and trip the check below. Every editing tool, every way to start or steer another agent (except through the shell), MCP tools and any tool Claude Code adds later are out. One hole stays, by the Engineer's choice: the shell can still write, and it's kept for git history and read-only commands. So every planner run (lead, each resume, and a plan security challenge) happens in a clean planning workspace at the base branch's tip, never the Engineer's checkout, and the Orchestrator runs `skills/orchestrate/planner-check.md` around it: a marker file before, then a list of everything in the workspace modified after the marker (outside `.git` and `.jj`, ignored files and deletions included), plus the workspace's own VCS status. It works in git, in jj secondary workspaces that have no `.git`, and in bash, zsh or PowerShell. Any change stops the slice, the Engineer sees what changed, and the plan isn't saved. Writes outside that workspace aren't detected.
+## The design session's routines
 
-## The teams file
+| Skill | What it does |
+|---|---|
+| `/teams:objectives` | Interviews the Engineer one section at a time into the release's `objectives.md`, has a fresh `teams:designer` challenge it, records the signature |
+| `/teams:my-queue` | The Engineer's queue as Ready, Incoming, Questions, Waiting and Optional tables, from the board (`zaf status`) or a queue file, and live PRs. Read-only |
+| `/teams:catch-me-up` | Where things stand, why, what's missing, what's next, from the board, the release folder and VCS history. Read-only |
+| `/teams:document` | Doc comments on what changed, in each language's style and placement. Docs only |
+| `/teams:retrospective` | Claude's own retro over a time range, from commits, PRs and reviews |
 
-This pack's whole configuration for a project is **`.claude/TEAMS.md`**: settings, the teams and opt-outs, in fixed sections the Orchestrator reads by name. `/teams:orchestrate` offers to create it on first run (`skills/orchestrate/first-run.md`), asking once with every answer pre-filled from what it detects, and never regenerates it over your edits. `.claude/TEAMS.yaml` and `.claude/TEAMS.toml` work too, with the same settings under snake_case keys (`skills/orchestrate/teams-file.toml`); if more than one exists the Orchestrator warns and reads Markdown, then YAML, then TOML. Before writing anything, first run adds `.claude/settings.local.json` to the repo's exclude file (`git rev-parse --git-path info/exclude`), and in a repo that isn't the Engineer's also the teams file, `CLAUDE.local.md` and the docs folder.
+They read `.claude/TEAMS.md` (or `.yaml`, `.toml`) when a project still has one from 1.x, and otherwise detect what they need and ask once.
 
-First run also hands the Engineer one worksheet that saves `.claude/settings.local.json` with the workspaces folder in `permissions.additionalDirectories` and allow rules for the gate and the VCS commands. Unattended Spawns still need auto mode: every Spawn command starts `cd <workspace> &&`, and in Manual mode a `cd` followed by `git` asks for approval whatever the allow rules say, since git can run the hooks of the directory it moved into. Don't switch briefs to `git -C <path>` to avoid that: the deny rules below don't match that form. The worksheet allows no push. Every lifecycle push is plain: a branch that falls behind its base gets the base merged in, never rebased, so its history gains merge commits, and a squash merge into main keeps main linear. Tested on Claude Code 2.1.302 with no push rule, auto mode let those plain pushes and `jj git push -b` through, and blocked leased pushes as `[Git Destructive]`, which an allow rule doesn't settle in a `cd … &&` command. A push allow rule would also switch off the classifier's checks on what every push carries (secrets, sensitive files, private material bound for a public repo), since an allow rule resolves first. Where a project's own rules want rebased branches, they win, and its leased pushes may stall in auto mode for the Engineer to push. Deny rules then cover pushes that name `Repository › main` or an `engineer reviews` branch (the branch as a refspec, `+main`, `<src>:main`, `:main`, `refs/heads/main` in each of those forms, `--all`, `--branches`, `--mirror`; with jj, the bookmark by name, `--all` and `--tracked`); never `*main*`, which would block slice branches like `api/v0.2-1-domain`, and deny beats allow. Those rules are a speed bump, not a guard: they match the command as written, so `git -C <path> push`, a bare `git push` from main or a bare `jj git push` (it takes main along once main moved locally) gets past them. The real guard is the server's protection of main. First run checks that the server refuses a direct push, a force push and a deletion of main from the Engineer's account (GitHub: a ruleset with `pull_request`, `non_fast_forward` and `deletion` rules the account can't bypass, or classic protection with admins enforced) and, if it's missing, recommends turning it on with the exact `gh` command or the settings click path (in a repo that isn't the Engineer's, only a request to its owners, never the command, even for an admin); the skill never changes a setting itself, local or on the server. If protection stays off, that's recorded in Opt-outs. Protection stops pushes, not merges: an agent signed in to `gh` as the Engineer could still `gh pr merge` into main, so only the rule that PRs into `engineer reviews` branches are the Engineer's to merge stands there.
+## Retired in 2.0.0
 
-**Whose repo.** A repo is the Engineer's own when it has no remote, or its push remote's owner (`origin`, or the remote `git push` uses) is the Engineer's forge login (`gh api user --jq .login`; on another host, add `--hostname <host>`) or an organization listed in the environment variable `WAYS_OWN_ORGS` (comma-separated, spaces around the commas ignored, e.g. `example-org,another-org`; leave it unset where no organization is yours, as on a work computer). A fork counts by its parent's owner, never its own; when that can't be told, it isn't yours. Admin rights never count: on a work computer you may admin a team's shared repos, and those aren't yours. First run pre-fills `Repository › owner` with this test, and the nodes pack uses it too.
-
-| Section › key | Default | Meaning |
-|---|---|---|
-| Repository › owner | engineer | `engineer`: the repo is yours by the test in "Whose repo" above; the file and docs are committed and the pointer goes in `CLAUDE.md`. `others`: all stay out of git |
-| Repository › docs | `.teams` | where `queue.md`, `releases/<version>/`, `retros/` and `team-config-rulings.md` live; outside `.claude/`, whose writes always prompt |
-| Repository › style | — | the project's style rules, read by every agent |
-| Repository › decisions | — | where the project records decisions |
-| Repository › config dir | `.` | root of the configuration files the teams file names (today: the team config files), relative to the project root; the teams file itself stays in `.claude/`; each team's Config resolves against it |
-| Repository › vcs | git | `git` or `jj` |
-| Repository › main | main | the default branch, never pushed to directly |
-| Repository › workspaces | `../{repo}-workspaces` | one workspace per branch, named after it, reused by its reviewers and fix rounds, plus planning workspaces |
-| Repository › teardown | — | commands run inside a workspace before `/teams:cleanup` removes it (`{name}`, `{path}`), e.g. tearing down its containers |
-| Repository › gate | — | exactly what CI runs, all of it; after the build lead's critique, before a slice's first push |
-| Repository › light gate | — | for base merges and fix rounds; CI stays the enforcement |
-| Branches › strategy | integration | `integration` (one branch per release, fed by slice PRs; one PR into main at release end) or `trunk` (a PR per slice into main, the Engineer's; milestone QA reviews what merged, and its fixes are new PRs) |
-| Branches › integration, slice | `release/{release}`, `{team}/{release}-{n}-{part}` | branch name patterns (an off-cycle branch matches none); `{release}` is the version as `Release › version format` writes it, `{team}` the team's name with `/` as `-`; the integration branch is cut and pushed before slice 1 |
-| Branches › fix | `{team}/{release}-m{n}-fix` | a milestone fix round's branch, merged into the integration branch like a slice |
-| Branches › engineer reviews | main | PRs into these are the Engineer's to review and merge; the Orchestrator merges the rest (slice and fix PRs) once the slice checks pass and CI ran green |
-| Branches › merge slice, merge main | merge, squash | merge method for each kind of PR; a squashed release PR is one commit on main |
-| Tracker › kind, project, commit format | none, —, — | the issue tracker and commit title convention |
-| Release › version format | `v{version}` | e.g. `{stage}-v{version}` |
-| Release › stages | — | e.g. pre-alpha, alpha, beta, release |
-| Release › documents | design | the release document set: one design document, or e.g. pdd, tdd, plan |
-| Release › format | markdown | `markdown` with Mermaid, or `typst` |
-| Lanes (table) | — | per-lane effort overrides; a build or subsystem Model pins programmers (never security-nature tasks or any other role) |
-| Runners (two tables) | — | models outside Claude: each runner's name and command, then the roles assigned to it (see **Runners** under Lanes); `runner` and `runs` in TOML and YAML |
-| Limits › max lanes | 2 | lanes running at once (a lead and its running programmers, or one reviewer); a documents-only lane counts; each build lead's programmer budget fits inside |
-| Limits › small lanes | 4 | allowed when every lane is one or two agents on a short slice |
-| Limits › internal after | 3 | new retrospectives that wake the internal team |
-| Reviews › release reviews | on | compliance, architecture and security at each release's end, before the last milestone's QA |
-| Reviews › security triggers | authentication; authorization and permissions; sessions, tokens, secrets and keys; cryptography; untrusted input; trust boundaries; network egress; personal data storage | a slice touching one gets a security review of its plan and code; first run fits them to the project |
-| Reviews › compliance triggers | personal data; payments; accessibility; a new dependency's license | a slice touching one calls compliance in early; first run fits them to the project |
-| Reviews › bot | — | a review bot requested on PRs into the Engineer's branches |
-| Reviews › comment prefix | `Claude:` | starts every comment posted through the Engineer's accounts |
-| Teams (table) | qa, internal, compliance, architects, security, plus the project's teams | mission, owned paths, a named lead (the qa row's is the top-level QA; the architects' is the architect), review teams' reviewers, and an optional config file (Config; `config_file` in TOML and YAML); programmers aren't listed |
-| Shared ground | — | files no team owns, touched one Spawn at a time |
-| Opt-outs | — | the internal team, nodes, release reviews, main's protection or runners, each with the date and the Engineer's words |
-
-**Team config files.** A team's Config names its own file, relative to `Repository › config dir`, in the teams file's format (`skills/orchestrate/team-config.md`, or `team-config.toml` for TOML and YAML): the team's Roles and the special instructions each must follow. Its sections default to the pack's: Every role (all the team's Spawns), then lead, build lead, programmer, security reviewer, release reviewer, top-level QA and architect; any other name is a free-form role for a special occasion, never an error, and the Orchestrator asks when it can't tell whose brief one covers, recording the answer. At every brief, the Orchestrator re-reads the files and pastes into the brief, verbatim, the Spawn's own team's Every role and role sections, plus, for a reviewer, its role's section from each team whose work it reviews; a build lead passes Every role and Programmer on to its programmers. The instructions add to a brief and never loosen the pack's rules: the Orchestrator leaves out one that would and asks you. A named file that's missing or unreadable stops that team's Spawns until it's fixed or the row is cleared. No agent edits these files; first run only writes the ones you name that don't exist yet.
-
-## Optional integrations
-
-- **nodes** (`nodes@ways` and its `nodes` binary, 0.7.0 or later): setup offers it, pre-selected yes in the Engineer's own repos and no in anyone else's, since the first chart is costly and there its settings and refs would stay local-only, in one checkout. When in use, every brief has its Spawn run `nodes --root <dir> chain <path>` for the paths it owns and touches before reading code there: its own workspace for a committed tree, which writing Spawns also update, the changes shipping in their PR; the Orchestrator's checkout, read-only, for a local-only tree, which the Orchestrator re-charts after each merge, recording the ref changes Spawns report. Teams runs plain `nodes` from PATH and doesn't read the nodes pack's `NODE.toml`. Declining records the opt-out and everything else runs the same.
-- **The agent board** (its own plugin): used only when its tools are present. Writing Spawns register, teams may run roadmap rounds and claims on the board, and locks cover shared ground.
+The Orchestrator (`/teams:orchestrate`, its teams file and templates, its first run, runners and planner check), standing build leads, briefs written by hand, the Groundwork, roadmaps and claims by hand-back, the milestone QA and its planted bugs, `queue.md` as the queue, and the lanes the briefs replace (`teams:builder`, `teams:myth`, `teams:planner`) or the design retires (`teams:machinery`). The verbs replace `/teams:prepare-pr` (`zaf slice pr`), `/teams:cleanup` (`zaf slice merge`, `zaf slice drop`), `/teams:critique` and `/teams:address-comments` (`zaf check` runs the review steps and returns the findings; a team instance sends them to a fresh programmer). A project that still runs the 1.x way pins a 1.x version of this pack.
 
 ## Updating
 

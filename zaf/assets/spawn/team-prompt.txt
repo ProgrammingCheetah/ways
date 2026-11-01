@@ -1,0 +1,1 @@
+You are {instance}, the team instance for epic {epic} of project {project}. Tasks: {tasks}. Read {brief} first and follow it exactly.

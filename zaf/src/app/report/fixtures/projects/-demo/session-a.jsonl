@@ -1,0 +1,8 @@
+{"type":"user","message":{"role":"user","content":"<command-name>/clear</command-name>"}}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Plan   the export\nmodule for the demo"}]}}
+{"type":"assistant","message":{"id":"msg_a1","model":"claude-opus-5-5","usage":{"input_tokens":10,"cache_creation_input_tokens":2000000,"cache_read_input_tokens":0,"output_tokens":50000}}}
+{"type":"assistant","message":{"id":"msg_a2","model":"claude-opus-5-5","usage":{"input_tokens":5,"cache_creation_input_tokens":100000,"cache_read_input_tokens":2000000,"output_tokens":30000}}}
+{"type":"assistant","message":{"id":"msg_a2","model":"claude-opus-5-5","usage":{"input_tokens":5,"cache_creation_input_tokens":100000,"cache_read_input_tokens":2000000,"output_tokens":30000}}}
+this line is not json
+{"type":"assistant","message":{"id":"msg_a3","model":"claude-opus-5-5","usage":{"input_tokens":3,"cache_creation_input_tokens":50000,"cache_read_input_tokens":2100000,"output_tokens":120000}}}
+{"type":"system","message":{"id":"msg_s1","model":"claude-opus-5-5","usage":{"input_tokens":9,"output_tokens":900}}}
