@@ -96,7 +96,10 @@ pub trait Vcs {
     /// Commits the slice's uncommitted work; nothing to commit is [`PortError::Rejected`].
     fn commit(&self, slice: &SliceName, message: &str) -> Result<CommitId, PortError>;
 
-    /// Publishes the slice plainly: a remote with work the slice lacks is a conflict, never overwritten.
+    /// Publishes the slice's latest commit, even one made by hand: the slice's line
+    /// first moves forward to it (a backwards move is a conflict), then is pushed
+    /// plainly; a remote with work the slice lacks is a conflict, never overwritten.
+    /// Uncommitted work is [`PortError::Rejected`]: commit first.
     fn publish(&self, slice: &SliceName) -> Result<Publication, PortError>;
 
     /// Whether the slice has no uncommitted work.
