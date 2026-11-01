@@ -491,7 +491,7 @@ fn tool_rules(command: &CommandLine) -> Vec<String> {
                 .split_whitespace()
                 .find(|word| !word.contains('=') && *word != "env")?;
             let named = !tool.starts_with(['{', '$', '(', '"', '\'']);
-            (named && !NO_TOOL.iter().any(|skipped| *skipped == tool)).then_some(tool)
+            (named && !NO_TOOL.contains(&tool)).then_some(tool)
         })
         .map(|tool| format!("Bash({tool} *)"))
         .collect()
