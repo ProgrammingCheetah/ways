@@ -43,7 +43,11 @@ impl Board for SharedBoard {
     fn open_question(&self, question: &NewQuestion) -> Result<IssueNumber, PortError> {
         self.0.open_question(question)
     }
-    fn record_ruling(&self, question: IssueNumber, ruling: &str) -> Result<(), PortError> {
+    fn record_ruling(
+        &self,
+        question: IssueNumber,
+        ruling: &str,
+    ) -> Result<Option<IssueNumber>, PortError> {
         self.0.record_ruling(question, ruling)
     }
 }

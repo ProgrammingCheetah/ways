@@ -117,9 +117,16 @@ pub fn run(cli: &Cli, action: &BoardAction) -> u8 {
                 question: *question,
                 ruling: text.clone(),
             };
-            board::ruling(board, &command).map(|()| {
-                let json = json!({ "question": question.get() });
-                print(cli, &json, format!("{question} ruled"))
+            board::ruling(board, &command).map(|returned| {
+                let json = json!({
+                    "question": question.get(),
+                    "ready": returned.map(IssueNumber::get),
+                });
+                let terse = match returned {
+                    Some(task) => format!("{question} ruled; {task} ready"),
+                    None => format!("{question} ruled"),
+                };
+                print(cli, &json, terse)
             })
         }
     };

@@ -246,7 +246,7 @@ One binary, `zaf` (§11.5), one page of help pasted into every standing brief, e
 
 | Verb | Replaces | Output |
 |---|---|---|
-| `zaf board ready|claim|report|question|ruling` | hand-crafted `gh` queries and JSON | six-line answers |
+| `zaf board ready|claim|report|question|ruling` | hand-crafted `gh` queries and JSON | six-line answers; `ruling` closes the question and returns its task to `ready` unless the task is `done` (the same ruling again changes nothing) |
 | `zaf ask -t <task> "<kind>: <question>"` (up to five) | reading corpus pages into a working context; asking the lead | a keeper's cited answer; the tool checks each quote exists verbatim in the cited page and re-asks on Haiku or Sonnet if the local model fails |
 | `zaf brief <task>` | the opening burst of rg, cat, ls (the biggest look-around cost) | one context pack: ticket, named corpus pages, `nodes chain` of owned paths, the style page, the help page |
 | `zaf check <task>` or `zaf check pr:<n>[:<task>]` | reading PR threads turn by turn; hand-run reviews; the LLM QA's checklist | runs the step list configured for the target's kind (task: acceptance checks; PR: CI, CodeQL, CodeRabbit, Gemini critique, Gemini security when flagged; milestone: objectives check, release reviews, mutant score), waits inside the verb, and returns one deduplicated findings list tagged by source with an exit code: clean, must-fix present, or a step failed. `--status` reads without running. Steps are configured in `ZAF.toml` with a kind (wait on CI, wait for a bot, run a role on a runner, run a command, read scanner alerts), a `when`, a timeout and a must flag; independent steps run in parallel |
