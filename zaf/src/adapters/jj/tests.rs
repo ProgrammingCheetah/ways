@@ -95,12 +95,39 @@ impl Fixture {
         self.vcs.slice_dir(slice).expect("slice dir")
     }
 
-    /// Commits a file on the base from the root's own working copy.
+    /// Commits a file on the base from the root's own working copy and pushes it.
     fn advance_base(&self, path: &str, content: &str) {
         jj(&self.root, &["new", &bookmark(BASE)]);
         write(&self.root, path, content);
         jj(&self.root, &["commit", "-m", "Advance the base"]);
         jj(&self.root, &["bookmark", "set", BASE, "-r", "@-"]);
+        jj(&self.root, &["git", "push", "--bookmark", BASE]);
+    }
+
+    /// Pushes a commit to the base from a second clone, so this repository's
+    /// local and remote-tracking base both lag until something fetches.
+    fn advance_base_elsewhere(&self, path: &str, content: &str) {
+        let temp = self.root.parent().expect("temp").to_owned();
+        let remote_text = self.remote.to_string_lossy();
+        run(&temp, "git", &["clone", "-q", &remote_text, "other"]);
+        let other = temp.join("other");
+        run(&other, "git", &["checkout", "-q", BASE]);
+        write(&other, path, content);
+        run(&other, "git", &["add", path]);
+        run(
+            &other,
+            "git",
+            &[
+                "-c",
+                "user.name=Other",
+                "-c",
+                "user.email=other@example.com",
+                "commit",
+                "-qm",
+                "Advance the base elsewhere",
+            ],
+        );
+        run(&other, "git", &["push", "-q", "origin", BASE]);
     }
 
     fn target(&self, name: &str) -> String {
@@ -361,6 +388,53 @@ fn base_merges_report_their_outcome() {
     assert!(fixture.slice_dir(&slice).join("base-2.txt").is_file());
     assert_eq!(fixture.vcs.is_clean(&slice), Ok(true));
     assert_eq!(fixture.vcs.merge_base(&slice), Ok(BaseMerge::UpToDate));
+}
+
+#[test]
+fn a_base_pushed_from_elsewhere_is_merged_without_a_manual_fetch() {
+    let fixture = Fixture::new(false);
+    let (slice, _base) = fixture.slice();
+    let before = fixture.target(BASE);
+    fixture.advance_base_elsewhere("elsewhere.txt", "e\n");
+    let pushed = fixture.remote_target(BASE);
+    assert_ne!(pushed, before.trim());
+    assert_eq!(fixture.target(BASE), before);
+    assert_eq!(fixture.vcs.merge_base(&slice), Ok(BaseMerge::Merged));
+    assert_eq!(fixture.target(BASE), pushed);
+    assert_eq!(fixture.target(SLICE), pushed);
+    assert!(fixture.slice_dir(&slice).join("elsewhere.txt").is_file());
+    assert_eq!(fixture.vcs.merge_base(&slice), Ok(BaseMerge::UpToDate));
+}
+
+#[test]
+fn a_remote_base_is_merged_into_a_slice_with_work_of_its_own() {
+    let fixture = Fixture::new(false);
+    let (slice, _base) = fixture.slice();
+    write(&fixture.slice_dir(&slice), "slice.txt", "s\n");
+    let own = fixture
+        .vcs
+        .commit(&slice, "Add slice work")
+        .expect("commit");
+    fixture.advance_base_elsewhere("elsewhere.txt", "e\n");
+    assert_eq!(fixture.vcs.merge_base(&slice), Ok(BaseMerge::Merged));
+    assert_ne!(fixture.target(SLICE), own.as_ref());
+    assert_eq!(fixture.target(BASE), fixture.remote_target(BASE));
+    assert!(fixture.slice_dir(&slice).join("slice.txt").is_file());
+    assert!(fixture.slice_dir(&slice).join("elsewhere.txt").is_file());
+}
+
+#[test]
+fn a_failed_fetch_is_a_backend_error_and_leaves_the_slice_unchanged() {
+    let fixture = Fixture::new(false);
+    let (slice, _base) = fixture.slice();
+    let before = fixture.target(SLICE);
+    std::fs::remove_dir_all(&fixture.remote).expect("remove remote");
+    assert!(matches!(
+        fixture.vcs.merge_base(&slice),
+        Err(PortError::Backend(_))
+    ));
+    assert_eq!(fixture.target(SLICE), before);
+    assert_eq!(fixture.vcs.is_clean(&slice), Ok(true));
 }
 
 #[test]
