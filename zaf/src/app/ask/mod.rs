@@ -5,8 +5,12 @@
 //! manifest's ladder: a rung whose run fails, whose answer does not parse, does
 //! not answer exactly the questions asked, cites a page that is not citable, or
 //! carries a quote its pages do not hold, is discarded and the next rung asked.
-//! When every rung fails, each question is `not settled`. Every question asked,
-//! cached or not, appends one line to `.zaf/asklog.jsonl`.
+//! When every rung fails, the ask fails and each question it carried is logged as
+//! `failed`. Every question asked, cached or not, appends one line to
+//! `.zaf/asklog.jsonl`: a keeper run that ends in an error leaves `failed` lines, and
+//! one that is cut off (the caller's timeout kills `zaf ask` while the keeper still
+//! runs) leaves the `interrupted` lines written before the run began, which a later
+//! line for the same question supersedes.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -34,6 +38,12 @@ pub const ASK_LOG: &str = "asklog.jsonl";
 
 /// How long an answer in the log stays fresh when the manifest says nothing.
 pub const DEFAULT_CACHE_HOURS: u64 = 24;
+
+/// The verdict a log line carries when no answer was recorded.
+pub const FAILED: &str = "failed";
+
+/// The reason on a line written before a keeper run; it stays only when `zaf ask` never finished.
+pub const INTERRUPTED: &str = "interrupted: the keeper was asked and no answer was recorded";
 
 /// The role every rung runs.
 pub const KEEPER_ROLE: &str = "keeper";
@@ -112,7 +122,7 @@ pub struct LogLine {
     pub kind: String,
     /// The question.
     pub question: String,
-    /// `settled`, `not settled` or `conflict`.
+    /// `settled`, `not settled`, `conflict` or `failed`.
     pub verdict: String,
     /// The pages the answer cites.
     pub pages: Vec<String>,
@@ -150,6 +160,9 @@ pub enum AskFailure {
     /// The questions do not make a valid ask.
     #[error(transparent)]
     Ask(#[from] AskError),
+    /// Every rung failed; the reasons, one per rung.
+    #[error("no rung gave a verified answer: {}", .0.join("; "))]
+    Exhausted(Vec<String>),
     /// The board could not give the task.
     #[error("board: {0}")]
     Board(PortError),
@@ -202,7 +215,21 @@ pub fn ask(query: &AskQuery<'_>, ports: &AskPorts<'_>) -> Result<AskOutcome, Ask
         parsed.context = vec![ticket.title];
         parsed.questions = open;
         let prompt = keeper_prompt(query, &parsed, &pages)?;
-        let (answered, rung, check) = climb(query, ports, &parsed, &prompt)?;
+        // A keeper run can outlive `zaf ask` (a caller's timeout kills the process, the
+        // run goes on): the questions are in the log before it starts.
+        append_log(
+            &log_path,
+            &failed_lines(query, &parsed.questions, INTERRUPTED, now),
+        )?;
+        let (answered, rung, check) = match climb(query, ports, &parsed, &prompt) {
+            Ok(climbed) => climbed,
+            Err(error) => {
+                let lines = failed_lines(query, &parsed.questions, &error.to_string(), now);
+                // The ask's own error is the one to return; a log that cannot be written is not.
+                let _ = append_log(&log_path, &lines);
+                return Err(error);
+            }
+        };
         let mut fresh = answered.into_iter();
         for slot in entries.iter_mut().filter(|slot| slot.is_none()) {
             *slot = fresh
@@ -301,7 +328,7 @@ fn keeper_prompt(query: &AskQuery<'_>, ask: &Ask, pages: &[Page]) -> Result<Stri
     Ok(sections.join("\n\n") + "\n")
 }
 
-/// Runs the ladder until a rung's answer passes; every rung failing yields `not settled` for each question.
+/// Runs the ladder until a rung's answer passes; every rung failing is [`AskFailure::Exhausted`].
 fn climb(
     query: &AskQuery<'_>,
     ports: &AskPorts<'_>,
@@ -321,12 +348,7 @@ fn climb(
             Err(reason) => failures.push(format!("{}: {reason}", rung.name)),
         }
     }
-    let exhausted = ask
-        .questions
-        .iter()
-        .map(|question| not_settled(question.id, query.task))
-        .collect();
-    Ok((exhausted, None, CheckResult::Failed(failures)))
+    Err(AskFailure::Exhausted(failures))
 }
 
 /// One rung: `Ok(Ok(answer))` when it passes, `Ok(Err(reason))` when the rung fails.
@@ -472,18 +494,65 @@ fn log_line(
     }
 }
 
+/// One `failed` line per question, carrying `reason` as its answer and its only check reason.
+fn failed_lines(
+    query: &AskQuery<'_>,
+    questions: &[Question],
+    reason: &str,
+    now: u64,
+) -> Vec<LogLine> {
+    questions
+        .iter()
+        .map(|question| {
+            let kind: &'static str = question.kind.into();
+            LogLine {
+                time: now,
+                task: query.task.get(),
+                from: query.from.to_owned(),
+                kind: kind.to_owned(),
+                question: question.text.clone(),
+                verdict: FAILED.to_owned(),
+                pages: Vec::new(),
+                answer: reason.to_owned(),
+                rung: None,
+                check: CheckResult::Failed(vec![reason.to_owned()]),
+            }
+        })
+        .collect()
+}
+
+/// Whether `lines[index]` is an interrupted marker that a later line for the same question replaces.
+fn superseded(lines: &[LogLine], index: usize) -> bool {
+    let line = &lines[index];
+    let same = |other: &LogLine| {
+        (
+            other.time,
+            &other.from,
+            other.task,
+            &other.kind,
+            &other.question,
+        ) == (line.time, &line.from, line.task, &line.kind, &line.question)
+    };
+    line.verdict == FAILED && line.answer == INTERRUPTED && lines[index + 1..].iter().any(same)
+}
+
 /// Every line of the log; a missing log is empty, and a line that does not parse is skipped.
+/// An interrupted marker is dropped once a later line answers or fails the same question.
 pub fn read_log(path: &Path) -> Result<Vec<LogLine>, AskFailure> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(source) => return Err(state_error(path, source)),
     };
-    let lines = text
+    let lines: Vec<LogLine> = text
         .lines()
         .filter_map(|line| serde_json::from_str::<LogLine>(line).ok())
         .collect();
-    Ok(lines)
+    let kept = (0..lines.len())
+        .filter(|&index| !superseded(&lines, index))
+        .map(|index| lines[index].clone())
+        .collect();
+    Ok(kept)
 }
 
 fn append_log(path: &Path, lines: &[LogLine]) -> Result<(), AskFailure> {
