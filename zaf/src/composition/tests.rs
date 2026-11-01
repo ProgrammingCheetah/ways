@@ -334,3 +334,22 @@ fn a_role_without_the_claude_runner_has_no_runner() {
     ));
     fs::remove_dir_all(&root).expect("clean up");
 }
+
+#[test]
+fn a_runner_command_carries_the_project_root_single_quoted() {
+    let root = scratch_dir("root-placeholder");
+    write_manifest(
+        &root,
+        &format!("{HEAD}[runners.claude]\ncommand = \"printf '%s|%s' {{root}} {{dir}}\"\n"),
+    );
+    let run_dir = root.join("run");
+    fs::create_dir_all(&run_dir).expect("run dir");
+    let composition = Composition::load(&root).expect("loads");
+    let runner = composition
+        .runner(&RunnerName::from("claude"))
+        .expect("builds");
+    assert_eq!(
+        runner.run(&request(&run_dir)).expect("runs").transcript,
+        format!("{}|{}", composition.root().display(), run_dir.display())
+    );
+}

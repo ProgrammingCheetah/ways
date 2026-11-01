@@ -239,7 +239,7 @@ fn expand(template: &CommandLine, prompt: &str, dir: &Path) -> String {
 }
 
 /// Wraps text in single quotes for a POSIX shell.
-fn single_quote(text: &str) -> String {
+pub(crate) fn single_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
