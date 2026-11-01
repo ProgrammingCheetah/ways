@@ -218,7 +218,7 @@ pub struct GateSection {
     pub tests: Option<CommandLine>,
 }
 
-/// `[runners.<name>]`: a command that runs a role, with `{prompt}`, `{dir}` placeholders.
+/// `[runners.<name>]`: a command that runs a role, with `{prompt}`, `{dir}` and `{root}` placeholders (`{model}` and `{effort}` for a role).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunnerSection {
