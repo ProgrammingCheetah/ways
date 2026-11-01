@@ -246,7 +246,7 @@ One binary, `zaf` (§11.5), one page of help pasted into every standing brief, e
 
 | Verb | Replaces | Output |
 |---|---|---|
-| `zaf board ready|claim|report|question|ruling` | hand-crafted `gh` queries and JSON | six-line answers |
+| `zaf board ready|claim|report|question|ruling` | hand-crafted `gh` queries and JSON | six-line answers; `ruling` closes the question and returns its task to `ready` unless the task is `done` (the same ruling again changes nothing) |
 | `zaf ask -t <task> "<kind>: <question>"` (up to five) | reading corpus pages into a working context; asking the lead | a keeper's cited answer; the tool checks each quote exists verbatim in the cited page and re-asks on Haiku or Sonnet if the local model fails |
 | `zaf brief <task>` | the opening burst of rg, cat, ls (the biggest look-around cost) | one context pack: ticket, named corpus pages, `nodes chain` of owned paths, the style page, the help page |
 | `zaf check <task>` or `zaf check pr:<n>[:<task>]` | reading PR threads turn by turn; hand-run reviews; the LLM QA's checklist | runs the step list configured for the target's kind (task: acceptance checks; PR: CI, CodeQL, CodeRabbit, Gemini critique, Gemini security when flagged; milestone: objectives check, release reviews, mutant score), waits inside the verb, and returns one deduplicated findings list tagged by source with an exit code: clean, must-fix present, or a step failed. `--status` reads without running. Steps are configured in `ZAF.toml` with a kind (wait on CI, wait for a bot, run a role on a runner, run a command, read scanner alerts), a `when`, a timeout and a must flag; independent steps run in parallel |
@@ -357,6 +357,8 @@ Turn-one context is what the process loads before the brief: system prompt, tool
 | review | Gemini via `agy` | its own settings; inputs copied per runners.md | n/a |
 
 The stable part of a profile (settings, CLAUDE.md, the role's standing brief) is the cached prefix; the variable part (the ticket, the pack) comes after it in the prompt. A profile changes only by a ruling, because changing it invalidates every cached prefix at once.
+
+A profile's allow-list comes from the manifest: `zaf`, each `[requires]` tool, each `[gate]` command verbatim, and one `Bash(<tool> *)` rule for every tool a gate command invokes (the first word of each `&&`, `||`, `;` or `|` segment, skipping `cd`, `env` and shell builtins), so a programmer can run the gate's tools from its slice workspace, not only the exact line from the project root. The `[forbidden]` denies keep precedence.
 
 ### 7.4 Inside `zaf`: ports and adapters
 One crate, a library target and a thin binary, layered the way Zurfur is:

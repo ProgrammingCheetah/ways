@@ -40,7 +40,13 @@ fn project() -> Project {
             "issue view 7 *",
             r#"{"number":7,"title":"Which columns?","labels":[{"name":"question"}],"state":"OPEN","comments":[]}"#,
         )
-        .on("issue close 7 *", "");
+        .on("issue close 7 *", "")
+        .on("issue view 6 *", &issue(6, "question", ""))
+        .on(
+            "issue view 8 *",
+            r#"{"number":8,"title":"Which rows?","body":"Raised on #6.","labels":[{"name":"question"}],"state":"OPEN","comments":[]}"#,
+        )
+        .on("issue close 8 *", "");
     project
 }
 
@@ -111,6 +117,17 @@ fn question_ruling_and_report_go_through() {
             .gh_calls()
             .iter()
             .any(|call| call.starts_with("issue close 7"))
+    );
+
+    let (code, stdout, stderr) =
+        outcome(&project.zaf(&["board", "ruling", "8", "Header row only."]));
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "#8 ruled; #6 ready\n");
+    assert!(
+        project
+            .gh_calls()
+            .iter()
+            .any(|call| call.starts_with("issue edit 6 --add-label ready --remove-label question"))
     );
 
     project.env("ZAF_INSTANCE", INSTANCE);

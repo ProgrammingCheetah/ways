@@ -289,8 +289,71 @@ fn a_project_requiring_nothing_allows_only_zaf_and_its_gate() {
     let settings = settings(&state, "lean");
     assert_eq!(
         strings(&settings["permissions"]["allow"]),
-        ["Bash(zaf *)", "Bash(make check)"]
+        ["Bash(zaf *)", "Bash(make check)", "Bash(make *)"]
     );
+}
+
+#[test]
+fn a_chained_gate_adds_exactly_one_rule_for_its_one_tool() {
+    let gate = "cd zaf && cargo fmt --check && cargo build && cargo clippy --all-targets -- -D warnings && cargo test";
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    init_here(&state, &manifest(&format!("[gate]\nfull = \"{gate}\"\n"))).expect("generates");
+    let verbatim = format!("Bash({gate})");
+    for profile in ["lean", "build"] {
+        assert_eq!(
+            strings(&settings(&state, profile)["permissions"]["allow"]),
+            ["Bash(zaf *)", verbatim.as_str(), "Bash(cargo *)"],
+            "{profile}"
+        );
+    }
+}
+
+#[test]
+fn a_gate_and_its_tests_allow_each_tool_once() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    init_here(
+        &state,
+        &manifest("[gate]\nfull = \"just gate\"\ntests = \"cargo test -p {crate} {name}\"\n"),
+    )
+    .expect("generates");
+    for profile in ["lean", "build"] {
+        assert_eq!(
+            strings(&settings(&state, profile)["permissions"]["allow"]),
+            [
+                "Bash(zaf *)",
+                "Bash(just gate)",
+                "Bash(just *)",
+                "Bash(cargo test -p * *)",
+                "Bash(cargo *)"
+            ],
+            "{profile}"
+        );
+    }
+}
+
+#[test]
+fn tools_are_found_across_every_separator_and_builtins_are_skipped() {
+    assert_eq!(
+        tool_rules(&CommandLine::from("cd a; env X=1 b | c || d && FOO=1 e")),
+        ["Bash(b *)", "Bash(c *)", "Bash(d *)", "Bash(e *)"]
+    );
+}
+
+#[test]
+fn a_forbidden_tool_is_not_allowed_by_the_gate_rules() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    init_here(
+        &state,
+        &manifest("[gate]\nfull = \"cd x && gh pr\"\n[forbidden]\ncommands = [\"gh\"]\n"),
+    )
+    .expect("generates");
+    let settings = settings(&state, "build");
+    let allow = strings(&settings["permissions"]["allow"]);
+    assert!(!allow.contains(&"Bash(gh *)"));
+    assert!(allow.contains(&"Bash(cd x && gh pr)"));
 }
 
 /// The project root's marketplace file: marketplace `shelf` listing plugin `kit` at `source`.

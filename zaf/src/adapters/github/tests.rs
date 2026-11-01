@@ -123,6 +123,27 @@ fn at(seconds: u64) -> SystemTime {
 
 /// An issue as `gh issue view --json` prints it; comments get ids 100, 101, ….
 fn issue(number: u64, labels: &[&str], comments: &[String], state: &str) -> String {
+    issue_with_body(number, labels, comments, state, "Goal: export the list")
+}
+
+/// A question ticket as `gh issue view --json` prints it, raised on `task`.
+fn question_issue(number: u64, comments: &[String], state: &str, task: u64) -> String {
+    let body = NewQuestion {
+        on: IssueNumber::from(task),
+        text: String::new(),
+        door: false,
+    }
+    .body();
+    issue_with_body(number, &["question"], comments, state, &body)
+}
+
+fn issue_with_body(
+    number: u64,
+    labels: &[&str],
+    comments: &[String],
+    state: &str,
+    body: &str,
+) -> String {
     let labels: Vec<_> = labels
         .iter()
         .map(|name| serde_json::json!({ "name": name }))
@@ -141,7 +162,7 @@ fn issue(number: u64, labels: &[&str], comments: &[String], state: &str) -> Stri
     let issue = serde_json::json!({
         "number": number,
         "title": format!("task {number}"),
-        "body": "Goal: export the list",
+        "body": body,
         "labels": labels,
         "parent": { "number": 1 },
         "state": state,
@@ -268,7 +289,7 @@ fn every_call_on_a_missing_issue_is_not_found() {
         board.label(missing, TaskLabel::Done),
         board.comment(missing, "Blocked."),
         board.report(missing, &instance(1), "working"),
-        board.record_ruling(missing, "Title only."),
+        board.record_ruling(missing, "Title only.").map(drop),
     ];
     for result in results {
         assert!(matches!(result, Err(PortError::NotFound(_))), "{result:?}");
@@ -695,6 +716,81 @@ fn record_ruling_comments_and_closes_once() {
         view("8"),
     ];
     assert_eq!(fake.calls(), expected_calls);
+}
+
+#[test]
+fn a_ruling_returns_the_waiting_task_to_ready() {
+    let fake = FakeGh::new();
+    fake.on("issue view 7 *", &question_issue(7, &[], "OPEN", 2))
+        .on(
+            "issue view 2 *",
+            &issue(2, &["task", "question"], &[], "OPEN"),
+        )
+        .on("issue comment *", "")
+        .on("issue close *", "")
+        .on("issue edit *", "");
+    let returned = fake
+        .board()
+        .record_ruling(IssueNumber::from(7), "Title and author.");
+    assert_eq!(returned, Ok(Some(IssueNumber::from(2))));
+    let expected_calls = vec![
+        view("7"),
+        argv(&[
+            "issue",
+            "comment",
+            "7",
+            "--body",
+            "<!-- zaf:ruling -->\nTitle and author.",
+            "--repo",
+            REPO,
+        ]),
+        argv(&["issue", "close", "7", "--repo", REPO]),
+        view("2"),
+        argv(&[
+            "issue",
+            "edit",
+            "2",
+            "--add-label",
+            "ready",
+            "--remove-label",
+            "question",
+            "--repo",
+            REPO,
+        ]),
+    ];
+    assert_eq!(fake.calls(), expected_calls);
+}
+
+#[test]
+fn a_second_identical_ruling_changes_nothing_and_a_done_task_keeps_its_labels() {
+    let ruled = ["<!-- zaf:ruling -->\nTitle and author.".to_owned()];
+    let fake = FakeGh::new();
+    fake.on("issue view 8 *", &question_issue(8, &ruled, "CLOSED", 2))
+        .on("issue view 2 *", &issue(2, &["task", "ready"], &[], "OPEN"))
+        .on("issue view 9 *", &question_issue(9, &[], "OPEN", 4))
+        .on(
+            "issue view 4 *",
+            &issue(4, &["task", "done", "question"], &[], "OPEN"),
+        )
+        .on("issue comment *", "")
+        .on("issue close *", "");
+    let board = fake.board();
+    assert_eq!(
+        board.record_ruling(IssueNumber::from(8), "Title and author."),
+        Ok(None),
+        "the task already returned"
+    );
+    assert_eq!(
+        board.record_ruling(IssueNumber::from(9), "Title and author."),
+        Ok(None),
+        "a done task is left alone"
+    );
+    let calls = fake.calls();
+    assert!(
+        calls.iter().all(|call| call[1] != "edit"),
+        "no label changes: {calls:?}"
+    );
+    assert_eq!(calls[..2], [view("8"), view("2")]);
 }
 
 fn request() -> PrRequest {

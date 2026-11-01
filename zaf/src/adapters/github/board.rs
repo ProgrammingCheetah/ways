@@ -61,6 +61,23 @@ impl GithubBoard {
             .map(drop)
     }
 
+    /// Returns the task a ruled question was raised on to `ready`, when it still waits:
+    /// carries `question` and is not `done`. Returns the task it changed.
+    fn return_waiting_task(&self, question: &IssueRow) -> Result<Option<IssueNumber>, PortError> {
+        let Some(task) = NewQuestion::raised_on(&question.body) else {
+            return Ok(None);
+        };
+        let row = self.issue(task)?;
+        let waiting = TaskLabel::Question.to_string();
+        let done = TaskLabel::Done.to_string();
+        if row.has_label(&done) || !row.has_label(&waiting) {
+            return Ok(None);
+        }
+        let ready = TaskLabel::Ready.to_string();
+        self.edit_labels(task, &[&ready], &[&waiting])?;
+        Ok(Some(task))
+    }
+
     fn edit_comment(&self, url: &str, body: &str) -> Result<(), PortError> {
         let id = url
             .rsplit_once("#issuecomment-")
@@ -308,7 +325,11 @@ impl Board for GithubBoard {
         number_from_url(&stdout).map(IssueNumber::from)
     }
 
-    fn record_ruling(&self, question: IssueNumber, ruling: &str) -> Result<(), PortError> {
+    fn record_ruling(
+        &self,
+        question: IssueNumber,
+        ruling: &str,
+    ) -> Result<Option<IssueNumber>, PortError> {
         let row = self.issue(question)?;
         let recorded = row
             .comments
@@ -323,10 +344,10 @@ impl Board for GithubBoard {
             Some(_) => {}
             None => self.post_comment(question, &marked(RULING_MARKER, ruling))?,
         }
-        if row.state != OPEN {
-            return Ok(());
+        if row.state == OPEN {
+            let number = question.get().to_string();
+            self.gh.text(&["issue", "close", &number]).map(drop)?;
         }
-        let number = question.get().to_string();
-        self.gh.text(&["issue", "close", &number]).map(drop)
+        self.return_waiting_task(&row)
     }
 }
