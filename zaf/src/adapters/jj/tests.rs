@@ -226,6 +226,69 @@ fn commit_and_publish_follow_the_work() {
 }
 
 #[test]
+fn publish_pushes_a_commit_made_by_hand() {
+    let fixture = Fixture::new(false);
+    let (slice, _base) = fixture.slice();
+    let dir = fixture.slice_dir(&slice);
+    write(&dir, "by_hand.txt", "hand\n");
+    jj(&dir, &["commit", "-m", "Made by hand"]);
+    // The bookmark was left on the base by the hand-made commit.
+    assert_eq!(fixture.target(SLICE), fixture.target(BASE));
+    let head = jj(&dir, &["log", "--no-graph", "-r", "@-", "-T", "commit_id"]);
+    assert_ne!(head, fixture.target(BASE));
+    assert_eq!(fixture.vcs.publish(&slice), Ok(Publication::Published));
+    assert_eq!(fixture.target(SLICE), head);
+    assert_eq!(fixture.remote_target(SLICE), head);
+    assert_eq!(
+        fixture.vcs.publish(&slice),
+        Ok(Publication::AlreadyPublished)
+    );
+}
+
+#[test]
+fn publish_of_uncommitted_work_is_rejected_and_pushes_nothing() {
+    let fixture = Fixture::new(false);
+    let (slice, _base) = fixture.slice();
+    let dir = fixture.slice_dir(&slice);
+    write(&dir, "wip.txt", "wip\n");
+    assert!(matches!(
+        fixture.vcs.publish(&slice),
+        Err(PortError::Rejected(_))
+    ));
+    let git_dir = fixture.remote.to_string_lossy();
+    let reference = format!("refs/heads/{SLICE}");
+    let lookup = Command::new("git")
+        .args([
+            "--git-dir",
+            &git_dir,
+            "rev-parse",
+            "--verify",
+            "-q",
+            &reference,
+        ])
+        .output()
+        .expect("spawn");
+    assert!(!lookup.status.success(), "the remote must not have {SLICE}");
+}
+
+#[test]
+fn publish_refuses_to_move_the_bookmark_backwards() {
+    let fixture = Fixture::new(false);
+    let (slice, _base) = fixture.slice();
+    let dir = fixture.slice_dir(&slice);
+    write(&dir, "a.txt", "a\n");
+    fixture.vcs.commit(&slice, "Add a").expect("commit");
+    let before = fixture.target(SLICE);
+    // The workspace now sits on a sibling of the slice's tip.
+    jj(&dir, &["new", &bookmark(BASE)]);
+    assert!(matches!(
+        fixture.vcs.publish(&slice),
+        Err(PortError::Conflict(_))
+    ));
+    assert_eq!(fixture.target(SLICE), before);
+}
+
+#[test]
 fn publish_never_overwrites_work_the_remote_has() {
     let fixture = Fixture::new(false);
     let (slice, _base) = fixture.slice();

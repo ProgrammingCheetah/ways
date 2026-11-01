@@ -211,6 +211,22 @@ impl Vcs for JjVcs {
 
     fn publish(&self, slice: &SliceName) -> Result<Publication, PortError> {
         let (jj, _base) = self.open(slice)?;
+        if !jj.working_copy_is("empty")? {
+            return Err(PortError::Rejected(format!(
+                "uncommitted work in {slice}; commit first"
+            )));
+        }
+        // A programmer may have committed by hand, leaving the bookmark behind:
+        // settle it on the workspace's latest commit. `bookmark set` moves forward
+        // or stays, and refuses a backwards or sideways move.
+        jj.run(
+            Place::Workspace,
+            &["bookmark", "set", slice.as_ref(), "-r", "@-"],
+        )
+        .map_err(|error| match error {
+            PortError::Backend(failure) => PortError::Conflict(failure),
+            other => other,
+        })?;
         let published = format!(
             "{} & remote_bookmarks(exact:{})",
             bookmark(slice.as_ref()),
