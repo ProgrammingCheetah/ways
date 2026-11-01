@@ -78,6 +78,46 @@ fn prune_drops_instances_whose_process_is_gone() {
 }
 
 #[test]
+fn an_instance_with_two_tasks_is_one_running_instance() {
+    let mut state = SpawnState::default();
+    assert_eq!(state.running(), 0);
+    state.reserve(&[planned(1, 2, &[3, 4])], 100);
+    assert_eq!(state.launches.len(), 2);
+    assert_eq!(state.running(), 1);
+    state.reserve(&[planned(2, 12, &[13])], 200);
+    assert_eq!(state.running(), 2);
+
+    let names: Vec<String> = state
+        .running_instances()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(names, ["team instance 1 on #2", "team instance 2 on #12"]);
+    assert_eq!(state.tasks_of(&state.running_instances()[0]), [3, 4]);
+}
+
+#[test]
+fn a_pruned_instance_is_gone_from_both() {
+    let mut state = SpawnState::default();
+    state.reserve(&[planned(1, 2, &[3, 4]), planned(2, 12, &[13])], 100);
+    state.prune(&|_| false);
+    assert_eq!(state.running(), 0);
+    assert!(state.running_instances().is_empty());
+
+    state.reserve(&[planned(3, 2, &[3, 4]), planned(4, 12, &[13])], 100);
+    state.prune(&|pid| pid == 100);
+    assert_eq!(state.running(), 2);
+    state.finish("team instance 3 on #2");
+    assert_eq!(state.running(), 1);
+    let names: Vec<String> = state
+        .running_instances()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(names, ["team instance 4 on #12"]);
+}
+
+#[test]
 fn finish_frees_the_instance_and_keeps_the_counter() {
     let mut state = SpawnState::default();
     state.reserve(&[planned(1, 2, &[3, 4])], 100);
