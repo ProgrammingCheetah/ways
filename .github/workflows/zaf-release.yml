@@ -51,7 +51,7 @@ jobs:
       - name: Package archive and checksum
         shell: bash
         run: |
-          name="zaf-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          name="${GITHUB_REF_NAME}-${{ matrix.target }}"
           stage="$RUNNER_TEMP/$name"
           mkdir -p "$stage" dist
           cp "zaf/target/${{ matrix.target }}/release/zaf" "$stage/"
