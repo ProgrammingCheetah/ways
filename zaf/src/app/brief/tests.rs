@@ -141,7 +141,7 @@ fn the_pack_holds_every_section_in_order() {
     assert_eq!(*chained.borrow(), ["src/export", "src/cli/export.rs"]);
     let owned = section(&text, "Owned paths");
     assert!(owned.contains("### src/export\n\n```\nroot\n  src/export\n```"));
-    assert!(!owned.contains(NODES_ABSENT_NOTE));
+    assert!(!owned.contains(NO_NODE_TREE_NOTE));
 
     assert!(section(&text, "Style").contains("Name things by what they mean."));
     assert!(section(&text, "Interface").contains("zaf ask -t <task>"));
@@ -152,7 +152,7 @@ fn the_pack_holds_every_section_in_order() {
 }
 
 #[test]
-fn without_nodes_the_owned_paths_carry_the_skip_note() {
+fn without_a_node_chain_the_owned_paths_carry_the_note_and_a_plain_list() {
     let state = tempfile::tempdir().expect("temp dir");
     let board = board_with(BODY);
     let design = design();
@@ -166,7 +166,8 @@ fn without_nodes_the_owned_paths_carry_the_skip_note() {
 
     let text = fs::read_to_string(&brief.path).expect("pack");
     let owned = section(&text, "Owned paths");
-    assert!(owned.contains(NODES_ABSENT_NOTE));
+    assert!(owned.contains(NO_NODE_TREE_NOTE));
+    assert!(owned.contains("\n- src/export\n- src/cli/export.rs\n"));
     assert!(!owned.contains("```"));
     assert!(section(&text, "Style").contains("declares no style file"));
 }

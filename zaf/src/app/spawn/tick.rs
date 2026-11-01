@@ -141,7 +141,7 @@ pub fn allowed_slots(total: u32, level: Level) -> u32 {
 /// Plans one tick of the team-instance branch.
 pub fn plan(snapshot: &Snapshot, state: &SpawnState, level: Level, settings: Settings) -> Plan {
     let allowed = allowed_slots(settings.slots, level);
-    let running = u32::try_from(state.instances().len()).unwrap_or(u32::MAX);
+    let running = u32::try_from(state.running()).unwrap_or(u32::MAX);
     let slots = SlotCount {
         total: settings.slots,
         level,

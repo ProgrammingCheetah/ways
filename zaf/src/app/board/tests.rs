@@ -246,3 +246,28 @@ fn a_ruling_closes_the_question_once() {
         Err(BoardError::Port(PortError::Conflict(_)))
     ));
 }
+
+#[test]
+fn a_ruling_returns_the_task_to_ready_so_it_can_be_claimed_again() {
+    let board = board_with(&[(2, TaskLabel::Claimed)]);
+    let asked = NewQuestion {
+        on: IssueNumber::from(2),
+        text: "Which columns?".to_owned(),
+        door: false,
+    };
+    let number = question(&board, &asked).expect("question");
+    assert!(matches!(
+        claim(&board, &claim_command(2, 2, 1)),
+        Err(BoardError::Port(PortError::Rejected(_)))
+    ));
+    let command = RulingCommand {
+        question: number,
+        ruling: "Title and author.".to_owned(),
+    };
+    assert_eq!(ruling(&board, &command), Ok(Some(IssueNumber::from(2))));
+    assert_eq!(ruling(&board, &command), Ok(None));
+    assert_eq!(
+        claim(&board, &claim_command(2, 2, 1)),
+        Ok(ClaimOutcome::Claimed)
+    );
+}

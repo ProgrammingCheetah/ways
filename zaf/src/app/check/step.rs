@@ -165,6 +165,8 @@ pub struct StepContext {
     pub deadline: Instant,
     /// How often `ci` looks at the forge's checks.
     pub poll: Duration,
+    /// How long after `ci` starts an empty check list still counts as pending.
+    pub grace: Duration,
 }
 
 /// Runs one step to its findings; an error is a failed step.

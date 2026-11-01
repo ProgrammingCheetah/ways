@@ -221,6 +221,19 @@ impl FromStr for TaskTemplate {
                 acceptance.push(item.trim().to_owned());
                 continue;
             }
+            if raw_line.starts_with([' ', '\t']) {
+                let continued = current_field
+                    .and_then(|field| values.get_mut(&field))
+                    .ok_or_else(|| TaskTemplateError::UnrecognizedLine {
+                        line,
+                        text: content.to_owned(),
+                    })?;
+                if !continued.is_empty() {
+                    continued.push('\n');
+                }
+                continued.push_str(content);
+                continue;
+            }
             let (label, value) =
                 content
                     .split_once(':')
@@ -323,11 +336,15 @@ impl fmt::Display for TaskTemplate {
 }
 
 fn write_field(formatter: &mut fmt::Formatter<'_>, field: TaskField, value: &str) -> fmt::Result {
-    if value.is_empty() {
-        writeln!(formatter, "{field}:")
-    } else {
-        writeln!(formatter, "{field}: {value}")
+    let mut lines = value.lines();
+    match lines.next() {
+        Some(first) if !first.is_empty() => writeln!(formatter, "{field}: {first}")?,
+        _ => writeln!(formatter, "{field}:")?,
     }
+    for continuation in lines {
+        writeln!(formatter, "  {continuation}")?;
+    }
+    Ok(())
 }
 
 fn take_required(

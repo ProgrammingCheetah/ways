@@ -57,6 +57,12 @@ impl NewQuestion {
         format!("Raised on {}.", self.on)
     }
 
+    /// The issue a question ticket was raised on, read back from its [`body`](Self::body).
+    pub fn raised_on(body: &str) -> Option<IssueNumber> {
+        let rest = body.trim().strip_prefix("Raised on ")?;
+        rest.strip_suffix('.')?.parse().ok()
+    }
+
     /// Whether `ticket` is this question already open: the same text raised on the same issue.
     /// Whether it was raised as a door does not matter; the question is the same.
     pub fn is_asked_by(&self, ticket: &Ticket) -> bool {
@@ -83,8 +89,10 @@ pub trait Board {
     /// Every live claim with its last heartbeat, for the spawner's lease check.
     fn claims(&self) -> Result<Vec<ClaimRecord>, PortError>;
 
-    /// Drops a task's claim and returns it to `ready`; a task without a claim is left as it is.
-    fn release(&self, task: IssueNumber) -> Result<(), PortError>;
+    /// Drops `instance`'s claim on a task and comments `released from <instance> at <time>`.
+    /// The task returns to `ready` unless it carries `question` or `done`, which it keeps.
+    /// A task the instance does not hold is left as it is and the call succeeds.
+    fn release(&self, task: IssueNumber, instance: &Instance) -> Result<(), PortError>;
 
     /// Sets a task's state label, replacing the one it had.
     fn label(&self, task: IssueNumber, label: TaskLabel) -> Result<(), PortError>;
@@ -104,7 +112,16 @@ pub trait Board {
 
     /// Records the Engineer's ruling on a question and closes it.
     /// The same ruling again succeeds quietly; a different one is a [`PortError::Conflict`].
-    fn record_ruling(&self, question: IssueNumber, ruling: &str) -> Result<(), PortError>;
+    ///
+    /// The task the question was raised on (see [`NewQuestion::raised_on`]) returns to
+    /// `ready` when it carries `question`: the label is dropped and `ready` added.
+    /// A task that is `done`, or no longer waits, is left alone.
+    /// Returns the task that was returned to `ready`, if any.
+    fn record_ruling(
+        &self,
+        question: IssueNumber,
+        ruling: &str,
+    ) -> Result<Option<IssueNumber>, PortError>;
 }
 
 #[cfg(test)]

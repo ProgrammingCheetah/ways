@@ -1,5 +1,6 @@
 //! `zaf brief`: writes the task's context pack and prints its path and token estimate.
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -19,6 +20,9 @@ pub const DEFAULT_INSTANCE: &str = "local";
 /// The node tool the pack calls for each owned path.
 const NODES_BINARY: &str = "nodes";
 
+/// The file at the project root that marks a node tree.
+const NODE_TREE_FILE: &str = "NODE.inf.json";
+
 /// Builds a task's context pack.
 pub fn run(cli: &Cli, task: IssueNumber) -> u8 {
     let path = cli.verb.path();
@@ -37,7 +41,7 @@ pub fn run(cli: &Cli, task: IssueNumber) -> u8 {
     let instance = instance();
     let state_dir = composition.state_dir();
     let root = composition.root().to_owned();
-    let nodes = find_on_path(NODES_BINARY);
+    let nodes = nodes_for(&root, std::env::var_os("PATH").as_deref());
     let chain = nodes
         .as_deref()
         .map(|binary| move |owned: &str| nodes_chain(binary, &root, owned));
@@ -89,10 +93,20 @@ pub(crate) fn instance() -> String {
         .unwrap_or_else(|| DEFAULT_INSTANCE.to_owned())
 }
 
-/// The first executable file named `name` on PATH.
-fn find_on_path(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
+/// The `nodes` binary to chain with, only when the project root holds a node tree.
+///
+/// Without `<root>/NODE.inf.json`, `nodes` would walk up and chart whatever
+/// tree lies above the project, so the chains are skipped instead.
+fn nodes_for(root: &Path, path_var: Option<&OsStr>) -> Option<PathBuf> {
+    if !root.join(NODE_TREE_FILE).is_file() {
+        return None;
+    }
+    find_on_path(NODES_BINARY, path_var?)
+}
+
+/// The first executable file named `name` in the PATH value `path`.
+fn find_on_path(name: &str, path: &OsStr) -> Option<PathBuf> {
+    std::env::split_paths(path)
         .map(|dir| dir.join(name))
         .find(|candidate| candidate.is_file())
 }
@@ -135,5 +149,39 @@ mod tests {
             style_file(&declared),
             Some(root.path().join("docs/style.md"))
         );
+    }
+
+    /// A temp dir holding a fake `nodes` file, and its path as a PATH value.
+    fn fake_nodes_on_path() -> (tempfile::TempDir, std::ffi::OsString, PathBuf) {
+        let bin = tempfile::tempdir().expect("temp dir");
+        let binary = bin.path().join(NODES_BINARY);
+        std::fs::write(&binary, "#!/bin/sh\n").expect("fake nodes");
+        let path_var = std::env::join_paths([bin.path()]).expect("path value");
+        (bin, path_var, binary)
+    }
+
+    #[test]
+    fn a_root_without_a_node_tree_gets_no_nodes_even_with_the_binary_on_path() {
+        let (_bin, path_var, _binary) = fake_nodes_on_path();
+        let root = tempfile::tempdir().expect("temp dir");
+        assert_eq!(nodes_for(root.path(), Some(&path_var)), None);
+    }
+
+    #[test]
+    fn a_root_with_a_node_tree_gets_the_binary_found_on_path() {
+        let (_bin, path_var, binary) = fake_nodes_on_path();
+        let root = tempfile::tempdir().expect("temp dir");
+        std::fs::write(root.path().join(NODE_TREE_FILE), "{}").expect("node tree");
+        assert_eq!(nodes_for(root.path(), Some(&path_var)), Some(binary));
+    }
+
+    #[test]
+    fn a_root_with_a_node_tree_but_no_binary_gets_no_nodes() {
+        let root = tempfile::tempdir().expect("temp dir");
+        std::fs::write(root.path().join(NODE_TREE_FILE), "{}").expect("node tree");
+        let empty = tempfile::tempdir().expect("temp dir");
+        let path_var = std::env::join_paths([empty.path()]).expect("path value");
+        assert_eq!(nodes_for(root.path(), Some(&path_var)), None);
+        assert_eq!(nodes_for(root.path(), None), None);
     }
 }

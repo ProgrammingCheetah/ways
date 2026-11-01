@@ -9,6 +9,7 @@ use std::path::Path;
 use super::SpawnError;
 use super::tick::PlannedLaunch;
 use crate::app::status::{Launch, SPAWN_STATE_FILE};
+use crate::domain::Instance;
 
 /// The number the first instance gets.
 const FIRST_INSTANCE: u32 = 1;
@@ -51,6 +52,34 @@ impl SpawnState {
             }
         }
         seen
+    }
+
+    /// How many slots are held: the distinct instances among the launches, however many tasks each carries.
+    ///
+    /// The tick's free slots and `zaf status` both read this number; neither recounts launches.
+    pub fn running(&self) -> usize {
+        self.instances().len()
+    }
+
+    /// The running instances, each once, in the order they were recorded.
+    ///
+    /// A recorded name that is not an instance is counted by [`running`](Self::running)
+    /// (it holds a slot) but cannot be listed here.
+    pub fn running_instances(&self) -> Vec<Instance> {
+        self.instances()
+            .into_iter()
+            .filter_map(|name| name.parse::<Instance>().ok())
+            .collect()
+    }
+
+    /// The tasks an instance carries, in the order they were recorded.
+    pub fn tasks_of(&self, instance: &Instance) -> Vec<u64> {
+        let name = instance.to_string();
+        self.launches
+            .iter()
+            .filter(|launch| launch.instance == name)
+            .map(|launch| launch.task)
+            .collect()
     }
 
     /// Drops every instance whose process is gone and returns them.

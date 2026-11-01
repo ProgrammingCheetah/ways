@@ -1,13 +1,14 @@
 //! `zaf asklog`: the ask log as the design's own analytics.
 //!
 //! The pages cited most, the questions asked more than once (a question that
-//! keeps returning was not settled), and the `not settled` answers (the gaps).
+//! keeps returning was not settled), the `not settled` answers (the gaps) and the
+//! `failed` lines (an ask that got no answer, or never finished).
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use super::ask::{AskFailure, LogLine, read_log};
+use super::ask::{AskFailure, FAILED, LogLine, read_log};
 
 /// A page and how many answers cited it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -42,6 +43,19 @@ pub struct Gap {
     pub question: String,
 }
 
+/// A question no rung answered, or whose ask never finished.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Failure {
+    /// The task it was asked for.
+    pub task: u64,
+    /// Its kind.
+    pub kind: String,
+    /// The question.
+    pub question: String,
+    /// Why there is no answer.
+    pub reason: String,
+}
+
 /// The log, summed up.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct AskLogSummary {
@@ -53,6 +67,8 @@ pub struct AskLogSummary {
     pub recurring: Vec<Recurring>,
     /// `not settled` answers, one per task and question, in first-asked order.
     pub not_settled: Vec<Gap>,
+    /// `failed` lines, every one, in log order.
+    pub failed: Vec<Failure>,
 }
 
 /// Reads the log at `path` and sums it up; a missing log is an empty summary.
@@ -116,11 +132,23 @@ pub fn summarize(lines: &[LogLine]) -> AskLogSummary {
         })
         .collect();
 
+    let failed = lines
+        .iter()
+        .filter(|line| line.verdict == FAILED)
+        .map(|line| Failure {
+            task: line.task,
+            kind: line.kind.clone(),
+            question: line.question.clone(),
+            reason: line.answer.clone(),
+        })
+        .collect();
+
     AskLogSummary {
         asks: lines.len(),
         top_pages,
         recurring,
         not_settled,
+        failed,
     }
 }
 

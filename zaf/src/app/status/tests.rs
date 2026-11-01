@@ -88,7 +88,7 @@ fn the_screen_joins_board_spawn_state_and_guard() {
          claimed   1 (#5)\n\
          questions 1 (#9)\n\
          running   1\n\
-         \x20 #5 programmer instance 1 on #2 pid 4242 since 2026-10-28T01:00:00Z\n\
+         \x20 programmer instance 1 on #2: #5\n\
          slots     1 free of 2\n\
          guard     yellow 72% ($72 of $100)\n\
          question  #9 Which columns are exported?\n"
@@ -167,9 +167,33 @@ fn a_batch_of_tasks_holds_one_slot() {
     let status = status(&board(), dir.path(), 4).expect("status");
 
     assert_eq!(status.running.len(), 3, "every entry is still listed");
+    assert_eq!(status.running_count, 2);
     assert_eq!(
         status.slots,
         Slots { total: 4, free: 2 },
         "two distinct instances hold two slots"
+    );
+}
+
+#[test]
+fn the_running_line_counts_instances_and_each_is_listed_once_with_its_tasks() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = r#"{"launches": [
+        {"task": 46, "instance": "team instance 3 on #37"},
+        {"task": 47, "instance": "team instance 3 on #37"},
+        {"task": 5, "instance": "team instance 4 on #7"}
+    ]}"#;
+    std::fs::write(dir.path().join(SPAWN_STATE_FILE), state).expect("spawn.state");
+
+    let text = status(&board(), dir.path(), 2)
+        .expect("status")
+        .render_text();
+
+    assert!(
+        text.contains(
+            "running   2\n  team instance 3 on #37: #46 #47\n  team instance 4 on #7: #5\n\
+             slots     0 free of 2\n"
+        ),
+        "{text}"
     );
 }

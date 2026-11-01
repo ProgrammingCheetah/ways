@@ -84,6 +84,33 @@ fn the_summary_ranks_pages_finds_repeats_and_gaps() {
 }
 
 #[test]
+fn failed_lines_are_counted_and_listed_with_their_reason() {
+    let mut failed = line(49, "rule", "Is it so?", "failed", &[]);
+    failed.answer = "no rung gave a verified answer: haiku: run exited 1".to_owned();
+    failed.rung = None;
+    failed.check = CheckResult::Failed(vec![failed.answer.clone()]);
+    let lines = [
+        line(49, "fact", "What is it?", "not settled", &[]),
+        failed.clone(),
+        line(50, "term", "What is a shelf?", "settled", &["1001"]),
+    ];
+
+    let summary = summarize(&lines);
+
+    assert_eq!(summary.asks, 3, "a failed ask was asked");
+    assert_eq!(
+        summary.failed,
+        [Failure {
+            task: 49,
+            kind: "rule".to_owned(),
+            question: "Is it so?".to_owned(),
+            reason: failed.answer,
+        }]
+    );
+    assert_eq!(summary.not_settled.len(), 1, "failed is not not settled");
+}
+
+#[test]
 fn the_most_cited_page_comes_first() {
     let lines = [
         line(1, "fact", "a?", "settled", &["2002"]),

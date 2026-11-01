@@ -88,10 +88,44 @@ fn leases_beat_and_release_back_to_ready() {
         port.heartbeat(task, &instance(2)),
         Err(PortError::Conflict(_))
     ));
-    port.release(task).expect("release");
-    port.release(task).expect("a second release is quiet");
+    port.release(task, &instance(2))
+        .expect("a release by a non-holder is quiet");
+    assert_eq!(port.claims().expect("claims").len(), 1);
+    assert_eq!(
+        port.task(task).expect("task").label,
+        Some(TaskLabel::Claimed)
+    );
+    assert!(
+        board.comments(task).is_empty(),
+        "a non-holder writes nothing"
+    );
+    port.release(task, &instance(1)).expect("release");
+    port.release(task, &instance(1))
+        .expect("a second release is quiet");
     assert!(port.claims().expect("claims").is_empty());
     assert_eq!(port.task(task).expect("task").label, Some(TaskLabel::Ready));
+    let comments = board.comments(task);
+    assert_eq!(comments.len(), 1, "only the first release comments");
+    assert!(
+        comments[0].starts_with("released from programmer instance 1 on #1 at "),
+        "{comments:?}"
+    );
+}
+
+#[test]
+fn a_release_keeps_question_and_done_and_adds_no_ready() {
+    let board = seeded();
+    let port: &dyn Board = &board;
+    for (task, label) in [(2, TaskLabel::Question), (4, TaskLabel::Done)] {
+        let task = IssueNumber::from(task);
+        port.claim(task, &instance(1)).expect("claim");
+        port.label(task, label).expect("label");
+        port.release(task, &instance(1)).expect("release");
+        assert_eq!(port.task(task).expect("task").label, Some(label));
+        assert!(port.claims().expect("claims").is_empty());
+        assert_eq!(board.comments(task).len(), 1);
+    }
+    assert!(port.ready().expect("ready").is_empty());
 }
 
 #[test]
@@ -136,6 +170,62 @@ fn questions_open_and_take_one_ruling() {
     ));
     let expected_question = Some((true, Some("Title and author.".to_owned())));
     assert_eq!(board.question(question), expected_question);
+}
+
+#[test]
+fn a_question_body_names_the_issue_it_was_raised_on() {
+    let asked = NewQuestion {
+        on: IssueNumber::from(12),
+        text: "Which columns?".to_owned(),
+        door: false,
+    };
+    assert_eq!(
+        NewQuestion::raised_on(&asked.body()),
+        Some(IssueNumber::from(12))
+    );
+    let with_newline = format!("{}\n", asked.body());
+    assert_eq!(
+        NewQuestion::raised_on(&with_newline),
+        Some(IssueNumber::from(12))
+    );
+    assert_eq!(NewQuestion::raised_on(""), None);
+    assert_eq!(NewQuestion::raised_on("Goal: export the list"), None);
+    assert_eq!(NewQuestion::raised_on("Raised on #x."), None);
+}
+
+#[test]
+fn a_ruling_returns_the_waiting_task_to_ready_and_names_it() {
+    let board = seeded();
+    let port: &dyn Board = &board;
+    let ask = |on: u64| NewQuestion {
+        on: IssueNumber::from(on),
+        text: "Which columns?".to_owned(),
+        door: false,
+    };
+    let waiting = port.open_question(&ask(2)).expect("question");
+    port.label(IssueNumber::from(2), TaskLabel::Question)
+        .expect("the task waits");
+    let finished = port.open_question(&ask(4)).expect("question");
+    port.label(IssueNumber::from(4), TaskLabel::Done)
+        .expect("the task is done");
+    assert_eq!(
+        port.record_ruling(waiting, "Title."),
+        Ok(Some(IssueNumber::from(2)))
+    );
+    assert_eq!(
+        port.task(IssueNumber::from(2)).expect("task").label,
+        Some(TaskLabel::Ready)
+    );
+    assert_eq!(
+        port.record_ruling(waiting, "Title."),
+        Ok(None),
+        "the same ruling again changes nothing"
+    );
+    assert_eq!(port.record_ruling(finished, "Title."), Ok(None));
+    assert_eq!(
+        port.task(IssueNumber::from(4)).expect("task").label,
+        Some(TaskLabel::Done)
+    );
 }
 
 #[test]

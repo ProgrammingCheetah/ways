@@ -139,10 +139,6 @@ fn page(id: &str, status: PageStatus, text: &str) -> Page {
     }
 }
 
-fn verdict_of(outcome: &AskOutcome, index: usize) -> &Verdict {
-    &outcome.answer.questions[index].verdict
-}
-
 #[test]
 fn a_verified_answer_on_the_first_rung_is_returned() {
     let scene = Scene::new();
@@ -253,10 +249,8 @@ fn an_answer_to_other_questions_or_an_uncitable_page_falls_through() {
         "q1: settled\n    answer: Nothing.\n    pages: 1002 (decided)\n    quote: \"An empty list exports nothing.\"\n",
     );
 
-    let outcome = scene.ask(ONE_QUESTION);
-
-    let CheckResult::Failed(reasons) = &outcome.lines[0].check else {
-        panic!("expected a failed check, got {:?}", outcome.lines[0].check);
+    let Err(AskFailure::Exhausted(reasons)) = scene.ask_at(ONE_QUESTION, noon()) else {
+        panic!("expected every rung to fail");
     };
     assert!(
         reasons[0].starts_with("local: answered q2 for q1"),
@@ -266,9 +260,19 @@ fn an_answer_to_other_questions_or_an_uncitable_page_falls_through() {
 }
 
 #[test]
-fn every_rung_failing_is_not_settled() {
+fn every_rung_failing_fails_the_ask_and_logs_a_failed_line_per_question() {
     let scene = Scene::new();
-    Scene::record(&scene.local, BAD_QUOTE);
+    let both_bad = "\
+q1: settled
+    answer: An empty list exports nothing.
+    pages: 1001 (decided)
+    quote: \"an empty list exports nothing\"
+q2: settled
+    answer: A shelf is a list.
+    pages: 1001 (decided)
+    quote: \"a shelf is a list\"
+";
+    Scene::record(&scene.local, both_bad);
     scene.haiku.record(
         RoleName::from(KEEPER_ROLE),
         RunOutput {
@@ -277,17 +281,16 @@ fn every_rung_failing_is_not_settled() {
         },
     );
 
-    let outcome = scene.ask(ONE_QUESTION);
+    let result = scene.ask_at(
+        &[
+            "rule: Is an empty list exported as a header row only?",
+            "term: What is a shelf?",
+        ],
+        noon(),
+    );
 
-    let expected = Verdict::NotSettled {
-        next: "question ticket on #12 (door: no)".to_owned(),
-    };
-    assert_eq!(*verdict_of(&outcome, 0), expected);
-    let line = &outcome.lines[0];
-    assert_eq!(line.rung, None);
-    assert_eq!(line.verdict, "not settled");
-    let CheckResult::Failed(reasons) = &line.check else {
-        panic!("expected a failed check, got {:?}", line.check);
+    let Err(AskFailure::Exhausted(reasons)) = result else {
+        panic!("expected every rung to fail");
     };
     assert_eq!(reasons.len(), 2);
     assert!(
@@ -295,6 +298,154 @@ fn every_rung_failing_is_not_settled() {
         "{reasons:?}"
     );
     assert_eq!(reasons[1], "haiku: run exited 1");
+
+    let log = scene.log();
+    assert_eq!(log.len(), 2, "one line per question");
+    assert_eq!(log[0].kind, "rule");
+    assert_eq!(log[1].kind, "term");
+    for line in &log {
+        assert_eq!(line.verdict, "failed");
+        assert_eq!(line.task, 12);
+        assert_eq!(line.rung, None);
+        assert!(line.pages.is_empty());
+        assert!(
+            line.answer
+                .starts_with("no rung gave a verified answer: local: "),
+            "{}",
+            line.answer
+        );
+        assert!(matches!(line.check, CheckResult::Failed(_)));
+    }
+}
+
+#[test]
+fn a_failed_ask_is_not_served_from_the_log_and_the_next_ask_runs_again() {
+    let scene = Scene::new();
+    Scene::record(&scene.local, BAD_QUOTE);
+    Scene::record(&scene.haiku, BAD_QUOTE);
+    assert!(scene.ask_at(ONE_QUESTION, noon()).is_err());
+
+    Scene::record(&scene.local, GOOD);
+    let outcome = scene.ask(ONE_QUESTION);
+
+    assert_eq!(outcome.lines[0].check, CheckResult::Passed);
+    let verdicts: Vec<String> = scene.log().into_iter().map(|line| line.verdict).collect();
+    assert_eq!(verdicts, ["failed", "settled"]);
+}
+
+#[test]
+fn a_second_ask_on_another_task_appends_its_own_lines() {
+    let scene = Scene::new();
+    let other = IssueNumber::from(13);
+    scene.board.add_ticket(Ticket {
+        number: other,
+        epic: Some(IssueNumber::from(10)),
+        title: "Import a reading list".to_owned(),
+        body: BODY.to_owned(),
+        label: Some(TaskLabel::Claimed),
+    });
+    let not_settled = "q1: not settled\n    next: question ticket on #12 (door: no)\n";
+    Scene::record(&scene.local, not_settled);
+    let first = scene.ask(ONE_QUESTION);
+    assert_eq!(first.lines[0].verdict, "not settled");
+
+    Scene::record(&scene.local, not_settled);
+    let questions = vec!["rule: Is a missing file an error?".to_owned()];
+    let query = AskQuery {
+        task: other,
+        from: "programmer-3",
+        questions: &questions,
+        max: 5,
+        root: Path::new("/project"),
+        state_dir: scene.state.path(),
+        cache_window: Duration::from_secs(DEFAULT_CACHE_HOURS * 3600),
+        now: noon() + Duration::from_secs(170),
+    };
+    ask(&query, &scene.ports()).expect("second ask");
+
+    let log = scene.log();
+    assert_eq!(log.len(), 2, "both asks are in the log");
+    assert_eq!(log[0].task, 12);
+    assert_eq!(log[1].task, 13);
+    assert_eq!(log[1].time, 1_800_000_170);
+    assert_eq!(log[1].verdict, "not settled");
+    assert_eq!(scene.local.requests().len(), 2);
+}
+
+/// A runner that reads the ask log while the keeper "runs".
+struct LogReader {
+    path: PathBuf,
+    seen: std::cell::RefCell<Vec<LogLine>>,
+}
+
+impl Runner for LogReader {
+    fn run(&self, _request: &RunRequest) -> Result<RunOutput, PortError> {
+        *self.seen.borrow_mut() = read_log(&self.path).expect("log");
+        Ok(RunOutput {
+            exit_code: 0,
+            transcript: GOOD.to_owned(),
+        })
+    }
+}
+
+#[test]
+fn the_questions_are_in_the_log_before_the_keeper_runs() {
+    let scene = Scene::new();
+    let reader = LogReader {
+        path: scene.state.path().join(ASK_LOG),
+        seen: std::cell::RefCell::default(),
+    };
+    let mut ports = scene.ports();
+    ports.ladder[0].runner = Ok(&reader);
+    let questions = vec![ONE_QUESTION[0].to_owned()];
+    let query = AskQuery {
+        task: task(),
+        from: "programmer-3",
+        questions: &questions,
+        max: 5,
+        root: Path::new("/project"),
+        state_dir: scene.state.path(),
+        cache_window: Duration::from_secs(3600),
+        now: noon(),
+    };
+
+    ask(&query, &ports).expect("ask");
+
+    let during = reader.seen.borrow();
+    assert_eq!(during.len(), 1, "a run cut off here would leave this line");
+    assert_eq!(during[0].verdict, "failed");
+    assert_eq!(during[0].answer, INTERRUPTED);
+    assert_eq!(
+        during[0].question,
+        "Is an empty list exported as a header row only?"
+    );
+
+    let after = scene.log();
+    assert_eq!(after.len(), 1, "the answer supersedes the marker");
+    assert_eq!(after[0].verdict, "settled");
+    let raw = fs::read_to_string(scene.state.path().join(ASK_LOG)).expect("log file");
+    assert_eq!(raw.lines().count(), 2, "marker, then the answer");
+}
+
+#[test]
+fn a_run_cut_off_before_it_answered_leaves_a_failed_line() {
+    let scene = Scene::new();
+    let marker = LogLine {
+        time: 1_800_000_000,
+        task: 49,
+        from: "team instance 4 on #37".to_owned(),
+        kind: "rule".to_owned(),
+        question: "Is it so?".to_owned(),
+        verdict: FAILED.to_owned(),
+        pages: Vec::new(),
+        answer: INTERRUPTED.to_owned(),
+        rung: None,
+        check: CheckResult::Failed(vec![INTERRUPTED.to_owned()]),
+    };
+    let json = serde_json::to_string(&marker).expect("json");
+    fs::write(scene.state.path().join(ASK_LOG), format!("{json}\n")).expect("log");
+
+    assert_eq!(scene.log(), [marker]);
 }
 
 #[test]
@@ -324,8 +475,7 @@ fn a_missing_runner_or_design_source_fails_only_its_rung() {
         now: noon() + Duration::from_secs(7200),
         ..query
     };
-    let outcome = ask(&later, &ports).expect("ask");
-    let CheckResult::Failed(reasons) = &outcome.lines[0].check else {
+    let Err(AskFailure::Exhausted(reasons)) = ask(&later, &ports) else {
         panic!("a quote cannot be checked without a design source");
     };
     assert!(reasons[1].contains("no design source"), "{reasons:?}");
@@ -371,7 +521,11 @@ q2: not settled
     assert!(log[1].pages.is_empty());
 
     let raw = fs::read_to_string(scene.state.path().join(ASK_LOG)).expect("log file");
-    assert_eq!(raw.lines().count(), 2, "one JSON object per line");
+    assert_eq!(
+        raw.lines().count(),
+        4,
+        "one JSON object per line: a marker for each question, then each answer"
+    );
 }
 
 #[test]
@@ -394,8 +548,8 @@ fn a_repeated_question_is_served_from_the_log() {
 fn only_fresh_passed_answers_to_the_same_question_are_served() {
     let scene = Scene::new();
     Scene::record(&scene.local, BAD_QUOTE);
-    let failed = scene.ask(ONE_QUESTION);
-    assert!(matches!(failed.lines[0].check, CheckResult::Failed(_)));
+    Scene::record(&scene.haiku, BAD_QUOTE);
+    assert!(scene.ask_at(ONE_QUESTION, noon()).is_err());
 
     Scene::record(&scene.local, GOOD);
     let retried = scene.ask(ONE_QUESTION);
@@ -405,14 +559,12 @@ fn only_fresh_passed_answers_to_the_same_question_are_served() {
         "a failure is not served"
     );
 
+    Scene::record(&scene.local, BAD_QUOTE);
     let other_kind = scene.ask_at(
         &["fact: Is an empty list exported as a header row only?"],
         noon(),
     );
-    assert!(matches!(
-        other_kind.expect("ask").lines[0].check,
-        CheckResult::Failed(_)
-    ));
+    assert!(other_kind.is_err(), "another kind is not served");
 
     Scene::record(&scene.local, GOOD);
     let two_days_later = noon() + Duration::from_secs(48 * 3600);

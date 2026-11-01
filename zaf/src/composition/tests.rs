@@ -270,6 +270,27 @@ fn a_custom_workspaces_path_is_honoured_by_discovery() {
 }
 
 #[test]
+fn a_slice_dir_joins_the_root_the_workspaces_path_and_the_slice_name() {
+    let slice = SliceName::from("feature/0.1.1-37-46");
+    let default = scratch_dir("slice-dir-default");
+    write_manifest(&default, HEAD);
+    let composition = Composition::load(&default).expect("loads");
+    assert_eq!(
+        composition.slice_dir(&slice),
+        default.join(".zaf/workspaces/feature/0.1.1-37-46")
+    );
+    let custom = scratch_dir("slice-dir-custom");
+    write_manifest(&custom, &format!("{HEAD}[workspaces]\npath = \"slices\"\n"));
+    let composition = Composition::load(&custom).expect("loads");
+    assert_eq!(
+        composition.slice_dir(&slice),
+        custom.join("slices/feature/0.1.1-37-46")
+    );
+    fs::remove_dir_all(&default).expect("clean up");
+    fs::remove_dir_all(&custom).expect("clean up");
+}
+
+#[test]
 fn a_manifest_outside_the_workspaces_path_is_its_own_root() {
     let parent = scratch_dir("nested-project");
     write_manifest(&parent, HEAD);

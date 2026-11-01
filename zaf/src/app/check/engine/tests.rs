@@ -115,6 +115,7 @@ fn engine(ports: &Arc<FakePorts>, dir: &tempfile::TempDir, timeout: Duration) ->
         runs_dir: dir.path().join(".zaf/runs"),
         timeout,
         poll: Duration::from_millis(5),
+        ci_grace: Duration::ZERO,
     };
     let shared: Arc<dyn StepPorts> = Arc::clone(ports) as Arc<dyn StepPorts>;
     Engine::new(shared, settings)

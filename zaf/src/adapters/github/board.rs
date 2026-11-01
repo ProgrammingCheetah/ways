@@ -4,7 +4,7 @@ use std::time::SystemTime;
 
 use super::GhCommand;
 use super::command::number_from_url;
-use super::notes::{LeaseNote, RULING_MARKER, marked, report_marker, unmarked};
+use super::notes::{LeaseNote, RULING_MARKER, marked, release_line, report_marker, unmarked};
 use super::rows::{ISSUE_FIELDS, IssueRow, NumberRow};
 use crate::domain::{Instance, IssueNumber, TaskLabel};
 use crate::ports::{Board, ClaimOutcome, ClaimRecord, NewQuestion, PortError, Ticket};
@@ -59,6 +59,23 @@ impl GithubBoard {
         self.gh
             .text(&["issue", "comment", &number, "--body", body])
             .map(drop)
+    }
+
+    /// Returns the task a ruled question was raised on to `ready`, when it still waits:
+    /// carries `question` and is not `done`. Returns the task it changed.
+    fn return_waiting_task(&self, question: &IssueRow) -> Result<Option<IssueNumber>, PortError> {
+        let Some(task) = NewQuestion::raised_on(&question.body) else {
+            return Ok(None);
+        };
+        let row = self.issue(task)?;
+        let waiting = TaskLabel::Question.to_string();
+        let done = TaskLabel::Done.to_string();
+        if row.has_label(&done) || !row.has_label(&waiting) {
+            return Ok(None);
+        }
+        let ready = TaskLabel::Ready.to_string();
+        self.edit_labels(task, &[&ready], &[&waiting])?;
+        Ok(Some(task))
     }
 
     fn edit_comment(&self, url: &str, body: &str) -> Result<(), PortError> {
@@ -210,13 +227,24 @@ impl Board for GithubBoard {
         Ok(claims)
     }
 
-    fn release(&self, task: IssueNumber) -> Result<(), PortError> {
-        let claimed = TaskLabel::Claimed.to_string();
-        if !self.issue(task)?.has_label(&claimed) {
+    fn release(&self, task: IssueNumber, instance: &Instance) -> Result<(), PortError> {
+        let row = self.issue(task)?;
+        let holder = row.claim().map(|claim| claim.instance);
+        if holder.as_ref() != Some(instance) {
             return Ok(());
         }
+        let claimed = TaskLabel::Claimed.to_string();
         let ready = TaskLabel::Ready.to_string();
-        self.edit_labels(task, &[&ready], &[&claimed])
+        let keeps_state = [TaskLabel::Question, TaskLabel::Done]
+            .iter()
+            .any(|label| row.has_label(&label.to_string()));
+        let add: Vec<&str> = if keeps_state {
+            Vec::new()
+        } else {
+            vec![ready.as_str()]
+        };
+        self.edit_labels(task, &add, &[&claimed])?;
+        self.post_comment(task, &release_line(instance, SystemTime::now()))
     }
 
     fn label(&self, task: IssueNumber, label: TaskLabel) -> Result<(), PortError> {
@@ -297,7 +325,11 @@ impl Board for GithubBoard {
         number_from_url(&stdout).map(IssueNumber::from)
     }
 
-    fn record_ruling(&self, question: IssueNumber, ruling: &str) -> Result<(), PortError> {
+    fn record_ruling(
+        &self,
+        question: IssueNumber,
+        ruling: &str,
+    ) -> Result<Option<IssueNumber>, PortError> {
         let row = self.issue(question)?;
         let recorded = row
             .comments
@@ -312,10 +344,10 @@ impl Board for GithubBoard {
             Some(_) => {}
             None => self.post_comment(question, &marked(RULING_MARKER, ruling))?,
         }
-        if row.state != OPEN {
-            return Ok(());
+        if row.state == OPEN {
+            let number = question.get().to_string();
+            self.gh.text(&["issue", "close", &number]).map(drop)?;
         }
-        let number = question.get().to_string();
-        self.gh.text(&["issue", "close", &number]).map(drop)
+        self.return_waiting_task(&row)
     }
 }

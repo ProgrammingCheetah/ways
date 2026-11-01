@@ -4,7 +4,7 @@ use super::Cli;
 use super::exit::{BACKEND, OK, fail_composition};
 
 use crate::app::ask::ASK_LOG;
-use crate::app::asklog::asklog;
+use crate::app::asklog::{AskLogSummary, asklog};
 use crate::composition::Composition;
 
 /// How many pages the terse view lists; `--more` lists them all.
@@ -28,24 +28,33 @@ pub fn run(cli: &Cli) -> u8 {
         println!("{}", serde_json::json!(summary));
         return OK;
     }
+    print!("{}", render(&summary, cli.more));
+    OK
+}
+
+/// The terse view of the summary; `more` lists every cited page.
+fn render(summary: &AskLogSummary, more: bool) -> String {
+    use std::fmt::Write as _;
+
     if summary.asks == 0 {
-        println!("The ask log is empty.");
-        return OK;
+        return "The ask log is empty.\n".to_owned();
     }
-    println!("{} questions asked", summary.asks);
-    let shown = if cli.more { usize::MAX } else { TOP_PAGES };
-    println!("Top pages:");
+    let mut out = String::new();
+    let shown = if more { usize::MAX } else { TOP_PAGES };
+    let _ = writeln!(out, "{} questions asked", summary.asks);
+    out.push_str("Top pages:\n");
     for count in summary.top_pages.iter().take(shown) {
-        println!("  {} cited {}", count.page, count.citations);
+        let _ = writeln!(out, "  {} cited {}", count.page, count.citations);
     }
-    println!("Asked more than once:");
+    out.push_str("Asked more than once:\n");
     for recurring in &summary.recurring {
         let tasks: Vec<String> = recurring
             .tasks
             .iter()
             .map(|task| format!("#{task}"))
             .collect();
-        println!(
+        let _ = writeln!(
+            out,
             "  {}x {}: {} ({})",
             recurring.times,
             recurring.kind,
@@ -53,9 +62,47 @@ pub fn run(cli: &Cli) -> u8 {
             tasks.join(", ")
         );
     }
-    println!("Not settled:");
+    out.push_str("Not settled:\n");
     for gap in &summary.not_settled {
-        println!("  #{} {}: {}", gap.task, gap.kind, gap.question);
+        let _ = writeln!(out, "  #{} {}: {}", gap.task, gap.kind, gap.question);
     }
-    OK
+    out.push_str("Failed:\n");
+    for failure in &summary.failed {
+        let _ = writeln!(
+            out,
+            "  #{} {}: {} ({})",
+            failure.task, failure.kind, failure.question, failure.reason
+        );
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::asklog::Failure;
+
+    #[test]
+    fn the_failed_heading_lists_failed_lines() {
+        let summary = AskLogSummary {
+            asks: 2,
+            top_pages: Vec::new(),
+            recurring: Vec::new(),
+            not_settled: Vec::new(),
+            failed: vec![Failure {
+                task: 49,
+                kind: "rule".to_owned(),
+                question: "Is it so?".to_owned(),
+                reason: "no rung gave a verified answer: haiku: run exited 1".to_owned(),
+            }],
+        };
+
+        let text = render(&summary, false);
+
+        let (_, failed) = text.split_once("Failed:\n").expect("a Failed heading");
+        assert_eq!(
+            failed,
+            "  #49 rule: Is it so? (no rung gave a verified answer: haiku: run exited 1)\n"
+        );
+    }
 }

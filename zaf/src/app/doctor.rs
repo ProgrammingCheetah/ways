@@ -5,7 +5,8 @@
 //! [`Commands`], which tests fake and the command line backs with real processes.
 //! Each generated profile is asked whether it carries a login, by `claude auth status`
 //! run with `CLAUDE_CONFIG_DIR` set to it; a missing login is reported with its fix,
-//! never fixed, and does not fail the doctor.
+//! never fixed, and does not fail the doctor. Each profile that carries the pack is asked
+//! `claude plugin list` the same way and reports the pack's version, or that it is missing.
 
 use std::fmt;
 use std::io;
@@ -122,6 +123,34 @@ impl LoginCheck {
     }
 }
 
+/// Whether a profile has the pack registered, as `claude plugin list` inside it says.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct PackCheck {
+    /// The profile's name.
+    pub profile: String,
+    /// The pack as `<plugin>@<marketplace>`, when the manifest names one Claude can know.
+    pub pack: Option<String>,
+    /// The version the listing shows, when the pack is listed.
+    pub version: Option<String>,
+    /// Whether the pack is listed.
+    pub ok: bool,
+}
+
+impl PackCheck {
+    /// `profile <name>: pack <pack>@<marketplace> <version> ok`, or `pack missing` with its fix.
+    pub fn line(&self) -> String {
+        match (&self.pack, &self.version) {
+            (Some(pack), Some(version)) if self.ok => {
+                format!("profile {}: pack {pack} {version} ok", self.profile)
+            }
+            _ => format!(
+                "profile {}: pack missing (fix: zaf profile init)",
+                self.profile
+            ),
+        }
+    }
+}
+
 /// Everything `doctor` found.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Report {
@@ -133,6 +162,9 @@ pub struct Report {
     pub workspaces: PathCheck,
     /// One entry per generated profile; informational, it never fails the report.
     pub logins: Vec<LoginCheck>,
+    /// One entry per generated profile that carries the pack, when the manifest has a `[pack]`;
+    /// informational, it never fails the report.
+    pub packs: Vec<PackCheck>,
 }
 
 impl Report {
@@ -157,6 +189,7 @@ impl Report {
             .collect();
         lines.extend(self.design.iter().map(PathCheck::line));
         lines.extend(self.logins.iter().map(LoginCheck::line));
+        lines.extend(self.packs.iter().map(PackCheck::line));
         lines.push(self.workspaces.line());
         lines
     }
@@ -266,8 +299,44 @@ pub fn logins(root: &Path, manifest: &Manifest, commands: &dyn Commands) -> Vec<
         .collect()
 }
 
+/// Asks each generated profile that carries the pack whether `claude plugin list` shows it.
+///
+/// Reads only: a profile not generated yet, or a pack the project's marketplace file cannot
+/// name, is missing without asking; the fix is `zaf profile init`, which doctor never runs.
+pub fn packs(root: &Path, manifest: &Manifest, commands: &dyn Commands) -> Vec<PackCheck> {
+    let Some(pack) = &manifest.pack else {
+        return Vec::new();
+    };
+    let pack_ref = profile::pack_ref(root, pack).ok().flatten();
+    let state_dir = root.join(STATE_DIR);
+    profile::generated(manifest)
+        .into_iter()
+        .filter(|name| profile::carries_pack(*name))
+        .map(|name| {
+            let home = profile::home(&state_dir, name);
+            let version = pack_ref
+                .as_ref()
+                .filter(|_| home.is_dir())
+                .and_then(|pack_ref| {
+                    let setting = format!("{CONFIG_DIR_VAR}={}", home.display());
+                    let output = commands
+                        .run("env", &[&setting, "claude", "plugin", "list"])
+                        .ok()
+                        .filter(|output| output.success)?;
+                    profile::listed_version(&output.text, &pack_ref.to_string())
+                });
+            PackCheck {
+                profile: name.to_string(),
+                pack: pack_ref.as_ref().map(ToString::to_string),
+                ok: version.is_some(),
+                version,
+            }
+        })
+        .collect()
+}
+
 /// Checks the required tools, the design folder, the workspaces folder and the profiles'
-/// logins of a loaded manifest.
+/// logins and packs of a loaded manifest.
 pub fn doctor(root: &Path, manifest: &Manifest, commands: &dyn Commands) -> Report {
     let tools = manifest
         .requires
@@ -290,6 +359,7 @@ pub fn doctor(root: &Path, manifest: &Manifest, commands: &dyn Commands) -> Repo
         design,
         workspaces,
         logins: logins(root, manifest, commands),
+        packs: packs(root, manifest, commands),
     }
 }
 

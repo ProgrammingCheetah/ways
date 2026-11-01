@@ -4,19 +4,25 @@
 //! Exit codes: 0 clean, 1 must-fix present (or a task line failed), 2 a step
 //! failed or timed out, or a backend is missing.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use super::Cli;
 use super::exit::{self, BACKEND, REFUSED};
+use super::slice::{VERSION_VAR, fail_slice};
 use crate::adapters::gate::RUNS_DIR;
+use crate::adapters::shell::SystemShell;
 use crate::app::check::{
     CheckRecord, Engine, EngineSettings, Shell, Step, StepPorts, Target, TaskInputs, check_task,
 };
-use crate::composition::{Composition, CompositionError};
+use crate::app::slice::{self, SliceQuery};
+use crate::composition::{Composition, CompositionError, SHELL_TIMEOUT};
 use crate::domain::{IssueNumber, SecurityTrigger, TaskTemplate};
 use crate::manifest::{CheckTarget, CommandLine, RunnerName};
-use crate::ports::{Forge, GateRun, PortError, PrNumber, Runner};
+use crate::ports::{
+    Board, Forge, Gate, GateRun, PortError, PrNumber, Runner, Shell as ShellPort, SliceName,
+};
 
 /// Runs the configured check steps for a target, or reads the last result.
 pub fn run(cli: &Cli, target: &str, status: bool) -> u8 {
@@ -44,29 +50,102 @@ fn check(cli: &Cli, target: Target, status: bool) -> u8 {
     if status {
         return show_stored(cli, &path, &stored);
     }
-    let outcome = match target {
-        Target::Task(task) => check_task_target(&path, &composition, &target, task),
-        Target::Pr { pr, task } => check_pr_target(&path, &composition, &target, pr, task),
-    };
-    let record = match outcome {
-        Ok(record) => record,
-        Err(code) => return code,
+    let (record, slice_line) = match target {
+        Target::Task(task) => match check_task_target(cli, &path, &composition, &target, task) {
+            Ok((record, line)) => (record, Some(line)),
+            Err(code) => return code,
+        },
+        Target::Pr { pr, task } => match check_pr_target(&path, &composition, &target, pr, task) {
+            Ok(record) => (record, None),
+            Err(code) => return code,
+        },
     };
     if let Err(error) = store(&stored, &record) {
         eprintln!("zaf {path}: the result was not stored for --status: {error}");
+    }
+    if let Some(line) = slice_line.filter(|_| !cli.json) {
+        println!("{line}");
     }
     print(cli, &record);
     record.verdict.code()
 }
 
+/// Builds the gate to run inside a directory.
+type GateIn<'a> = dyn Fn(&Path) -> Result<Box<dyn Gate>, CompositionError> + 'a;
+
+/// What a task check reaches outside the process, so a test can stand in for each.
+struct TaskPorts<'a> {
+    /// The board, to read the ticket.
+    board: &'a dyn Board,
+    /// The release version for the branch patterns, if the environment gave one.
+    version: Option<String>,
+    /// Builds the gate to run inside a directory.
+    gate_in: &'a GateIn<'a>,
+    /// Builds the shell that runs each named test inside a directory.
+    shell_in: &'a dyn Fn(&Path) -> Box<dyn Shell>,
+}
+
+/// A port shell serving a task check's named tests.
+struct DirShell(Box<dyn ShellPort>);
+
+impl Shell for DirShell {
+    fn run(&self, line: &CommandLine) -> Result<GateRun, PortError> {
+        self.0.run(line)
+    }
+}
+
 fn check_task_target(
+    cli: &Cli,
     path: &str,
     composition: &Composition,
     target: &Target,
     task: IssueNumber,
-) -> Result<CheckRecord, u8> {
-    let template = task_template(path, composition, task)?;
-    let gate = match composition.gate() {
+) -> Result<(CheckRecord, String), u8> {
+    let board = composition
+        .board()
+        .map_err(|error| exit::fail_composition(path, &error))?;
+    let ports = TaskPorts {
+        board: board.as_ref(),
+        version: std::env::var(VERSION_VAR)
+            .ok()
+            .filter(|version| !version.is_empty()),
+        gate_in: &|dir| composition.gate_in(dir),
+        shell_in: &|dir| Box::new(DirShell(Box::new(SystemShell::new(dir, SHELL_TIMEOUT)))),
+    };
+    check_task_in_slice(cli, path, composition, &ports, target, task)
+}
+
+/// Checks a task inside its slice's workspace: the gate and the named tests run there.
+/// A slice that is not open is refused, and nothing runs at the project root.
+fn check_task_in_slice(
+    cli: &Cli,
+    path: &str,
+    composition: &Composition,
+    ports: &TaskPorts<'_>,
+    target: &Target,
+    task: IssueNumber,
+) -> Result<(CheckRecord, String), u8> {
+    let query = SliceQuery {
+        task,
+        version: ports.version.clone(),
+    };
+    let branches = &composition.manifest().branches;
+    let resolved = slice::resolve(ports.board, branches, &query)
+        .map_err(|error| fail_slice(path, cli, &error))?;
+    let dir = composition.slice_dir(&resolved.slice);
+    if !dir.is_dir() {
+        eprintln!("zaf {path}: {}", not_open(&resolved.slice, task));
+        return Err(REFUSED);
+    }
+    let template = resolved
+        .ticket
+        .body
+        .parse::<TaskTemplate>()
+        .map_err(|error| {
+            eprintln!("zaf {path}: {task} is not a task ticket: {error}");
+            REFUSED
+        })?;
+    let gate = match (ports.gate_in)(&dir) {
         Ok(gate) => Some(gate),
         Err(CompositionError::Absent { .. }) => None,
         Err(error) => return Err(exit::fail_composition(path, &error)),
@@ -76,17 +155,24 @@ fn check_task_target(
         .gate
         .as_ref()
         .and_then(|section| section.tests.as_ref());
-    let shell = LivePorts {
-        composition: composition.clone(),
-    };
+    let shell = (ports.shell_in)(&dir);
     let inputs = TaskInputs {
         gate: gate.as_deref(),
         tests,
-        shell: &shell,
-        root: composition.root(),
+        shell: shell.as_ref(),
+        root: &dir,
     };
     let check = check_task(&template, &inputs);
-    Ok(CheckRecord::from_task(target, &check))
+    let line = format!("slice {} at {}", resolved.slice, dir.display());
+    Ok((CheckRecord::from_task(target, &check), line))
+}
+
+/// Why a task whose slice has no workspace is refused.
+fn not_open(slice: &SliceName, task: IssueNumber) -> String {
+    format!(
+        "slice {slice} is not open; run zaf slice open {}",
+        task.get()
+    )
 }
 
 fn check_pr_target(
@@ -99,6 +185,7 @@ fn check_pr_target(
     let configured = composition
         .manifest()
         .check
+        .targets
         .get(&CheckTarget::Pr)
         .map(|section| section.steps.as_slice())
         .unwrap_or_default();
@@ -120,7 +207,8 @@ fn check_pr_target(
     let ports: Arc<dyn StepPorts> = Arc::new(LivePorts {
         composition: composition.clone(),
     });
-    let settings = EngineSettings::new(composition.root().to_owned(), runs_dir(composition));
+    let mut settings = EngineSettings::new(composition.root().to_owned(), runs_dir(composition));
+    settings.ci_grace = Duration::from_secs(composition.manifest().check.ci_grace_seconds);
     let report = Engine::new(ports, settings).run(&steps, pr, flagged);
     Ok(CheckRecord::from_report(target, &report))
 }
@@ -263,6 +351,116 @@ mod tests {
         assert!(matches!(ports.forge(), Err(PortError::Unavailable(_))));
         let missing = ports.runner(&RunnerName::from("local"));
         assert!(matches!(missing, Err(PortError::Unavailable(_))));
+    }
+
+    const SLICE: &str = "feature/0.1.1-37-46";
+
+    /// A task ticket whose checks need no test run and no symbol: the gate line decides.
+    fn ticket() -> crate::ports::Ticket {
+        let body = "Goal: gate the slice.\n\
+            Owned paths: src/lib.rs\n\
+            Interfaces: none\n\
+            Design pages: none\n\
+            Architecture: the cli module wires ports; the check stays directory-agnostic\n\
+            Acceptance:\n\
+            \x20 - the gate runs in the slice\n\
+            Tests: beside each module\n\
+            Security trigger: no\n\
+            Model: sonnet\n\
+            Size: S\n\
+            Blocked by: —\n";
+        crate::ports::Ticket {
+            number: IssueNumber::from(46),
+            epic: Some(IssueNumber::from(37)),
+            title: "check gates the slice".to_owned(),
+            body: body.to_owned(),
+            label: None,
+        }
+    }
+
+    /// A gate that records the directory it was built for each time it runs.
+    struct DirGate {
+        dir: PathBuf,
+        ran: Arc<std::sync::Mutex<Vec<PathBuf>>>,
+    }
+
+    impl Gate for DirGate {
+        fn run(&self, _level: crate::ports::GateLevel) -> Result<GateRun, PortError> {
+            self.ran.lock().expect("lock").push(self.dir.clone());
+            Ok(GateRun {
+                verdict: crate::ports::GateVerdict::Passed,
+                output: "ok\n".to_owned(),
+            })
+        }
+    }
+
+    /// A shell the fake ticket must never reach: it names no test, so a run is a failure.
+    struct NoShell;
+
+    impl Shell for NoShell {
+        fn run(&self, line: &CommandLine) -> Result<GateRun, PortError> {
+            panic!("the fake ticket names no test to run, yet the shell ran {line:?}")
+        }
+    }
+
+    /// Runs `check <task>` against fakes; returns the exit code, the result, and every gate run.
+    fn check_with_fakes(
+        composition: &Composition,
+    ) -> (Result<(CheckRecord, String), u8>, Vec<PathBuf>) {
+        let board = crate::fakes::FakeBoard::default();
+        board.add_ticket(ticket());
+        let ran = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorder = Arc::clone(&ran);
+        let gate_in = move |dir: &Path| -> Result<Box<dyn Gate>, CompositionError> {
+            Ok(Box::new(DirGate {
+                dir: dir.to_owned(),
+                ran: Arc::clone(&recorder),
+            }))
+        };
+        let ports = TaskPorts {
+            board: &board,
+            version: Some("0.1.1".to_owned()),
+            gate_in: &gate_in,
+            shell_in: &|_| Box::new(NoShell),
+        };
+        let cli = <Cli as clap::Parser>::try_parse_from(["zaf", "check", "46"]).expect("parses");
+        let target = Target::Task(IssueNumber::from(46));
+        let outcome = check_task_in_slice(
+            &cli,
+            "check",
+            composition,
+            &ports,
+            &target,
+            IssueNumber::from(46),
+        );
+        let runs = ran.lock().expect("lock").clone();
+        (outcome, runs)
+    }
+
+    #[test]
+    fn a_task_whose_slice_is_open_gates_inside_the_slice_and_says_where() {
+        let dir = project(MANIFEST);
+        let composition = Composition::load(dir.path()).expect("loads");
+        let slice_dir = dir.path().join(".zaf/workspaces").join(SLICE);
+        std::fs::create_dir_all(&slice_dir).expect("slice dir");
+        let (outcome, runs) = check_with_fakes(&composition);
+        let (record, line) = outcome.expect("checked");
+        assert_eq!(runs, vec![slice_dir.clone()]);
+        assert_eq!(line, format!("slice {SLICE} at {}", slice_dir.display()));
+        assert_eq!(record.verdict, crate::app::check::Verdict::Clean);
+    }
+
+    #[test]
+    fn a_task_without_a_slice_directory_is_refused_and_nothing_runs() {
+        let dir = project(MANIFEST);
+        let composition = Composition::load(dir.path()).expect("loads");
+        let (outcome, runs) = check_with_fakes(&composition);
+        assert_eq!(outcome.err(), Some(REFUSED));
+        assert_eq!(
+            not_open(&SliceName::from(SLICE), IssueNumber::from(46)),
+            "slice feature/0.1.1-37-46 is not open; run zaf slice open 46"
+        );
+        assert!(runs.is_empty(), "the gate ran at {runs:?}");
     }
 
     #[test]
