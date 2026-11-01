@@ -11,7 +11,7 @@ mod command;
 
 use std::path::{Component, Path, PathBuf};
 
-use command::{JjCommand, Place, bookmark, quoted};
+use command::{JjCommand, Place, bookmark, quoted, remote_bookmark, tracked_remote};
 
 use crate::manifest::WorkspacesSection;
 use crate::ports::{
@@ -158,7 +158,27 @@ impl Vcs for JjVcs {
 
     fn merge_base(&self, slice: &SliceName) -> Result<BaseMerge, PortError> {
         let (jj, base) = self.open_clean(slice)?;
-        let base_revset = bookmark(base.as_ref());
+        let remote = tracked_remote(&jj, &base)?;
+        jj.run(Place::Workspace, &["git", "fetch", "--remote", &remote])?;
+        let local_base = bookmark(base.as_ref());
+        let remote_base = remote_bookmark(base.as_ref(), &remote);
+        // A base never pushed has no remote revision: merge the local one as it is.
+        let base_revset = if jj.is_none(Place::Workspace, &remote_base)? {
+            local_base
+        } else {
+            // The remote revision is what the forge merges against. Bring the local
+            // bookmark up to it when it is behind; never move it backwards or sideways.
+            let local_ahead = format!("{local_base} ~ ::{remote_base}");
+            if !jj.is_none(Place::Workspace, &local_base)?
+                && jj.is_none(Place::Workspace, &local_ahead)?
+            {
+                jj.run(
+                    Place::Workspace,
+                    &["bookmark", "set", base.as_ref(), "-r", &remote_base],
+                )?;
+            }
+            remote_base
+        };
         let slice_revset = bookmark(slice.as_ref());
         let base_missing = format!("{base_revset} ~ ::{slice_revset}");
         if jj.is_none(Place::Workspace, &base_missing)? {

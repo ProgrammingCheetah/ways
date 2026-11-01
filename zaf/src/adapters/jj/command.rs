@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::ports::{CommitId, PortError};
+use crate::ports::{BaseName, CommitId, PortError};
 
 /// Where a jj command runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,4 +135,34 @@ pub(super) fn quoted(text: &str) -> String {
 /// The revset of exactly the local bookmark `name`, never a change id that happens to match.
 pub(super) fn bookmark(name: &str) -> String {
     format!("bookmarks(exact:{})", quoted(name))
+}
+
+/// The revset of exactly the remote-tracking bookmark `name` on `remote`.
+pub(super) fn remote_bookmark(name: &str, remote: &str) -> String {
+    format!(
+        "remote_bookmarks(exact:{}, exact:{})",
+        quoted(name),
+        quoted(remote)
+    )
+}
+
+/// The remote the base bookmark tracks; `origin` when it tracks none.
+pub(super) fn tracked_remote(jj: &JjCommand, base: &BaseName) -> Result<String, PortError> {
+    let pattern = format!("exact:{}", quoted(base.as_ref()));
+    let stdout = jj.run(
+        Place::Workspace,
+        &[
+            "bookmark",
+            "list",
+            "--tracked",
+            "-T",
+            r#"remote ++ "\n""#,
+            &pattern,
+        ],
+    )?;
+    let remote = stdout
+        .lines()
+        .map(str::trim)
+        .find(|remote| !remote.is_empty() && *remote != "git");
+    Ok(remote.unwrap_or("origin").to_owned())
 }

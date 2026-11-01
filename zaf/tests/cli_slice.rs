@@ -96,13 +96,15 @@ fn remote_ref(remote: &Path, name: &str) -> String {
     .to_owned()
 }
 
-/// Moves the base one commit ahead from the root's own working copy.
+/// Moves the base one commit ahead from the root's own working copy and pushes it:
+/// a merge takes the base as the remote has it.
 fn advance_base(root: &Path) -> String {
     let base = format!("bookmarks(exact:\"{BASE}\")");
     jj(root, &["new", &base]);
     write(root, "later.txt", "later\n");
     jj(root, &["commit", "-m", "Advance the base"]);
     jj(root, &["bookmark", "set", BASE, "-r", "@-"]);
+    jj(root, &["git", "push", "--bookmark", BASE]);
     jj(root, &["log", "--no-graph", "-r", &base, "-T", "commit_id"])
 }
 
