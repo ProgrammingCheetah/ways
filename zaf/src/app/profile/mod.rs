@@ -5,11 +5,18 @@
 //! Generation is deterministic (sorted keys, fixed order, no timestamps), so a rerun
 //! rewrites only the files whose bytes differ and says which.
 //!
-//! With a `[pack]`, every profile that carries plugins gets the pack under `plugins/`:
-//! copied from `[pack] path`, or installed from the marketplace at `[pack] tag` by
-//! `claude plugin install` run through the [`Shell`] port with `CLAUDE_CONFIG_DIR` set
-//! to the profile. Its settings enable the pack.
+//! With a `[pack]`, every profile that carries plugins gets the pack registered through
+//! Claude's own plugin commands, run through the [`Shell`] port with `CLAUDE_CONFIG_DIR`
+//! set to the profile (a raw copy under `plugins/` is invisible to Claude):
+//! - `[pack] path`: the project root is added as a marketplace (its
+//!   `.claude-plugin/marketplace.json` names the marketplace and lists the pack) and the
+//!   pack is installed from it. What is already added or installed is read from
+//!   `claude plugin list` and `claude plugin marketplace list`, and issues no command.
+//! - `[pack] tag`: the pack is installed from the marketplace on GitHub at that tag.
+//!
+//! The two share the install step. The profile's settings enable the pack.
 
+use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -25,15 +32,17 @@ use crate::ports::{GateVerdict, Shell};
 pub const PROFILES_DIR: &str = "profiles";
 /// The project's own rules, appended to the interface page when present, under the state folder.
 pub const PROJECT_RULES: &str = "roles/project.md";
-/// The folders every profile carries; `plugins` stays empty until the pack is vendored.
+/// The folders every profile carries; `plugins` is Claude's own, filled by the pack install.
 pub const PROFILE_DIRS: [&str; 3] = ["projects", "memory", "plugins"];
 
-/// The pack's plugin name.
+/// The pack's plugin name when it is installed from a tag.
 pub const PACK_PLUGIN: &str = "teams";
 /// The marketplace the pack is published in, by its own name.
 pub const PACK_MARKETPLACE: &str = "ways";
 /// Where the marketplace is, as `claude plugin install --marketplace` takes it.
 pub const MARKETPLACE_SOURCE: &str = "ProgrammingCheetah/ways";
+/// The marketplace file at the project root, which names the marketplace and lists the pack.
+pub const MARKETPLACE_FILE: &str = ".claude-plugin/marketplace.json";
 /// The variable that points Claude Code at a profile instead of the host's home.
 pub const CONFIG_DIR_VAR: &str = "CLAUDE_CONFIG_DIR";
 /// The record, under a profile's `plugins/`, of the tag installed from the marketplace,
@@ -51,8 +60,6 @@ pub enum Change {
     Created,
     /// The file was there with other bytes.
     Rewritten,
-    /// The file was in a vendored pack and is no longer in its source.
-    Removed,
 }
 
 /// One file that was written.
@@ -73,14 +80,14 @@ pub struct Report {
     pub written: Vec<Written>,
     /// Profiles roles name that have no generated home (design and review run on their own settings).
     pub skipped: Vec<String>,
-    /// The pack installs run from the marketplace, one line each.
+    /// The pack installs run, one line each.
     pub installed: Vec<String>,
 }
 
 impl Report {
-    /// Whether nothing was written.
+    /// Whether nothing was written and nothing was installed.
     pub fn unchanged(&self) -> bool {
-        self.written.is_empty()
+        self.written.is_empty() && self.installed.is_empty()
     }
 
     /// One line per written file, or one line saying nothing changed.
@@ -92,7 +99,6 @@ impl Report {
                 let verb = match file.change {
                     Change::Created => "created",
                     Change::Rewritten => "rewritten",
-                    Change::Removed => "removed",
                 };
                 format!("{verb} {}", file.path.display())
             })
@@ -125,10 +131,15 @@ pub enum ProfileError {
     /// A profile's settings template is not a JSON object (a defect of the pack).
     #[error("the {0} settings template is not a JSON object")]
     Template(Profile),
-    /// `[pack] path` names no folder.
-    #[error("[pack] path {0} is not a folder")]
-    NoPack(PathBuf),
-    /// The marketplace install failed.
+    /// The project's marketplace file cannot name the pack `[pack] path` points at.
+    #[error("{path}: {reason}")]
+    Marketplace {
+        /// The marketplace file.
+        path: PathBuf,
+        /// What is wrong with it.
+        reason: String,
+    },
+    /// A `claude plugin` command failed.
     #[error("`{line}` failed: {output}")]
     Install {
         /// The command line run.
@@ -145,8 +156,9 @@ fn io_error(path: &Path) -> impl FnOnce(io::Error) -> ProfileError {
 
 /// Generates every profile the manifest's roles name under `<state_dir>/profiles/`.
 ///
-/// `root` is the project root, which `[pack] path` is relative to; `shell` runs the
-/// marketplace install for `[pack] tag` and nothing else.
+/// `root` is the project root, which `[pack] path` is relative to and which is added as the
+/// marketplace; `shell` runs the `claude plugin` commands that register the pack and
+/// nothing else.
 pub fn init(
     root: &Path,
     state_dir: &Path,
@@ -155,6 +167,10 @@ pub fn init(
 ) -> Result<Report, ProfileError> {
     let mut report = Report::default();
     let project = read_project_rules(state_dir)?;
+    let pack_ref = match &manifest.pack {
+        Some(pack) => pack_ref(root, pack)?,
+        None => None,
+    };
     for profile in named(manifest) {
         let Some(template) = template_for(profile) else {
             report.skipped.push(profile.to_string());
@@ -165,12 +181,20 @@ pub fn init(
             let dir = home.join(dir);
             fs::create_dir_all(&dir).map_err(io_error(&dir))?;
         }
-        let pack = manifest.pack.as_ref().filter(|_| carries_pack(profile));
-        if let Some(pack) = pack {
-            vendor(root, state_dir, &home, pack, shell, &mut report)?;
+        let pack = pack_ref.as_ref().filter(|_| carries_pack(profile));
+        if let (Some(pack_section), Some(pack)) = (&manifest.pack, pack) {
+            register(
+                root,
+                state_dir,
+                &home,
+                pack_section,
+                pack,
+                shell,
+                &mut report,
+            )?;
         }
         // After the pack: an install may touch the settings, and the generated bytes must win.
-        let settings = settings_for(profile, template, manifest, pack.is_some())?;
+        let settings = settings_for(profile, template, manifest, pack)?;
         let claude_md = claude_md(project.as_deref());
         for (name, bytes) in [("settings.json", settings), ("CLAUDE.md", claude_md)] {
             record(state_dir, &home.join(name), &bytes, &mut report)?;
@@ -202,7 +226,7 @@ pub fn home(state_dir: &Path, profile: Profile) -> PathBuf {
 }
 
 /// Whether the profile carries the pack: every generated one but `lean`, which runs plugin-free.
-fn carries_pack(profile: Profile) -> bool {
+pub fn carries_pack(profile: Profile) -> bool {
     !matches!(profile, Profile::Lean)
 }
 
@@ -226,54 +250,176 @@ fn relative(state_dir: &Path, path: &Path) -> PathBuf {
     path.strip_prefix(state_dir).unwrap_or(path).to_owned()
 }
 
-/// Puts the pack under `<home>/plugins/`: a copy of `[pack] path`, else a marketplace install.
-fn vendor(
+/// A pack as Claude names it: `<plugin>@<marketplace>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackRef {
+    /// The plugin's name.
+    pub plugin: String,
+    /// The marketplace's name.
+    pub marketplace: String,
+}
+
+impl fmt::Display for PackRef {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}@{}", self.plugin, self.marketplace)
+    }
+}
+
+/// The pack a manifest's `[pack]` names, as Claude knows it; `None` when it names no source.
+///
+/// A `path` is looked up in the project root's marketplace file: the marketplace is that
+/// file's `name` and the plugin is the entry whose `source` is the path. A `tag` is the
+/// pack published as [`PACK_PLUGIN`] in [`PACK_MARKETPLACE`].
+pub fn pack_ref(root: &Path, pack: &PackSection) -> Result<Option<PackRef>, ProfileError> {
+    if let Some(path) = &pack.path {
+        return marketplace_entry(root, path).map(Some);
+    }
+    Ok(pack.tag.as_ref().map(|_| PackRef {
+        plugin: PACK_PLUGIN.to_owned(),
+        marketplace: PACK_MARKETPLACE.to_owned(),
+    }))
+}
+
+/// Reads the project root's marketplace file and finds the plugin whose source is `path`.
+fn marketplace_entry(root: &Path, path: &Path) -> Result<PackRef, ProfileError> {
+    let file = root.join(MARKETPLACE_FILE);
+    let bad = |reason: String| ProfileError::Marketplace {
+        path: file.clone(),
+        reason,
+    };
+    let text = fs::read_to_string(&file).map_err(|error| bad(error.to_string()))?;
+    let Ok(Value::Object(catalog)) = serde_json::from_str::<Value>(&text) else {
+        return Err(bad("not a JSON object".to_owned()));
+    };
+    let Some(marketplace) = catalog.get("name").and_then(Value::as_str) else {
+        return Err(bad("names no marketplace (no `name`)".to_owned()));
+    };
+    let spelled = path.to_string_lossy();
+    let wanted = source_key(&spelled);
+    let plugin = catalog
+        .get("plugins")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|entry| {
+            entry
+                .get("source")
+                .and_then(Value::as_str)
+                .is_some_and(|source| source_key(source) == wanted)
+        })
+        .and_then(|entry| entry.get("name").and_then(Value::as_str));
+    match plugin {
+        Some(plugin) => Ok(PackRef {
+            plugin: plugin.to_owned(),
+            marketplace: marketplace.to_owned(),
+        }),
+        None => Err(bad(format!(
+            "lists no plugin with source {}",
+            path.display()
+        ))),
+    }
+}
+
+/// A plugin source path without its leading `./` and trailing `/`, so spellings compare equal.
+fn source_key(source: &str) -> &str {
+    let source = source.trim();
+    source
+        .strip_prefix("./")
+        .unwrap_or(source)
+        .trim_end_matches('/')
+}
+
+/// Registers the pack in the profile at `home`, issuing no command for what is already there.
+fn register(
     root: &Path,
     state_dir: &Path,
     home: &Path,
     pack: &PackSection,
+    pack_ref: &PackRef,
     shell: &dyn Shell,
     report: &mut Report,
 ) -> Result<(), ProfileError> {
-    let plugins = home.join("plugins");
-    if let Some(source) = pack.dir(root) {
-        return mirror(&source, &plugins.join(PACK_PLUGIN), state_dir, report);
+    if pack.path.is_some() {
+        let id = pack_ref.to_string();
+        if listed_version(&run(shell, &plugin_line(home, "list"))?, &id).is_some() {
+            return Ok(());
+        }
+        let marketplaces = run(shell, &plugin_line(home, "marketplace list"))?;
+        if !lists_marketplace(&marketplaces, &pack_ref.marketplace) {
+            let add = format!(
+                "{} {}",
+                plugin_line(home, "marketplace add"),
+                single_quote(&root.to_string_lossy())
+            );
+            run(shell, &add)?;
+        }
+        let line = install_line(home, &id, None);
+        return install(shell, state_dir, home, &id, &line, report);
     }
     let Some(tag) = &pack.tag else {
         return Ok(());
     };
-    let marker = plugins.join(INSTALLED_TAG_FILE);
+    let marker = home.join("plugins").join(INSTALLED_TAG_FILE);
     if fs::read_to_string(&marker).is_ok_and(|installed| installed.trim() == tag) {
         return Ok(());
     }
-    let line = install_line(home, tag);
-    let run = shell
-        .run(&CommandLine::from(line.clone()))
-        .map_err(|error| ProfileError::Install {
-            line: line.clone(),
-            output: error.to_string(),
-        })?;
-    if run.verdict != GateVerdict::Passed {
-        return Err(ProfileError::Install {
-            line,
-            output: run.output.trim().to_owned(),
-        });
-    }
-    report.installed.push(format!(
-        "installed {PACK_PLUGIN}@{tag} into {}",
-        relative(state_dir, home).display()
-    ));
+    let spec = format!("{PACK_PLUGIN}@{tag}");
+    let line = install_line(home, &spec, Some(MARKETPLACE_SOURCE));
+    install(shell, state_dir, home, &spec, &line, report)?;
     record(state_dir, &marker, format!("{tag}\n").as_bytes(), report)
 }
 
-/// The marketplace install of the pack at `tag`, into the profile at `home`.
-pub fn install_line(home: &Path, tag: &str) -> String {
+/// The install step both sources share: runs `line` and reports `spec` installed.
+fn install(
+    shell: &dyn Shell,
+    state_dir: &Path,
+    home: &Path,
+    spec: &str,
+    line: &str,
+    report: &mut Report,
+) -> Result<(), ProfileError> {
+    run(shell, line)?;
+    report.installed.push(format!(
+        "installed {spec} into {}",
+        relative(state_dir, home).display()
+    ));
+    Ok(())
+}
+
+/// Runs one line through the shell; its output when it passes, an error naming it when not.
+fn run(shell: &dyn Shell, line: &str) -> Result<String, ProfileError> {
+    let ran = shell
+        .run(&CommandLine::from(line.to_owned()))
+        .map_err(|error| ProfileError::Install {
+            line: line.to_owned(),
+            output: error.to_string(),
+        })?;
+    if ran.verdict != GateVerdict::Passed {
+        return Err(ProfileError::Install {
+            line: line.to_owned(),
+            output: ran.output.trim().to_owned(),
+        });
+    }
+    Ok(ran.output)
+}
+
+/// `claude plugin <subcommand>` run against the profile at `home`, without its arguments.
+fn plugin_line(home: &Path, subcommand: &str) -> String {
     format!(
-        "{CONFIG_DIR_VAR}={} claude plugin install {} --marketplace {}",
+        "{CONFIG_DIR_VAR}={} claude plugin {subcommand}",
         single_quote(&home.to_string_lossy()),
-        single_quote(&format!("{PACK_PLUGIN}@{tag}")),
-        single_quote(MARKETPLACE_SOURCE),
     )
+}
+
+/// `claude plugin install <spec>` into the profile at `home`, from `marketplace` on GitHub
+/// when one is given, else from a marketplace the profile already has.
+fn install_line(home: &Path, spec: &str, marketplace: Option<&str>) -> String {
+    let mut line = format!("{} {}", plugin_line(home, "install"), single_quote(spec));
+    if let Some(marketplace) = marketplace {
+        line.push_str(" --marketplace ");
+        line.push_str(&single_quote(marketplace));
+    }
+    line
 }
 
 /// Wraps text in single quotes for a POSIX shell.
@@ -281,60 +427,48 @@ fn single_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
-/// Makes `target` hold exactly the files of `source`, byte for byte: each file copied when
-/// it differs, and each file no longer in the source removed.
-fn mirror(
-    source: &Path,
-    target: &Path,
-    state_dir: &Path,
-    report: &mut Report,
-) -> Result<(), ProfileError> {
-    if !source.is_dir() {
-        return Err(ProfileError::NoPack(source.to_owned()));
-    }
-    let wanted = files(source)?;
-    for file in &wanted {
-        let from = source.join(file);
-        let to = target.join(file);
-        let bytes = fs::read(&from).map_err(io_error(&from))?;
-        if let Some(parent) = to.parent() {
-            fs::create_dir_all(parent).map_err(io_error(parent))?;
+/// The version `claude plugin list` shows for `id` (`plugin@marketplace`); `None` when `id`
+/// is not listed, `unknown` when it is listed without a `Version:` line.
+///
+/// An entry is its header line (the line with `id` as a word) and the lines after it up to
+/// a blank line or the next entry's header.
+pub fn listed_version(listing: &str, id: &str) -> Option<String> {
+    let mut lines = listing.lines();
+    lines.find(|line| line.split_whitespace().any(|word| bare(word) == id))?;
+    for line in lines {
+        if line.trim().is_empty() || is_header(line) {
+            break;
         }
-        record(state_dir, &to, &bytes, report)?;
-    }
-    if target.is_dir() {
-        for file in files(target)? {
-            if !wanted.contains(&file) {
-                let stale = target.join(&file);
-                fs::remove_file(&stale).map_err(io_error(&stale))?;
-                report.written.push(Written {
-                    path: relative(state_dir, &stale),
-                    change: Change::Removed,
-                });
-            }
+        let version = line
+            .trim()
+            .split_once(':')
+            .filter(|(key, _)| key.trim().eq_ignore_ascii_case("version"))
+            .and_then(|(_, value)| value.split_whitespace().next());
+        if let Some(version) = version {
+            return Some(bare(version).to_owned());
         }
     }
-    Ok(())
+    Some("unknown".to_owned())
 }
 
-/// Every file under `dir`, relative to it, sorted.
-fn files(dir: &Path) -> Result<Vec<PathBuf>, ProfileError> {
-    let mut found = Vec::new();
-    let mut pending = vec![PathBuf::new()];
-    while let Some(relative) = pending.pop() {
-        let here = dir.join(&relative);
-        for entry in fs::read_dir(&here).map_err(io_error(&here))? {
-            let entry = entry.map_err(io_error(&here))?;
-            let path = relative.join(entry.file_name());
-            if entry.path().is_dir() {
-                pending.push(path);
-            } else {
-                found.push(path);
-            }
-        }
-    }
-    found.sort();
-    Ok(found)
+/// Whether `claude plugin marketplace list` shows a marketplace called `name`.
+fn lists_marketplace(listing: &str, name: &str) -> bool {
+    listing
+        .lines()
+        .any(|line| line.split_whitespace().any(|word| bare(word) == name))
+}
+
+/// A header line names a plugin: its first word, past any bullet, holds an `@` and no `:`.
+fn is_header(line: &str) -> bool {
+    line.split_whitespace()
+        .map(bare)
+        .find(|word| word.chars().any(char::is_alphanumeric))
+        .is_some_and(|word| word.contains('@') && !word.contains(':'))
+}
+
+/// A word without the quotes, commas and brackets a listing wraps it in.
+fn bare(word: &str) -> &str {
+    word.trim_matches(|ch: char| matches!(ch, '"' | '\'' | ',' | '(' | ')' | '[' | ']' | '`'))
 }
 
 fn template_for(profile: Profile) -> Option<&'static str> {
@@ -377,7 +511,7 @@ fn settings_for(
     profile: Profile,
     template: &str,
     manifest: &Manifest,
-    pack: bool,
+    pack: Option<&PackRef>,
 ) -> Result<Vec<u8>, ProfileError> {
     let Ok(Value::Object(mut settings)) = serde_json::from_str::<Value>(template) else {
         return Err(ProfileError::Template(profile));
@@ -419,10 +553,10 @@ fn settings_for(
         settings.insert("model".to_owned(), json!(role.model.as_ref() as &str));
         settings.insert("effortLevel".to_owned(), json!(effort_level(role.effort)));
     }
-    if pack {
+    if let Some(pack) = pack {
         settings.insert(
             "enabledPlugins".to_owned(),
-            json!({ format!("{PACK_PLUGIN}@{PACK_MARKETPLACE}"): true }),
+            json!({ pack.to_string(): true }),
         );
     }
     let mut text = serde_json::to_string_pretty(&Value::Object(settings))

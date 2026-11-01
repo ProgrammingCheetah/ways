@@ -5,8 +5,12 @@ use super::*;
 use crate::ports::{GateRun, PortError};
 
 /// A shell that records each line and answers with a fixed verdict; it never runs anything.
+///
+/// `claude plugin list` and `claude plugin marketplace list` answer with the listings it was given.
 struct RecordingShell {
     verdict: GateVerdict,
+    plugins: String,
+    marketplaces: String,
     lines: Mutex<Vec<String>>,
 }
 
@@ -14,7 +18,18 @@ impl RecordingShell {
     fn answering(verdict: GateVerdict) -> Self {
         Self {
             verdict,
+            plugins: NO_PLUGINS.to_owned(),
+            marketplaces: NO_MARKETPLACES.to_owned(),
             lines: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// A passing shell whose profile already shows `plugins` and `marketplaces`.
+    fn listing(plugins: &str, marketplaces: &str) -> Self {
+        Self {
+            plugins: plugins.to_owned(),
+            marketplaces: marketplaces.to_owned(),
+            ..Self::answering(GateVerdict::Passed)
         }
     }
 
@@ -26,12 +41,26 @@ impl RecordingShell {
 impl Shell for RecordingShell {
     fn run(&self, line: &CommandLine) -> Result<GateRun, PortError> {
         self.lines.lock().expect("lock").push(line.to_string());
+        let output = if line.as_ref().ends_with("claude plugin list") {
+            self.plugins.clone()
+        } else if line.as_ref().ends_with("claude plugin marketplace list") {
+            self.marketplaces.clone()
+        } else {
+            "said no".to_owned()
+        };
         Ok(GateRun {
             verdict: self.verdict,
-            output: "said no".to_owned(),
+            output,
         })
     }
 }
+
+const NO_PLUGINS: &str = "No plugins installed\n";
+const NO_MARKETPLACES: &str = "No marketplaces configured\n";
+/// What `claude plugin list` shows once the pack is in.
+const KIT_LISTED: &str = "Installed plugins:\n\n  \u{276f} other@shelf\n    Version: 9.9.9\n    Scope: user\n    Status: enabled\n\n  \u{276f} kit@shelf\n    Version: 1.2.3\n    Scope: user\n    Status: enabled\n";
+const SHELF_ADDED: &str =
+    "Configured marketplaces:\n\n  \u{276f} shelf\n    Source: Directory (/somewhere)\n";
 
 /// `init` for a project rooted at the state folder's parent, with a shell that must stay unused.
 fn init_here(state: &Path, manifest: &Manifest) -> Result<Report, ProfileError> {
@@ -327,99 +356,181 @@ fn a_forbidden_tool_is_not_allowed_by_the_gate_rules() {
     assert!(allow.contains(&"Bash(cd x && gh pr)"));
 }
 
-/// A pack checkout with a manifest, a nested skill and a hidden folder.
-fn write_pack(dir: &Path) {
-    fs::create_dir_all(dir.join(".claude-plugin")).expect("pack dirs");
-    fs::create_dir_all(dir.join("skills/plan")).expect("pack dirs");
-    fs::write(
-        dir.join(".claude-plugin/plugin.json"),
-        "{\"name\":\"kit\"}\n",
-    )
-    .expect("writes");
-    fs::write(dir.join("skills/plan/SKILL.md"), "# Plan\n").expect("writes");
-    fs::write(dir.join("README.md"), "kit\n").expect("writes");
+/// The project root's marketplace file: marketplace `shelf` listing plugin `kit` at `source`.
+fn write_marketplace(root: &Path, source: &str) {
+    fs::create_dir_all(root.join(".claude-plugin")).expect("marketplace dir");
+    let catalog = json!({
+        "name": "shelf",
+        "plugins": [
+            { "name": "other", "source": "./plugins/other" },
+            { "name": "kit", "source": source },
+        ],
+    });
+    fs::write(root.join(MARKETPLACE_FILE), catalog.to_string()).expect("writes");
+}
+
+/// `init` for a project rooted at the state folder's parent, through `shell`.
+fn init_through(
+    state: &Path,
+    manifest: &Manifest,
+    shell: &RecordingShell,
+) -> Result<Report, ProfileError> {
+    init(state.parent().expect("a parent"), state, manifest, shell)
+}
+
+const PATH_PACK: &str = "[pack]\npath = \"vendor/kit\"\n";
+
+#[test]
+fn a_pack_from_a_path_is_registered_through_claude_under_the_profile_home() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    write_marketplace(dir.path(), "./vendor/kit/");
+    let shell = RecordingShell::listing(NO_PLUGINS, NO_MARKETPLACES);
+    let report = init_through(&state, &manifest(PATH_PACK), &shell).expect("generates");
+    let home = state.join("profiles/build").display().to_string();
+    let env = format!("CLAUDE_CONFIG_DIR='{home}' claude plugin");
+    assert_eq!(
+        shell.lines(),
+        [
+            format!("{env} list"),
+            format!("{env} marketplace list"),
+            format!("{env} marketplace add '{}'", dir.path().display()),
+            format!("{env} install 'kit@shelf'"),
+        ],
+        "only the profile that carries plugins (build) is registered, lean runs plugin-free"
+    );
+    assert!(!report.unchanged());
+    assert!(
+        report
+            .lines()
+            .contains(&"installed kit@shelf into profiles/build".to_owned())
+    );
+    assert!(
+        !state.join("profiles/build/plugins/kit").exists(),
+        "no raw copy of the pack"
+    );
+    let build = settings(&state, "build");
+    assert_eq!(build["enabledPlugins"], json!({ "kit@shelf": true }));
+    assert!(settings(&state, "lean").get("enabledPlugins").is_none());
 }
 
 #[test]
-fn a_pack_from_a_path_is_copied_into_the_profiles_that_carry_plugins_and_a_rerun_changes_nothing() {
+fn a_rerun_whose_plugin_list_already_shows_the_pack_installs_nothing_and_changes_nothing() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state = dir.path().join(".zaf");
-    write_pack(&dir.path().join("vendor/kit"));
-    let manifest = manifest("[pack]\npath = \"vendor/kit\"\n");
-    let first = init_here(&state, &manifest).expect("generates");
-    let vendored = state.join("profiles/build/plugins").join(PACK_PLUGIN);
-    for file in [
-        ".claude-plugin/plugin.json",
-        "skills/plan/SKILL.md",
-        "README.md",
-    ] {
-        assert_eq!(
-            fs::read(vendored.join(file)).expect("copied"),
-            fs::read(dir.path().join("vendor/kit").join(file)).expect("source"),
-            "{file}"
-        );
-    }
-    assert!(
-        first
-            .written
-            .iter()
-            .any(|file| file.path == Path::new("profiles/build/plugins/teams/README.md"))
-    );
-    let lean_plugins = state.join("profiles/lean/plugins");
-    assert_eq!(
-        fs::read_dir(&lean_plugins).expect("reads").count(),
-        0,
-        "lean runs plugin-free"
-    );
-    let second = init_here(&state, &manifest).expect("again");
+    write_marketplace(dir.path(), "./vendor/kit");
+    let shell = RecordingShell::listing(KIT_LISTED, SHELF_ADDED);
+    let manifest = manifest(PATH_PACK);
+    init_through(&state, &manifest, &shell).expect("first");
+    let second = init_through(&state, &manifest, &shell).expect("again");
     assert!(second.unchanged(), "{:?}", second.lines());
     assert_eq!(second.lines(), ["nothing changed"]);
-}
-
-#[test]
-fn a_file_dropped_from_the_pack_source_is_removed_from_the_copy() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let state = dir.path().join(".zaf");
-    let source = dir.path().join("kit");
-    write_pack(&source);
-    let manifest = manifest("[pack]\npath = \"kit\"\n");
-    init_here(&state, &manifest).expect("first");
-    fs::remove_file(source.join("README.md")).expect("drops");
-    let report = init_here(&state, &manifest).expect("second");
-    assert_eq!(
-        report.written,
-        [Written {
-            path: PathBuf::from("profiles/build/plugins/teams/README.md"),
-            change: Change::Removed
-        }]
-    );
     assert!(
-        !state
-            .join("profiles/build/plugins/teams/README.md")
-            .exists()
+        shell
+            .lines()
+            .iter()
+            .all(|line| line.ends_with("claude plugin list")),
+        "only the listing is asked: {:?}",
+        shell.lines()
     );
 }
 
 #[test]
-fn a_missing_pack_folder_is_an_error() {
+fn a_marketplace_already_added_is_not_added_again() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state = dir.path().join(".zaf");
-    let result = init_here(&state, &manifest("[pack]\npath = \"nowhere\"\n"));
-    assert!(matches!(result, Err(ProfileError::NoPack(_))));
+    write_marketplace(dir.path(), "./vendor/kit");
+    let shell = RecordingShell::listing(NO_PLUGINS, SHELF_ADDED);
+    init_through(&state, &manifest(PATH_PACK), &shell).expect("generates");
+    let lines = shell.lines();
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert!(lines[2].ends_with("claude plugin install 'kit@shelf'"));
+    assert!(lines.iter().all(|line| !line.contains("marketplace add")));
+}
+
+#[test]
+fn a_pack_path_the_marketplace_does_not_list_is_an_error() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    write_marketplace(dir.path(), "./plugins/elsewhere");
+    let shell = RecordingShell::answering(GateVerdict::Passed);
+    let result = init_through(&state, &manifest(PATH_PACK), &shell);
+    let Err(ProfileError::Marketplace { reason, .. }) = result else {
+        panic!("a marketplace error");
+    };
+    assert!(reason.contains("vendor/kit"), "{reason}");
+    assert!(shell.lines().is_empty());
+}
+
+#[test]
+fn a_missing_marketplace_file_is_an_error() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    let shell = RecordingShell::answering(GateVerdict::Passed);
+    let result = init_through(&state, &manifest(PATH_PACK), &shell);
+    assert!(matches!(result, Err(ProfileError::Marketplace { .. })));
+}
+
+#[test]
+fn a_failed_claude_command_is_an_error_naming_the_line() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    write_marketplace(dir.path(), "./vendor/kit");
+    let shell = RecordingShell::answering(GateVerdict::Failed);
+    let result = init_through(&state, &manifest(PATH_PACK), &shell);
+    let Err(ProfileError::Install { line, output }) = result else {
+        panic!("an install error");
+    };
+    assert!(line.ends_with("claude plugin list"), "{line}");
+    assert_eq!(output, NO_PLUGINS.trim());
+}
+
+#[test]
+fn the_listing_gives_the_version_of_the_asked_plugin_only() {
+    assert_eq!(
+        listed_version(KIT_LISTED, "kit@shelf"),
+        Some("1.2.3".to_owned())
+    );
+    assert_eq!(
+        listed_version(KIT_LISTED, "other@shelf"),
+        Some("9.9.9".to_owned())
+    );
+    assert_eq!(listed_version(KIT_LISTED, "kit@elsewhere"), None);
+    assert_eq!(listed_version(NO_PLUGINS, "kit@shelf"), None);
+    assert_eq!(
+        listed_version("  kit@shelf\n    Scope: user\n", "kit@shelf"),
+        Some("unknown".to_owned()),
+        "listed without a version"
+    );
+    assert_eq!(
+        listed_version("kit@shelf\n\nVersion: 3.0.0\n", "kit@shelf"),
+        Some("unknown".to_owned()),
+        "a blank line ends the entry"
+    );
+}
+
+#[test]
+fn a_marketplace_is_listed_by_its_own_word() {
+    assert!(lists_marketplace(SHELF_ADDED, "shelf"));
+    assert!(!lists_marketplace(SHELF_ADDED, "shel"));
+    assert!(!lists_marketplace(NO_MARKETPLACES, "shelf"));
 }
 
 #[test]
 fn settings_enable_the_pack_and_never_wait_on_a_prompt() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state = dir.path().join(".zaf");
-    write_pack(&dir.path().join("kit"));
-    init_here(
+    write_marketplace(dir.path(), "./vendor/kit");
+    init_through(
         &state,
-        &manifest("[pack]\npath = \"kit\"\n[forbidden]\ncommands = [\"git push\"]\n"),
+        &manifest(&format!(
+            "{PATH_PACK}[forbidden]\ncommands = [\"git push\"]\n"
+        )),
+        &RecordingShell::listing(KIT_LISTED, SHELF_ADDED),
     )
     .expect("generates");
     let build = settings(&state, "build");
-    assert_eq!(build["enabledPlugins"], json!({ "teams@ways": true }));
+    assert_eq!(build["enabledPlugins"], json!({ "kit@shelf": true }));
     assert_eq!(build["permissions"]["defaultMode"], "acceptEdits");
     assert!(strings(&build["permissions"]["allow"]).contains(&"Bash(zaf *)"));
     assert!(strings(&build["permissions"]["deny"]).contains(&"Bash(git push)"));
