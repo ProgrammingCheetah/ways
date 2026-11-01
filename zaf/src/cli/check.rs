@@ -6,6 +6,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use super::Cli;
 use super::exit::{self, BACKEND, REFUSED};
@@ -99,6 +100,7 @@ fn check_pr_target(
     let configured = composition
         .manifest()
         .check
+        .targets
         .get(&CheckTarget::Pr)
         .map(|section| section.steps.as_slice())
         .unwrap_or_default();
@@ -120,7 +122,8 @@ fn check_pr_target(
     let ports: Arc<dyn StepPorts> = Arc::new(LivePorts {
         composition: composition.clone(),
     });
-    let settings = EngineSettings::new(composition.root().to_owned(), runs_dir(composition));
+    let mut settings = EngineSettings::new(composition.root().to_owned(), runs_dir(composition));
+    settings.ci_grace = Duration::from_secs(composition.manifest().check.ci_grace_seconds);
     let report = Engine::new(ports, settings).run(&steps, pr, flagged);
     Ok(CheckRecord::from_report(target, &report))
 }
