@@ -308,7 +308,7 @@ The binary and the pack are the only shared things. Everything else lives in the
 - Nothing secret in `ZAF.toml`, so a public repo can commit it; everything private sits in `.zaf/`, which a private-papers check can guard.
 
 ### 7.1 Spawn rules: where repeated spawning gets expensive
-Every spawn pays a fixed tax: its turn-one context (58k tokens median this week: system prompt, tool list, CLAUDE.md chain, memory index, skills, brief) times its turns. The rules that keep the tax small:
+Every spawn pays a fixed tax: its turn-one context (58k tokens median this week: system prompt, tool list, CLAUDE.md chain, memory index, skills, brief) times its turns. A lost instance costs nothing more: after recording `lost` on its epic, the spawner releases every task it still held (the `claimed` label and lease go, `ready` returns unless the task carries `question` or `done`, and a comment reads `released from <instance> at <time>`), so the next tick can claim it again. The rules that keep the tax small:
 1. **Depth one.** A keeper never spawns; an instance never spawns an instance; a programmer never spawns a programmer. A chain pays the tax per hop while the top asker idles at full context. `not settled` ends a chain as a ticket.
 2. **Ask in batches.** One `zaf ask` carries every question the role has at that moment; the keeper answers all of them in one process.
 3. **Preload what is named.** The brief pack carries the task's named pages, so the common questions never become asks.

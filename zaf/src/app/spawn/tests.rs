@@ -25,8 +25,8 @@ impl Board for SharedBoard {
     fn claims(&self) -> Result<Vec<ClaimRecord>, PortError> {
         self.0.claims()
     }
-    fn release(&self, task: IssueNumber) -> Result<(), PortError> {
-        self.0.release(task)
+    fn release(&self, task: IssueNumber, instance: &Instance) -> Result<(), PortError> {
+        self.0.release(task, instance)
     }
     fn label(&self, task: IssueNumber, label: TaskLabel) -> Result<(), PortError> {
         self.0.label(task, label)
@@ -333,6 +333,72 @@ fn a_launch_whose_process_is_gone_is_recorded_as_lost() {
             .contains(&"<!-- zaf:exit team instance 1 on #2 lost -->".to_owned())
     );
     assert_eq!(second.plan.launches[0].instance, instance(3, 2));
+}
+
+#[test]
+fn a_lost_instances_tasks_are_released_and_a_question_is_kept() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let board = board();
+    prepare(&board, &state_dir, &manifest(), &|_| true, 100).expect("first tick");
+    let lost = instance(1, 2);
+    let (waiting, stuck, other) = (
+        IssueNumber::from(4),
+        IssueNumber::from(3),
+        IssueNumber::from(13),
+    );
+    board.claim(stuck, &lost).expect("claims #3");
+    board.claim(waiting, &lost).expect("claims #4");
+    board
+        .label(waiting, TaskLabel::Question)
+        .expect("#4 waits on a question");
+    // Held by an instance that is not lost: stays held.
+    board.claim(other, &instance(9, 12)).expect("claims #13");
+
+    let second =
+        prepare(&board, &state_dir, &manifest(), &|pid| pid != 100, OWN_PID).expect("second tick");
+
+    let expected = vec![
+        Released {
+            task: stuck,
+            instance: lost.clone(),
+        },
+        Released {
+            task: waiting,
+            instance: lost,
+        },
+    ];
+    assert_eq!(second.released, expected);
+    let label = |task| board.task(task).expect("task").label;
+    assert_eq!(label(stuck), Some(TaskLabel::Ready));
+    assert_eq!(label(waiting), Some(TaskLabel::Question));
+    assert_eq!(label(other), Some(TaskLabel::Claimed));
+    for task in [stuck, waiting] {
+        let comments = board.comments(task);
+        assert_eq!(comments.len(), 1, "{comments:?}");
+        assert!(
+            comments[0].starts_with("released from team instance 1 on #2 at "),
+            "{comments:?}"
+        );
+    }
+    assert!(board.comments(other).is_empty());
+    let claims = board.claims().expect("claims");
+    assert_eq!(claims.len(), 1);
+    assert_eq!(claims[0].task, other);
+}
+
+#[test]
+fn a_tick_with_nothing_lost_releases_nothing() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let board = board();
+    prepare(&board, &state_dir, &manifest(), &|_| true, 100).expect("first tick");
+    board
+        .claim(IssueNumber::from(3), &instance(1, 2))
+        .expect("claims #3");
+    let second = prepare(&board, &state_dir, &manifest(), &|_| true, OWN_PID).expect("second tick");
+    assert!(second.released.is_empty());
+    assert_eq!(board.claims().expect("claims").len(), 1);
 }
 
 #[test]

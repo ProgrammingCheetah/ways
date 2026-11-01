@@ -9,7 +9,8 @@
 //! epic and frees the slot. Launch and exit are HTML comments on the epic:
 //! `<!-- zaf:launch <instance> -->` and `<!-- zaf:exit <instance> <status> -->`,
 //! the status being the exit code, `error` when the runner could not run, or
-//! `lost` for a launch whose process vanished without one.
+//! `lost` for a launch whose process vanished without one. A lost instance's
+//! claims go back to the board: [`prepare`] releases each task it still held.
 //!
 //! A dry run ([`plan_only`] and [`dry_run`]) plans the same tick and describes
 //! each launch it would make, writing nothing: no state, no run folder, no comment.
@@ -145,12 +146,24 @@ pub struct Prepared {
     pub plan: Plan,
     /// Instances dropped because their process is gone, each recorded as `lost`.
     pub lost: Vec<String>,
+    /// The tasks a lost instance held that went back to the board, each released.
+    pub released: Vec<Released>,
+}
+
+/// A task released from a lost instance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Released {
+    /// The task.
+    pub task: IssueNumber,
+    /// The lost instance that held it.
+    pub instance: Instance,
 }
 
 /// Plans one tick and reserves its launches under `pid`, the process that will run them.
 ///
 /// `alive` says whether a recorded pid still runs; the launches of a dead one
-/// are dropped and their exit recorded on the epic as `lost`.
+/// are dropped, their exit recorded on the epic as `lost`, and every task they
+/// still held released, so another instance can claim it.
 pub fn prepare(
     board: &dyn Board,
     state_dir: &Path,
@@ -160,9 +173,21 @@ pub fn prepare(
 ) -> Result<Prepared, SpawnError> {
     let mut state = load(state_dir)?;
     let lost = state.prune(alive);
-    for instance in &lost {
-        if let Ok(parsed) = instance.parse::<Instance>() {
+    let mut released = Vec::new();
+    if !lost.is_empty() {
+        let claims = board.claims()?;
+        for instance in &lost {
+            let Ok(parsed) = instance.parse::<Instance>() else {
+                continue;
+            };
             board.comment(parsed.epic, &exit_marker(instance, "lost"))?;
+            for claim in claims.iter().filter(|claim| claim.instance == parsed) {
+                board.release(claim.task, &parsed)?;
+                released.push(Released {
+                    task: claim.task,
+                    instance: parsed.clone(),
+                });
+            }
         }
     }
     let snapshot = snapshot(board)?;
@@ -170,7 +195,11 @@ pub fn prepare(
     let plan = tick::plan(&snapshot, &state, level, Settings::from(manifest));
     state.reserve(&plan.launches, pid);
     save(state_dir, &state)?;
-    Ok(Prepared { plan, lost })
+    Ok(Prepared {
+        plan,
+        lost,
+        released,
+    })
 }
 
 /// The comment that records a launch on its epic.
@@ -428,7 +457,11 @@ pub fn plan_only(
     let snapshot = snapshot(board)?;
     let level = read_guard(state_dir)?;
     let plan = tick::plan(&snapshot, &state, level, Settings::from(manifest));
-    Ok(Prepared { plan, lost })
+    Ok(Prepared {
+        plan,
+        lost,
+        released: Vec::new(),
+    })
 }
 
 /// What a runner would run for a request: the command line and the environment it sets.

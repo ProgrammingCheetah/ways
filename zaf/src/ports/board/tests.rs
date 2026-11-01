@@ -88,10 +88,44 @@ fn leases_beat_and_release_back_to_ready() {
         port.heartbeat(task, &instance(2)),
         Err(PortError::Conflict(_))
     ));
-    port.release(task).expect("release");
-    port.release(task).expect("a second release is quiet");
+    port.release(task, &instance(2))
+        .expect("a release by a non-holder is quiet");
+    assert_eq!(port.claims().expect("claims").len(), 1);
+    assert_eq!(
+        port.task(task).expect("task").label,
+        Some(TaskLabel::Claimed)
+    );
+    assert!(
+        board.comments(task).is_empty(),
+        "a non-holder writes nothing"
+    );
+    port.release(task, &instance(1)).expect("release");
+    port.release(task, &instance(1))
+        .expect("a second release is quiet");
     assert!(port.claims().expect("claims").is_empty());
     assert_eq!(port.task(task).expect("task").label, Some(TaskLabel::Ready));
+    let comments = board.comments(task);
+    assert_eq!(comments.len(), 1, "only the first release comments");
+    assert!(
+        comments[0].starts_with("released from programmer instance 1 on #1 at "),
+        "{comments:?}"
+    );
+}
+
+#[test]
+fn a_release_keeps_question_and_done_and_adds_no_ready() {
+    let board = seeded();
+    let port: &dyn Board = &board;
+    for (task, label) in [(2, TaskLabel::Question), (4, TaskLabel::Done)] {
+        let task = IssueNumber::from(task);
+        port.claim(task, &instance(1)).expect("claim");
+        port.label(task, label).expect("label");
+        port.release(task, &instance(1)).expect("release");
+        assert_eq!(port.task(task).expect("task").label, Some(label));
+        assert!(port.claims().expect("claims").is_empty());
+        assert_eq!(board.comments(task).len(), 1);
+    }
+    assert!(port.ready().expect("ready").is_empty());
 }
 
 #[test]

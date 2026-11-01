@@ -83,8 +83,10 @@ pub trait Board {
     /// Every live claim with its last heartbeat, for the spawner's lease check.
     fn claims(&self) -> Result<Vec<ClaimRecord>, PortError>;
 
-    /// Drops a task's claim and returns it to `ready`; a task without a claim is left as it is.
-    fn release(&self, task: IssueNumber) -> Result<(), PortError>;
+    /// Drops `instance`'s claim on a task and comments `released from <instance> at <time>`.
+    /// The task returns to `ready` unless it carries `question` or `done`, which it keeps.
+    /// A task the instance does not hold is left as it is and the call succeeds.
+    fn release(&self, task: IssueNumber, instance: &Instance) -> Result<(), PortError>;
 
     /// Sets a task's state label, replacing the one it had.
     fn label(&self, task: IssueNumber, label: TaskLabel) -> Result<(), PortError>;
