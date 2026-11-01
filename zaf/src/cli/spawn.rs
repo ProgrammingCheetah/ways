@@ -67,6 +67,9 @@ pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool) -> u8 {
         for instance in &prepared.lost {
             println!("lost {instance}");
         }
+        for released in &prepared.released {
+            println!("released {} from {}", released.task, released.instance);
+        }
         print!("{}", prepared.plan.render_text());
     }
     let jobs = jobs(&composition, &prepared, version);
@@ -102,7 +105,18 @@ pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool) -> u8 {
         }
     }
     if cli.json {
-        println!("{}", prepared.plan.to_json(&launched, &prepared.lost));
+        let mut json = prepared.plan.to_json(&launched, &prepared.lost);
+        json["released"] = prepared
+            .released
+            .iter()
+            .map(|released| {
+                serde_json::json!({
+                    "task": released.task.get(),
+                    "instance": released.instance.to_string(),
+                })
+            })
+            .collect();
+        println!("{json}");
     }
     code
 }

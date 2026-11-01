@@ -177,12 +177,27 @@ impl Board for FakeBoard {
         Ok(claims)
     }
 
-    fn release(&self, task: IssueNumber) -> Result<(), PortError> {
+    fn release(&self, task: IssueNumber, instance: &Instance) -> Result<(), PortError> {
         let mut state = self.state();
         let issue = state.issue_mut(task)?;
-        if issue.claim.take().is_some() {
+        if !issue
+            .claim
+            .as_ref()
+            .is_some_and(|claim| claim.instance == *instance)
+        {
+            return Ok(());
+        }
+        issue.claim = None;
+        if !matches!(
+            issue.ticket.label,
+            Some(TaskLabel::Question | TaskLabel::Done)
+        ) {
             issue.ticket.label = Some(TaskLabel::Ready);
         }
+        let at = humantime::format_rfc3339_seconds(SystemTime::now());
+        issue
+            .comments
+            .push(format!("released from {instance} at {at}"));
         Ok(())
     }
 

@@ -4,7 +4,7 @@ use std::time::SystemTime;
 
 use super::GhCommand;
 use super::command::number_from_url;
-use super::notes::{LeaseNote, RULING_MARKER, marked, report_marker, unmarked};
+use super::notes::{LeaseNote, RULING_MARKER, marked, release_line, report_marker, unmarked};
 use super::rows::{ISSUE_FIELDS, IssueRow, NumberRow};
 use crate::domain::{Instance, IssueNumber, TaskLabel};
 use crate::ports::{Board, ClaimOutcome, ClaimRecord, NewQuestion, PortError, Ticket};
@@ -210,13 +210,24 @@ impl Board for GithubBoard {
         Ok(claims)
     }
 
-    fn release(&self, task: IssueNumber) -> Result<(), PortError> {
-        let claimed = TaskLabel::Claimed.to_string();
-        if !self.issue(task)?.has_label(&claimed) {
+    fn release(&self, task: IssueNumber, instance: &Instance) -> Result<(), PortError> {
+        let row = self.issue(task)?;
+        let holder = row.claim().map(|claim| claim.instance);
+        if holder.as_ref() != Some(instance) {
             return Ok(());
         }
+        let claimed = TaskLabel::Claimed.to_string();
         let ready = TaskLabel::Ready.to_string();
-        self.edit_labels(task, &[&ready], &[&claimed])
+        let keeps_state = [TaskLabel::Question, TaskLabel::Done]
+            .iter()
+            .any(|label| row.has_label(&label.to_string()));
+        let add: Vec<&str> = if keeps_state {
+            Vec::new()
+        } else {
+            vec![ready.as_str()]
+        };
+        self.edit_labels(task, &add, &[&claimed])?;
+        self.post_comment(task, &release_line(instance, SystemTime::now()))
     }
 
     fn label(&self, task: IssueNumber, label: TaskLabel) -> Result<(), PortError> {

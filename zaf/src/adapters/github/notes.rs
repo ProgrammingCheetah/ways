@@ -89,6 +89,14 @@ fn parse_time(text: &str) -> Result<SystemTime, NotANote> {
     humantime::parse_rfc3339(text.trim()).map_err(|_| NotANote)
 }
 
+/// The comment that records `instance` letting go of a task: `released from <instance> at <rfc3339>`.
+pub(super) fn release_line(instance: &Instance, at: SystemTime) -> String {
+    format!(
+        "released from {instance} at {}",
+        humantime::format_rfc3339_seconds(at)
+    )
+}
+
 /// The first line of an instance's status report on a task.
 pub(super) fn report_marker(instance: &Instance) -> String {
     format!("<!-- zaf:report {instance} -->")

@@ -264,7 +264,7 @@ fn every_call_on_a_missing_issue_is_not_found() {
         board.task(missing).map(drop),
         board.claim(missing, &instance(1)).map(drop),
         board.heartbeat(missing, &instance(1)),
-        board.release(missing),
+        board.release(missing, &instance(1)),
         board.label(missing, TaskLabel::Done),
         board.comment(missing, "Blocked."),
         board.report(missing, &instance(1), "working"),
@@ -375,20 +375,18 @@ fn a_heartbeat_is_a_new_comment_and_claims_read_the_latest() {
 }
 
 #[test]
-fn release_returns_a_claimed_task_to_ready_and_leaves_others() {
+fn release_returns_a_held_task_to_ready_and_comments() {
     let fake = FakeGh::new();
     let comments = [claim_line(1, 1_800_000_000)];
     fake.on(
         "issue view 2 *",
         &issue(2, &["task", "claimed"], &comments, "OPEN"),
     )
-    .on("issue view 4 *", &issue(4, &["task", "ready"], &[], "OPEN"))
-    .on("issue edit *", "");
-    let board = fake.board();
-    board.release(IssueNumber::from(2)).expect("release");
-    board
-        .release(IssueNumber::from(4))
-        .expect("a release without a claim is quiet");
+    .on("issue edit *", "")
+    .on("issue comment *", "");
+    fake.board()
+        .release(IssueNumber::from(2), &instance(1))
+        .expect("release");
     let expected_edit = argv(&[
         "issue",
         "edit",
@@ -400,7 +398,72 @@ fn release_returns_a_claimed_task_to_ready_and_leaves_others() {
         "--repo",
         REPO,
     ]);
-    assert_eq!(fake.calls(), [view("2"), expected_edit, view("4")]);
+    let calls = fake.calls();
+    assert_eq!(calls.len(), 3);
+    assert_eq!(calls[0], view("2"));
+    assert_eq!(calls[1], expected_edit);
+    assert_eq!(calls[2][..4], argv(&["issue", "comment", "2", "--body"]));
+    assert!(
+        calls[2][4].starts_with("released from programmer instance 1 on #1 at "),
+        "{:?}",
+        calls[2]
+    );
+}
+
+#[test]
+fn a_release_keeps_question_and_done_and_adds_no_ready() {
+    let fake = FakeGh::new();
+    let comments = [claim_line(1, 1_800_000_000)];
+    fake.on(
+        "issue view 2 *",
+        &issue(2, &["task", "claimed", "question"], &comments, "OPEN"),
+    )
+    .on(
+        "issue view 3 *",
+        &issue(3, &["task", "claimed", "done"], &comments, "OPEN"),
+    )
+    .on("issue edit *", "")
+    .on("issue comment *", "");
+    let board = fake.board();
+    board
+        .release(IssueNumber::from(2), &instance(1))
+        .expect("release");
+    board
+        .release(IssueNumber::from(3), &instance(1))
+        .expect("release");
+    let removes_claimed_only = |number: &str| {
+        argv(&[
+            "issue",
+            "edit",
+            number,
+            "--remove-label",
+            "claimed",
+            "--repo",
+            REPO,
+        ])
+    };
+    let calls = fake.calls();
+    assert_eq!(calls[1], removes_claimed_only("2"));
+    assert_eq!(calls[4], removes_claimed_only("3"));
+}
+
+#[test]
+fn a_release_by_a_non_holder_is_quiet_and_changes_nothing() {
+    let fake = FakeGh::new();
+    let comments = [claim_line(1, 1_800_000_000)];
+    fake.on(
+        "issue view 2 *",
+        &issue(2, &["task", "claimed"], &comments, "OPEN"),
+    )
+    .on("issue view 4 *", &issue(4, &["task", "ready"], &[], "OPEN"));
+    let board = fake.board();
+    board
+        .release(IssueNumber::from(2), &instance(2))
+        .expect("another instance holds it");
+    board
+        .release(IssueNumber::from(4), &instance(1))
+        .expect("nobody holds it");
+    assert_eq!(fake.calls(), [view("2"), view("4")]);
 }
 
 #[test]
