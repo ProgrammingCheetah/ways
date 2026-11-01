@@ -131,6 +131,85 @@ fn acceptance_needs_items_and_items_need_acceptance() {
     assert_eq!(stray.parse::<TaskTemplate>(), Err(stray_item_error));
 }
 
+/// The body of #38 exactly as posted on GitHub.
+const TICKET_38_BODY: &str = r##"Goal: the archives of tag `zaf-v0.1.1` are named `zaf-v0.1.1-<target>.tar.gz` (the 0.1.0 release shipped `zaf-zaf-v0.1.0-<target>.tar.gz`: the packaging step prefixes the tag, which already starts with `zaf-`, with `zaf-` again), and `zaf/Cargo.toml` says 0.1.1 so the tag's version check passes.
+Owned paths: .github/workflows/zaf-release.yml; zaf/Cargo.toml; zaf/Cargo.lock
+Interfaces:
+  1. In the step "Package archive and checksum", the line `name="zaf-${GITHUB_REF_NAME}-${{ matrix.target }}"` becomes `name="${GITHUB_REF_NAME}-${{ matrix.target }}"`. Nothing else in the workflow changes.
+  2. `version = "0.1.1"` in zaf/Cargo.toml; the `zaf` entry of zaf/Cargo.lock follows (the gate's `cargo build` rewrites it; commit the rewritten lock).
+Design pages: none; the three owned files, read fully.
+Architecture: n/a (workflow and crate metadata only)
+Acceptance:
+  - the text `zaf-${GITHUB_REF_NAME}` appears nowhere in .github/workflows/zaf-release.yml, and `"${GITHUB_REF_NAME}-${{ matrix.target }}"` appears exactly once
+  - `zaf/Cargo.toml` has `version = "0.1.1"` and the `name = "zaf"` entry in zaf/Cargo.lock has `version = "0.1.1"`
+  - `zaf check <task>` is green (the four cargo commands)
+  - the lead runs actionlint on the workflow and, after the merge into main, tags `zaf-v0.1.1`
+Tests: none new (no code changes)
+Security trigger: no
+Model: sonnet
+Size: S
+Blocked by: none"##;
+
+#[test]
+fn indented_lines_continue_the_field_above() {
+    let template: TaskTemplate = TICKET_38_BODY
+        .parse()
+        .unwrap_or_else(|error| panic!("the body of #38 parses: {error}"));
+    let items: Vec<&str> = template.interfaces.lines().collect();
+    assert_eq!(items.len(), 2);
+    assert!(items[0].starts_with("1. In the step \"Package archive and checksum\""));
+    assert!(items[1].starts_with("2. `version = \"0.1.1\"` in zaf/Cargo.toml"));
+    assert_eq!(template.acceptance.len(), 4);
+    assert_eq!(template.size, TaskSize::S);
+}
+
+#[test]
+fn a_multi_line_field_round_trips_through_display() {
+    let first: TaskTemplate = TICKET_38_BODY
+        .parse()
+        .unwrap_or_else(|error| panic!("the body of #38 parses: {error}"));
+    let rendered = first.to_string();
+    assert!(rendered.contains("Interfaces: 1. In the step"));
+    assert!(rendered.contains("\n  2. `version"));
+    let second: TaskTemplate = rendered
+        .parse()
+        .unwrap_or_else(|error| panic!("the rendering parses: {error}"));
+    assert_eq!(second, first);
+}
+
+#[test]
+fn an_indented_line_before_any_field_is_unrecognized() {
+    let indented_first = format!("  1. an item with no field\n{FILLED_TEMPLATE}");
+    let unrecognized_error = TaskTemplateError::UnrecognizedLine {
+        line: 1,
+        text: "1. an item with no field".to_owned(),
+    };
+    assert_eq!(
+        indented_first.parse::<TaskTemplate>(),
+        Err(unrecognized_error)
+    );
+}
+
+#[test]
+fn a_tab_indented_line_continues_and_a_stray_item_stays_refused() {
+    let tabbed = FILLED_TEMPLATE.replace(
+        "Owned paths: src/export/**, tests/export.rs",
+        "Owned paths: src/export/**\n\ttests/export.rs",
+    );
+    let template: TaskTemplate = tabbed
+        .parse()
+        .unwrap_or_else(|error| panic!("the tabbed body parses: {error}"));
+    assert_eq!(template.owned_paths, "src/export/**\ntests/export.rs");
+    let stray = FILLED_TEMPLATE.replace(
+        "Interfaces: ExportSink (defined here), consumed by the export verb",
+        "Interfaces:\n  - not acceptance",
+    );
+    assert_eq!(
+        stray.parse::<TaskTemplate>(),
+        Err(TaskTemplateError::StrayListItem { line: 3 })
+    );
+}
+
 #[test]
 fn field_labels_are_pinned() {
     let labels: Vec<String> = TaskField::VARIANTS
