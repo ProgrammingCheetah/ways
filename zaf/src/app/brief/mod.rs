@@ -1,8 +1,9 @@
 //! `zaf brief`: one context pack per task, so a programmer starts from a file instead of a look-around.
 //!
 //! The pack holds, in order: the ticket body, each design page the ticket names
-//! in full, `nodes chain <path>` for each owned path (or a note when no `nodes`
-//! binary is on PATH), the project's style file, and the interface help page.
+//! in full, `nodes chain <path>` for each owned path (or, when the cli passes no
+//! chain, a note and the plain list of owned paths), the project's style file,
+//! and the interface help page.
 //! It is written to `.zaf/runs/<instance slug>/brief-<task>.md`, the slug being
 //! [`Instance::slug_of`] of the instance's name.
 
@@ -29,6 +30,12 @@ const CHARS_PER_TOKEN: usize = 4;
 /// The note written in place of the node chains when `nodes` is not on PATH.
 pub const NODES_ABSENT_NOTE: &str = "No `nodes` binary on PATH; the node chains are skipped.";
 
+/// The note written in place of the node chains when the project root has no node tree.
+///
+/// The cli passes no chain in that case, so a missing `nodes` binary reads the same.
+pub const NO_NODE_TREE_NOTE: &str =
+    "No node tree at the project root; the node chains are skipped.";
+
 /// Runs `nodes chain <path>` and returns its output, or why it failed.
 pub type NodesChain<'a> = &'a dyn Fn(&str) -> Result<String, String>;
 
@@ -52,7 +59,7 @@ pub struct BriefPorts<'a> {
     pub board: &'a dyn Board,
     /// The design source; `None` when the project has none.
     pub design: Option<&'a dyn Design>,
-    /// The `nodes` binary; `None` when it is not on PATH.
+    /// The `nodes` chain; `None` when the project has no node tree or `nodes` is not on PATH.
     pub nodes: Option<NodesChain<'a>>,
 }
 
@@ -242,8 +249,12 @@ fn render(
     let paths = template.map(|template| owned_paths(&template.owned_paths));
     match (ports.nodes, paths) {
         (_, None) => {}
-        (None, Some(_)) => {
-            writeln!(text, "{NODES_ABSENT_NOTE}\n")?;
+        (None, Some(paths)) => {
+            writeln!(text, "{NO_NODE_TREE_NOTE}\n")?;
+            for path in paths {
+                writeln!(text, "- {path}")?;
+            }
+            writeln!(text)?;
         }
         (Some(chain), Some(paths)) => {
             for path in paths {
