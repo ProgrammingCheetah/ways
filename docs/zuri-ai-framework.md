@@ -283,11 +283,12 @@ No project word in the binary, no assumed language, VCS, forge or design source.
 [branches]       integration = "feature/{version}"  task = "feature/{version}-{epic}-{task}"
 [gate]           full = "just gate"  light = "just gate-light"  tests = "cargo test -p {crate} {name}"
 [style]          path = "docs/style.md"      # optional, pasted into every brief
-[runners.claude] command = "claude -p {prompt} --model {model} --add-dir {dir}"  timeout_minutes = 45
-[runners.gemini] command = "agy -p {prompt} --add-dir {dir} --model gemini-4-argon --print-timeout 60m"
+[runners.claude] command = "claude -p {prompt} --model {model} --add-dir {root}"  timeout_minutes = 45
+[runners.gemini] command = "agy -p {prompt} --add-dir {root} --model gemini-4-argon --print-timeout 60m"
 [runners.local]  command = "zuri -p {prompt}"
 [roles.programmer]  model = "sonnet"  effort = "high"  profile = "lean"  turns = 60
 [roles.team]        model = "opus"    effort = "xhigh" profile = "build" turns = 200  batch = 4
+[check]          ci_grace_seconds = 120     # optional: how long after a push an empty check list still counts as pending
 [check.pr]       steps = ["ci", "codeql", "bot:coderabbitai", "runner:gemini:critique", "runner:gemini:security?flagged"]
 [check.milestone] steps = ["runner:gemini:objectives", "runner:gemini:release-reviews", "command:cargo mutants"]
 [ask]            ladder = ["local", "haiku", "sonnet"]  max = 5  cache_hours = 24   # a rung names a runner, else [runners.claude] with {model} = the rung

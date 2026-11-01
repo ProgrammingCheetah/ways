@@ -141,6 +141,7 @@ pub(super) fn context(pr: PrNumber, wait: Duration) -> StepContext {
         dir: PathBuf::from("."),
         deadline: Instant::now() + wait,
         poll: Duration::from_millis(5),
+        grace: Duration::ZERO,
     }
 }
 

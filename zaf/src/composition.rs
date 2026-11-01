@@ -13,7 +13,7 @@ use crate::adapters::design::DirDesign;
 use crate::adapters::gate::ShellGate;
 use crate::adapters::github::{GhCommand, GithubBoard, GithubForge};
 use crate::adapters::jj::JjVcs;
-use crate::adapters::runner::ProcessRunner;
+use crate::adapters::runner::{ProcessRunner, single_quote};
 use crate::adapters::shell::SystemShell;
 use crate::app::profile::{self, CONFIG_DIR_VAR};
 use crate::domain::{Profile, RoleName};
@@ -21,7 +21,7 @@ use crate::manifest::{
     BoardKind, CommandLine, DesignKind, Effort, ForgeKind, Manifest, ManifestError, ModelName,
     RunnerName, VcsKind,
 };
-use crate::ports::{Board, Design, Forge, Gate, RunRequest, Runner, Shell, Vcs};
+use crate::ports::{Board, Design, Forge, Gate, RunRequest, Runner, Shell, SliceName, Vcs};
 
 /// The manifest's file name at the project root.
 pub const MANIFEST_FILE: &str = "ZAF.toml";
@@ -240,6 +240,14 @@ impl Composition {
         Ok(Box::new(ShellGate::new(&self.root, section)))
     }
 
+    /// The directory of a slice's workspace, open or not: the project root, the
+    /// `[workspaces]` path and the slice name. The manifest alone answers it, so no port is called.
+    pub fn slice_dir(&self, slice: &SliceName) -> PathBuf {
+        self.root
+            .join(&self.manifest.workspaces.path)
+            .join(slice.as_ref())
+    }
+
     /// The gate run inside `dir` instead of the project root (a slice workspace).
     pub fn gate_in(&self, dir: &Path) -> Result<Box<dyn Gate>, CompositionError> {
         let section = self
@@ -311,8 +319,9 @@ impl Composition {
         Ok(Box::new(self.process_runner(name, model, None)?))
     }
 
-    /// The runner's command with `{model}` and `{effort}` filled where given; a
-    /// placeholder left unfilled stays as written.
+    /// The runner's command with `{root}` set to the project root (single-quoted for the
+    /// shell) and `{model}` and `{effort}` filled where given; a placeholder left unfilled
+    /// stays as written. `{prompt}` and `{dir}` are the runner's own, filled per run.
     fn process_runner(
         &self,
         name: &RunnerName,
@@ -331,6 +340,7 @@ impl Composition {
         if let Some(effort) = effort {
             command = command.replace("{effort}", &effort.to_string());
         }
+        command = command.replace("{root}", &single_quote(&self.root.to_string_lossy()));
         let timeout = Duration::from_secs(section.timeout_minutes * 60);
         Ok(ProcessRunner::new(CommandLine::from(command), timeout))
     }

@@ -5,10 +5,10 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use super::sections::{
-    AskSection, BoardKind, BoardSection, BranchesSection, CheckSection, CheckTarget, DesignKind,
-    DesignSection, ForbiddenSection, ForgeKind, ForgeSection, GateSection, IsolationKind,
-    IsolationSection, PackSection, ProjectSection, RoleSection, RunnerName, RunnerSection,
-    SpawnSection, StyleSection, ToolName, VcsSection, WorkspacesSection,
+    AskSection, BoardKind, BoardSection, BranchesSection, ChecksSection, DesignKind, DesignSection,
+    ForbiddenSection, ForgeKind, ForgeSection, GateSection, IsolationKind, IsolationSection,
+    PackSection, ProjectSection, RoleSection, RunnerName, RunnerSection, SpawnSection,
+    StyleSection, ToolName, VcsSection, WorkspacesSection,
 };
 use super::{ManifestError, Requirement};
 use crate::domain::{MAX_QUESTIONS, RoleName};
@@ -51,9 +51,9 @@ pub struct Manifest {
     /// `[roles.<name>]`, the pack's roles filled in where the project leaves them out.
     #[serde(default)]
     pub roles: BTreeMap<RoleName, RoleSection>,
-    /// `[check.<target>]`; a target left out runs no steps.
+    /// `[check]` and `[check.<target>]`; a target left out runs no steps.
     #[serde(default)]
-    pub check: BTreeMap<CheckTarget, CheckSection>,
+    pub check: ChecksSection,
     /// `[ask]`.
     #[serde(default)]
     pub ask: AskSection,

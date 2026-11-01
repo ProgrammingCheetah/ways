@@ -19,6 +19,10 @@ pub const STEP_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 /// How often a `ci` step looks at the forge's checks.
 pub const CI_POLL: Duration = Duration::from_secs(30);
 
+/// How long after a `ci` step starts the forge's empty check list still counts as
+/// pending: right after a push the forge lists no checks for a while.
+pub const CI_GRACE: Duration = Duration::from_secs(120);
+
 /// The ports a step reaches, built inside the step's own thread.
 ///
 /// A custom shape: the composition hands out boxed ports that are not `Send`,
@@ -42,16 +46,19 @@ pub struct EngineSettings {
     pub timeout: Duration,
     /// How often `ci` polls.
     pub poll: Duration,
+    /// How long after `ci` starts an empty check list still counts as pending.
+    pub ci_grace: Duration,
 }
 
 impl EngineSettings {
-    /// The defaults for a project: [`STEP_TIMEOUT`] and [`CI_POLL`].
+    /// The defaults for a project: [`STEP_TIMEOUT`], [`CI_POLL`] and [`CI_GRACE`].
     pub fn new(root: PathBuf, runs_dir: PathBuf) -> Self {
         Self {
             root,
             runs_dir,
             timeout: STEP_TIMEOUT,
             poll: CI_POLL,
+            ci_grace: CI_GRACE,
         }
     }
 }
@@ -143,6 +150,7 @@ impl Engine {
                 dir: run_dir.join(format!("step-{index}")),
                 deadline,
                 poll: self.settings.poll,
+                grace: self.settings.ci_grace,
             };
             let ports = Arc::clone(&self.ports);
             let step = step.clone();

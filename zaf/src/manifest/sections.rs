@@ -1,5 +1,6 @@
 //! The sections of `ZAF.toml`, with the pack's defaults for the ones a project leaves out.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::domain::Profile;
@@ -218,7 +219,7 @@ pub struct GateSection {
     pub tests: Option<CommandLine>,
 }
 
-/// `[runners.<name>]`: a command that runs a role, with `{prompt}`, `{dir}` placeholders.
+/// `[runners.<name>]`: a command that runs a role, with `{prompt}`, `{dir}` and `{root}` placeholders (`{model}` and `{effort}` for a role).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunnerSection {
@@ -302,6 +303,30 @@ pub enum CheckTarget {
     Pr,
     /// A milestone: objectives and release reviews.
     Milestone,
+}
+
+/// How long after the `ci` step starts an empty check list still counts as pending, in seconds.
+pub const DEFAULT_CI_GRACE_SECONDS: u64 = 120;
+
+/// `[check]`: the `ci` grace and, beside it, one `[check.<target>]` table per target.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(default)]
+pub struct ChecksSection {
+    /// Seconds after the `ci` step starts during which an empty check list is pending, because
+    /// the forge lists no checks for a while after a push. Default: 120.
+    pub ci_grace_seconds: u64,
+    /// The targets; one left out runs no steps.
+    #[serde(flatten)]
+    pub targets: BTreeMap<CheckTarget, CheckSection>,
+}
+
+impl Default for ChecksSection {
+    fn default() -> Self {
+        Self {
+            ci_grace_seconds: DEFAULT_CI_GRACE_SECONDS,
+            targets: BTreeMap::new(),
+        }
+    }
 }
 
 /// `[check.<target>]`: the steps run for that target, in the step syntax of the check verb.

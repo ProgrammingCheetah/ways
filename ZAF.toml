@@ -45,7 +45,7 @@ path = "README.md"
 path = "plugins/teams"
 
 [runners.claude]
-command = "claude -p {prompt} --model {model} --add-dir {dir}"
+command = "claude -p {prompt} --model {model} --add-dir {root}"
 timeout_minutes = 45
 
 [roles.programmer]

@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 use super::*;
 use crate::domain::Profile;
 use crate::manifest::{
-    BranchPattern, CommandLine, Effort, ModelName, ProjectName, RepoName, Rung, RunnerName,
+    BranchPattern, CheckTarget, CommandLine, Effort, ModelName, ProjectName, RepoName, Rung,
+    RunnerName,
 };
 
 const MINIMAL: &str = r#"
@@ -63,6 +64,9 @@ effort = "medium"
 profile = "lean"
 turns = 40
 
+[check]
+ci_grace_seconds = 45
+
 [check.pr]
 steps = ["ci", "bot:reviewer", "runner:reviewer:critique"]
 
@@ -113,7 +117,8 @@ fn project_and_board_alone_load_with_the_pack_defaults() {
         BranchPattern::from("feature/{version}-{epic}-{task}")
     );
     assert!(manifest.runners.is_empty());
-    assert!(manifest.check.is_empty());
+    assert!(manifest.check.targets.is_empty());
+    assert_eq!(manifest.check.ci_grace_seconds, 120);
     assert_eq!(
         manifest.ask.ladder,
         [Rung::from("haiku"), Rung::from("sonnet")]
@@ -141,7 +146,8 @@ fn every_section_reads() {
         manifest.gate.map(|gate| gate.light),
         Some(Some(CommandLine::from("just gate-light")))
     );
-    assert_eq!(manifest.check[&CheckTarget::Pr].steps.len(), 3);
+    assert_eq!(manifest.check.targets[&CheckTarget::Pr].steps.len(), 3);
+    assert_eq!(manifest.check.ci_grace_seconds, 45);
     assert_eq!(manifest.ask.max, 3);
     assert_eq!(
         manifest.isolation.image.as_deref(),
@@ -207,6 +213,23 @@ fn an_unknown_key_is_an_error_that_names_it() {
         message.contains("nightly"),
         "the error names the target: {message}"
     );
+}
+
+#[test]
+fn the_ci_grace_parses_beside_the_targets_and_defaults_to_120() {
+    let alone = load(&with("[check]\nci_grace_seconds = 7\n")).expect("the grace alone loads");
+    assert_eq!(alone.check.ci_grace_seconds, 7);
+    assert!(alone.check.targets.is_empty());
+    let beside = load(&with(
+        "[check]\nci_grace_seconds = 0\n[check.pr]\nsteps = [\"ci\"]\n",
+    ))
+    .expect("the grace beside a target loads");
+    assert_eq!(beside.check.ci_grace_seconds, 0);
+    assert_eq!(beside.check.targets[&CheckTarget::Pr].steps, ["ci"]);
+    let target_only = load(&with("[check.pr]\nsteps = [\"ci\"]\n")).expect("a target alone loads");
+    assert_eq!(target_only.check.ci_grace_seconds, 120);
+    let negative = with("[check]\nci_grace_seconds = -1\n");
+    assert!(load(&negative).is_err(), "a negative grace is refused");
 }
 
 #[test]
