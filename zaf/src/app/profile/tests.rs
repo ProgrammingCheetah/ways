@@ -315,9 +315,8 @@ fn every_profile_allows_the_read_only_shell_basics() {
         let settings = settings(&state, profile);
         let allow = strings(&settings["permissions"]["allow"]);
         for word in [
-            "ls", "cat", "head", "tail", "wc", "diff", "rg", "grep", "fd", "find", "pwd", "echo",
-            "printf", "for", "while", "test", "sort", "uniq", "cut", "awk", "sed", "stat", "du",
-            "env", "which",
+            "ls", "cat", "head", "tail", "wc", "diff", "rg", "grep", "fd", "pwd", "echo", "printf",
+            "for", "while", "test", "sort", "uniq", "cut", "stat", "du", "which",
         ] {
             let rule = format!("Bash({word} *)");
             assert!(allow.contains(&rule.as_str()), "{profile} allows {rule}");
@@ -326,6 +325,23 @@ fn every_profile_allows_the_read_only_shell_basics() {
             !allow.iter().any(|rule| rule.starts_with("Bash(sh ")),
             "{profile}: no shell run from a string"
         );
+    }
+}
+
+#[test]
+fn no_allow_entry_can_write_or_run_arbitrary_commands() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    init_here(&state, &manifest("")).expect("generates");
+    for profile in ["lean", "build"] {
+        let settings = settings(&state, profile);
+        let allow = strings(&settings["permissions"]["allow"]);
+        for rule in ["Bash(env *)", "Bash(find *)", "Bash(sed *)", "Bash(awk *)"] {
+            assert!(!allow.contains(&rule), "{profile} allows {rule}");
+        }
+        for rule in ["Bash(fd *)", "Bash(rg *)", "Bash(cat *)", "Bash(for *)"] {
+            assert!(allow.contains(&rule), "{profile} lacks {rule}");
+        }
     }
 }
 

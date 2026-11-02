@@ -505,10 +505,11 @@ const ZAF_ALLOW: &str = "Bash(zaf *)";
 
 /// The read-only shell basics every profile allows, one `Bash(<word> *)` rule each, so a
 /// programmer never stops on a listing, a loop or a search. `sh -c` is not here: a shell
-/// run from a string can write.
-pub const READ_ONLY: [&str; 25] = [
-    "ls", "cat", "head", "tail", "wc", "diff", "rg", "grep", "fd", "find", "pwd", "echo", "printf",
-    "for", "while", "test", "sort", "uniq", "cut", "awk", "sed", "stat", "du", "env", "which",
+/// run from a string can write. Neither are `env`, `find`, `sed` and `awk`: `env <cmd>` runs
+/// anything, `find -exec`/`-delete` and `sed -i` write, and `awk` can call `system()`.
+pub const READ_ONLY: [&str; 21] = [
+    "ls", "cat", "head", "tail", "wc", "diff", "rg", "grep", "fd", "pwd", "echo", "printf", "for",
+    "while", "test", "sort", "uniq", "cut", "stat", "du", "which",
 ];
 
 /// The `git` read verbs a colocated repo (a manifest that requires `jj`) allows besides `jj`.
