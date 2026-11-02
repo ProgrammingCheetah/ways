@@ -275,8 +275,111 @@ fn the_allow_list_comes_from_requires_not_from_the_pack() {
         let settings = settings(&state, profile);
         assert_eq!(
             strings(&settings["permissions"]["allow"]),
-            ["Bash(zaf *)", "Bash(jj *)", "Bash(make *)"],
-            "{profile}: zaf once, each required tool, nothing else"
+            with_read_only(&["Bash(zaf *)", "Bash(jj *)", "Bash(make *)"], true),
+            "{profile}: zaf once, each required tool, then the read-only rules"
+        );
+    }
+}
+
+/// The rules a profile's allow list ends with: the read-only basics, and the `git` reads
+/// when the repo is colocated.
+fn read_only_tail(colocated: bool) -> Vec<String> {
+    let mut tail: Vec<String> = READ_ONLY
+        .iter()
+        .map(|word| format!("Bash({word} *)"))
+        .collect();
+    if colocated {
+        tail.extend(
+            ["log", "show", "diff", "status", "blame"]
+                .iter()
+                .map(|verb| format!("Bash(git {verb} *)")),
+        );
+    }
+    tail
+}
+
+/// `head`, the rules the manifest names, followed by the read-only tail.
+fn with_read_only(head: &[&str], colocated: bool) -> Vec<String> {
+    head.iter()
+        .map(|rule| (*rule).to_owned())
+        .chain(read_only_tail(colocated))
+        .collect()
+}
+
+#[test]
+fn every_profile_allows_the_read_only_shell_basics() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    init_here(&state, &manifest("")).expect("generates");
+    for profile in ["lean", "build"] {
+        let settings = settings(&state, profile);
+        let allow = strings(&settings["permissions"]["allow"]);
+        for word in [
+            "ls", "cat", "head", "tail", "wc", "diff", "rg", "grep", "fd", "find", "pwd", "echo",
+            "printf", "for", "while", "test", "sort", "uniq", "cut", "awk", "sed", "stat", "du",
+            "env", "which",
+        ] {
+            let rule = format!("Bash({word} *)");
+            assert!(allow.contains(&rule.as_str()), "{profile} allows {rule}");
+        }
+        assert!(
+            !allow.iter().any(|rule| rule.starts_with("Bash(sh ")),
+            "{profile}: no shell run from a string"
+        );
+    }
+}
+
+#[test]
+fn a_colocated_repo_allows_the_git_read_verbs() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    init_here(&state, &manifest("[requires]\njj = \"*\"\n")).expect("generates");
+    for profile in ["lean", "build"] {
+        let settings = settings(&state, profile);
+        let allow = strings(&settings["permissions"]["allow"]);
+        for verb in ["log", "show", "diff", "status", "blame"] {
+            let rule = format!("Bash(git {verb} *)");
+            assert!(allow.contains(&rule.as_str()), "{profile} allows {rule}");
+        }
+    }
+}
+
+#[test]
+fn no_writing_git_verb_is_allowed_and_without_jj_no_git_at_all() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    init_here(&state, &manifest("[requires]\njj = \"*\"\n")).expect("generates");
+    let plain = dir.path().join("plain").join(".zaf");
+    init_here(&plain, &manifest("")).expect("generates");
+    for profile in ["lean", "build"] {
+        let settings = settings(&state, profile);
+        for rule in strings(&settings["permissions"]["allow"]) {
+            if let Some(verb) = rule.strip_prefix("Bash(git ") {
+                let verb = verb.split([' ', ')']).next().expect("a verb");
+                assert!(
+                    ["log", "show", "diff", "status", "blame"].contains(&verb),
+                    "{profile} allows the writing verb {rule}"
+                );
+            }
+        }
+        let allow = strings(&settings["permissions"]["allow"]);
+        for verb in [
+            "push", "commit", "checkout", "reset", "add", "rebase", "merge", "switch", "restore",
+            "clean", "stash", "tag", "branch", "fetch", "pull",
+        ] {
+            let rule = format!("Bash(git {verb} *)");
+            assert!(!allow.contains(&rule.as_str()), "{profile} allows {rule}");
+        }
+        assert!(
+            !allow.contains(&"Bash(git *)"),
+            "{profile} allows all of git"
+        );
+        let plain_settings = self::settings(&plain, profile);
+        assert!(
+            !strings(&plain_settings["permissions"]["allow"])
+                .iter()
+                .any(|rule| rule.starts_with("Bash(git")),
+            "{profile}: no jj, no git"
         );
     }
 }
@@ -289,7 +392,7 @@ fn a_project_requiring_nothing_allows_only_zaf_and_its_gate() {
     let settings = settings(&state, "lean");
     assert_eq!(
         strings(&settings["permissions"]["allow"]),
-        ["Bash(zaf *)", "Bash(make check)", "Bash(make *)"]
+        with_read_only(&["Bash(zaf *)", "Bash(make check)", "Bash(make *)"], false)
     );
 }
 
@@ -303,7 +406,7 @@ fn a_chained_gate_adds_exactly_one_rule_for_its_one_tool() {
     for profile in ["lean", "build"] {
         assert_eq!(
             strings(&settings(&state, profile)["permissions"]["allow"]),
-            ["Bash(zaf *)", verbatim.as_str(), "Bash(cargo *)"],
+            with_read_only(&["Bash(zaf *)", verbatim.as_str(), "Bash(cargo *)"], false),
             "{profile}"
         );
     }
@@ -321,13 +424,16 @@ fn a_gate_and_its_tests_allow_each_tool_once() {
     for profile in ["lean", "build"] {
         assert_eq!(
             strings(&settings(&state, profile)["permissions"]["allow"]),
-            [
-                "Bash(zaf *)",
-                "Bash(just gate)",
-                "Bash(just *)",
-                "Bash(cargo test -p * *)",
-                "Bash(cargo *)"
-            ],
+            with_read_only(
+                &[
+                    "Bash(zaf *)",
+                    "Bash(just gate)",
+                    "Bash(just *)",
+                    "Bash(cargo test -p * *)",
+                    "Bash(cargo *)"
+                ],
+                false
+            ),
             "{profile}"
         );
     }
