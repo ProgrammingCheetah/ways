@@ -658,6 +658,56 @@ fn questions_lists_open_question_issues_and_skips_tasks_waiting_on_one() {
 }
 
 #[test]
+fn questions_on_lists_ruled_and_open_questions_raised_on_the_task_oldest_first() {
+    let fake = FakeGh::new();
+    let ruled = [
+        "chatter".to_owned(),
+        "<!-- zaf:ruling -->\nTitle and author.\n".to_owned(),
+    ];
+    let listed = format!(
+        "[{},{},{},{},{}]",
+        question_issue(9, &[], "OPEN", 2),
+        question_issue(8, &[], "OPEN", 3),
+        issue(2, &["task", "question"], &[], "OPEN"),
+        question_issue(7, &ruled, "CLOSED", 2),
+        issue(5, &["question"], &[], "OPEN"),
+    );
+    fake.on("issue list *", &listed);
+
+    let raised = fake
+        .board()
+        .questions_on(IssueNumber::from(2))
+        .expect("questions on the task");
+
+    let seen: Vec<(IssueNumber, Option<&str>)> = raised
+        .iter()
+        .map(|(ticket, ruling)| (ticket.number, ruling.as_deref()))
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            (IssueNumber::from(7), Some("Title and author.")),
+            (IssueNumber::from(9), None)
+        ]
+    );
+    let expected_call = argv(&[
+        "issue",
+        "list",
+        "--label",
+        "question",
+        "--state",
+        "all",
+        "--limit",
+        "1000",
+        "--json",
+        ISSUE_FIELDS,
+        "--repo",
+        REPO,
+    ]);
+    assert_eq!(fake.calls(), [expected_call]);
+}
+
+#[test]
 fn a_listed_question_is_the_one_that_opened_it() {
     let fake = FakeGh::new();
     let question = NewQuestion {

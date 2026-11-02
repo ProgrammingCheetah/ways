@@ -305,6 +305,40 @@ impl Board for GithubBoard {
         Ok(rows.iter().map(IssueRow::ticket).collect())
     }
 
+    /// Lists the `question` issues, open and closed, whose body says `Raised on #<task>`,
+    /// oldest first, each with the text of its ruling comment when it has one.
+    fn questions_on(&self, task: IssueNumber) -> Result<Vec<(Ticket, Option<String>)>, PortError> {
+        let question = TaskLabel::Question.to_string();
+        let mut rows: Vec<IssueRow> = self.gh.json(&[
+            "issue",
+            "list",
+            "--label",
+            &question,
+            "--state",
+            "all",
+            "--limit",
+            LIST_LIMIT,
+            "--json",
+            "number,title,body,labels,parent,state,comments",
+        ])?;
+        rows.retain(|row| {
+            !row.has_label(TASK_LABEL) && NewQuestion::raised_on(&row.body) == Some(task)
+        });
+        rows.sort_by_key(|row| row.number);
+        let raised = rows
+            .iter()
+            .map(|row| {
+                let ruling = row
+                    .comments
+                    .iter()
+                    .find_map(|comment| unmarked(RULING_MARKER, &comment.body))
+                    .map(|text| text.trim().to_owned());
+                (row.ticket(), ruling)
+            })
+            .collect();
+        Ok(raised)
+    }
+
     fn open_question(&self, question: &NewQuestion) -> Result<IssueNumber, PortError> {
         let body = question.body();
         let question_label = TaskLabel::Question.to_string();
