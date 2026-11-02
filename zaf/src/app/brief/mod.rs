@@ -1,6 +1,8 @@
 //! `zaf brief`: one context pack per task, so a programmer starts from a file instead of a look-around.
 //!
-//! The pack holds, in order: the ticket body, each design page the ticket names
+//! The pack holds, in order: the ticket body, the questions raised on the task
+//! with their rulings (`## Rulings`, newest last, so a settled question is not asked again),
+//! each design page the ticket names
 //! in full, `nodes chain <path>` for each owned path (or, when the cli passes no
 //! chain, a note and the plain list of owned paths), the project's style file,
 //! and the interface help page.
@@ -110,7 +112,11 @@ pub fn brief(query: &BriefQuery<'_>, ports: &BriefPorts<'_>) -> Result<Brief, Br
         }
         _ => Vec::new(),
     };
-    let text = render(query, ports, &ticket, template.as_ref(), &pages)
+    let questions = ports
+        .board
+        .questions_on(query.task)
+        .map_err(BriefError::Board)?;
+    let text = render(query, ports, &ticket, &questions, template.as_ref(), &pages)
         .expect("writing to a String cannot fail");
 
     let runs = ensure_runs_dir(query.state_dir)
@@ -211,6 +217,7 @@ fn render(
     query: &BriefQuery<'_>,
     ports: &BriefPorts<'_>,
     ticket: &Ticket,
+    questions: &[(Ticket, Option<String>)],
     template: Option<&TaskTemplate>,
     pages: &[Page],
 ) -> Result<String, fmt::Error> {
@@ -223,6 +230,18 @@ fn render(
             text,
             "The body does not follow the task template, so no pages or paths are read from it.\n"
         )?;
+    }
+
+    writeln!(text, "## Rulings\n")?;
+    if questions.is_empty() {
+        writeln!(text, "— none\n")?;
+    }
+    for (question, ruling) in questions {
+        writeln!(text, "{} {}", question.number, question.title)?;
+        match ruling {
+            Some(ruling) => writeln!(text, "ruling: {ruling}\n")?,
+            None => writeln!(text, "open\n")?,
+        }
     }
 
     writeln!(text, "## Design pages\n")?;

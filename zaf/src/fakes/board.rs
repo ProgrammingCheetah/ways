@@ -238,6 +238,18 @@ impl Board for FakeBoard {
         Ok(questions)
     }
 
+    fn questions_on(&self, task: IssueNumber) -> Result<Vec<(Ticket, Option<String>)>, PortError> {
+        let raised = self
+            .state()
+            .issues
+            .values()
+            .filter(|issue| issue.question)
+            .filter(|issue| NewQuestion::raised_on(&issue.ticket.body) == Some(task))
+            .map(|issue| (issue.ticket.clone(), issue.ruling.clone()))
+            .collect();
+        Ok(raised)
+    }
+
     fn open_question(&self, question: &NewQuestion) -> Result<IssueNumber, PortError> {
         let mut state = self.state();
         state.issue_mut(question.on)?;
