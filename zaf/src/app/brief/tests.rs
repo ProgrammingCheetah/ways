@@ -228,6 +228,30 @@ fn the_rulings_come_after_the_ticket_and_before_the_design_pages() {
 }
 
 #[test]
+fn the_instance_prompts_say_to_read_the_rulings_before_asking() {
+    let prompts = [
+        (
+            "team brief",
+            include_str!("../../../assets/spawn/team-brief.md"),
+        ),
+        (
+            "team agent",
+            include_str!("../../../../plugins/teams/agents/team.md"),
+        ),
+        (
+            "programmer agent",
+            include_str!("../../../../plugins/teams/agents/programmer.md"),
+        ),
+    ];
+    for (name, text) in prompts {
+        assert!(
+            text.contains("`## Rulings` section before asking"),
+            "{name} must say to read the Rulings section before asking"
+        );
+    }
+}
+
+#[test]
 fn a_board_that_cannot_list_questions_is_a_board_error() {
     struct Silent(FakeBoard);
     impl Board for Silent {
