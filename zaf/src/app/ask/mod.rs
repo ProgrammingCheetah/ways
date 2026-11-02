@@ -6,7 +6,10 @@
 //! not answer exactly the questions asked, cites a page that is not citable, or
 //! carries a quote its pages do not hold, is discarded and the next rung asked.
 //! When every rung fails, the ask fails and each question it carried is logged as
-//! `failed`. Every question asked, cached or not, appends one line to
+//! `failed`; when the answers that were checked failed only on cited pages the design
+//! source could not read, the ask returns, each question it carried is logged as
+//! `check failed` and the caller reports it (a fault of the design source, never a
+//! `not settled`). Every question asked, cached or not, appends one line to
 //! `.zaf/asklog.jsonl`: a keeper run that ends in an error leaves `failed` lines, and
 //! one that is cut off (the caller's timeout kills `zaf ask` while the keeper still
 //! runs) leaves the `interrupted` lines written before the run began, which a later
@@ -21,8 +24,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::brief::{RUNS_DIR, ensure_runs_dir, named_pages};
 use crate::domain::{
-    Answer, AnsweredQuestion, Ask, AskError, Instance, IssueNumber, Profile, Question, QuestionId,
-    RoleName, TaskTemplate, Verdict,
+    Answer, AnsweredQuestion, Ask, AskError, Instance, IssueNumber, PageId, Profile, Question,
+    QuestionId, QuoteCheckError, RoleName, TaskTemplate, Verdict,
 };
 use crate::manifest::Rung;
 use crate::ports::{Board, Design, Page, PortError, RunRequest, Runner};
@@ -41,6 +44,13 @@ pub const DEFAULT_CACHE_HOURS: u64 = 24;
 
 /// The verdict a log line carries when no answer was recorded.
 pub const FAILED: &str = "failed";
+
+/// The verdict a log line carries when the ladder ended on a cited page the design source
+/// could not read: the question is neither answered nor `not settled`.
+pub const CHECK_FAILED: &str = "check failed";
+
+/// What the printed line says about a misconfigured design source.
+const MISCONFIGURED: &str = "design dir or index misconfigured";
 
 /// The reason on a line written before a keeper run; it stays only when `zaf ask` never finished.
 pub const INTERRUPTED: &str = "interrupted: the keeper was asked and no answer was recorded";
@@ -122,7 +132,7 @@ pub struct LogLine {
     pub kind: String,
     /// The question.
     pub question: String,
-    /// `settled`, `not settled`, `conflict` or `failed`.
+    /// `settled`, `not settled`, `conflict`, `failed` or `check failed`.
     pub verdict: String,
     /// The pages the answer cites.
     pub pages: Vec<String>,
@@ -137,10 +147,41 @@ pub struct LogLine {
 /// The verified answer and the log lines written for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AskOutcome {
-    /// One entry per question, in the order asked.
+    /// One entry per question, in the order asked. A question whose line is
+    /// [`CHECK_FAILED`] has a `not settled` placeholder here that is never to be shown:
+    /// [`AskOutcome::render`] prints its line instead.
     pub answer: Answer,
     /// One line per question, in the order asked, as appended to the log.
     pub lines: Vec<LogLine>,
+}
+
+impl AskOutcome {
+    /// Whether any question ended on a failed citation check, not on an answer.
+    #[must_use]
+    pub fn has_check_failure(&self) -> bool {
+        self.lines.iter().any(|line| line.verdict == CHECK_FAILED)
+    }
+
+    /// The terse answer: each entry in the answer format, and for a question whose
+    /// citation check failed, its `check failed` line in the entry's place.
+    #[must_use]
+    pub fn render(&self) -> String {
+        self.answer
+            .questions
+            .iter()
+            .zip(&self.lines)
+            .map(|(entry, line)| {
+                if line.verdict == CHECK_FAILED {
+                    format!("{}\n", line.answer)
+                } else {
+                    Answer {
+                        questions: vec![entry.clone()],
+                    }
+                    .to_string()
+                }
+            })
+            .collect()
+    }
 }
 
 /// Why no answer came back.
@@ -204,6 +245,7 @@ pub fn ask(query: &AskQuery<'_>, ports: &AskPorts<'_>) -> Result<AskOutcome, Ask
         .filter(|(_, entry)| entry.is_none())
         .map(|(question, _)| question.clone())
         .collect();
+    let mut unreadable: Vec<(QuestionId, PageId)> = Vec::new();
     if !open.is_empty() {
         let ticket = ports.board.task(query.task).map_err(AskFailure::Board)?;
         let pages = match (ticket.body.parse::<TaskTemplate>(), ports.design) {
@@ -221,20 +263,27 @@ pub fn ask(query: &AskQuery<'_>, ports: &AskPorts<'_>) -> Result<AskOutcome, Ask
             &log_path,
             &failed_lines(query, &parsed.questions, INTERRUPTED, now),
         )?;
-        let (answered, rung, check) = match climb(query, ports, &parsed, &prompt) {
-            Ok(climbed) => climbed,
+        match climb(query, ports, &parsed, &prompt) {
+            Ok(Climb::Answered {
+                answers,
+                rung,
+                check,
+            }) => {
+                let mut fresh = answers.into_iter();
+                for slot in entries.iter_mut().filter(|slot| slot.is_none()) {
+                    *slot = fresh
+                        .next()
+                        .map(|entry| (entry, rung.clone(), check.clone()));
+                }
+            }
+            // Every open question stays without an entry: each ends on a failed check below.
+            Ok(Climb::CheckFailed(pages)) => unreadable = pages,
             Err(error) => {
                 let lines = failed_lines(query, &parsed.questions, &error.to_string(), now);
                 // The ask's own error is the one to return; a log that cannot be written is not.
                 let _ = append_log(&log_path, &lines);
                 return Err(error);
             }
-        };
-        let mut fresh = answered.into_iter();
-        for slot in entries.iter_mut().filter(|slot| slot.is_none()) {
-            *slot = fresh
-                .next()
-                .map(|entry| (entry, rung.clone(), check.clone()));
         }
     }
 
@@ -243,11 +292,18 @@ pub fn ask(query: &AskQuery<'_>, ports: &AskPorts<'_>) -> Result<AskOutcome, Ask
     };
     let mut lines = Vec::new();
     for (question, slot) in questions.iter().zip(entries) {
-        let (entry, rung, check) = slot.unwrap_or_else(|| {
-            let entry = not_settled(question.id, query.task);
-            (entry, None, CheckResult::Failed(Vec::new()))
-        });
-        lines.push(log_line(query, question, &entry, rung, check, now));
+        let (entry, line) = match slot {
+            Some((entry, rung, check)) => {
+                let line = log_line(query, question, &entry, rung, check, now);
+                (entry, line)
+            }
+            None => {
+                let pages = unreadable_for(&unreadable, question.id);
+                let line = check_failed_line(query, question, &pages, now);
+                (not_settled(question.id, query.task), line)
+            }
+        };
+        lines.push(line);
         answer.questions.push(entry);
     }
     append_log(&log_path, &lines)?;
@@ -328,30 +384,83 @@ fn keeper_prompt(query: &AskQuery<'_>, ask: &Ask, pages: &[Page]) -> Result<Stri
     Ok(sections.join("\n\n") + "\n")
 }
 
-/// Runs the ladder until a rung's answer passes; every rung failing is [`AskFailure::Exhausted`].
+/// How the ladder ended.
+enum Climb {
+    /// A rung's answer passed.
+    Answered {
+        answers: Vec<AnsweredQuestion>,
+        rung: Option<String>,
+        check: CheckResult,
+    },
+    /// No answer passed, and the only rungs that got as far as a check failed it on cited
+    /// pages the design source could not read: the question and the page, per citation.
+    CheckFailed(Vec<(QuestionId, PageId)>),
+}
+
+/// Why one rung gave no verified answer.
+enum RungFailure {
+    /// There was no answer to check: no runner, a failed run, a malformed answer.
+    NoAnswer(String),
+    /// The answer cites pages the design source could not read.
+    Unreadable {
+        reason: String,
+        pages: Vec<(QuestionId, PageId)>,
+    },
+    /// The answer was checked and rejected on its own account.
+    Rejected(String),
+}
+
+impl RungFailure {
+    fn reason(&self) -> &str {
+        match self {
+            Self::NoAnswer(reason) | Self::Rejected(reason) | Self::Unreadable { reason, .. } => {
+                reason
+            }
+        }
+    }
+}
+
+/// Runs the ladder until a rung's answer passes.
+///
+/// Every rung failing is [`AskFailure::Exhausted`], unless the answers that were checked
+/// failed only on unreadable pages: that is [`Climb::CheckFailed`], a fault of the design
+/// source, not of the keeper.
 fn climb(
     query: &AskQuery<'_>,
     ports: &AskPorts<'_>,
     ask: &Ask,
     prompt: &str,
-) -> Result<(Vec<AnsweredQuestion>, Option<String>, CheckResult), AskFailure> {
+) -> Result<Climb, AskFailure> {
     let mut failures = Vec::new();
+    let mut rejected = false;
+    let mut unreadable: Vec<(QuestionId, PageId)> = Vec::new();
     for (index, rung) in ports.ladder.iter().enumerate() {
         match try_rung(query, ports.design, ask, prompt, index, rung)? {
             Ok(answer) => {
-                return Ok((
-                    answer.questions,
-                    Some(rung.name.to_string()),
-                    CheckResult::Passed,
-                ));
+                return Ok(Climb::Answered {
+                    answers: answer.questions,
+                    rung: Some(rung.name.to_string()),
+                    check: CheckResult::Passed,
+                });
             }
-            Err(reason) => failures.push(format!("{}: {reason}", rung.name)),
+            Err(failure) => {
+                failures.push(format!("{}: {}", rung.name, failure.reason()));
+                match failure {
+                    RungFailure::NoAnswer(_) => {}
+                    RungFailure::Rejected(_) => rejected = true,
+                    RungFailure::Unreadable { pages, .. } => unreadable.extend(pages),
+                }
+            }
         }
     }
-    Err(AskFailure::Exhausted(failures))
+    if rejected || unreadable.is_empty() {
+        Err(AskFailure::Exhausted(failures))
+    } else {
+        Ok(Climb::CheckFailed(unreadable))
+    }
 }
 
-/// One rung: `Ok(Ok(answer))` when it passes, `Ok(Err(reason))` when the rung fails.
+/// One rung: `Ok(Ok(answer))` when it passes, `Ok(Err(failure))` when the rung fails.
 fn try_rung(
     query: &AskQuery<'_>,
     design: Option<&dyn Design>,
@@ -359,10 +468,11 @@ fn try_rung(
     prompt: &str,
     index: usize,
     rung: &LadderRung<'_>,
-) -> Result<Result<Answer, String>, AskFailure> {
+) -> Result<Result<Answer, RungFailure>, AskFailure> {
+    let no_answer = |reason: String| Ok(Err(RungFailure::NoAnswer(reason)));
     let runner = match &rung.runner {
         Ok(runner) => *runner,
-        Err(why) => return Ok(Err(format!("no runner: {why}"))),
+        Err(why) => return no_answer(format!("no runner: {why}")),
     };
     let dir = run_dir(query, index, &rung.name)?;
     let request = RunRequest {
@@ -374,20 +484,25 @@ fn try_rung(
     };
     let output = match runner.run(&request) {
         Ok(output) => output,
-        Err(error) => return Ok(Err(format!("run failed: {error}"))),
+        Err(error) => return no_answer(format!("run failed: {error}")),
     };
     if output.exit_code != 0 {
-        return Ok(Err(format!("run exited {}", output.exit_code)));
+        return no_answer(format!("run exited {}", output.exit_code));
     }
     let answer = match output.transcript.trim().parse::<Answer>() {
         Ok(answer) => answer,
-        Err(error) => return Ok(Err(format!("malformed answer: {error}"))),
+        Err(error) => return no_answer(format!("malformed answer: {error}")),
     };
     Ok(verify(&answer, ask, design).map(|()| answer))
 }
 
 /// The answer covers exactly the questions asked, in order, cites only citable pages, and every quote is found.
-fn verify(answer: &Answer, ask: &Ask, design: Option<&dyn Design>) -> Result<(), String> {
+///
+/// A cited page the design source cannot read is [`RungFailure::Unreadable`]: its index
+/// entry (the design source failed, not found) or its text. A page the index does not know
+/// is a wrong citation, not a fault.
+fn verify(answer: &Answer, ask: &Ask, design: Option<&dyn Design>) -> Result<(), RungFailure> {
+    let rejected = |reason: String| Err(RungFailure::Rejected(reason));
     let asked: Vec<QuestionId> = ask.questions.iter().map(|question| question.id).collect();
     let answered: Vec<QuestionId> = answer.questions.iter().map(|entry| entry.id).collect();
     if asked != answered {
@@ -397,25 +512,49 @@ fn verify(answer: &Answer, ask: &Ask, design: Option<&dyn Design>) -> Result<(),
                 .collect::<Vec<_>>()
                 .join(" ")
         };
-        return Err(format!("answered {} for {}", list(&answered), list(&asked)));
+        return rejected(format!("answered {} for {}", list(&answered), list(&asked)));
     }
-    let cited: BTreeSet<_> = answer
+    let cited: BTreeSet<(QuestionId, PageId)> = answer
         .questions
         .iter()
-        .flat_map(|entry| match &entry.verdict {
-            Verdict::Settled { pages, .. } | Verdict::Conflict { pages, .. } => pages.as_slice(),
-            Verdict::NotSettled { .. } => &[],
+        .flat_map(|entry| {
+            let pages = match &entry.verdict {
+                Verdict::Settled { pages, .. } | Verdict::Conflict { pages, .. } => {
+                    pages.as_slice()
+                }
+                Verdict::NotSettled { .. } => &[],
+            };
+            pages
+                .iter()
+                .map(|citation| (entry.id, citation.page.clone()))
         })
-        .map(|citation| citation.page.clone())
         .collect();
-    for page in &cited {
-        let status = design
-            .ok_or_else(|| format!("page {page} cited, but there is no design source"))?
-            .status(page)
-            .map_err(|error| format!("page {page}: {error}"))?;
-        if !status.is_citable() {
-            return Err(format!("page {page} is {status} and cannot be cited"));
+    let mut unreadable = Vec::new();
+    let mut reasons = Vec::new();
+    for (id, page) in cited {
+        let Some(design) = design else {
+            return rejected(format!("page {page} cited, but there is no design source"));
+        };
+        match design.status(&page) {
+            Ok(status) if !status.is_citable() => {
+                return rejected(format!("page {page} is {status} and cannot be cited"));
+            }
+            Ok(_) => {}
+            Err(error @ PortError::NotFound(_)) => {
+                return rejected(format!("page {page}: {error}"));
+            }
+            Err(error) => {
+                reasons.push(format!("page {page}: {error}"));
+                unreadable.push((id, page));
+            }
         }
+    }
+    if !unreadable.is_empty() {
+        let reason = reasons.join("; ");
+        return Err(RungFailure::Unreadable {
+            reason,
+            pages: unreadable,
+        });
     }
     answer
         .check_quotes(|page| {
@@ -423,7 +562,16 @@ fn verify(answer: &Answer, ask: &Ask, design: Option<&dyn Design>) -> Result<(),
                 .and_then(|design| design.page(page).ok())
                 .map(|page| page.text)
         })
-        .map_err(|error| error.to_string())
+        .map_err(|error| {
+            let reason = error.to_string();
+            match error {
+                QuoteCheckError::PageUnavailable { question, page } => RungFailure::Unreadable {
+                    reason,
+                    pages: vec![(question, page)],
+                },
+                QuoteCheckError::QuoteNotFound { .. } => RungFailure::Rejected(reason),
+            }
+        })
 }
 
 fn run_dir(query: &AskQuery<'_>, index: usize, rung: &Rung) -> Result<PathBuf, AskFailure> {
@@ -457,6 +605,63 @@ fn not_settled(id: QuestionId, task: IssueNumber) -> AnsweredQuestion {
         verdict: Verdict::NotSettled {
             next: format!("question ticket on {task} (door: no)"),
         },
+    }
+}
+
+/// The pages to name for a question that ended on a failed check: the unreadable pages it
+/// cited, or, when its own citations were fine and its rung was discarded with the others,
+/// every unreadable page of the ask.
+fn unreadable_for(unreadable: &[(QuestionId, PageId)], id: QuestionId) -> Vec<PageId> {
+    let own: BTreeSet<PageId> = unreadable
+        .iter()
+        .filter(|(question, _)| *question == id)
+        .map(|(_, page)| page.clone())
+        .collect();
+    if own.is_empty() {
+        let all: BTreeSet<PageId> = unreadable.iter().map(|(_, page)| page.clone()).collect();
+        all.into_iter().collect()
+    } else {
+        own.into_iter().collect()
+    }
+}
+
+/// The log line of a question that ended on pages the design source could not read.
+///
+/// Its `answer` is the line the verb prints, its check the failure per page.
+fn check_failed_line(
+    query: &AskQuery<'_>,
+    question: &Question,
+    pages: &[PageId],
+    now: u64,
+) -> LogLine {
+    let kind: &'static str = question.kind.into();
+    let failures: Vec<String> = pages
+        .iter()
+        .map(|page| format!("page {page} could not be read"))
+        .collect();
+    let printed = if pages.is_empty() {
+        format!(
+            "{}: check failed — no verified answer ({MISCONFIGURED})",
+            question.id
+        )
+    } else {
+        format!(
+            "{}: check failed — {} ({MISCONFIGURED})",
+            question.id,
+            failures.join(", ")
+        )
+    };
+    LogLine {
+        time: now,
+        task: query.task.get(),
+        from: query.from.to_owned(),
+        kind: kind.to_owned(),
+        question: question.text.clone(),
+        verdict: CHECK_FAILED.to_owned(),
+        pages: Vec::new(),
+        answer: printed,
+        rung: None,
+        check: CheckResult::Failed(failures),
     }
 }
 

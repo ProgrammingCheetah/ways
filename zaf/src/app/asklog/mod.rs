@@ -2,13 +2,14 @@
 //!
 //! The pages cited most, the questions asked more than once (a question that
 //! keeps returning was not settled), the `not settled` answers (the gaps) and the
-//! `failed` lines (an ask that got no answer, or never finished).
+//! `failed` lines (an ask that got no answer, or never finished) and the `check failed`
+//! lines (a cited page the design source could not read), kept apart from both.
 
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use super::ask::{AskFailure, FAILED, LogLine, read_log};
+use super::ask::{AskFailure, CHECK_FAILED, CheckResult, FAILED, LogLine, read_log};
 
 /// A page and how many answers cited it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -69,6 +70,8 @@ pub struct AskLogSummary {
     pub not_settled: Vec<Gap>,
     /// `failed` lines, every one, in log order.
     pub failed: Vec<Failure>,
+    /// `check failed` lines (a cited page could not be read), every one, in log order.
+    pub check_failed: Vec<Failure>,
 }
 
 /// Reads the log at `path` and sums it up; a missing log is an empty summary.
@@ -143,12 +146,27 @@ pub fn summarize(lines: &[LogLine]) -> AskLogSummary {
         })
         .collect();
 
+    let check_failed = lines
+        .iter()
+        .filter(|line| line.verdict == CHECK_FAILED)
+        .map(|line| Failure {
+            task: line.task,
+            kind: line.kind.clone(),
+            question: line.question.clone(),
+            reason: match &line.check {
+                CheckResult::Failed(reasons) if !reasons.is_empty() => reasons.join("; "),
+                _ => line.answer.clone(),
+            },
+        })
+        .collect();
+
     AskLogSummary {
         asks: lines.len(),
         top_pages,
         recurring,
         not_settled,
         failed,
+        check_failed,
     }
 }
 

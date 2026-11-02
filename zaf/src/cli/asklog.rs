@@ -74,6 +74,14 @@ fn render(summary: &AskLogSummary, more: bool) -> String {
             failure.task, failure.kind, failure.question, failure.reason
         );
     }
+    out.push_str("Check failed:\n");
+    for failure in &summary.check_failed {
+        let _ = writeln!(
+            out,
+            "  #{} {}: {} ({})",
+            failure.task, failure.kind, failure.question, failure.reason
+        );
+    }
     out
 }
 
@@ -95,6 +103,7 @@ mod tests {
                 question: "Is it so?".to_owned(),
                 reason: "no rung gave a verified answer: haiku: run exited 1".to_owned(),
             }],
+            check_failed: Vec::new(),
         };
 
         let text = render(&summary, false);
@@ -102,7 +111,36 @@ mod tests {
         let (_, failed) = text.split_once("Failed:\n").expect("a Failed heading");
         assert_eq!(
             failed,
-            "  #49 rule: Is it so? (no rung gave a verified answer: haiku: run exited 1)\n"
+            "  #49 rule: Is it so? (no rung gave a verified answer: haiku: run exited 1)\nCheck failed:\n"
         );
+    }
+
+    #[test]
+    fn the_check_failed_heading_lists_check_failed_lines_apart_from_failed() {
+        let summary = AskLogSummary {
+            asks: 1,
+            top_pages: Vec::new(),
+            recurring: Vec::new(),
+            not_settled: Vec::new(),
+            failed: Vec::new(),
+            check_failed: vec![Failure {
+                task: 83,
+                kind: "rule".to_owned(),
+                question: "Is it so?".to_owned(),
+                reason: "page 21594113 could not be read".to_owned(),
+            }],
+        };
+
+        let text = render(&summary, false);
+
+        let (before, check_failed) = text
+            .split_once("Check failed:\n")
+            .expect("a Check failed heading");
+        assert_eq!(
+            check_failed,
+            "  #83 rule: Is it so? (page 21594113 could not be read)\n"
+        );
+        let (_, failed) = before.split_once("Failed:\n").expect("a Failed heading");
+        assert_eq!(failed, "", "no rung failure listed");
     }
 }

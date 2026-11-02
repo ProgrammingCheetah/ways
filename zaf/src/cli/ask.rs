@@ -6,7 +6,7 @@ use super::Cli;
 use super::brief::instance;
 use super::exit::{BACKEND, OK, REFUSED, fail, fail_composition};
 
-use crate::app::ask::{AskFailure, AskPorts, AskQuery, LadderRung, ask};
+use crate::app::ask::{AskFailure, AskOutcome, AskPorts, AskQuery, LadderRung, ask};
 use crate::composition::{Composition, CompositionError};
 use crate::domain::IssueNumber;
 use crate::manifest::{ModelName, Rung, RunnerName};
@@ -61,19 +61,10 @@ pub fn run(cli: &Cli, task: IssueNumber, questions: &[String]) -> u8 {
         now: SystemTime::now(),
     };
     match ask(&query, &ports) {
-        Ok(outcome) if cli.json => {
-            println!("{}", serde_json::json!(outcome.lines));
-            OK
-        }
         Ok(outcome) => {
-            print!("{}", outcome.answer);
-            if cli.more {
-                for (entry, line) in outcome.answer.questions.iter().zip(&outcome.lines) {
-                    let rung = line.rung.as_deref().unwrap_or("none");
-                    println!("{}: rung {rung}, check {}", entry.id, line.check);
-                }
-            }
-            OK
+            let (text, code) = report(&outcome, cli.json, cli.more);
+            print!("{text}");
+            code
         }
         Err(AskFailure::Board(error) | AskFailure::Design(error)) => fail(&path, &error),
         Err(error @ (AskFailure::State { .. } | AskFailure::Exhausted(_))) => {
@@ -85,6 +76,29 @@ pub fn run(cli: &Cli, task: IssueNumber, questions: &[String]) -> u8 {
             REFUSED
         }
     }
+}
+
+/// What the verb prints for an outcome and the exit code: a question that ended on a failed
+/// citation check prints its `check failed` line and the verb exits 2, whatever else answered.
+fn report(outcome: &AskOutcome, json: bool, more: bool) -> (String, u8) {
+    use std::fmt::Write as _;
+
+    let code = if outcome.has_check_failure() {
+        BACKEND
+    } else {
+        OK
+    };
+    if json {
+        return (format!("{}\n", serde_json::json!(outcome.lines)), code);
+    }
+    let mut text = outcome.render();
+    if more {
+        for (entry, line) in outcome.answer.questions.iter().zip(&outcome.lines) {
+            let rung = line.rung.as_deref().unwrap_or("none");
+            let _ = writeln!(text, "{}: rung {rung}, check {}", entry.id, line.check);
+        }
+    }
+    (text, code)
 }
 
 /// How long an answered question is served from the log, from `[ask] cache_hours`.
@@ -116,7 +130,8 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::domain::{Profile, RoleName};
+    use crate::app::ask::{CheckResult, LogLine};
+    use crate::domain::{Answer, Profile, RoleName};
     use crate::ports::RunRequest;
 
     const MANIFEST: &str = "\
@@ -148,6 +163,83 @@ command = \"echo local-model\"
             env: std::collections::BTreeMap::new(),
         };
         runner.run(&request).expect("run").transcript
+    }
+
+    fn line(verdict: &str, answer: &str, check: CheckResult) -> LogLine {
+        LogLine {
+            time: 1_800_000_000,
+            task: 83,
+            from: "programmer-1".to_owned(),
+            kind: "rule".to_owned(),
+            question: "Is it so?".to_owned(),
+            verdict: verdict.to_owned(),
+            pages: Vec::new(),
+            answer: answer.to_owned(),
+            rung: None,
+            check,
+        }
+    }
+
+    fn outcome(lines: Vec<LogLine>) -> AskOutcome {
+        let questions = lines
+            .iter()
+            .enumerate()
+            .map(|(index, _)| {
+                let text = format!(
+                    "q{}: not settled\n    next: question ticket on #83 (door: no)\n",
+                    index + 1
+                );
+                text.parse::<Answer>().expect("answer").questions.remove(0)
+            })
+            .collect();
+        AskOutcome {
+            answer: Answer { questions },
+            lines,
+        }
+    }
+
+    #[test]
+    fn a_failed_citation_check_prints_its_line_and_exits_2() {
+        let failed = line(
+            "check failed",
+            "q1: check failed — page 21594113 could not be read (design dir or index misconfigured)",
+            CheckResult::Failed(vec!["page 21594113 could not be read".to_owned()]),
+        );
+
+        let (text, code) = report(&outcome(vec![failed]), false, false);
+
+        assert_eq!(
+            text,
+            "q1: check failed — page 21594113 could not be read (design dir or index misconfigured)\n"
+        );
+        assert_eq!(code, BACKEND);
+    }
+
+    #[test]
+    fn a_not_settled_prints_as_before_and_exits_0() {
+        let silent = line("not settled", "", CheckResult::Passed);
+
+        let (text, code) = report(&outcome(vec![silent]), false, false);
+
+        assert_eq!(
+            text,
+            "q1: not settled\n    next: question ticket on #83 (door: no)\n"
+        );
+        assert_eq!(code, OK);
+    }
+
+    #[test]
+    fn json_output_keeps_the_log_lines_and_the_exit_code_follows_the_check() {
+        let failed = line(
+            "check failed",
+            "q1: check failed — page 1 could not be read (design dir or index misconfigured)",
+            CheckResult::Failed(vec!["page 1 could not be read".to_owned()]),
+        );
+
+        let (text, code) = report(&outcome(vec![failed]), true, false);
+
+        assert!(text.contains("\"verdict\":\"check failed\""), "{text}");
+        assert_eq!(code, BACKEND);
     }
 
     #[test]
