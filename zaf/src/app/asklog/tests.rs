@@ -111,6 +111,32 @@ fn failed_lines_are_counted_and_listed_with_their_reason() {
 }
 
 #[test]
+fn check_failed_lines_are_listed_apart_from_failed_and_not_settled() {
+    let mut unreadable = line(83, "rule", "Is it so?", "check failed", &[]);
+    unreadable.answer = "q1: check failed — page 21594113 could not be read".to_owned();
+    unreadable.rung = None;
+    unreadable.check = CheckResult::Failed(vec!["page 21594113 could not be read".to_owned()]);
+    let lines = [
+        unreadable,
+        line(83, "term", "What is a shelf?", "not settled", &[]),
+    ];
+
+    let summary = summarize(&lines);
+
+    assert_eq!(
+        summary.check_failed,
+        [Failure {
+            task: 83,
+            kind: "rule".to_owned(),
+            question: "Is it so?".to_owned(),
+            reason: "page 21594113 could not be read".to_owned(),
+        }]
+    );
+    assert!(summary.failed.is_empty(), "not a rung failure");
+    assert_eq!(summary.not_settled.len(), 1, "not a gap either");
+}
+
+#[test]
 fn the_most_cited_page_comes_first() {
     let lines = [
         line(1, "fact", "a?", "settled", &["2002"]),
