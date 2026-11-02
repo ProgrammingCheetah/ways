@@ -115,6 +115,7 @@ fn the_pack_holds_every_section_in_order() {
         headings,
         [
             "## Ticket",
+            "## Rulings",
             "## Design pages",
             "## Owned paths",
             "## Style",
@@ -122,6 +123,7 @@ fn the_pack_holds_every_section_in_order() {
         ]
     );
     assert!(section(&text, "Ticket").contains("Goal: Members export their reading list as CSV."));
+    assert_eq!(section(&text, "Rulings").trim_end(), "## Rulings\n\n— none");
 
     let pages = section(&text, "Design pages");
     assert!(
@@ -149,6 +151,174 @@ fn the_pack_holds_every_section_in_order() {
         fs::read_to_string(state.path().join("runs/.gitignore")).expect("ignore"),
         "*\n"
     );
+}
+
+fn raise(board: &FakeBoard, number: u64, on: u64, text: &str) -> IssueNumber {
+    let number = IssueNumber::from(number);
+    board.add_question(Ticket {
+        number,
+        epic: None,
+        title: text.to_owned(),
+        body: format!("Raised on {}.", IssueNumber::from(on)),
+        label: None,
+    });
+    number
+}
+
+fn rulings_of(board: &FakeBoard) -> String {
+    let state = tempfile::tempdir().expect("temp dir");
+    let ports = BriefPorts {
+        board,
+        design: None,
+        nodes: None,
+    };
+    let brief = brief(&query(state.path(), None), &ports).expect("brief");
+    let text = fs::read_to_string(&brief.path).expect("pack");
+    section(&text, "Rulings").trim_end().to_owned()
+}
+
+#[test]
+fn a_ruled_question_is_in_the_brief_so_it_is_not_asked_again() {
+    let board = board_with(BODY);
+    board.add_ticket(Ticket {
+        number: IssueNumber::from(13),
+        epic: Some(IssueNumber::from(10)),
+        title: "Another task".to_owned(),
+        body: BODY.to_owned(),
+        label: Some(TaskLabel::Claimed),
+    });
+    let ruled = raise(&board, 80, 12, "Which columns does the export carry?");
+    board
+        .record_ruling(ruled, "Title and author.")
+        .expect("ruling");
+    raise(&board, 81, 12, "Is the header row quoted?");
+    raise(&board, 82, 13, "A question on another task");
+
+    let rulings = rulings_of(&board);
+
+    assert_eq!(
+        rulings,
+        "## Rulings\n\n\
+         #80 Which columns does the export carry?\n\
+         ruling: Title and author.\n\n\
+         #81 Is the header row quoted?\n\
+         open"
+    );
+}
+
+#[test]
+fn the_rulings_come_after_the_ticket_and_before_the_design_pages() {
+    let board = board_with(BODY);
+    let ruled = raise(&board, 80, 12, "Which columns?");
+    board.record_ruling(ruled, "Title only.").expect("ruling");
+    let state = tempfile::tempdir().expect("temp dir");
+    let design = design();
+    let ports = BriefPorts {
+        board: &board,
+        design: Some(&design),
+        nodes: None,
+    };
+
+    let brief = brief(&query(state.path(), None), &ports).expect("brief");
+
+    let text = fs::read_to_string(&brief.path).expect("pack");
+    let at = |heading: &str| text.find(heading).expect(heading);
+    assert!(at("## Ticket") < at("## Rulings"));
+    assert!(at("## Rulings") < at("## Design pages"));
+}
+
+#[test]
+fn the_instance_prompts_say_to_read_the_rulings_before_asking() {
+    let prompts = [
+        (
+            "team brief",
+            include_str!("../../../assets/spawn/team-brief.md"),
+        ),
+        (
+            "team agent",
+            include_str!("../../../../plugins/teams/agents/team.md"),
+        ),
+        (
+            "programmer agent",
+            include_str!("../../../../plugins/teams/agents/programmer.md"),
+        ),
+    ];
+    for (name, text) in prompts {
+        assert!(
+            text.contains("`## Rulings` section before asking"),
+            "{name} must say to read the Rulings section before asking"
+        );
+    }
+}
+
+#[test]
+fn a_board_that_cannot_list_questions_is_a_board_error() {
+    struct Silent(FakeBoard);
+    impl Board for Silent {
+        fn ready(&self) -> Result<Vec<Ticket>, PortError> {
+            self.0.ready()
+        }
+        fn task(&self, number: IssueNumber) -> Result<Ticket, PortError> {
+            self.0.task(number)
+        }
+        fn claim(
+            &self,
+            task: IssueNumber,
+            instance: &Instance,
+        ) -> Result<crate::ports::ClaimOutcome, PortError> {
+            self.0.claim(task, instance)
+        }
+        fn heartbeat(&self, task: IssueNumber, instance: &Instance) -> Result<(), PortError> {
+            self.0.heartbeat(task, instance)
+        }
+        fn claims(&self) -> Result<Vec<crate::ports::ClaimRecord>, PortError> {
+            self.0.claims()
+        }
+        fn release(&self, task: IssueNumber, instance: &Instance) -> Result<(), PortError> {
+            self.0.release(task, instance)
+        }
+        fn label(&self, task: IssueNumber, label: TaskLabel) -> Result<(), PortError> {
+            self.0.label(task, label)
+        }
+        fn comment(&self, issue: IssueNumber, body: &str) -> Result<(), PortError> {
+            self.0.comment(issue, body)
+        }
+        fn report(
+            &self,
+            task: IssueNumber,
+            instance: &Instance,
+            body: &str,
+        ) -> Result<(), PortError> {
+            self.0.report(task, instance, body)
+        }
+        fn questions(&self) -> Result<Vec<Ticket>, PortError> {
+            self.0.questions()
+        }
+        fn open_question(
+            &self,
+            question: &crate::ports::NewQuestion,
+        ) -> Result<IssueNumber, PortError> {
+            self.0.open_question(question)
+        }
+        fn record_ruling(
+            &self,
+            question: IssueNumber,
+            ruling: &str,
+        ) -> Result<Option<IssueNumber>, PortError> {
+            self.0.record_ruling(question, ruling)
+        }
+    }
+    let state = tempfile::tempdir().expect("temp dir");
+    let board = Silent(board_with(BODY));
+    let ports = BriefPorts {
+        board: &board,
+        design: None,
+        nodes: None,
+    };
+
+    let error = brief(&query(state.path(), None), &ports).expect_err("no question list");
+
+    assert!(matches!(error, BriefError::Board(PortError::Rejected(_))));
 }
 
 #[test]

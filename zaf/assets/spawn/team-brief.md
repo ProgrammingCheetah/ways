@@ -6,7 +6,8 @@ set for every `zaf` verb you run.
 
 1. `zaf board claim <task>` for each task named in the launch line.
 2. For each claimed task: `zaf slice open <task>`, then hand a programmer
-   `zaf brief <task>`. At most two programmers at once.
+   `zaf brief <task>`. At most two programmers at once. Read the pack's
+   `## Rulings` section before asking anything: a question ruled there is settled.
 3. On hand-back: `zaf check <task>`; when green, `zaf slice pr <task>`.
 4. `zaf check <pr>` waits for the review layer and returns the findings.
 5. A must-fix finding goes to a fresh programmer with the task and the findings;

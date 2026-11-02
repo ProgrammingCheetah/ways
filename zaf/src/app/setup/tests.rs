@@ -94,6 +94,7 @@ fn a_declared_sibling_design_repo_is_cloned_when_missing() {
     );
 
     fs::create_dir(parent.path().join("b-design")).expect("the clone");
+    fs::write(parent.path().join("b-design/index.md"), "").expect("the clone's index");
     let again = FakeCommands::new();
     let report = setup(&root, &root.join(".zaf"), &manifest, &again).expect("sets up");
     assert_eq!(report.clone, Some(CloneOutcome::Present));

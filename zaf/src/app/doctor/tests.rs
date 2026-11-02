@@ -123,7 +123,70 @@ fn a_declared_design_dir_must_exist() {
     assert!(!before.passed());
     assert!(before.lines()[0].starts_with("design dir: missing"));
     fs::create_dir(parent.path().join("b-design")).expect("design dir");
+    fs::write(parent.path().join("b-design/index.md"), "").expect("index");
     assert!(doctor(&root, &manifest, &FakeCommands::new()).passed());
+}
+
+#[test]
+fn a_missing_design_index_fails_and_names_the_path() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    fs::create_dir(dir.path().join("docs")).expect("design dir");
+    let manifest = manifest("[design]\nkind = \"repo-dir\"\npath = \"docs\"\n");
+    let report = doctor(dir.path(), &manifest, &FakeCommands::new());
+    assert!(!report.passed());
+    let missing = format!(
+        "design index: missing ({})",
+        dir.path().join("docs/index.md").display()
+    );
+    assert!(report.lines().contains(&missing), "{:?}", report.lines());
+    assert!(report.lines()[0].starts_with("design dir: ok"));
+}
+
+#[test]
+fn a_present_design_index_is_ok() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    fs::create_dir(dir.path().join("docs")).expect("design dir");
+    fs::write(dir.path().join("docs/index.md"), "# Pages\n").expect("index");
+    let manifest = manifest("[design]\nkind = \"repo-dir\"\npath = \"docs\"\n");
+    let report = doctor(dir.path(), &manifest, &FakeCommands::new());
+    assert!(report.passed());
+    assert!(
+        report.lines()[1].starts_with("design index: ok"),
+        "{:?}",
+        report.lines()
+    );
+}
+
+#[test]
+fn a_declared_design_index_is_resolved_against_the_design_dir() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    fs::create_dir_all(dir.path().join("docs/meta")).expect("design dir");
+    let manifest =
+        manifest("[design]\nkind = \"repo-dir\"\npath = \"docs\"\nindex = \"meta/pages.md\"\n");
+    let before = doctor(dir.path(), &manifest, &FakeCommands::new());
+    assert!(!before.passed());
+    assert_eq!(
+        before.design_index.as_ref().map(|check| check.path.clone()),
+        Some(dir.path().join("docs/meta/pages.md"))
+    );
+    fs::write(dir.path().join("docs/meta/pages.md"), "").expect("index");
+    assert!(doctor(dir.path(), &manifest, &FakeCommands::new()).passed());
+}
+
+#[test]
+fn a_design_index_that_is_a_folder_is_missing() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    fs::create_dir_all(dir.path().join("docs/index.md")).expect("a folder");
+    let manifest = manifest("[design]\nkind = \"repo-dir\"\npath = \"docs\"\n");
+    assert!(!doctor(dir.path(), &manifest, &FakeCommands::new()).passed());
+}
+
+#[test]
+fn the_default_index_name_is_the_design_adapters() {
+    assert_eq!(
+        DEFAULT_DESIGN_INDEX,
+        crate::adapters::design::DEFAULT_INDEX_FILE
+    );
 }
 
 #[test]
@@ -131,6 +194,7 @@ fn no_design_kind_checks_no_design_dir() {
     let dir = tempfile::tempdir().expect("temp dir");
     let report = doctor(dir.path(), &manifest(""), &FakeCommands::new());
     assert_eq!(report.design, None);
+    assert_eq!(report.design_index, None);
     assert!(report.passed());
 }
 

@@ -18,6 +18,10 @@ use crate::manifest::{DesignSection, Manifest, Requirement, ToolName};
 
 pub mod fake;
 
+/// The design index's name when `[design] index` names none; the design adapter's default,
+/// which a test keeps in step (the app layer does not import adapters).
+const DEFAULT_DESIGN_INDEX: &str = "index.md";
+
 /// What a finished command wrote.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandOutput {
@@ -158,6 +162,8 @@ pub struct Report {
     pub tools: Vec<ToolCheck>,
     /// The design folder, when the design kind is not `none`.
     pub design: Option<PathCheck>,
+    /// The design index file, when the design kind is not `none`.
+    pub design_index: Option<PathCheck>,
     /// The workspaces folder, which must be creatable.
     pub workspaces: PathCheck,
     /// One entry per generated profile; informational, it never fails the report.
@@ -172,6 +178,7 @@ impl Report {
     pub fn passed(&self) -> bool {
         self.tools.iter().all(|check| check.status.is_ok())
             && self.design.as_ref().is_none_or(|check| check.ok)
+            && self.design_index.as_ref().is_none_or(|check| check.ok)
             && self.workspaces.ok
     }
 
@@ -188,6 +195,7 @@ impl Report {
             .map(|check| format!("{}: {}", check.tool, check.status))
             .collect();
         lines.extend(self.design.iter().map(PathCheck::line));
+        lines.extend(self.design_index.iter().map(PathCheck::line));
         lines.extend(self.logins.iter().map(LoginCheck::line));
         lines.extend(self.packs.iter().map(PackCheck::line));
         lines.push(self.workspaces.line());
@@ -199,7 +207,7 @@ impl PathCheck {
     fn line(&self) -> String {
         let state = match (self.what, self.ok) {
             (_, true) => "ok",
-            ("design dir", false) => "missing",
+            ("design dir" | "design index", false) => "missing",
             (_, false) => "not creatable",
         };
         format!("{}: {state} ({})", self.what, self.path.display())
@@ -343,7 +351,21 @@ pub fn doctor(root: &Path, manifest: &Manifest, commands: &dyn Commands) -> Repo
         .iter()
         .map(|(tool, requirement)| check_tool(commands, tool, requirement))
         .collect();
-    let design = design_dir(root, &manifest.design).map(|path| PathCheck {
+    let design_path = design_dir(root, &manifest.design);
+    let design_index = design_path.as_ref().map(|dir| {
+        let index = manifest
+            .design
+            .index
+            .as_deref()
+            .unwrap_or(Path::new(DEFAULT_DESIGN_INDEX));
+        let path = dir.join(index);
+        PathCheck {
+            what: "design index",
+            ok: path.is_file(),
+            path,
+        }
+    });
+    let design = design_path.map(|path| PathCheck {
         what: "design dir",
         ok: path.is_dir(),
         path,
@@ -357,6 +379,7 @@ pub fn doctor(root: &Path, manifest: &Manifest, commands: &dyn Commands) -> Repo
     Report {
         tools,
         design,
+        design_index,
         workspaces,
         logins: logins(root, manifest, commands),
         packs: packs(root, manifest, commands),
