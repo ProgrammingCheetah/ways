@@ -6,7 +6,7 @@ A Claude Code plugin marketplace of **ways of working**: one plugin per way, eac
 
 | Pack | Status | What it is |
 |---|---|---|
-| `teams` | built | The Orchestrator and its Spawns: agent teams (a standing lead, short-lived programmers; QA and an architect at the top) run through a release lifecycle (objectives, design document, team roadmaps and claims, a Groundwork plan, read-only slice plans, build, milestone QA, release reviews, one PR into main) while the Engineer decides every domain fork. Its routines also work alone: release objectives, the Engineer's queue, catch-up briefings, workspace cleanup, critique, docs, PR preparation, review triage and retrospectives. [README](plugins/teams/README.md) |
+| `teams` | built | The standing briefs of the instances that build a project, one per zaf role (team, programmer, keeper, planning, challenger, release) plus the design session's judgment lane (designer); a session-start hook that prints `zaf doctor`; and the routines the Engineer runs in the design session: release objectives, the queue, catch-up briefings, doc comments and retrospectives. The work runs through `zaf`, the project-blind binary of verbs built in `zaf/`, and the Engineer rules every domain fork. [README](plugins/teams/README.md) |
 | `handoff` | built | How Claude hands the Engineer something to do: a short worksheet of numbered steps. [README](plugins/handoff/README.md) |
 | `nodes` | built | The NODE.inf.json node tree: chart a repository so agents load a path's context from the root down. Needs the `nodes` binary. `teams` offers it at setup. [README](plugins/nodes/README.md) |
 | `decide` | roadmap | A domain decision from question to record: check what's already decided, state the objectives, research, weigh the options, record the ruling and keep the records in sync. |
@@ -27,11 +27,11 @@ In a repo the Engineer doesn't own (the push remote's owner is neither their for
 
 ## Install on a new computer
 
-**Goal:** Claude in your work project runs `/teams:orchestrate` and has written its teams file.
+**Goal:** your work project has a `ZAF.toml` and Claude starts there with a clean `zaf doctor`.
 
 1. **Check** Claude Code's version.
    `claude --version`
-   Done when: it prints 2.1.292 or later.
+   Done when: it prints 2.1.296 or later.
 2. **Check** that git is installed.
    `git --version`
    Done when: it prints a version number.
@@ -44,13 +44,18 @@ In a repo the Engineer doesn't own (the push remote's owner is neither their for
 5. **Optional: name** your organizations, only if some of your own repos live under an organization. Add this line to your shell profile (`~/.zshrc` or `~/.bashrc`; on Windows run `setx WAYS_OWN_ORGS example-org`), with several organizations comma-separated (spaces around the commas are ignored), then open a new terminal. Skip it where no organization is yours, as on a work computer.
    `export WAYS_OWN_ORGS=example-org`
    Done when: `printenv WAYS_OWN_ORGS` (PowerShell: `$env:WAYS_OWN_ORGS`) prints your organization(s).
-6. **Start** Claude in a terminal at your work project's root folder.
+6. **Install** `zaf`: open https://github.com/ProgrammingCheetah/ways/releases, download the latest `zaf-v*` archive for your platform (Linux x86_64 or macOS Apple silicon), unpack it, and put its `zaf` binary on your PATH.
+   `zaf --version`
+   Done when: it prints a version number.
+7. **Run** `zaf init` at your work project's root folder and answer its four questions (project name, board repo, forge repo, gate command).
+   `cd <your project root> && zaf init`
+   Done when: the output ends with `wrote ZAF.toml`.
+8. **Run** `zaf setup`, do the steps it prints, and run it again until nothing is left.
+   `cd <your project root> && zaf setup`
+   Done when: it exits 0.
+9. **Start** Claude in a terminal at your work project's root folder.
    `claude`
-   Done when: the Claude prompt is open.
-7. **Type** `/teams:orchestrate`.
-   Done when: Claude offers to create `.claude/TEAMS.md`, with its answers pre-filled.
-8. **Answer** its one round of questions, changing any pre-filled answer you disagree with, and approve the file writes it asks for.
-   Done when: Claude shows the teams file it wrote and hands you a short worksheet for the project's permissions.
+   Done when: the `zaf doctor` table the teams hook prints at session start shows every row `ok`.
 
 Tell me: "done", or the step that failed and its last line of output.
 
@@ -60,13 +65,16 @@ To get worksheets like this one from Claude in every project, also run `claude p
 
 ## Updating
 
-`claude plugin marketplace update ways`, then `claude plugin update teams@ways` (and each other pack you use), then start a new session. Or turn on auto-update: `/plugin` → **Marketplaces** → `ways` → **Enable auto-update**. The plugins carry no version number, so every commit on `main` is a new version: `main` is the release channel and stays shippable.
+`claude plugin marketplace update ways`, then `claude plugin update teams@ways` (and each other pack you use), then start a new session. Or turn on auto-update: `/plugin` → **Marketplaces** → `ways` → **Enable auto-update**. `main` is the release channel and stays shippable: every commit on it is a new version of the plugins. Only `teams` carries a version number in its `plugin.json` (2.0.0), which `zaf doctor` reports; the other packs carry none. The `zaf` binary is released separately, from tags `zaf-vX.Y.Z`.
 
 ## Layout
 
 ```
 .claude-plugin/marketplace.json   the catalog: name "ways"
-plugins/teams/                    /teams:orchestrate and its templates, nine more skills, the five agent lanes
+plugins/teams/                    the role briefs (team, programmer, keeper, planning, challenger, release, designer), the doctor hook, five design-session skills
 plugins/handoff/                  /handoff:how-to
 plugins/nodes/                    the nodes pack
+zaf/                              the zaf crate: the binary the teams pack drives, released from tags zaf-vX.Y.Z
+docs/                             zuri-ai-framework.md, the method's design draft, and the 2026-10-27 baseline
+ZAF.toml                          zaf's manifest for this repo, which runs the framework on itself
 ```

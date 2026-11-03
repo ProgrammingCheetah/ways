@@ -40,7 +40,8 @@ tests = "cd zaf && cargo test {name}"
 [style]
 path = "README.md"
 
-# The pack the profiles carry: this repo's own teams plugin, copied by `zaf profile init`.
+# The pack the profiles carry: this repo's own teams plugin. `zaf profile init` adds this repo
+# as a marketplace and installs the pack from it into each profile.
 [pack]
 path = "plugins/teams"
 

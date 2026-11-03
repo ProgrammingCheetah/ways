@@ -47,7 +47,7 @@
   ],
   "notes": [
     "this repo's ZAF.toml `[pack] path` points here: `zaf profile init` adds the repo as a marketplace and installs and enables teams@ways in each zaf profile",
-    "the only pack whose plugin.json sets a `version` (2.0.0), although the root README says the plugins carry no version number",
+    "the only pack whose plugin.json sets a `version` (2.0.0), which `zaf doctor` reports; the root README says so",
     "the hook's matcher is `startup` only (not resume or clear) and it always exits 0, so it never blocks a session",
     "the `zaf` binary these briefs and the hook drive is built from this repo's zaf/ crate; the interface page and keeper prompt they rely on live in zaf/assets/",
     "needs Claude Code 2.1.296 or later because team.md sets `autoCompactWindow`"
