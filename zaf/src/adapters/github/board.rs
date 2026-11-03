@@ -11,6 +11,8 @@ use crate::ports::{Board, ClaimOutcome, ClaimRecord, NewQuestion, PortError, Tic
 
 /// The label every task carries.
 const TASK_LABEL: &str = "task";
+/// The label every epic carries.
+const EPIC_LABEL: &str = "epic";
 /// The label a question raised as a one-way decision carries beside `question`.
 const DOOR_LABEL: &str = "door";
 /// The most issues one list call reads.
@@ -70,7 +72,7 @@ impl GithubBoard {
         let row = self.issue(task)?;
         let waiting = TaskLabel::Question.to_string();
         let done = TaskLabel::Done.to_string();
-        if row.has_label(&done) || !row.has_label(&waiting) {
+        if row.has_label(EPIC_LABEL) || row.has_label(&done) || !row.has_label(&waiting) {
             return Ok(None);
         }
         let ready = TaskLabel::Ready.to_string();
@@ -94,6 +96,15 @@ impl GithubBoard {
 impl IssueRow {
     fn has_label(&self, name: &str) -> bool {
         self.labels.iter().any(|label| label.name == name)
+    }
+
+    /// Whether a question raised on this issue makes it wait: a task that is `claimed` or
+    /// `ready`. An epic and a task that was never ready carry no state a ruling could restore.
+    fn can_wait(&self) -> bool {
+        !self.has_label(EPIC_LABEL)
+            && [TaskLabel::Claimed, TaskLabel::Ready]
+                .iter()
+                .any(|label| self.has_label(&label.to_string()))
     }
 
     fn task_labels(&self) -> impl Iterator<Item = TaskLabel> + '_ {
@@ -249,6 +260,9 @@ impl Board for GithubBoard {
 
     fn label(&self, task: IssueNumber, label: TaskLabel) -> Result<(), PortError> {
         let row = self.issue(task)?;
+        if label == TaskLabel::Question && !row.can_wait() {
+            return Ok(());
+        }
         let wanted = label.to_string();
         let others: Vec<String> = row
             .task_labels()
@@ -303,6 +317,40 @@ impl Board for GithubBoard {
         rows.retain(|row| !row.has_label(TASK_LABEL));
         rows.sort_by_key(|row| row.number);
         Ok(rows.iter().map(IssueRow::ticket).collect())
+    }
+
+    /// Lists the `question` issues, open and closed, whose body says `Raised on #<task>`,
+    /// oldest first, each with the text of its ruling comment when it has one.
+    fn questions_on(&self, task: IssueNumber) -> Result<Vec<(Ticket, Option<String>)>, PortError> {
+        let question = TaskLabel::Question.to_string();
+        let mut rows: Vec<IssueRow> = self.gh.json(&[
+            "issue",
+            "list",
+            "--label",
+            &question,
+            "--state",
+            "all",
+            "--limit",
+            LIST_LIMIT,
+            "--json",
+            "number,title,body,labels,parent,state,comments",
+        ])?;
+        rows.retain(|row| {
+            !row.has_label(TASK_LABEL) && NewQuestion::raised_on(&row.body) == Some(task)
+        });
+        rows.sort_by_key(|row| row.number);
+        let raised = rows
+            .iter()
+            .map(|row| {
+                let ruling = row
+                    .comments
+                    .iter()
+                    .find_map(|comment| unmarked(RULING_MARKER, &comment.body))
+                    .map(|text| text.trim().to_owned());
+                (row.ticket(), ruling)
+            })
+            .collect();
+        Ok(raised)
     }
 
     fn open_question(&self, question: &NewQuestion) -> Result<IssueNumber, PortError> {

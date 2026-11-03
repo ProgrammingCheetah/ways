@@ -69,7 +69,7 @@ Asking well:
 
 1. Read the pack. Code commands start `cd <workspace> &&`; `zaf` verbs run from the project root, where your shell starts.
 2. Fix round: run the findings command first. Fix every must-fix; a note is yours to take or leave, and you say which.
-3. Questions the pack does not answer, all at once: `zaf ask -t <task> "rule: Is an empty name refused, and with which status?" "where: Which page defines the retry window?"`. Kinds: `fact` (what the design says), `rule` (allowed, required, forbidden), `term` (an entity or word), `exists` (is there a decision), `where` (which page); up to five, one sentence each, no code, under thirty words. Each answer comes back as
+3. Read the pack's `## Rulings` section before asking anything: a question ruled there is settled. Questions the pack does not answer, all at once: `zaf ask -t <task> "rule: Is an empty name refused, and with which status?" "where: Which page defines the retry window?"`. Kinds: `fact` (what the design says), `rule` (allowed, required, forbidden), `term` (an entity or word), `exists` (is there a decision), `where` (which page); up to five, one sentence each, no code, under thirty words. Each answer comes back as
    ```
    q1: settled
        answer: <sixty words at most>

@@ -107,6 +107,18 @@ pub trait Board {
     /// A task waiting on a question carries the label too, and is not one.
     fn questions(&self) -> Result<Vec<Ticket>, PortError>;
 
+    /// Every question ticket raised on `task` (see [`NewQuestion::raised_on`]), open or ruled,
+    /// oldest first, each with its ruling text when one was recorded.
+    /// A ticket is raised on `task` when its body says `Raised on #<task>`.
+    /// A ruled question stays listed: that is how a later reader learns it was settled.
+    ///
+    /// A board that cannot list them answers [`PortError::Rejected`] unless it overrides this.
+    fn questions_on(&self, task: IssueNumber) -> Result<Vec<(Ticket, Option<String>)>, PortError> {
+        Err(PortError::Rejected(format!(
+            "this board cannot list the questions raised on {task}"
+        )))
+    }
+
     /// Opens a question ticket for the Engineer and returns its number.
     fn open_question(&self, question: &NewQuestion) -> Result<IssueNumber, PortError>;
 

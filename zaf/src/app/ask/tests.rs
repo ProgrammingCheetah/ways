@@ -638,3 +638,192 @@ fn malformed_asks_are_refused_before_any_run() {
     assert!(scene.local.requests().is_empty());
     assert!(scene.log().is_empty());
 }
+
+const CITES_UNREADABLE: &str = "\
+q1: settled
+    answer: An empty list exports the header row and nothing else.
+    pages: 1003 (decided)
+    quote: \"an empty list exports the header row only\"
+";
+
+const CHECK_FAILED_LINE: &str =
+    "q1: check failed — page 1003 could not be read (design dir or index misconfigured)\n";
+
+/// A design source whose index lists page 1003 but cannot read it: the misconfigured
+/// design dir of the 2026-11-01 report. With `index_fails`, the index itself errors.
+struct Unreadable<'a> {
+    inner: &'a FakeDesign,
+    index_fails: bool,
+}
+
+impl Unreadable<'_> {
+    fn is_broken(id: &PageId) -> bool {
+        id.as_ref() == "1003"
+    }
+}
+
+impl Design for Unreadable<'_> {
+    fn page(&self, id: &PageId) -> Result<Page, PortError> {
+        if Self::is_broken(id) {
+            return Err(PortError::Unavailable(format!("design source: page {id}")));
+        }
+        self.inner.page(id)
+    }
+
+    fn search(&self, query: &str) -> Result<Vec<PageId>, PortError> {
+        self.inner.search(query)
+    }
+
+    fn status(&self, id: &PageId) -> Result<PageStatus, PortError> {
+        if self.index_fails && Self::is_broken(id) {
+            return Err(PortError::Unavailable("design source: index".to_owned()));
+        }
+        self.inner.status(id)
+    }
+}
+
+/// Asks `questions` through `design`.
+fn ask_through(
+    scene: &Scene,
+    design: &dyn Design,
+    questions: &[&str],
+) -> Result<AskOutcome, AskFailure> {
+    let mut ports = scene.ports();
+    ports.design = Some(design);
+    let questions: Vec<String> = questions.iter().map(|&text| text.to_owned()).collect();
+    let query = AskQuery {
+        task: task(),
+        from: "programmer-3",
+        questions: &questions,
+        max: 5,
+        root: Path::new("/project"),
+        state_dir: scene.state.path(),
+        cache_window: Duration::from_secs(3600),
+        now: noon(),
+    };
+    ask(&query, &ports)
+}
+
+fn scene_with_page_1003() -> Scene {
+    let scene = Scene::new();
+    scene.design.add_page(page(
+        "1003",
+        PageStatus::Decided,
+        "An empty list exports the header row only.",
+    ));
+    scene
+}
+
+#[test]
+fn a_cited_page_that_cannot_be_read_is_a_check_failure_not_a_not_settled() {
+    let scene = scene_with_page_1003();
+    Scene::record(&scene.local, CITES_UNREADABLE);
+    Scene::record(&scene.haiku, CITES_UNREADABLE);
+    let design = Unreadable {
+        inner: &scene.design,
+        index_fails: false,
+    };
+
+    let outcome =
+        ask_through(&scene, &design, ONE_QUESTION).expect("a check failure is an outcome");
+
+    assert!(outcome.has_check_failure());
+    assert_eq!(outcome.render(), CHECK_FAILED_LINE);
+    assert_eq!(scene.local.requests().len(), 1, "the ladder was climbed");
+    assert_eq!(scene.haiku.requests().len(), 1);
+    let line = &outcome.lines[0];
+    assert_eq!(line.verdict, CHECK_FAILED);
+    assert_eq!(line.rung, None);
+    assert_eq!(
+        line.check,
+        CheckResult::Failed(vec!["page 1003 could not be read".to_owned()])
+    );
+    assert_eq!(scene.log(), outcome.lines, "the marker is superseded");
+}
+
+#[test]
+fn an_index_that_cannot_be_read_is_a_check_failure_too() {
+    let scene = scene_with_page_1003();
+    Scene::record(&scene.local, CITES_UNREADABLE);
+    Scene::record(&scene.haiku, CITES_UNREADABLE);
+    let design = Unreadable {
+        inner: &scene.design,
+        index_fails: true,
+    };
+
+    let outcome = ask_through(&scene, &design, ONE_QUESTION).expect("outcome");
+
+    assert_eq!(outcome.render(), CHECK_FAILED_LINE);
+}
+
+#[test]
+fn a_page_the_index_does_not_know_is_a_wrong_citation_not_a_check_failure() {
+    let scene = Scene::new();
+    let hallucinated = CITES_UNREADABLE.replace("1003", "1999");
+    Scene::record(&scene.local, &hallucinated);
+    Scene::record(&scene.haiku, &hallucinated);
+
+    let Err(AskFailure::Exhausted(reasons)) = scene.ask_at(ONE_QUESTION, noon()) else {
+        panic!("a page nobody indexed is the keeper's fault");
+    };
+    assert!(reasons[0].contains("1999"), "{reasons:?}");
+}
+
+#[test]
+fn a_rejected_answer_beside_an_unreadable_page_still_exhausts_the_ladder() {
+    let scene = scene_with_page_1003();
+    Scene::record(&scene.local, CITES_UNREADABLE);
+    Scene::record(&scene.haiku, BAD_QUOTE);
+    let design = Unreadable {
+        inner: &scene.design,
+        index_fails: false,
+    };
+
+    assert!(matches!(
+        ask_through(&scene, &design, ONE_QUESTION),
+        Err(AskFailure::Exhausted(_))
+    ));
+}
+
+#[test]
+fn a_not_settled_with_no_citations_is_printed_as_before_and_is_no_failure() {
+    let scene = Scene::new();
+    let silent = "q1: not settled\n    next: question ticket on #12 (door: no)\n";
+    Scene::record(&scene.local, silent);
+
+    let outcome = scene.ask(ONE_QUESTION);
+
+    assert!(!outcome.has_check_failure());
+    assert_eq!(outcome.render(), silent);
+    assert_eq!(outcome.lines[0].verdict, "not settled");
+    assert_eq!(outcome.lines[0].check, CheckResult::Passed);
+}
+
+#[test]
+fn a_question_with_sound_citations_in_a_discarded_answer_names_the_asks_unreadable_pages() {
+    let scene = scene_with_page_1003();
+    let two = format!(
+        "{CITES_UNREADABLE}q2: settled\n    answer: A shelf is a list.\n    pages: 1001 (decided)\n    quote: \"Columns follow the list\"\n"
+    );
+    Scene::record(&scene.local, &two);
+    Scene::record(&scene.haiku, &two);
+    let design = Unreadable {
+        inner: &scene.design,
+        index_fails: false,
+    };
+
+    let outcome = ask_through(
+        &scene,
+        &design,
+        &[ONE_QUESTION[0], "term: What is a shelf?"],
+    )
+    .expect("outcome");
+
+    assert_eq!(
+        outcome.render(),
+        format!(
+            "{CHECK_FAILED_LINE}{}",
+            CHECK_FAILED_LINE.replace("q1", "q2")
+        )
+    );
+}

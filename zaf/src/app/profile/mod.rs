@@ -25,7 +25,7 @@ use serde_json::{Map, Value, json};
 
 use crate::app::brief::INTERFACE_PAGE;
 use crate::domain::Profile;
-use crate::manifest::{CommandLine, Effort, Manifest, PackSection, RoleSection};
+use crate::manifest::{CommandLine, Effort, Manifest, PackSection, RoleSection, ToolName};
 use crate::ports::{GateVerdict, Shell};
 
 /// The folder under the state folder that holds the profiles.
@@ -503,8 +503,45 @@ fn claude_md(project: Option<&str>) -> Vec<u8> {
 /// The one tool rule the pack itself adds: the verbs every role runs.
 const ZAF_ALLOW: &str = "Bash(zaf *)";
 
+/// The read-only shell basics every profile allows, one `Bash(<word> *)` rule each, so a
+/// programmer never stops on a listing, a loop or a search. `sh -c` is not here: a shell
+/// run from a string can write. Neither are `env`, `find`, `sed` and `awk`: `env <cmd>` runs
+/// anything, `find -exec`/`-delete` and `sed -i` write, and `awk` can call `system()`.
+pub const READ_ONLY: [&str; 21] = [
+    "ls", "cat", "head", "tail", "wc", "diff", "rg", "grep", "fd", "pwd", "echo", "printf", "for",
+    "while", "test", "sort", "uniq", "cut", "stat", "du", "which",
+];
+
+/// The `git` read verbs a colocated repo (a manifest that requires `jj`) allows besides `jj`.
+/// A writing verb (`push`, `commit`, `checkout`, `reset`, ...) is never in this list.
+pub const GIT_READ_ONLY: [&str; 5] = ["log", "show", "diff", "status", "blame"];
+
+/// The tool whose requirement makes the repo colocated, so `git` reads are allowed.
+const COLOCATED_TOOL: &str = "jj";
+
+/// The fixed read-only allow rules: the shell basics, and the `git` read verbs when the
+/// manifest requires `jj`.
+fn read_only_rules(manifest: &Manifest) -> Vec<String> {
+    let mut rules: Vec<String> = READ_ONLY
+        .iter()
+        .map(|word| format!("Bash({word} *)"))
+        .collect();
+    if manifest
+        .requires
+        .contains_key(&ToolName::from(COLOCATED_TOOL))
+    {
+        rules.extend(
+            GIT_READ_ONLY
+                .iter()
+                .map(|verb| format!("Bash(git {verb} *)")),
+        );
+    }
+    rules
+}
+
 /// The template with the manifest's parts merged in: `zaf`, every `[requires]` tool and the
-/// gate commands as allows (so the pack names no tool of its own), the
+/// gate commands as allows (so the pack names no tool of its own), the fixed read-only
+/// rules ([`READ_ONLY`], and [`GIT_READ_ONLY`] in a colocated repo), the
 /// forbidden commands as denies, the model and effort of the roles using the profile, and
 /// the pack enabled when the profile carries it. The template's `defaultMode` stays.
 fn settings_for(
@@ -541,6 +578,7 @@ fn settings_for(
         allow.push(allow_rule(command));
         allow.extend(tool_rules(command));
     }
+    allow.extend(read_only_rules(manifest));
     let mut seen = Vec::new();
     allow.retain(|rule| {
         let fresh = !seen.contains(rule) && !deny.contains(rule);

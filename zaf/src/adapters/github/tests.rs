@@ -658,6 +658,56 @@ fn questions_lists_open_question_issues_and_skips_tasks_waiting_on_one() {
 }
 
 #[test]
+fn questions_on_lists_ruled_and_open_questions_raised_on_the_task_oldest_first() {
+    let fake = FakeGh::new();
+    let ruled = [
+        "chatter".to_owned(),
+        "<!-- zaf:ruling -->\nTitle and author.\n".to_owned(),
+    ];
+    let listed = format!(
+        "[{},{},{},{},{}]",
+        question_issue(9, &[], "OPEN", 2),
+        question_issue(8, &[], "OPEN", 3),
+        issue(2, &["task", "question"], &[], "OPEN"),
+        question_issue(7, &ruled, "CLOSED", 2),
+        issue(5, &["question"], &[], "OPEN"),
+    );
+    fake.on("issue list *", &listed);
+
+    let raised = fake
+        .board()
+        .questions_on(IssueNumber::from(2))
+        .expect("questions on the task");
+
+    let seen: Vec<(IssueNumber, Option<&str>)> = raised
+        .iter()
+        .map(|(ticket, ruling)| (ticket.number, ruling.as_deref()))
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            (IssueNumber::from(7), Some("Title and author.")),
+            (IssueNumber::from(9), None)
+        ]
+    );
+    let expected_call = argv(&[
+        "issue",
+        "list",
+        "--label",
+        "question",
+        "--state",
+        "all",
+        "--limit",
+        "1000",
+        "--json",
+        ISSUE_FIELDS,
+        "--repo",
+        REPO,
+    ]);
+    assert_eq!(fake.calls(), [expected_call]);
+}
+
+#[test]
 fn a_listed_question_is_the_one_that_opened_it() {
     let fake = FakeGh::new();
     let question = NewQuestion {
@@ -791,6 +841,133 @@ fn a_second_identical_ruling_changes_nothing_and_a_done_task_keeps_its_labels() 
         "no label changes: {calls:?}"
     );
     assert_eq!(calls[..2], [view("8"), view("2")]);
+}
+
+fn edits(fake: &FakeGh) -> Vec<Vec<String>> {
+    fake.calls()
+        .into_iter()
+        .filter(|call| call[1] == "edit")
+        .collect()
+}
+
+#[test]
+fn a_question_replaces_claimed_or_ready_with_question() {
+    let fake = FakeGh::new();
+    fake.on(
+        "issue view 2 *",
+        &issue(2, &["task", "claimed"], &[], "OPEN"),
+    )
+    .on("issue view 4 *", &issue(4, &["task", "ready"], &[], "OPEN"))
+    .on("issue edit *", "");
+    let board = fake.board();
+    board
+        .label(IssueNumber::from(2), TaskLabel::Question)
+        .expect("claimed task");
+    board
+        .label(IssueNumber::from(4), TaskLabel::Question)
+        .expect("ready task");
+    let edit = |number: &str, removed: &str| {
+        argv(&[
+            "issue",
+            "edit",
+            number,
+            "--add-label",
+            "question",
+            "--remove-label",
+            removed,
+            "--repo",
+            REPO,
+        ])
+    };
+    assert_eq!(edits(&fake), [edit("2", "claimed"), edit("4", "ready")]);
+}
+
+#[test]
+fn a_question_on_a_task_that_is_neither_claimed_nor_ready_leaves_its_labels_alone() {
+    let fake = FakeGh::new();
+    fake.on("issue view 2 *", &issue(2, &["task"], &[], "OPEN"))
+        .on("issue view 4 *", &issue(4, &["task", "done"], &[], "OPEN"))
+        .on("issue edit *", "");
+    let board = fake.board();
+    board
+        .label(IssueNumber::from(2), TaskLabel::Question)
+        .expect("unlabelled task");
+    board
+        .label(IssueNumber::from(4), TaskLabel::Question)
+        .expect("done task");
+    assert_eq!(edits(&fake), Vec::<Vec<String>>::new());
+}
+
+#[test]
+fn a_question_on_an_epic_never_adds_a_state_label() {
+    let fake = FakeGh::new();
+    fake.on("issue view 3 *", &issue(3, &["epic"], &[], "OPEN"))
+        .on("issue view 5 *", &issue(5, &["epic", "ready"], &[], "OPEN"))
+        .on("issue edit *", "");
+    let board = fake.board();
+    board
+        .label(IssueNumber::from(3), TaskLabel::Question)
+        .expect("epic");
+    board
+        .label(IssueNumber::from(5), TaskLabel::Question)
+        .expect("epic carrying a state label");
+    assert_eq!(edits(&fake), Vec::<Vec<String>>::new());
+}
+
+#[test]
+fn a_ruling_on_a_question_raised_on_an_epic_edits_no_labels() {
+    let fake = FakeGh::new();
+    fake.on("issue view 7 *", &question_issue(7, &[], "OPEN", 3))
+        .on(
+            "issue view 3 *",
+            &issue(3, &["epic", "question"], &[], "OPEN"),
+        )
+        .on("issue comment *", "")
+        .on("issue close *", "")
+        .on("issue edit *", "");
+    let returned = fake
+        .board()
+        .record_ruling(IssueNumber::from(7), "Title and author.");
+    assert_eq!(returned, Ok(None), "an epic is never returned to ready");
+    assert_eq!(edits(&fake), Vec::<Vec<String>>::new());
+}
+
+/// Zuri's 2026-11-01 sequence on zurfur-design: questions on epic #71 and on tasks
+/// #72 and #73 that were never ready, then their rulings #78 to #80.
+#[test]
+fn questions_and_rulings_on_an_epic_and_unsigned_tasks_change_no_label() {
+    let fake = FakeGh::new();
+    fake.on("issue list *", "[]")
+        .on(
+            "issue create *",
+            &format!("https://github.com/{REPO}/issues/78\n"),
+        )
+        .on("issue view 71 *", &issue(71, &["epic"], &[], "OPEN"))
+        .on("issue view 72 *", &issue(72, &["task"], &[], "OPEN"))
+        .on("issue view 73 *", &issue(73, &["task"], &[], "OPEN"))
+        .on("issue view 78 *", &question_issue(78, &[], "OPEN", 71))
+        .on("issue view 79 *", &question_issue(79, &[], "OPEN", 72))
+        .on("issue view 80 *", &question_issue(80, &[], "OPEN", 73))
+        .on("issue comment *", "")
+        .on("issue close *", "")
+        .on("issue edit *", "");
+    let board = fake.board();
+    for on in [71, 72, 73] {
+        let command = NewQuestion {
+            on: IssueNumber::from(on),
+            text: "Which columns does the export carry?".to_owned(),
+            door: false,
+        };
+        crate::app::board::question(&board, &command).expect("question");
+    }
+    for question in [78, 79, 80] {
+        assert_eq!(
+            board.record_ruling(IssueNumber::from(question), "Title and author."),
+            Ok(None),
+            "ruling #{question} returns nothing to ready"
+        );
+    }
+    assert_eq!(edits(&fake), Vec::<Vec<String>>::new());
 }
 
 fn request() -> PrRequest {
