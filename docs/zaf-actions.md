@@ -1,23 +1,25 @@
 # zaf actions
 
-Draft v1, 2026-11-03, with the Engineer's rulings of this session (§8). An **action** is a runnable file that `zaf` names, lists and runs. It is how a project, or the machine, gives the instances a step that is not a verb: the tag that releases a binary, the landing of a hand-made PR, a check the forge does not run. Verbs stay what they are (§4); actions carry the project-specific *how* out of the briefs and out of the Engineer's hands, so the pack stays project-blind and nothing is typed twice. What Claude assumed beyond the rulings is listed in §9, open to veto.
+Draft v2, 2026-11-03, with the Engineer's rulings of this session (§8). An **action** is a runnable file that `zaf` names, lists and runs through `zaf do <name>`. Actions are how a project or a machine makes zaf its own: zaf is the abstraction layer over them. It owns the names, the listing, the environment, the log and one exit contract; what a name *does* is the action behind it, and every place a verb shells out today is such a name with a built-in default. What Claude assumed beyond the rulings is listed in §9, open to veto.
 
 ## 1. Principles
 
-1. **Anything runnable.** A file with a shebang or the executable bit, in any language. `zaf` adds nothing to it but a name, a listing, an environment and a log.
-2. **Two homes, one listing.** *Global* actions live in the machine's zaf home, `~/.zaf/`, and every instance on the machine sees them; *local* actions live in the project's `.zaf/actions/`, are committed, and travel with it. `zaf do` lists both, with the source.
-3. **Named through zaf, called through zaf.** The file name is the action name: `.zaf/actions/land` is `land`. No spaces; hyphens, dots and underscores are fine; no extension is dropped. Instances never call the file; they call `zaf do <name>`, which runs under the profile's `zaf` allow rule, so no action needs a permission of its own.
-4. **Terse like a verb.** Everything an action prints goes to its log; a pass prints nothing and exits 0; a failure prints the exit and the log path. Depth stays in the log.
-5. **A verb is not an action.** A verb goes through a port (board, VCS, forge, design, runner, gate) and is backend-blind; an action is project-specific or machine-specific by nature. Nothing that needs a port becomes an action (§4).
+1. **Make it yours.** A project or a machine replaces what a name does by putting a file of that name in its actions folder. Nothing in the binary is the last word on a step that shells out.
+2. **zaf is an abstraction over actions.** A verb is a stable name and a composition of named steps; each step resolves to an action. `zaf do push` runs the project's `push` when it has one, else the machine's, else zaf's own, and so does every verb that pushes.
+3. **Three tiers, resolved by name.** The project's `.zaf/actions/`, then the machine's `~/.zaf/actions/`, then zaf's built-in defaults. The first file found wins; `zaf do` lists every name with the tier it resolves to.
+4. **Composable.** An action's body may call `zaf do <other>` and any verb: `zaf do something` may be `zaf do something_1; zaf do something_2`. Each call gets its own log; an outer log names the inner ones.
+5. **One contract.** An action exits 0 on success and non-zero on failure, 1 being the canonical failure; every non-zero code it can return is declared in its metadata with its meaning. Nothing else is promised about its output: the log holds it.
+6. **Metadata and body.** Every action file has two parts: the metadata, which names it to zaf (description, exit meanings, limits), and the body, which runs. A file without metadata is not an action.
+7. **A verb is not an action.** What holds state or logic (the board's leases and labels, the ask ladder and quote check, the spawner's tick, the transcript parser) stays in zaf and is not overridable; what shells out is.
 
-## 2. The two homes
+## 2. The tiers and the homes
 
 **The project's `.zaf/`, committed.** Projects gain `.zaf/` as a folder of their own. The manifest is `.zaf.toml` at the project root, `.zaf/config.toml`, or both: when both exist they combine, and `.zaf.toml` wins on a property they both set. `ZAF.toml` is retired.
 
 ```
 .zaf.toml                 the manifest at the root (optional; wins on conflicts)
 .zaf/config.toml          the manifest inside the folder (optional; the two combine)
-.zaf/actions/<name>       local actions, committed
+.zaf/actions/<name>       the project's actions, committed
 .zaf/roles/               per-role project instructions pasted into briefs, committed
 .zaf/.gitignore           written by zaf setup, never by hand: the machine state below
 .zaf/local.toml           machine-private overrides (ignored)
@@ -25,53 +27,76 @@ Draft v1, 2026-11-03, with the Engineer's rulings of this session (§8). An **ac
 .zaf/runs/ .zaf/profiles/ .zaf/workspaces/ .zaf/slices/ .zaf/spawn.state .zaf/guard.json .zaf/asklog.jsonl   as today (ignored)
 ```
 
-**The machine's `~/.zaf/`, the global home.** Laid out like a project's `.zaf/`: `config.toml` (machine-wide defaults every project here inherits, below the project's own manifest) and `actions/` (global actions). Its place is configurable (`ZAF_HOME`); the default is `~/.zaf/`. `zaf setup` creates it, with a commented `config.toml` and an empty `actions/`, and creates the project's `.zaf/` with its `.gitignore`; any verb that finds either missing runs that setup first, so the Engineer may call `zaf setup` from the beginning or let the first verb do it. A `ZAF.toml` still at the root is moved to `.zaf.toml` by setup, once, and said so.
+**The machine's `~/.zaf/`, the global home.** Laid out like a project's `.zaf/`: `config.toml` (machine-wide defaults every project here inherits, below the project's own manifest) and `actions/` (the machine's actions, seen by every instance on it). Its place is configurable (`ZAF_HOME`); the default is `~/.zaf/`. `zaf setup` creates it, with a commented `config.toml` and an empty `actions/`, and creates the project's `.zaf/` with its `.gitignore`; any verb that finds either missing runs that setup first, so the Engineer may call `zaf setup` from the beginning or let the first verb do it. A `ZAF.toml` still at the root is moved to `.zaf.toml` by setup, once, and said so.
 
-**Precedence.** Manifest: `.zaf.toml` > `.zaf/config.toml` > `~/.zaf/config.toml` > the pack's defaults, property by property. Actions: a local name shadows a global one, and `zaf doctor` says so.
+**zaf's built-in defaults.** The bottom tier: one default per named step (§4), shipped in the binary, listed by `zaf do` as tier `zaf`, each with the same metadata as a file. `zaf do --show <name>` prints the resolved action: a file as is, a built-in as its metadata and the steps it takes, so a project copies it into `.zaf/actions/<name>` and edits.
 
-The zip test (framework §7.6) gains one named exception: `~/.zaf/` is the machine's zaf home, like its credentials. A project that depends on a global action depends on that machine; `zaf doctor` reports every `action:` step and gate line that names a global action, so the dependency is visible.
+**Precedence.** Manifest: `.zaf.toml` > `.zaf/config.toml` > `~/.zaf/config.toml` > the pack's defaults, property by property. Actions: project > machine > built-in, and `zaf doctor` names every shadowing.
 
-## 3. The object
+The zip test (framework §7.6) gains one named exception: `~/.zaf/` is the machine's zaf home, like its credentials. A project whose steps resolve to a machine action depends on that machine; `zaf doctor` reports each one, so the dependency is visible.
 
-| Field | Where it comes from |
-|---|---|
-| name | the file name in `actions/`, as is |
-| source | `global` or `local` |
-| description | the first comment line after the shebang (`# <one line>`); empty when there is none |
-| timeout | `[actions] timeout_minutes` (default 30); an action may set its own with a `# zaf: timeout <minutes>` header line |
+## 3. The file
 
-**Environment.** Run in the caller's current directory (the project root for a hand run, the slice workspace for a programmer), with `ZAF_ROOT` (the project root), `ZAF_HOME`, `ZAF_ACTION` (the name), and `ZAF_INSTANCE` and `ZAF_VERSION` passed through. Arguments after the name go to the action as given.
+Two parts. The **metadata** is the comment block that opens the file, right after the shebang when there is one: every line is the language's comment marker, then `zaf`, then a key, a colon and a value. The **body** is everything after the first line that is not metadata.
 
-**Output.** Everything the action writes, stdout and stderr, goes to `.zaf/logs/<DATETIME>_<ZAF_ACTION_NAME>.log` (`~/.zaf/logs/` when run outside a project), `<DATETIME>` as `YYYYMMDDTHHMMSSZ`. On exit 0 `zaf` prints nothing. On a non-zero exit it prints `<name>: exit <n>, log <path>` and the last ten lines of the log. `--more` prints the whole log after the run; `--json` gives name, source, exit, seconds and log. The action's exit code passes through, mapped to `2` when the file cannot start or the time bound passes.
+```sh
+#!/bin/sh
+# zaf description: land a pull request and move the working copy onto main
+# zaf 1: the forge refused the merge (checks failing or review missing)
+# zaf 2: the fetch failed; main was not moved
+# zaf timeout: 10
+set -e
+zaf do merge "$1"
+zaf do sync
+```
 
-## 4. The verbs, scrutinized
-
-| Verb | Stays a verb? | Why |
+| Key | Required | Meaning |
 |---|---|---|
-| `board ready\|claim\|report\|question\|ruling` | yes | leases, labels and comment markers through the Board port; backend-blind |
-| `ask`, `asklog` | yes | the ladder, the quote check, the log: logic, not a script |
-| `brief` | yes, and **lists the local actions** in the pack | composed from ports; the pack is where an instance learns the project's steps |
-| `check <task>` / `verify` | yes; its `command:<cmd>` step gains a sibling **`action:<name>`** | the engine, the dedupe and the record are logic; the step itself is a script |
-| `check pr:<n>` | yes; `action:<name>` steps apply here too | CI, bots and runners wait inside the verb |
-| `changes` | yes | the VCS port, stat before hunks |
-| `slice open\|pr\|merge\|drop` | yes | VCS, forge and board together, idempotent in slice terms |
-| `spawn`, `status`, `guard` | yes | the tick, the board snapshot and the budget are state and logic |
-| `report` | yes | the transcript parser with golden tests; generic across projects |
-| `doctor` | yes, and **checks the actions**: each file runnable, each `action:` step and each gate line naming one that exists, local names that shadow global ones | the manifest's validator |
-| `init`, `setup`, `profile init` | yes; `setup` also makes the two homes (§2) | they write the project's own files from the manifest |
-| `[gate] full\|light\|tests` | stays a command line | the profile allow-list derives its tool rules from the gate's words; a project may write `full = "zaf do gate"` when it prefers a script, at the price of that derivation |
-| `[runners.<name>] command` | stays a template | placeholders (`{prompt}`, `{model}`) are the runner's shape, not a script's |
+| `description` | yes | one line, what `zaf do` prints beside the name |
+| `<n>` (a non-zero integer) | at least `1` | what that exit code means; every code the body can return is declared |
+| `timeout` | no | minutes before the run is killed; default `[actions] timeout_minutes` (30) |
 
-No verb moves. What changes is where a project's *how* lives: the release brief says "merge and tag" and the project's `release` action does it; `[check.pr]` names `action:nodes-check` instead of a line; the Engineer's repeated `gh pr merge … && jj git fetch && jj new main` is `zaf do land <pr>`.
+A file with no metadata, no description or no declared code is refused by `zaf do` (exit 1, naming the line) and reported by `zaf doctor`. A comment marker is any run of non-alphanumeric characters (`#`, `//`, `--`, `;`, `REM`), so the format is the same in every language.
+
+**Name.** The file name, as is: `.zaf/actions/land` is `land`. No spaces; hyphens, dots and underscores are fine; no extension is dropped.
+
+**Environment.** Run in the caller's current directory (the project root for a hand run, the slice workspace for a programmer), with `ZAF_ROOT` (the project root), `ZAF_HOME`, `ZAF_ACTION` (the name), `ZAF_DEPTH` (how many `zaf do` calls are above this one), and `ZAF_INSTANCE` and `ZAF_VERSION` passed through. Arguments after the name go to the body as given.
+
+**Output and exit.** Everything the body writes, stdout and stderr, goes to `.zaf/logs/<DATETIME>_<ZAF_ACTION_NAME>.log` (`~/.zaf/logs/` outside a project), `<DATETIME>` as `YYYYMMDDTHHMMSSZ`. On exit 0 `zaf` prints nothing. On a non-zero exit it prints `<name>: exit <n>, <its declared meaning>, log <path>` and the last ten lines of the log; an undeclared code prints `exit <n>, undeclared`. The code passes through unchanged; a file that cannot start, or a run past its time bound, is `2`. `--more` prints the whole log after the run; `--json` gives name, tier, exit, meaning, seconds and log. A nested `zaf do` writes its own log and its path into the outer one.
+
+## 4. The verbs, as compositions
+
+Each verb keeps its name, its exit codes and its logic; the steps where it shells out become named actions with a built-in default. The first names:
+
+| Verb | Stays in zaf | Named steps (built-in default, overridable) |
+|---|---|---|
+| `board ready\|claim\|report\|question\|ruling` | leases, labels, comment markers, through the Board port | none: the board is state, not a step |
+| `ask`, `asklog` | the ladder, the quote check, the log | none |
+| `brief` | the pack's composition; **it lists the project's actions** | none |
+| `check <task>` / `verify` | the engine, the dedupe, the record | `gate`, `gate-light`, `test <name>`; a `[check.*]` step may be `action:<name>` beside `command:<cmd>` |
+| `check pr:<n>` | waiting on CI, bots and runners | `action:<name>` steps |
+| `changes` | the VCS port | none |
+| `slice open` | the slice's naming and record | `workspace-open <slice> <base>` |
+| `slice pr` | what to publish, the PR's record | `commit`, `push <slice>`, `pr-open <slice> <base>` |
+| `slice merge` | the merge conditions, the task's `done` | `sync <base>`, `gate`, `push <slice>`, `pr-merge <pr>`, `workspace-drop <slice>` |
+| `slice drop` | the record | `workspace-drop <slice>` |
+| `spawn`, `status`, `guard`, `report` | all of it | none |
+| `doctor` | the manifest's validator; **it checks every action** (metadata, runnable, shadowing, each `action:` step naming one that exists) | none |
+| `init`, `setup`, `profile init` | they write the project's own files; `setup` makes the two homes (§2) | none |
+| `[gate]` | the gate port keeps its levels | its lines may be `zaf do gate`; the profile allow-list still derives its tool rules from a literal line, so a project that wants both keeps the line |
+| `[runners.<name>]` | the template and its placeholders | none now |
+
+The release brief's "merge and tag" becomes the project's `release` action; a hand-made PR lands with `zaf do land <pr>`; `[check.pr]` names `action:nodes-check` instead of a line.
 
 ## 5. The verb added
 
 | Verb | Use it to |
 |---|---|
-| `zaf do` | list the actions: name, source, description; `--json` for the spawner and the briefs |
-| `zaf do <name> [args…]` | run one; its exit code and its log |
+| `zaf do` | list every action: name, tier, description; `--json` for the spawner and the briefs |
+| `zaf do <name> [args…]` | run one; its exit code, its meaning on failure, its log |
+| `zaf do --show <name>` | print the action a name resolves to, to copy into the project and edit |
 
-Exit codes as every verb: `0` done, `1` refused (no such action, a local file that is not runnable), `2` the file could not start or timed out, and the action's own code otherwise.
+Exit codes as every verb: `0` done, `1` refused (no such action, a file without metadata or not runnable, a declared-code error in its metadata), `2` the file could not start or timed out, and the action's own declared code otherwise.
 
 ## 6. The manifest
 
@@ -84,15 +109,15 @@ The actions folder is not configurable: `.zaf/actions/` in a project, `actions/`
 
 ## 7. Dogfood: the first actions
 
-Built through the lifecycle on this repo (an epic on the board, planned, built by a team instance). The ways repo moves first: `ZAF.toml` becomes `.zaf.toml`, the `.gitignore` line `.zaf/` becomes `.zaf/.gitignore`, and `.zaf/actions/` holds the local ones.
+Built through the lifecycle on this repo (an epic on the board, planned, built by a team instance). The ways repo moves first: `ZAF.toml` becomes `.zaf.toml`, the `.gitignore` line `.zaf/` becomes `.zaf/.gitignore`, and `.zaf/actions/` holds the project's own.
 
-| Action | Home | Does |
+| Action | Tier | Does |
 |---|---|---|
-| `land` | global | `land <pr>`: squash-merge a PR with branch deletion, fetch, and start a new change on the main bookmark |
-| `release` | local | `release <version>`: check `zaf/Cargo.toml` is at `<version>`, tag `zaf-v<version>` on main and push the tag; the workflow does the rest |
-| `nodes-check` | global | `nodes check --root "$ZAF_ROOT"`; the `[check.pr]` step of every charted repo |
+| `land <pr>` | built-in | `zaf do pr-merge <pr>` then `zaf do sync main`: the Engineer's repeated `gh pr merge … && jj git fetch && jj new main` |
+| `release <version>` | project | check `zaf/Cargo.toml` is at `<version>`, `zaf do tag zaf-v<version>`; the workflow does the rest |
+| `nodes-check` | machine | `nodes check --root "$ZAF_ROOT"`; the `[check.pr]` step of every charted repo on this machine |
 
-Not actions: `/nodes:chart --diff` (a model's job, a skill), the gate (a line, §4), the spawner's missing launches (verbs, their own epic).
+Not actions: `/nodes:chart --diff` (a model's job, a skill) and the spawner's missing launches (verbs, their own epic).
 
 ## 8. Rulings, 2026-11-03
 
@@ -102,15 +127,20 @@ Not actions: `/nodes:chart --diff` (a model's job, a skill), the gate (a line, �
 4. **Verb:** `zaf do`.
 5. **Output:** the log is `.zaf/logs/<DATETIME>_<ZAF_ACTION_NAME>.log`.
 6. **Ignore rule:** zaf writes `.zaf/.gitignore` for the machine state.
+7. **Actions are the "make it yours" layer, and zaf is the abstraction layer over them:** `zaf do push` may do far more than a push.
+8. **Contract:** an action returns 0 for success and non-zero for failure (1 canonical).
+9. **Composable:** an action's body may run `zaf do something_1; zaf do something_2`.
+10. **Two parts:** metadata (the description and what each non-zero return value means) and the body.
 
 ## 9. Assumed by Claude, open to veto
 
-1. `zaf do` with no name lists; `--json` for the briefs.
-2. `ZAF_HOME` moves the global home; nothing else configures it.
-3. `~/.zaf/config.toml` is read as machine-wide defaults below the project's manifest; what `.zaf/local.toml` holds today (budget, prices) may move there later, not in this epic.
-4. `.zaf/roles/` is committed with the project; it holds instructions, not secrets.
-5. `zaf setup` moves a root `ZAF.toml` to `.zaf.toml` once; `zaf doctor` refuses a project that still has both.
-6. On exit 0 nothing is printed; a value an action must hand back is read from its log with `--more` or `--json`.
-7. `command:` check steps stay one release beside `action:`, then retire.
-8. Every instance may run global actions; the brief lists local actions only.
-9. The manifest combines table by table, property by property; an array is replaced, not merged.
+1. Built-in defaults are zaf's own code behind a name (today's jj and gh adapters), not scripts; `--show` prints their metadata and steps. Defaults as shipped scripts is the alternative.
+2. The metadata syntax of §3: `<comment marker> zaf <key>: <value>` lines opening the file; `timeout` is the only optional key now.
+3. `zaf do` with no name lists; `ZAF_HOME` moves the global home; `ZAF_DEPTH` guards recursion at 8.
+4. The named steps of §4 are the first set; the planning instance may add or merge names, never remove the five the dogfood needs (`gate`, `push`, `pr-merge`, `sync`, `tag`).
+5. `~/.zaf/config.toml` is read as machine-wide defaults below the project's manifest; what `.zaf/local.toml` holds today may move there later, not in this epic.
+6. `.zaf/roles/` is committed with the project; it holds instructions, not secrets.
+7. `zaf setup` moves a root `ZAF.toml` to `.zaf.toml` once; `zaf doctor` refuses a project that still has both.
+8. On exit 0 nothing is printed; a value an action must hand back is read from its log with `--more` or `--json`.
+9. `command:` check steps stay one release beside `action:`, then retire.
+10. The manifest combines table by table, property by property; an array is replaced, not merged.
