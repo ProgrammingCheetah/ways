@@ -1,0 +1,57 @@
+{
+  "path": "zaf/src/app/spawn",
+  "charted": "2026-11-03",
+  "short": "spawner tick: plan, reserve, launch",
+  "is": "One tick of the spawner, split into a pure planner, the .zaf/spawn.state slot file, and the I/O that reserves slots, launches team instances through the Runner port and records them on the epic.",
+  "type": "code",
+  "tags": [
+    "category:source",
+    "scheduler"
+  ],
+  "conventions": [
+    "tick.rs stays pure (no port, no file); every side effect lives in mod.rs",
+    "Launch and exit are HTML-comment markers on the epic: `<!-- zaf:launch <instance> -->`, `<!-- zaf:exit <instance> <status> -->`"
+  ],
+  "entry_points": [
+    "mod.rs",
+    "tick.rs"
+  ],
+  "fs": [
+    {
+      "name": "mod.rs",
+      "role": "prepare, launch, launch_all, dry run",
+      "node": false
+    },
+    {
+      "name": "state.rs",
+      "role": ".zaf/spawn.state: next instance number, slot-holding launches",
+      "node": false
+    },
+    {
+      "name": "state/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "tests.rs",
+      "role": "tick and launch tests",
+      "node": false
+    },
+    {
+      "name": "tick.rs",
+      "role": "board snapshot, state, guard and settings in, launch plan out",
+      "node": false
+    },
+    {
+      "name": "tick/",
+      "role": "tests.rs",
+      "node": false
+    }
+  ],
+  "notes": [
+    "Only the team-instance branch is built; the planning, challenger and release launches the teams README describes are not here yet",
+    "The verb never loops; an external timer runs `zaf spawn --once`",
+    "The launch prompt and standing brief are assets/spawn/team-prompt.txt and team-brief.md",
+    "Slots and guard thresholds come from ZAF.toml [spawn]; the guard level is read from .zaf/guard.json; a batch of tasks shares one instance and one slot"
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "path": "plugins/teams/agents",
+  "charted": "2026-11-03",
+  "short": "the teams role briefs",
+  "is": "Seven agent definitions: six briefs for the instances zaf launches (team, programmer, keeper, planning, challenger, release) and `designer`, the judgment lane of the Engineer's design session.",
+  "type": "code",
+  "tags": [
+    "category:source",
+    "claude-code",
+    "agent",
+    "zaf"
+  ],
+  "conventions": [
+    "each file is `<role>.md`: frontmatter (name, description, model, effort, turns, tool limits, color), then a one-page brief: purpose, input, output, lifecycle, budget, never-list, verbs in order",
+    "the six zaf role briefs begin, right after the frontmatter, with the exact bytes of zaf's interface page so every instance shares a cached prompt prefix; when the page changes it is pasted into all six (the pack README's cmp loop checks this)",
+    "tool limits live in frontmatter: keeper gets Read/Grep/Glob only; team, planning, challenger and release cannot edit files; programmer cannot spawn agents; designer is unrestricted"
+  ],
+  "entry_points": [
+    "team.md"
+  ],
+  "fs": [
+    {
+      "name": "challenger.md",
+      "role": "comments on each planned task that is not exact, before the Engineer signs the epic (opus, xhigh)",
+      "node": false
+    },
+    {
+      "name": "designer.md",
+      "role": "design-session judgment lane: architect's package, fresh challenge of signed documents, one-way-door review; no interface prefix",
+      "node": false
+    },
+    {
+      "name": "keeper.md",
+      "role": "answers one `zaf ask` from the design pages with verbatim quotes, or says not settled (haiku, 10 turns)",
+      "node": false
+    },
+    {
+      "name": "planning.md",
+      "role": "turns a signed epic into exact Task and Spike sub-issues, or re-plans after a ruling (opus, xhigh)",
+      "node": false
+    },
+    {
+      "name": "programmer.md",
+      "role": "one task, one round, green in its own workspace from the task's zaf brief pack (sonnet, high, 60 turns)",
+      "node": false
+    },
+    {
+      "name": "release.md",
+      "role": "closes a milestone: checks musts, gathers release reviews and a retrospective, then files tasks or merges and tags (opus, xhigh)",
+      "node": false
+    },
+    {
+      "name": "team.md",
+      "role": "team instance: builds a batch of one epic's ready tasks, a programmer per task, merges into the integration branch (opus, xhigh, 200 turns)",
+      "node": false
+    }
+  ],
+  "notes": [
+    "in this repo the interface page is `zaf/assets/interface.md`; all six briefs matched it byte for byte on 2026-11-03",
+    "frontmatter model and effort are the by-hand defaults; the spawner passes ZAF.toml's `[roles.<role>]` model, effort, turns and profile instead",
+    "keeper.md points to zaf's own keeper prompt (`zaf/assets/keeper.md`) and never restates it",
+    "planning.md reads `nodes chain <path>` only when `nodes` is on PATH, its one optional tie to the nodes pack"
+  ]
+}

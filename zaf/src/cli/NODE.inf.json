@@ -1,0 +1,93 @@
+{
+  "path": "zaf/src/cli",
+  "charted": "2026-11-03",
+  "short": "verb modules and shared exit codes",
+  "is": "One module per verb that runs the app use case, prints terse, --json or --more output, and maps the outcome to the shared exit codes.",
+  "type": "code",
+  "tags": [
+    "category:ui",
+    "cli",
+    "clap"
+  ],
+  "conventions": [
+    "One file per verb named after it; a verb module owns printing and the exit code, the logic stays in app",
+    "Exit codes for every verb: 0 ok, 1 domain refusal, 2 backend failure or missing, 64 listed but not built; clap keeps 2 for usage errors",
+    "Instance verbs read ZAF_INSTANCE (`<role> instance <n> on #<epic>`) and slice verbs ZAF_VERSION; the spawner sets both"
+  ],
+  "entry_points": [
+    "../cli.rs",
+    "exit.rs"
+  ],
+  "fs": [
+    {
+      "name": "ask.rs",
+      "role": "ask and print the verified answer; exit 2 when a citation fails its check",
+      "node": false
+    },
+    {
+      "name": "board.rs",
+      "role": "board actions",
+      "node": false
+    },
+    {
+      "name": "brief.rs",
+      "role": "write the pack, print path and token estimate",
+      "node": false
+    },
+    {
+      "name": "check.rs",
+      "role": "check and verify; stores records under .zaf/runs/",
+      "node": false
+    },
+    {
+      "name": "doctor.rs",
+      "role": "ShellCommands backing doctor's Commands",
+      "node": false
+    },
+    {
+      "name": "exit.rs",
+      "role": "exit codes, port and composition error mapping",
+      "node": false
+    },
+    {
+      "name": "guard/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "init/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "report/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "slice.rs",
+      "role": "slice actions plus helpers changes shares",
+      "node": false
+    },
+    {
+      "name": "spawn.rs",
+      "role": "one tick, launches joined in parallel threads; --dry-run",
+      "node": false
+    },
+    {
+      "name": "status/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "tests.rs",
+      "role": "parsing and exit-64 tests",
+      "node": false
+    }
+  ],
+  "notes": [
+    "Verbs: board (ready, claim, report, question, ruling), ask, brief, check, verify, changes, slice (open, pr, merge, drop), spawn, asklog, status, report, guard, init, doctor, setup, profile init",
+    "`init --from-teams` is the one listed path still exiting 64",
+    "check.rs names adapters directly (SystemShell, gate RUNS_DIR), the only non-test place outside composition.rs that does"
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "path": "zaf/tests",
+  "charted": "2026-11-03",
+  "short": "binary-level integration tests with a fake gh",
+  "is": "Integration tests that run the built zaf binary in a temp project against a scripted fake gh and, for slices, a throwaway jj repository with a bare remote.",
+  "type": "code",
+  "tags": [
+    "category:tests",
+    "integration"
+  ],
+  "conventions": [
+    "Each test crate does `mod common;` and builds a Project (temp root, ZAF.toml, gh scene) from common/mod.rs"
+  ],
+  "entry_points": [
+    "common/mod.rs"
+  ],
+  "fs": [
+    {
+      "name": "cli_board.rs",
+      "role": "board verbs: terse and JSON forms, exits 0, 1, 2",
+      "node": false
+    },
+    {
+      "name": "cli_slice.rs",
+      "role": "slice open, changes, slice pr, slice merge end to end",
+      "node": false
+    },
+    {
+      "name": "common/",
+      "role": "shared Project harness and jj helper",
+      "node": false
+    },
+    {
+      "name": "fixtures/",
+      "role": "gh: fake gh shell script",
+      "node": false
+    }
+  ],
+  "notes": [
+    "fixtures/gh reads a FAKE_GH_DIR scene: a rules file of glob, exit code and response file; calls/ records each argv; an unmatched call exits 97",
+    "src/adapters/github/tests.rs also uses fixtures/gh, so it is shared with unit tests",
+    "cli_slice needs a real jj on PATH"
+  ]
+}

@@ -1,0 +1,55 @@
+{
+  "path": "plugins/teams",
+  "charted": "2026-11-03",
+  "short": "the zaf role-brief and design-routine pack",
+  "is": "The `teams` plugin (2.0.0): agent briefs for the instances the zaf spawner launches plus the design-session judgment lane, a SessionStart hook that prints `zaf doctor`, and five routines for the Engineer's design session.",
+  "type": "code",
+  "tags": [
+    "category:source",
+    "claude-code",
+    "plugin",
+    "zaf"
+  ],
+  "conventions": [
+    "nothing in the pack names a project: every project word comes from the project's ZAF.toml or the ticket",
+    "the build work runs through `zaf` verbs; the pack itself ships no scripts beyond the one hook command"
+  ],
+  "entry_points": [
+    "README.md",
+    ".claude-plugin/plugin.json"
+  ],
+  "fs": [
+    {
+      "name": ".claude-plugin/",
+      "role": "plugin.json manifest, name teams, version 2.0.0",
+      "node": false
+    },
+    {
+      "name": "README.md",
+      "role": "the pack's manual: parts, role table, launching an instance, routines, what 2.0.0 retired",
+      "node": false
+    },
+    {
+      "name": "agents/",
+      "role": "one brief per role, run as `teams:<role>`",
+      "node": true
+    },
+    {
+      "name": "hooks/",
+      "role": "hooks.json: at session start in a ZAF.toml project, runs `zaf doctor` and prints its table",
+      "node": false
+    },
+    {
+      "name": "skills/",
+      "role": "the design session's five slash commands",
+      "node": true
+    }
+  ],
+  "notes": [
+    "this repo's ZAF.toml `[pack] path` points here: `zaf profile init` adds the repo as a marketplace and installs and enables teams@ways in each zaf profile",
+    "the only pack whose plugin.json sets a `version` (2.0.0), although the root README says the plugins carry no version number",
+    "the hook's matcher is `startup` only (not resume or clear) and it always exits 0, so it never blocks a session",
+    "the `zaf` binary these briefs and the hook drive is built from this repo's zaf/ crate; the interface page and keeper prompt they rely on live in zaf/assets/",
+    "needs Claude Code 2.1.296 or later because team.md sets `autoCompactWindow`"
+  ]
+}

@@ -1,0 +1,60 @@
+{
+  "path": "zaf",
+  "charted": "2026-11-03",
+  "short": "zaf Rust crate, the framework's verb binary",
+  "is": "The Rust crate for zaf, the single project-blind binary of Zuri's AI Framework whose verbs the teams plugin drives over a board, a VCS, a forge, a design source, runners and a gate.",
+  "type": "code",
+  "tags": [
+    "category:project",
+    "category:source",
+    "lang:rust",
+    "cli"
+  ],
+  "conventions": [
+    "Built with cargo from inside zaf/ (edition 2024, publish = false); Cargo.lock is committed and CI builds with --locked",
+    "The gate is cargo fmt --check, build, clippy --all-targets -D warnings, test; any clippy warning fails it",
+    "Cargo.toml's version must equal the release tag zaf-v<version>"
+  ],
+  "entry_points": [
+    "Cargo.toml",
+    "src/lib.rs",
+    "src/main.rs"
+  ],
+  "fs": [
+    {
+      "name": ".gitignore",
+      "role": "ignores /target",
+      "node": false
+    },
+    {
+      "name": "Cargo.lock",
+      "role": "pinned dependencies",
+      "node": false
+    },
+    {
+      "name": "Cargo.toml",
+      "role": "crate manifest: lib plus the zaf bin",
+      "node": false
+    },
+    {
+      "name": "assets/",
+      "role": "prompts, briefs and profile settings compiled into the binary",
+      "node": true
+    },
+    {
+      "name": "src/",
+      "role": "library and binary source",
+      "node": true
+    },
+    {
+      "name": "tests/",
+      "role": "integration tests on the built binary",
+      "node": true
+    }
+  ],
+  "notes": [
+    "The gate commands live in the repo-root ZAF.toml [gate] (full, light, tests), each `cd zaf && cargo ...`",
+    "The design spec is docs/zuri-ai-framework.md (§7.4 for the ports-and-adapters layout); the crate has no README of its own",
+    "Dependencies are only clap, serde, toml, serde_json, thiserror, derive_more, strum, semver and humantime; every backend is reached by shelling out"
+  ]
+}

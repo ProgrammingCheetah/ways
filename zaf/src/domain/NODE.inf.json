@@ -1,0 +1,128 @@
+{
+  "path": "zaf/src/domain",
+  "charted": "2026-11-03",
+  "short": "framework objects and their line formats",
+  "is": "The backend-blind types (epics, tasks, asks, answers, findings, instances, profiles, ids, labels) and the text formats they travel in, each with its parser, plus the verbatim quote check.",
+  "type": "code",
+  "tags": [
+    "category:source",
+    "parsers"
+  ],
+  "conventions": [
+    "Imports no other layer, only the crate's text_newtype macro",
+    "A format with rules gets its own error type (AskError, AnswerError, IdError, TaskTemplateError)"
+  ],
+  "entry_points": [
+    "../domain.rs",
+    "task.rs",
+    "ask.rs",
+    "answer.rs"
+  ],
+  "fs": [
+    {
+      "name": "answer.rs",
+      "role": "keeper answer: verdict, citations, word limit",
+      "node": false
+    },
+    {
+      "name": "answer/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "ask.rs",
+      "role": "ask record: up to five typed questions",
+      "node": false
+    },
+    {
+      "name": "ask/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "epic.rs",
+      "role": "epic",
+      "node": false
+    },
+    {
+      "name": "finding.rs",
+      "role": "check finding: severity, location, source",
+      "node": false
+    },
+    {
+      "name": "ids.rs",
+      "role": "issue numbers and page ids",
+      "node": false
+    },
+    {
+      "name": "ids/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "instance.rs",
+      "role": "a role run numbered on its epic, and its slug",
+      "node": false
+    },
+    {
+      "name": "instance/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "labels.rs",
+      "role": "task labels and page statuses",
+      "node": false
+    },
+    {
+      "name": "labels/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "profile.rs",
+      "role": "context profiles: lean, build, design, review",
+      "node": false
+    },
+    {
+      "name": "profile/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "quote.rs",
+      "role": "verbatim quote check against the cited page",
+      "node": false
+    },
+    {
+      "name": "quote/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "task.rs",
+      "role": "task ticket template: one Field: value per line",
+      "node": false
+    },
+    {
+      "name": "task/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "text.rs",
+      "role": "shared line-format rules",
+      "node": false
+    },
+    {
+      "name": "text/",
+      "role": "tests.rs",
+      "node": false
+    }
+  ],
+  "notes": [
+    "Task fields: Goal, Owned paths, Interfaces, Design pages, Architecture, Acceptance, Tests, Security trigger, Model, Size; check reads Tests, Architecture and Acceptance",
+    "Task labels ready, claimed, blocked, question, done and page statuses decided, current, proposed, superseded are the vocabularies shared with the board and design source",
+    "Ask kinds are fact, rule, term, exists, where"
+  ]
+}

@@ -1,0 +1,93 @@
+{
+  "path": "zaf/src/app/check",
+  "charted": "2026-11-03",
+  "short": "task checks and the PR step engine",
+  "is": "The machinery behind `zaf check` and `zaf verify`: the target (task or pull request), the model-free task check, and a threaded engine that runs `[check.<target>] steps` and dedupes their findings into a stored CheckRecord.",
+  "type": "code",
+  "tags": [
+    "category:source",
+    "review"
+  ],
+  "conventions": [
+    "One module per step kind under step/: ci, command:<cmd>, runner:<name>:<role>, bot:<login>, codeql; a ?flagged suffix runs a step only for security-flagged tasks",
+    "Step reports speak `MUST: <path>:<line> <title>` and `NOTE: ...`; any other line is ignored",
+    "A task check uses no model: light gate, Tests: via [gate] tests, Architecture: ids as whole-word symbols in owned paths, Acceptance: lines listed as manual"
+  ],
+  "entry_points": [
+    "mod.rs",
+    "engine.rs",
+    "step.rs"
+  ],
+  "fs": [
+    {
+      "name": "engine.rs",
+      "role": "each step in its own thread under one timeout",
+      "node": false
+    },
+    {
+      "name": "engine/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "mod.rs",
+      "role": "Verdict and re-exports",
+      "node": false
+    },
+    {
+      "name": "record.rs",
+      "role": "CheckRecord printed and stored for --status",
+      "node": false
+    },
+    {
+      "name": "record/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "report.rs",
+      "role": "report-line parsing, dedupe within LINE_WINDOW",
+      "node": false
+    },
+    {
+      "name": "report/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "step.rs",
+      "role": "step syntax and StepKind",
+      "node": false
+    },
+    {
+      "name": "step/",
+      "role": "step kinds: bot, ci, codeql, command, runner (each with tests)",
+      "node": false
+    },
+    {
+      "name": "target.rs",
+      "role": "task issue number or pull request",
+      "node": false
+    },
+    {
+      "name": "target/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "task.rs",
+      "role": "task target's line-by-line check",
+      "node": false
+    },
+    {
+      "name": "task/",
+      "role": "symbols.rs: whole-word symbol search; tests.rs",
+      "node": false
+    }
+  ],
+  "notes": [
+    "step/runner.rs writes assets/check/security.md as the brief when the role name contains `security`, else critique.md, and runs under the review profile",
+    "cli/check.rs stores the record under .zaf/runs/ and exits 0 clean, 1 must-fix, 2 step failure or missing backend",
+    "The ways repo's own ZAF.toml runs only the ci step for pull requests"
+  ]
+}

@@ -1,0 +1,59 @@
+{
+  "path": "zaf/src/manifest",
+  "charted": "2026-11-03",
+  "short": "ZAF.toml model and validation",
+  "is": "The typed model of ZAF.toml: one struct per section with the pack's defaults, the [requires] version pins, and the loader that defaults and validates the whole document.",
+  "type": "code",
+  "tags": [
+    "category:schema",
+    "category:config",
+    "toml"
+  ],
+  "conventions": [
+    "Each ZAF.toml table maps to a *Section struct in sections.rs; every fixed section denies unknown keys, [check.<target>] is an open table",
+    "Keys a kind needs (repo for github-issues and github, repo or path for design, image for container) are checked at load in Manifest::validate"
+  ],
+  "entry_points": [
+    "../manifest.rs",
+    "sections.rs",
+    "document.rs"
+  ],
+  "fs": [
+    {
+      "name": "document.rs",
+      "role": "Manifest: load, default, validate",
+      "node": false
+    },
+    {
+      "name": "document/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "errors.rs",
+      "role": "ManifestError",
+      "node": false
+    },
+    {
+      "name": "requirement.rs",
+      "role": "[requires]: semver requirement or pinned release tag",
+      "node": false
+    },
+    {
+      "name": "requirement/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "sections.rs",
+      "role": "every section, its kinds and defaults",
+      "node": false
+    }
+  ],
+  "notes": [
+    "Only [project] and [board] are required; vcs, forge, gate, style and pack are optional and design defaults to kind none",
+    "Sections: project, requires, board, vcs, forge, design, style, workspaces, branches, gate, runners, roles, check, ask, spawn, isolation, pack, forbidden",
+    "isolation kind container parses and validates, but no adapter acts on it",
+    "Machine-private .zaf/local.toml is not part of this model"
+  ]
+}
