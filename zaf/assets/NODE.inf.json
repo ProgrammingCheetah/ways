@@ -1,0 +1,51 @@
+{
+  "path": "zaf/assets",
+  "charted": "2026-11-03",
+  "short": "embedded prompts, briefs and profile settings",
+  "is": "The prompt texts, review briefs, team spawn brief and per-profile Claude settings that app modules compile into the binary with include_str!.",
+  "type": "code",
+  "tags": [
+    "category:source",
+    "category:docs",
+    "prompts"
+  ],
+  "conventions": [
+    "Brace placeholders ({role}, {pr}, {root}, {instance}, {epic}, {project}, {tasks}, {brief}) are filled by the using module",
+    "Assets are compiled in; an edit takes effect only after a rebuild"
+  ],
+  "entry_points": [
+    "interface.md"
+  ],
+  "fs": [
+    {
+      "name": "check/",
+      "role": "critique and security review briefs for runner steps",
+      "node": false
+    },
+    {
+      "name": "interface.md",
+      "role": "the zaf interface page: verbs and exit codes",
+      "node": false
+    },
+    {
+      "name": "keeper.md",
+      "role": "default keeper prompt for zaf ask",
+      "node": false
+    },
+    {
+      "name": "profiles/",
+      "role": "lean and build settings.json for profile init",
+      "node": false
+    },
+    {
+      "name": "spawn/",
+      "role": "team-instance launch prompt and standing brief",
+      "node": false
+    }
+  ],
+  "notes": [
+    "Used by: keeper.md in app/ask, interface.md in app/brief, check/ in app/check/step/runner.rs, profiles/ in app/profile, spawn/ in app/spawn",
+    "Every plugins/teams brief opens with interface.md's exact bytes for a shared cache prefix; change it and re-paste it there",
+    "Profile folder names match the profile keys in ZAF.toml [roles] (programmer lean, team build)"
+  ]
+}

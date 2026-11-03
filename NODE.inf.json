@@ -1,0 +1,74 @@
+{
+  "path": ".",
+  "charted": "2026-11-03",
+  "short": "ways: a Claude Code plugin marketplace of ways of working, plus the zaf binary",
+  "is": "The ways repository: a Claude Code plugin marketplace (the teams, handoff and nodes packs under plugins/) and zaf, the Rust CLI the teams pack drives, with the framework's design draft under docs/.",
+  "type": "code",
+  "tags": [
+    "category:project",
+    "category:source",
+    "claude-code",
+    "plugin-marketplace",
+    "lang:rust"
+  ],
+  "conventions": [
+    "One plugin per way of working; no plugin requires another (an optional integration is detected or offered, never required).",
+    "main is the release channel for the plugins: every commit on main is a new plugin version, so main stays shippable.",
+    "Branches (ZAF.toml): integration feature/{version}, task feature/{version}-{epic}-{task}; VCS is jj colocated with git.",
+    "The repo runs zaf on itself: ZAF.toml is its manifest; the full gate is `cd zaf && cargo fmt --check && cargo build && cargo clippy --all-targets -- -D warnings && cargo test`."
+  ],
+  "entry_points": [
+    "README.md",
+    "ZAF.toml"
+  ],
+  "fs": [
+    {
+      "name": ".claude-plugin/",
+      "role": "marketplace.json: the catalog, name \"ways\"",
+      "node": false
+    },
+    {
+      "name": ".github/",
+      "role": "workflows: zaf.yml (gate on zaf/ changes) and zaf-release.yml (binaries on zaf-v* tags)",
+      "node": false
+    },
+    {
+      "name": "NODE.toml",
+      "role": "nodes pack settings",
+      "node": false
+    },
+    {
+      "name": "README.md",
+      "role": "the marketplace manual: packs, install, updating, layout",
+      "node": false
+    },
+    {
+      "name": "ZAF.toml",
+      "role": "zaf's manifest for this repo: board, vcs, forge, gate, roles, runners",
+      "node": false
+    },
+    {
+      "name": "docs/",
+      "role": "zuri-ai-framework.md (the design draft) and baseline-2026-10-27.md (teams 1.x measurements)",
+      "node": false
+    },
+    {
+      "name": "plugins/",
+      "role": "the packs: teams, handoff, nodes",
+      "node": true
+    },
+    {
+      "name": "zaf/",
+      "role": "the zaf Rust crate (Zuri's AI Framework CLI)",
+      "node": true
+    }
+  ],
+  "notes": [
+    "To understand a path, load `nodes chain <path>`; `node: false` entries are fully described by their `fs` line.",
+    "The design page is docs/zuri-ai-framework.md (draft v0, 2026-10-27); ZAF.toml sets [design] kind = \"none\" because it is not an id-indexed page set, so briefs carry only a ticket's named pages.",
+    ".zaf/ (git-ignored) is zaf's machine-local state: asklog, guard, profiles, runs, slices, spawn state and workspaces.",
+    "Board and forge are GitHub issues and PRs on ProgrammingCheetah/ways (ZAF.toml).",
+    "Binary releases are tagged zaf-vX.Y.Z: zaf-release.yml checks zaf/Cargo.toml's version matches the tag, builds x86_64 musl Linux and aarch64 macOS, and uploads archives plus sha256 sums to a GitHub release.",
+    "The CI gate zaf.yml runs only when zaf/ or the workflow changes, on Ubuntu and macOS, after installing jj v0.46.0 because the Vcs adapter's tests drive a real jj."
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "path": "plugins",
+  "charted": "2026-11-03",
+  "short": "the ways marketplace's three plugin packs",
+  "is": "The three Claude Code plugins the `ways` marketplace catalogs: `teams` (role briefs for the instances zaf launches, plus the design session's routines), `handoff` (the worksheet shape for asks to the Engineer) and `nodes` (charting and loading the NODE.inf.json tree).",
+  "type": "code",
+  "tags": [
+    "category:source",
+    "claude-code",
+    "plugin",
+    "marketplace"
+  ],
+  "conventions": [
+    "one directory per plugin, named as the plugin, holding `.claude-plugin/plugin.json`, a `README.md` and `skills/<name>/SKILL.md`",
+    "a skill runs as `/<pack>:<skill>` and an agent as `<pack>:<agent>`; a pack installs as `<pack>@ways`",
+    "packs name roles only (the Engineer, the Orchestrator), never a specific project"
+  ],
+  "entry_points": [
+    "teams/README.md",
+    "nodes/README.md",
+    "handoff/README.md"
+  ],
+  "fs": [
+    {
+      "name": "handoff/",
+      "role": "/handoff:how-to: asks to the Engineer as a short numbered worksheet (one skill, skills/how-to/SKILL.md)",
+      "node": false
+    },
+    {
+      "name": "nodes/",
+      "role": "/nodes:chart and /nodes:familiarize over the external `nodes` binary",
+      "node": true
+    },
+    {
+      "name": "teams/",
+      "role": "role briefs for the zaf instances, a doctor hook, and the design-session routines",
+      "node": true
+    }
+  ],
+  "notes": [
+    "the root `.claude-plugin/marketplace.json` lists each pack with `source: ./plugins/<pack>`, so a new pack needs an entry there",
+    "only `teams` has `agents/` and `hooks/`; `handoff` and `nodes` are skills only",
+    "Claude applies `handoff` unprompted whenever it asks the Engineer to act; it needs no slash command",
+    "`decide` and `research`, listed as roadmap packs in the root README, have no directory here yet",
+    "the root README's Packs row and Layout line for `teams` still describe 1.x; the pack's own README is current"
+  ]
+}

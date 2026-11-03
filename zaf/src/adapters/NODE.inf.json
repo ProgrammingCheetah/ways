@@ -1,0 +1,90 @@
+{
+  "path": "zaf/src/adapters",
+  "charted": "2026-11-03",
+  "short": "live adapters over external CLIs",
+  "is": "The live port implementations: a directory design source, a shell gate, the GitHub board and forge through gh, a jj VCS, a process runner and the system shell.",
+  "type": "code",
+  "tags": [
+    "category:source",
+    "category:infrastructure",
+    "hexagonal"
+  ],
+  "conventions": [
+    "Backends are reached by shelling out (gh, jj, sh -c), never through a client library",
+    "Each CLI has one door: every gh call goes through GhCommand (github/command.rs), every jj call through jj/command.rs; a failed call becomes PortError::Backend carrying stderr",
+    "Values substituted into a shell template are single-quoted"
+  ],
+  "entry_points": [
+    "../adapters.rs",
+    "github.rs",
+    "jj.rs"
+  ],
+  "fs": [
+    {
+      "name": "design.rs",
+      "role": "DirDesign: Markdown pages beside an index, subfolders included, for repo-dir and git-sibling",
+      "node": false
+    },
+    {
+      "name": "design/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "gate.rs",
+      "role": "ShellGate: [gate] lines by sh -c, output logged under .zaf/runs/",
+      "node": false
+    },
+    {
+      "name": "gate/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "github.rs",
+      "role": "GitHub module root",
+      "node": false
+    },
+    {
+      "name": "github/",
+      "role": "board on issues, forge on PRs, GhCommand, comment notes, gh JSON rows",
+      "node": false
+    },
+    {
+      "name": "jj.rs",
+      "role": "JjVcs: a slice is a jj workspace plus a same-named bookmark",
+      "node": false
+    },
+    {
+      "name": "jj/",
+      "role": "the jj command door",
+      "node": false
+    },
+    {
+      "name": "runner.rs",
+      "role": "ProcessRunner: a role run as a [runners.<name>] command template",
+      "node": false
+    },
+    {
+      "name": "runner/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "shell.rs",
+      "role": "SystemShell: sh -c in its own process group, killed past a time bound",
+      "node": false
+    },
+    {
+      "name": "shell/",
+      "role": "tests.rs",
+      "node": false
+    }
+  ],
+  "notes": [
+    "Claims and heartbeats are plain issue comments; reports and rulings open with a hidden HTML marker (github/notes.rs)",
+    "github/tests.rs puts zaf/tests/fixtures/gh first on PATH; jj/tests.rs drives a real jj",
+    "One adapter per kind today: board github-issues, forge github, vcs jj, design repo-dir or git-sibling; a git Vcs adapter is a named later use case",
+    "The gate's run folder carries a .gitignore of `*`, so gate logs never show as uncommitted work"
+  ]
+}

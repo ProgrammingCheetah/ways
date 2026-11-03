@@ -1,0 +1,90 @@
+{
+  "path": "zaf/src",
+  "charted": "2026-11-03",
+  "short": "crate source in hexagonal layers",
+  "is": "The zaf library and its thin binary: domain types, port traits, one use case per verb, live adapters with in-memory fakes, the ZAF.toml model, a single composition root and the command line.",
+  "type": "code",
+  "tags": [
+    "category:source",
+    "hexagonal"
+  ],
+  "conventions": [
+    "Layers inner to outer: domain, ports, app, adapters; app sees only port traits and never names an adapter",
+    "composition.rs alone reads the manifest and picks adapters, returning each port as a boxed trait object or CompositionError::Absent",
+    "A module x lives in x.rs with its children in x/; a few use x/mod.rs instead (app ask, asklog, brief, check, profile, spawn)",
+    "Unit tests sit in x/tests.rs behind #[cfg(test)] mod tests, so many folders hold only tests.rs",
+    "Plain text newtypes use the text_newtype! macro from newtype.rs; a value with a rule gets a hand-written parser in its own module"
+  ],
+  "entry_points": [
+    "lib.rs",
+    "main.rs",
+    "composition.rs"
+  ],
+  "fs": [
+    {
+      "name": "adapters/",
+      "role": "live backend implementations",
+      "node": true
+    },
+    {
+      "name": "app/",
+      "role": "one use case per verb",
+      "node": true
+    },
+    {
+      "name": "cli.rs",
+      "role": "Verb enum, global --json/--more, dispatch",
+      "node": false
+    },
+    {
+      "name": "cli/",
+      "role": "verb modules and exit codes",
+      "node": true
+    },
+    {
+      "name": "composition.rs",
+      "role": "composition root; MANIFEST_FILE, STATE_DIR",
+      "node": false
+    },
+    {
+      "name": "domain/",
+      "role": "framework objects and text formats",
+      "node": true
+    },
+    {
+      "name": "fakes/",
+      "role": "in-memory fake per port (board, design, forge, gate, vcs; the runner replays recorded output)",
+      "node": false
+    },
+    {
+      "name": "lib.rs",
+      "role": "layer map",
+      "node": false
+    },
+    {
+      "name": "main.rs",
+      "role": "binary: calls cli::run",
+      "node": false
+    },
+    {
+      "name": "manifest/",
+      "role": "ZAF.toml model and validation",
+      "node": true
+    },
+    {
+      "name": "newtype.rs",
+      "role": "text_newtype! macro",
+      "node": false
+    },
+    {
+      "name": "ports/",
+      "role": "narrow backend traits",
+      "node": true
+    }
+  ],
+  "notes": [
+    "Actual imports: domain uses no other layer; ports use domain plus manifest::CommandLine; app uses domain, ports, manifest and two composition constants",
+    "domain, ports, fakes and manifest keep their submodules private and re-export a flat API; adapters, app and cli expose pub mod",
+    "All runtime state goes under the project's git-ignored .zaf/: runs/, profiles/, roles/, slices/, spawn.state, guard.json, asklog.jsonl, local.toml"
+  ]
+}

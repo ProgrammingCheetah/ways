@@ -1,0 +1,16 @@
+# NODE.toml — settings for the nodes pack. Seeded once; edit freely, nothing is overwritten.
+
+[tool]
+run = "nodes"            # how the binary is invoked here (e.g. a task-runner recipe that wraps it)
+install = ""             # how to install it here; "" = the release or cargo route
+check = "nodes check"    # must be green before /nodes:chart reports
+fmt_on_write = false     # true when a hook already runs `nodes fmt` after each write
+
+[refs]
+index = ""               # a file listing the citable page ids (id → status + title); "" = no refs here
+kind = ""                # what a page is here (e.g. "design page", "spec")
+on_superseded = ""       # how a ref to a superseded page is re-pointed (a command or a sentence)
+
+[root]
+local = false            # true: the whole tree (nodes, NODE.refs.json, NODE.toml, .chartignore) stays out of version control (§0)
+notes = []               # tree-wide conventions, pinned verbatim as the root node's first notes

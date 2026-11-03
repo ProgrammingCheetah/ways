@@ -1,0 +1,101 @@
+{
+  "path": "zaf/src/ports",
+  "charted": "2026-11-03",
+  "short": "port traits and their value types",
+  "is": "Seven narrow traits (Board, Vcs, Forge, Design, Gate, Runner, Shell) with the value types they exchange and the one PortError they all return.",
+  "type": "code",
+  "tags": [
+    "category:source",
+    "hexagonal",
+    "traits"
+  ],
+  "conventions": [
+    "Traits are shaped by what the verbs need, never by what a backend offers",
+    "Every method takes &self and is idempotent: repeating a call on a done state succeeds quietly",
+    "Vcs speaks slice terms (open, merge the base in, publish), never branch, worktree, bookmark or stage"
+  ],
+  "entry_points": [
+    "../ports.rs",
+    "board.rs",
+    "vcs.rs"
+  ],
+  "fs": [
+    {
+      "name": "board.rs",
+      "role": "tickets, leased claims, labels, comments, questions, rulings",
+      "node": false
+    },
+    {
+      "name": "board/",
+      "role": "tests.rs: contract against the fake",
+      "node": false
+    },
+    {
+      "name": "design.rs",
+      "role": "pages by id, search, index status",
+      "node": false
+    },
+    {
+      "name": "design/",
+      "role": "tests.rs: contract against the fake",
+      "node": false
+    },
+    {
+      "name": "errors.rs",
+      "role": "PortError",
+      "node": false
+    },
+    {
+      "name": "forge.rs",
+      "role": "PRs, checks, review comments, scanning alerts, merge",
+      "node": false
+    },
+    {
+      "name": "forge/",
+      "role": "tests.rs: contract against the fake",
+      "node": false
+    },
+    {
+      "name": "gate.rs",
+      "role": "full or light gate run and verdict",
+      "node": false
+    },
+    {
+      "name": "gate/",
+      "role": "tests.rs: contract against the fake",
+      "node": false
+    },
+    {
+      "name": "runner.rs",
+      "role": "run a role with a profile, capture output",
+      "node": false
+    },
+    {
+      "name": "runner/",
+      "role": "tests.rs: contract against the fake",
+      "node": false
+    },
+    {
+      "name": "shell.rs",
+      "role": "one command line run to completion",
+      "node": false
+    },
+    {
+      "name": "vcs.rs",
+      "role": "slices: open, merge base, commit, publish, diff",
+      "node": false
+    },
+    {
+      "name": "vcs/",
+      "role": "tests.rs: contract against the fake",
+      "node": false
+    }
+  ],
+  "notes": [
+    "Each port but Shell has a tests.rs that runs its contract against the matching fake in crate::fakes",
+    "Shell has no fake in fakes/; test modules implement it ad hoc",
+    "lib.rs names six ports; Shell is the seventh, used by check command steps, doctor and profile's plugin installs",
+    "Design may be absent (kind none); the board's epics and rulings then stand in as the design",
+    "Board.question on an unclaimed task or on an epic sets no state label (0.1.2)"
+  ]
+}

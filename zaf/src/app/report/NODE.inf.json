@@ -1,0 +1,57 @@
+{
+  "path": "zaf/src/app/report",
+  "charted": "2026-11-03",
+  "short": "report submodules and golden fixtures",
+  "is": "The price table, the Claude Code transcript parser and the golden-file fixtures behind `zaf report`, which ports tools/burn.py.",
+  "type": "code",
+  "tags": [
+    "category:source",
+    "category:tests",
+    "golden-files"
+  ],
+  "conventions": [
+    "Rendered text must reproduce burn.py's output exactly, checked against fixtures/*.expected.txt"
+  ],
+  "entry_points": [
+    "../report.rs",
+    "transcript.rs"
+  ],
+  "fs": [
+    {
+      "name": "fixtures/",
+      "role": "Claude projects tree plus burn.py golden outputs",
+      "node": false
+    },
+    {
+      "name": "prices.rs",
+      "role": "API list-price table, overridable from .zaf/local.toml",
+      "node": false
+    },
+    {
+      "name": "prices/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "tests.rs",
+      "role": "golden-file tests",
+      "node": false
+    },
+    {
+      "name": "transcript.rs",
+      "role": "one *.jsonl to one Run, turns deduped by message id",
+      "node": false
+    },
+    {
+      "name": "transcript/",
+      "role": "tests.rs",
+      "node": false
+    }
+  ],
+  "notes": [
+    "tools/burn.py is not tracked in this repo (retired 2026-10-28, in git history); the golden files are its output for `--root fixtures/projects --hours 100000`, run once",
+    "fixtures/projects/-demo mirrors a Claude config dir's projects/ layout, including a session's subagents/ folder",
+    "burn.match-plan.expected.txt is the output filtered to runs matching `Plan`",
+    "Dollar figures weigh runs against the weekly limit; compare shares, not decimals"
+  ]
+}

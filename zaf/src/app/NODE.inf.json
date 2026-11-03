@@ -1,0 +1,145 @@
+{
+  "path": "zaf/src/app",
+  "charted": "2026-11-03",
+  "short": "use cases, one per verb",
+  "is": "Fifteen use-case modules, one per verb (verify lives in check), each taking a query or command over port traits and returning a flat result, with check, report and spawn split into submodules.",
+  "type": "code",
+  "tags": [
+    "category:source",
+    "use-cases"
+  ],
+  "conventions": [
+    "A verb that needs processes no port covers defines its own narrow trait with a fake beside it (doctor's Commands, doctor/fake.rs)",
+    "Prompts and settings come from zaf/assets/ via include_str!; .zaf/roles/keeper.md and team.md override the keeper prompt and team brief at runtime"
+  ],
+  "entry_points": [
+    "../app.rs"
+  ],
+  "fs": [
+    {
+      "name": "ask/",
+      "role": "`zaf ask`: keeper questions up the [ask] ladder, quote-verified (a failed citation check is reported, exit 2), logged to .zaf/asklog.jsonl",
+      "node": false
+    },
+    {
+      "name": "asklog/",
+      "role": "`zaf asklog`: top cited pages, recurring questions, gaps",
+      "node": false
+    },
+    {
+      "name": "board.rs",
+      "role": "`zaf board` ready, claim, report, question, ruling",
+      "node": false
+    },
+    {
+      "name": "board/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "brief/",
+      "role": "`zaf brief`: task context pack (ticket, pages, a ## Rulings section with the questions and rulings on the task, nodes chain, style, interface page)",
+      "node": false
+    },
+    {
+      "name": "changes.rs",
+      "role": "`zaf changes`: diff stat, hunks on request",
+      "node": false
+    },
+    {
+      "name": "changes/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "check/",
+      "role": "`zaf check` and `zaf verify`",
+      "node": true
+    },
+    {
+      "name": "doctor.rs",
+      "role": "`zaf doctor`: tool versions, folders, design index, profile logins and pack",
+      "node": false
+    },
+    {
+      "name": "doctor/",
+      "role": "fake.rs (Commands fake) and tests.rs",
+      "node": false
+    },
+    {
+      "name": "guard.rs",
+      "role": "`zaf guard`: weekly budget level to .zaf/guard.json",
+      "node": false
+    },
+    {
+      "name": "guard/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "init.rs",
+      "role": "`zaf init`: minimal manifest from four questions",
+      "node": false
+    },
+    {
+      "name": "init/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "profile/",
+      "role": "`zaf profile init`: deterministic hermetic Claude homes, pack installed via claude plugin commands",
+      "node": false
+    },
+    {
+      "name": "report.rs",
+      "role": "`zaf report`: tokens and dollars per model from transcripts",
+      "node": false
+    },
+    {
+      "name": "report/",
+      "role": "report's prices, transcript parser and golden fixtures",
+      "node": true
+    },
+    {
+      "name": "setup.rs",
+      "role": "`zaf setup`: lay out .zaf/, fetch design, worksheet for missing tools",
+      "node": false
+    },
+    {
+      "name": "setup/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "slice.rs",
+      "role": "`zaf slice` open, pr, merge, drop on a board-resolved target",
+      "node": false
+    },
+    {
+      "name": "slice/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "spawn/",
+      "role": "`zaf spawn --once`: one spawner tick",
+      "node": true
+    },
+    {
+      "name": "status.rs",
+      "role": "`zaf status`: board, instances, slots, guard on one screen",
+      "node": false
+    },
+    {
+      "name": "status/",
+      "role": "tests.rs",
+      "node": false
+    }
+  ],
+  "notes": [
+    ".zaf/ file names are constants repeated per module (RUNS_DIR in brief, spawn and adapters::gate; asklog.jsonl in ask and setup)",
+    ".zaf/local.toml is read by guard ([budget]) and report (prices), never by the manifest",
+    "Only lean and build profiles ship settings; design and review profiles get none from profile init"
+  ]
+}

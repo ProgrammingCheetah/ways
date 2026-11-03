@@ -1,0 +1,44 @@
+{
+  "path": "plugins/nodes",
+  "charted": "2026-11-03",
+  "short": "the NODE.inf.json node-tree pack",
+  "is": "The `nodes` plugin: `/nodes:chart` to build or refresh a repository's NODE.inf.json tree, and `/nodes:familiarize` to load it silently at session start, both driving the external `nodes` binary.",
+  "type": "code",
+  "tags": [
+    "category:source",
+    "claude-code",
+    "plugin",
+    "node-tree"
+  ],
+  "conventions": [
+    "every node read and write goes through the `nodes` binary (0.7.0 or later); a skill never writes a node file by hand",
+    "no scripts and no hooks, so the skills run the same on Linux, macOS and Windows",
+    "the pack's per-project settings are the root NODE.toml's `[tool]`, `[refs]` and `[root]` tables, seeded once by /nodes:chart and never overwritten"
+  ],
+  "entry_points": [
+    "README.md",
+    "skills/chart/SKILL.md"
+  ],
+  "fs": [
+    {
+      "name": ".claude-plugin/",
+      "role": "plugin.json manifest, no version",
+      "node": false
+    },
+    {
+      "name": "README.md",
+      "role": "the pack's manual: binary install, NODE.toml settings, committed vs local-only trees, the pointer rule, commands for other agents",
+      "node": false
+    },
+    {
+      "name": "skills/",
+      "role": "chart/ (/nodes:chart, two-pass incremental charting with --full, --dry, --diff) and familiarize/ (/nodes:familiarize, read-only loader that replies Ready.)",
+      "node": false
+    }
+  ],
+  "notes": [
+    "the `nodes` binary lives in a separate repo (ZurNetwork/nodes) and is not built here; on every machine update the plugin before the binary",
+    "zaf puts `nodes chain` output for each owned path into a task's brief pack when the binary is on PATH, so programmers get node context without loading this pack",
+    "whether a repository's tree is committed or kept local-only is decided per repository at the first chart, using the same ownership test (`WAYS_OWN_ORGS`) the root README applies to every pack's project files"
+  ]
+}
