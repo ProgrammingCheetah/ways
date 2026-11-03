@@ -49,7 +49,7 @@
     }
   ],
   "notes": [
-    "Only the team-instance branch is built; the planning, challenger and release launches the teams README describes are not here yet",
+    "Only the team-instance branch is built; tick.rs names planning, challenger and release as NOT_BUILT and skips them, and the teams README says so",
     "The verb never loops; an external timer runs `zaf spawn --once`",
     "The launch prompt and standing brief are assets/spawn/team-prompt.txt and team-brief.md",
     "Slots and guard thresholds come from ZAF.toml [spawn]; the guard level is read from .zaf/guard.json; a batch of tasks shares one instance and one slot"

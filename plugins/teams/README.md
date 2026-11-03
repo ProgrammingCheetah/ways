@@ -17,9 +17,9 @@ Each brief is an agent of this pack and runs as the session's main thread (`clau
 | team | the spawner | claims up to four ready tasks of one epic, spawns a programmer per task, checks, publishes and merges each, reports on the epic |
 | programmer | a team instance | one task, one round, green in its own workspace; asks the keeper for anything beyond its pack |
 | keeper | `zaf ask` | answers one to five design questions with verbatim quotes, or `not settled`; its rules are zaf's own keeper prompt, which this brief points to and never restates |
-| planning | the spawner | turns a signed epic into exact tasks in the task template |
-| challenger | the spawner | comments on every planned task that is not exact, before the Engineer signs the epic |
-| release | the spawner | checks a milestone's musts, gathers the release reviews and a retrospective, then files tasks or merges and tags |
+| planning | by hand (its spawner launch is not built yet) | turns a signed epic into exact tasks in the task template |
+| challenger | by hand (its spawner launch is not built yet) | comments on every planned task that is not exact, before the Engineer signs the epic |
+| release | by hand (its spawner launch is not built yet) | checks a milestone's musts, gathers the release reviews and a retrospective, then files tasks or merges and tags |
 
 **One prefix.** Every brief opens with the exact bytes of zaf's interface page (`zaf/assets/interface.md` in the zaf source, also the Interface section of every `zaf brief` pack), so every instance's prompt shares a cached prefix. When that page changes, paste it again into all six, right after the frontmatter, and check:
 
@@ -29,7 +29,7 @@ for r in team programmer keeper planning challenger release; do f=agents/$r.md; 
 
 ## Launching an instance
 
-**The spawner.** `zaf spawn --once` runs one tick and exits; a timer runs it over and over. Each tick launches, within the slots and the budget guard: a team instance for a signed epic with ready, unclaimed tasks; a planning instance for a signed epic with no tasks (or a ruling newer than its plan); a challenger for a planned epic; a release instance for a milestone whose epics are all done. It sets `ZAF_INSTANCE` and `ZAF_VERSION` and starts the role's agent, `teams:<role>`, with the model, effort, turns and profile `ZAF.toml` gives that role.
+**The spawner.** `zaf spawn --once` runs one tick and exits; a timer runs it over and over. Each tick launches, within the slots and the budget guard, a team instance for an epic with ready, unclaimed, unblocked tasks. It sets `ZAF_INSTANCE` and `ZAF_VERSION` and starts the role's agent, `teams:<role>`, with the model, effort, turns and profile `ZAF.toml` gives that role. The other launches are not built yet, and the tick names them as `not built`: a planning instance for a signed epic with no tasks (or a ruling newer than its plan), a challenger for a planned epic, and a release instance for a milestone whose epics are all done. Until they are, the Engineer launches those roles by hand, below.
 
 **By hand.** The Engineer runs one the same way, from the project root, with the two variables set:
 

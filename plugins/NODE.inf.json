@@ -41,7 +41,6 @@
     "the root `.claude-plugin/marketplace.json` lists each pack with `source: ./plugins/<pack>`, so a new pack needs an entry there",
     "only `teams` has `agents/` and `hooks/`; `handoff` and `nodes` are skills only",
     "Claude applies `handoff` unprompted whenever it asks the Engineer to act; it needs no slash command",
-    "`decide` and `research`, listed as roadmap packs in the root README, have no directory here yet",
-    "the root README's Packs row and Layout line for `teams` still describe 1.x; the pack's own README is current"
+    "`decide` and `research`, listed as roadmap packs in the root README, have no directory here yet"
   ]
 }
