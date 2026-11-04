@@ -284,7 +284,7 @@ No project word in the binary, no assumed language, VCS, forge or design source.
 [gate]           full = "just gate"  light = "just gate-light"  tests = "cargo test -p {crate} {name}"
 [style]          path = "docs/style.md"      # optional, pasted into every brief
 [runners.claude] command = "claude -p {prompt} --model {model} --add-dir {root}"  timeout_minutes = 45
-[runners.gemini] command = "agy -p {prompt} --add-dir {root} --model gemini-4-argon --print-timeout 60m"
+[runners.gemini] command = "agy -p {prompt} --add-dir {root} --model gemini-4-argon-high --print-timeout 60m"
 [runners.local]  command = "zuri -p {prompt}"
 [roles.programmer]  model = "sonnet"  effort = "high"  profile = "lean"  turns = 60
 [roles.team]        model = "opus"    effort = "xhigh" profile = "build" turns = 200  batch = 4
