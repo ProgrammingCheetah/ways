@@ -227,6 +227,12 @@ fn root_gitignore_makes_a_worksheet_step() {
 #[test]
 fn verb_creates_a_missing_home_first() {
     let mut project = project();
+    // A legacy `ZAF.toml` adds its own warning line; this test counts the homes line alone.
+    fs::rename(
+        project.root.join("ZAF.toml"),
+        project.root.join(".zaf.toml"),
+    )
+    .expect("rename the manifest");
     let home = project.temp.path().join("fresh-home");
     project.env("ZAF_HOME", &home.to_string_lossy());
 
