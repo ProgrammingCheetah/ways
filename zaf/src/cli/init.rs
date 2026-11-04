@@ -5,10 +5,12 @@ use std::io;
 use super::Cli;
 use super::exit::{BACKEND, NOT_IMPLEMENTED, OK, REFUSED};
 
-use crate::app::init::{InitError, init};
+use crate::app::init::{InitError, init_with_home};
+use crate::composition::zaf_home;
 
-/// Asks for the project's name and repos, writes `ZAF.toml` in the current directory and
-/// exits 0; exits 1 when one exists or an answer is unusable. `--from-teams` is not built.
+/// Asks for the project's name and repos, writes `.zaf.toml` in the current directory and
+/// prints `wrote .zaf.toml`; exits 1 when any manifest file exists or an answer is unusable.
+/// `--from-teams` is not built.
 pub fn run(cli: &Cli, from_teams: bool) -> u8 {
     let path = cli.verb.path();
     if from_teams {
@@ -22,9 +24,16 @@ pub fn run(cli: &Cli, from_teams: bool) -> u8 {
             return BACKEND;
         }
     };
-    match init(&dir, &mut io::stdin().lock(), &mut io::stdout()) {
+    let home = zaf_home();
+    match init_with_home(
+        &dir,
+        home.as_deref(),
+        &mut io::stdin().lock(),
+        &mut io::stdout(),
+    ) {
         Ok(written) => {
-            println!("wrote {}", written.display());
+            let shown = written.strip_prefix(&dir).unwrap_or(&written);
+            println!("wrote {}", shown.display());
             OK
         }
         Err(InitError::Io(error)) => {
