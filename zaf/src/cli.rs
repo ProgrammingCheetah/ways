@@ -5,8 +5,12 @@
 //! [`crate::app`] and sees only ports.
 
 use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 
+use crate::app::setup::ensure_homes;
+use crate::composition::Composition;
 use crate::domain::IssueNumber;
+use crate::manifest::ProjectFiles;
 
 pub mod ask;
 pub mod asklog;
@@ -125,7 +129,7 @@ pub enum Verb {
     },
     /// Validate the manifest and verify the required tools.
     Doctor,
-    /// Install what the manifest requires and generate the profiles.
+    /// Make the project's `.zaf/` and the zaf home, run doctor and print what is left to do.
     Setup,
     /// Manage the context profiles.
     Profile {
@@ -232,8 +236,49 @@ where
             let _ = error.print();
             u8::try_from(error.exit_code()).unwrap_or(2)
         },
-        |cli| dispatch(&cli),
+        |cli| {
+            // The unit tests call `run` in-process from the crate's own folder: they must
+            // never make the real zaf home or this repository's `.zaf/`.
+            if !cfg!(test) && !matches!(cli.verb, Verb::Setup) {
+                first_run();
+            }
+            dispatch(&cli)
+        },
     )
+}
+
+/// Makes a missing project `.zaf/` and zaf home before the verb runs, one line on stderr when
+/// it made anything and nothing on stdout. Outside a project only the zaf home is made. A
+/// failure is reported and the verb still runs: it will say what it needs itself.
+pub fn first_run() {
+    let Ok(here) = std::env::current_dir() else {
+        return;
+    };
+    first_run_at(&here, crate::composition::zaf_home().as_deref());
+}
+
+/// [`first_run`] from `here` with the zaf `home` given instead of read from the environment.
+pub fn first_run_at(here: &Path, home: Option<&Path>) {
+    let root = project_root(here, home);
+    match ensure_homes(root.as_deref(), home) {
+        Ok(homes) => {
+            if let Some(notice) = homes.notice() {
+                eprintln!("{notice}");
+            }
+        }
+        Err(error) => eprintln!("zaf: cannot make the zaf homes: {error}"),
+    }
+}
+
+/// The project root for `here`: the one discovery finds, else, when a manifest is broken, the
+/// nearest directory up the tree that holds any manifest file; `None` outside a project.
+pub fn project_root(here: &Path, home: Option<&Path>) -> Option<PathBuf> {
+    if let Ok(composition) = Composition::discover_with_home(here, home) {
+        return Some(composition.root().to_owned());
+    }
+    here.ancestors()
+        .find(|dir| !ProjectFiles::find(dir, home).is_empty())
+        .map(Path::to_owned)
 }
 
 /// Runs a parsed command line: each verb goes to its module; an unbuilt one says so and exits 64.

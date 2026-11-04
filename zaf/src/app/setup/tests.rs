@@ -10,49 +10,152 @@ fn manifest(extra: &str) -> Manifest {
     format!("{HEAD}{extra}").parse().expect("a valid manifest")
 }
 
-#[test]
-fn the_layout_exists_and_setup_is_idempotent() {
+/// A project root and a zaf home side by side in one temp dir.
+fn places() -> (tempfile::TempDir, PathBuf, PathBuf) {
     let dir = tempfile::tempdir().expect("temp dir");
-    let state = dir.path().join(".zaf");
+    let root = dir.path().join("project");
+    let home = dir.path().join("zaf-home");
+    fs::create_dir(&root).expect("project dir");
+    (dir, root, home)
+}
+
+fn read(path: &Path) -> String {
+    fs::read_to_string(path).expect("a readable file")
+}
+
+#[test]
+fn ensure_homes_makes_folders_and_files_and_changes_nothing_the_second_time() {
+    let (_dir, root, home) = places();
+    let first = ensure_homes(Some(&root), Some(&home)).expect("makes the homes");
+    for dir in PROJECT_DIRS {
+        assert!(root.join(".zaf").join(dir).is_dir(), "{dir}");
+    }
+    assert!(home.join("actions").is_dir());
+    assert_eq!(read(&home.join("config.toml")), HOME_CONFIG);
+    assert_eq!(
+        read(&root.join(".zaf/.gitignore")),
+        "*\n!.gitignore\n!config.toml\n!actions/\n!actions/**\n!roles/\n!roles/**\n"
+    );
+    assert_eq!(first.ignore, Some(IgnoreState::Written));
+    assert_eq!(first.touched, [root.join(".zaf"), home.clone()]);
+    assert!(first.notice().is_some());
+
+    fs::write(home.join("config.toml"), "# mine\n").expect("an edit");
+    fs::write(root.join(".zaf/roles/keep.md"), "mine").expect("a role file");
+    let second = ensure_homes(Some(&root), Some(&home)).expect("again");
+    assert!(second.made.is_empty(), "{:?}", second.made);
+    assert_eq!(second.ignore, Some(IgnoreState::Current));
+    assert_eq!(second.notice(), None);
+    assert_eq!(read(&home.join("config.toml")), "# mine\n");
+    assert_eq!(read(&root.join(".zaf/roles/keep.md")), "mine");
+}
+
+#[test]
+fn the_home_config_is_all_comments_so_it_adds_no_setting() {
+    for line in HOME_CONFIG.lines() {
+        assert!(line.is_empty() || line.starts_with('#'), "{line}");
+    }
+}
+
+#[test]
+fn outside_a_project_only_the_zaf_home_is_made() {
+    let (dir, _root, home) = places();
+    let homes = ensure_homes(None, Some(&home)).expect("makes the home");
+    assert_eq!(homes.ignore, None);
+    assert_eq!(homes.touched, std::slice::from_ref(&home));
+    assert!(home.join("actions").is_dir());
+    assert!(!dir.path().join(".zaf").exists());
+}
+
+#[test]
+fn a_missing_home_alone_is_made_and_named() {
+    let (_dir, root, home) = places();
+    ensure_homes(Some(&root), None).expect("project only");
+    assert!(!home.exists());
+    let homes = ensure_homes(Some(&root), Some(&home)).expect("home now");
+    assert_eq!(homes.touched, [home]);
+}
+
+#[test]
+fn ensure_homes_keeps_every_kind_of_old_gitignore() {
+    for (old, state) in [
+        ("*\n", IgnoreState::Star),
+        ("target/\n", IgnoreState::Foreign),
+        ("*\n!keep\n", IgnoreState::Foreign),
+    ] {
+        let (_dir, root, home) = places();
+        fs::create_dir(root.join(".zaf")).expect("state dir");
+        fs::write(root.join(".zaf/.gitignore"), old).expect("an old file");
+        let homes = ensure_homes(Some(&root), Some(&home)).expect("makes the homes");
+        assert_eq!(homes.ignore, Some(state), "{old:?}");
+        assert_eq!(read(&root.join(".zaf/.gitignore")), old);
+    }
+}
+
+#[test]
+fn setup_replaces_an_old_star_gitignore_and_keeps_another() {
+    let (_dir, root, home) = places();
+    fs::create_dir(root.join(".zaf")).expect("state dir");
+    fs::write(root.join(".zaf/.gitignore"), "*\n").expect("an old file");
+    let commands = FakeCommands::new();
+    let report = setup(&root, Some(&home), &manifest(""), &commands).expect("sets up");
+    assert_eq!(report.homes.ignore, Some(IgnoreState::Replaced));
+    assert!(report.is_ready(), "{:?}", report.worksheet);
+    assert_eq!(read(&root.join(".zaf/.gitignore")), ignore_text());
+
+    fs::write(root.join(".zaf/.gitignore"), "# mine\n*\n").expect("a foreign file");
+    let report = setup(&root, Some(&home), &manifest(""), &commands).expect("sets up again");
+    assert_eq!(report.homes.ignore, Some(IgnoreState::Foreign));
+    assert_eq!(read(&root.join(".zaf/.gitignore")), "# mine\n*\n");
+    let lines = report.worksheet_lines().join("\n");
+    assert!(lines.contains("Merge these lines"), "{lines}");
+    assert!(lines.contains("!actions/**"), "{lines}");
+}
+
+#[test]
+fn a_root_gitignore_of_the_whole_folder_is_a_step_but_a_star_is_not() {
+    let (_dir, root, home) = places();
+    let commands = FakeCommands::new();
+    for ignoring in [".zaf/\n", "/.zaf\n", "target/\n.zaf\n"] {
+        fs::write(root.join(".gitignore"), ignoring).expect("a root ignore file");
+        let report = setup(&root, Some(&home), &manifest(""), &commands).expect("sets up");
+        let lines = report.worksheet_lines().join("\n");
+        assert!(lines.contains("root `.gitignore`"), "{ignoring:?} {lines}");
+        assert!(!report.is_ready());
+    }
+    for fine in [".zaf/*\n", "target/\n", ".zaf/runs/\n"] {
+        fs::write(root.join(".gitignore"), fine).expect("a root ignore file");
+        let report = setup(&root, Some(&home), &manifest(""), &commands).expect("sets up");
+        assert!(report.worksheet.is_empty(), "{fine:?}");
+    }
+}
+
+#[test]
+fn setup_is_idempotent() {
+    let (_dir, root, home) = places();
     let manifest = manifest("");
     let commands = FakeCommands::new();
-    let first = setup(dir.path(), &state, &manifest, &commands).expect("sets up");
+    let first = setup(&root, Some(&home), &manifest, &commands).expect("sets up");
     assert!(first.is_ready());
-    for path in layout_paths(&state) {
-        assert!(path.exists(), "{}", path.display());
-    }
+    fs::write(root.join(".zaf/roles/keep.md"), "mine").expect("a role file");
+    let second = setup(&root, Some(&home), &manifest, &commands).expect("sets up again");
+    assert!(second.homes.made.is_empty());
+    assert_eq!(first.worksheet, second.worksheet);
     assert_eq!(
-        fs::read_to_string(state.join(IGNORE_FILE)).expect("ignore"),
-        "*\n"
-    );
-    assert_eq!(
-        fs::read_to_string(state.join(ASKLOG_FILE)).expect("log"),
-        ""
-    );
-
-    fs::write(state.join(ASKLOG_FILE), "{\"q\":1}\n").expect("a log line");
-    fs::write(state.join("roles/keep.md"), "mine").expect("a role file");
-    let second = setup(dir.path(), &state, &manifest, &commands).expect("sets up again");
-    assert_eq!(first, second);
-    assert_eq!(
-        fs::read_to_string(state.join(ASKLOG_FILE)).expect("log"),
-        "{\"q\":1}\n"
-    );
-    assert_eq!(
-        fs::read_to_string(state.join("roles/keep.md")).expect("role"),
-        "mine"
+        read(&root.join(".zaf/roles/keep.md")),
+        "mine",
+        "a file already there is never rewritten"
     );
 }
 
 #[test]
 fn the_worksheet_names_each_missing_tool() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let state = dir.path().join(".zaf");
+    let (_dir, root, home) = places();
     let manifest = manifest("[requires]\njj = \"*\"\ngh = \"*\"\nnodes = \">=1\"\nagy = \"*\"\n");
     let commands = FakeCommands::new()
         .with("nodes", "nodes 0.9.0")
         .with("agy", "agy dev");
-    let report = setup(dir.path(), &state, &manifest, &commands).expect("sets up");
+    let report = setup(&root, Some(&home), &manifest, &commands).expect("sets up");
     assert!(!report.is_ready());
     let lines = report.worksheet_lines().join("\n");
     assert_eq!(report.worksheet.len(), 4, "{lines}");
@@ -77,14 +180,12 @@ fn the_worksheet_names_each_missing_tool() {
 
 #[test]
 fn a_declared_sibling_design_repo_is_cloned_when_missing() {
-    let parent = tempfile::tempdir().expect("temp dir");
-    let root = parent.path().join("project");
-    fs::create_dir(&root).expect("project dir");
+    let (dir, root, home) = places();
     let manifest = manifest(
         "[design]\nkind = \"git-sibling\"\nrepo = \"example/b-design\"\npath = \"../b-design\"\n",
     );
     let commands = FakeCommands::new().with("gh", "ok");
-    let report = setup(&root, &root.join(".zaf"), &manifest, &commands).expect("sets up");
+    let report = setup(&root, Some(&home), &manifest, &commands).expect("sets up");
     assert_eq!(report.clone, Some(CloneOutcome::Cloned));
     let clone_call = commands.calls().into_iter().next().expect("a call");
     let target = root.join("../b-design").to_string_lossy().into_owned();
@@ -93,10 +194,10 @@ fn a_declared_sibling_design_repo_is_cloned_when_missing() {
         ["gh", "repo", "clone", "example/b-design", target.as_str()]
     );
 
-    fs::create_dir(parent.path().join("b-design")).expect("the clone");
-    fs::write(parent.path().join("b-design/index.md"), "").expect("the clone's index");
+    fs::create_dir(dir.path().join("b-design")).expect("the clone");
+    fs::write(dir.path().join("b-design/index.md"), "").expect("the clone's index");
     let again = FakeCommands::new();
-    let report = setup(&root, &root.join(".zaf"), &manifest, &again).expect("sets up");
+    let report = setup(&root, Some(&home), &manifest, &again).expect("sets up");
     assert_eq!(report.clone, Some(CloneOutcome::Present));
     assert!(again.calls().is_empty(), "nothing to clone, nothing run");
     assert!(report.is_ready());
@@ -104,14 +205,12 @@ fn a_declared_sibling_design_repo_is_cloned_when_missing() {
 
 #[test]
 fn a_failed_clone_becomes_a_worksheet_step() {
-    let parent = tempfile::tempdir().expect("temp dir");
-    let root = parent.path().join("project");
-    fs::create_dir(&root).expect("project dir");
+    let (_dir, root, home) = places();
     let manifest = manifest(
         "[design]\nkind = \"git-sibling\"\nrepo = \"example/b-design\"\npath = \"../b-design\"\n",
     );
     let commands = FakeCommands::new().failing("gh", "not logged in");
-    let report = setup(&root, &root.join(".zaf"), &manifest, &commands).expect("sets up");
+    let report = setup(&root, Some(&home), &manifest, &commands).expect("sets up");
     assert_eq!(
         report.clone,
         Some(CloneOutcome::Failed("not logged in".into()))
@@ -123,12 +222,11 @@ fn a_failed_clone_becomes_a_worksheet_step() {
 
 #[test]
 fn other_design_kinds_clone_nothing() {
-    let dir = tempfile::tempdir().expect("temp dir");
+    let (_dir, root, home) = places();
     let manifest = manifest("[design]\nkind = \"repo-dir\"\npath = \"docs\"\n");
-    fs::create_dir(dir.path().join("docs")).expect("docs");
+    fs::create_dir(root.join("docs")).expect("docs");
     let commands = FakeCommands::new();
-    let report =
-        setup(dir.path(), &dir.path().join(".zaf"), &manifest, &commands).expect("sets up");
+    let report = setup(&root, Some(&home), &manifest, &commands).expect("sets up");
     assert_eq!(report.clone, None);
     assert!(commands.calls().is_empty());
 }
