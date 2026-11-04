@@ -1,6 +1,6 @@
 {
   "path": ".",
-  "charted": "2026-11-03",
+  "charted": "2026-11-04",
   "short": "ways: a Claude Code plugin marketplace of ways of working, plus the zaf binary",
   "is": "The ways repository: a Claude Code plugin marketplace (the teams, handoff and nodes packs under plugins/) and zaf, the Rust CLI the teams pack drives, with the framework's design draft under docs/.",
   "type": "code",
