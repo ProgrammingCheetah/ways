@@ -5,9 +5,10 @@ mod common;
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use common::{Project, outcome, write};
@@ -41,8 +42,8 @@ fn project() -> Project {
     project
 }
 
-/// Runs the built `zaf` in `dir`, itself first on PATH so a body can say `zaf do`.
-fn zaf_in(project: &Project, dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
+/// The built `zaf` in `dir`, itself first on PATH so a body can say `zaf do`.
+fn zaf_command(project: &Project, dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Command {
     let bin = Path::new(env!("CARGO_BIN_EXE_zaf"))
         .parent()
         .expect("the binary's folder");
@@ -61,7 +62,14 @@ fn zaf_in(project: &Project, dir: &Path, args: &[&str], env: &[(&str, &str)]) ->
         command.env_remove(var);
     }
     command.envs(env.iter().copied());
-    command.output().expect("run zaf")
+    command
+}
+
+/// Runs the built `zaf` in `dir`.
+fn zaf_in(project: &Project, dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
+    zaf_command(project, dir, args, env)
+        .output()
+        .expect("run zaf")
 }
 
 fn zaf(project: &Project, args: &[&str]) -> Output {
@@ -304,6 +312,50 @@ fn do_reports_an_undeclared_code() {
         "{}",
         said(&run)
     );
+}
+
+#[test]
+fn do_reports_on_stderr() {
+    let project = project();
+    action(&project, "boom", "", "echo the-tail\nexit 1");
+
+    let (code, stdout, stderr) = outcome(&zaf(&project, &["do", "boom"]));
+    assert_eq!(code, 1);
+    assert_eq!(stdout, "", "stdout stays clean");
+    assert_eq!(
+        stderr,
+        format!(
+            "FAIL boom: exit 1, it failed, log {}\nthe-tail\n",
+            log_of(&project, "boom").display()
+        ),
+        "the line and the log's tail"
+    );
+
+    let (code, stdout, stderr) = outcome(&zaf(&project, &["do", "ghost"]));
+    assert_eq!(code, 125);
+    assert_eq!(stdout, "", "stdout stays clean");
+    assert_eq!(stderr, "NOT_RUN ghost: no such action\n");
+}
+
+#[test]
+fn do_closes_the_bodys_stdin() {
+    let project = project();
+    action(&project, "reader", "", "cat > \"$ZAF_ROOT/seen\"");
+
+    let mut child = zaf_command(&project, &project.root, &["do", "reader"], &[])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start zaf");
+    let mut stdin = child.stdin.take().expect("a pipe");
+    // This write fails only when zaf has already gone, which a body reading the pipe prevents.
+    let _ = stdin.write_all(b"typed by the caller\n");
+    drop(stdin);
+    let run = child.wait_with_output().expect("wait for zaf");
+
+    assert_eq!(outcome(&run).0, 0, "{}", said(&run));
+    assert_eq!(read(&project.root.join("seen")), "", "the caller's input");
 }
 
 #[test]
