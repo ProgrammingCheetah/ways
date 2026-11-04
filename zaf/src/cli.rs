@@ -18,6 +18,7 @@ pub mod board;
 pub mod brief;
 pub mod changes;
 pub mod check;
+pub mod do_action;
 pub mod doctor;
 pub mod exit;
 pub mod guard;
@@ -137,6 +138,8 @@ pub enum Verb {
         #[command(subcommand)]
         action: ProfileAction,
     },
+    /// List the actions, run one, or print the file a name resolves to.
+    Do(do_action::DoArgs),
 }
 
 /// `zaf board …`.
@@ -304,6 +307,7 @@ pub fn dispatch(cli: &Cli) -> u8 {
             dry_run,
         } => spawn::run(cli, *once, version.as_deref(), *dry_run),
         Verb::Profile { action } => profile::run(cli, action),
+        Verb::Do(args) => do_action::run(cli, args),
     }
 }
 
