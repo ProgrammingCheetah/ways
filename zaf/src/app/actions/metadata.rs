@@ -10,6 +10,8 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
+use super::phase::Phase;
+
 /// The mode an action declares nothing for.
 const DEFAULT_MODE: u16 = 0o755;
 
@@ -18,26 +20,6 @@ const RESERVED_CODE: u8 = 125;
 
 /// The Team Phases an action may name, in lifecycle order.
 const PHASE_NAMES: &str = "claim, build, check, publish, review, land, done";
-
-/// A Team Phase a `target: task` action may run in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, strum::Display, strum::EnumString)]
-#[strum(serialize_all = "lowercase")]
-pub enum Phase {
-    /// Claimed under a live lease, no slice yet.
-    Claim,
-    /// Its slice open, a programmer at work.
-    Build,
-    /// Its task checks have passed on the workspace.
-    Check,
-    /// Its pull request open, review steps not yet run.
-    Publish,
-    /// The pull request's steps have run.
-    Review,
-    /// The last `check pr` result is clean for the pull request's head.
-    Land,
-    /// Merged.
-    Done,
-}
 
 /// What an action's first argument names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display, strum::EnumString)]
@@ -303,7 +285,7 @@ impl Fields {
                 let phases = list(value, "phases")?
                     .iter()
                     .map(|name| {
-                        Phase::from_str(name).map_err(|_| {
+                        Phase::declared(name).ok_or_else(|| {
                             format!("unknown phase `{name}`; the phases are {PHASE_NAMES}")
                         })
                     })
