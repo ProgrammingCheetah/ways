@@ -222,7 +222,66 @@ impl Design for DirDesign {
         let entry = self.index_entry(id)?;
         parse_status(id, &entry.status)
     }
+
+    /// Every entry of the index file, in id order. An id that is not a page id is skipped;
+    /// when the index lists one id twice, the first line wins, as for [`Design::page`].
+    fn index(&self) -> Result<Vec<(PageId, PageStatus, String)>, PortError> {
+        let text = self.read(&self.dir.join(&self.index))?;
+        let mut entries = BTreeMap::new();
+        for entry in text.lines().filter_map(IndexEntry::parse) {
+            let Ok(id) = PageId::from_str(&entry.id) else {
+                continue;
+            };
+            if let Entry::Vacant(slot) = entries.entry(id.clone()) {
+                let status = parse_status(&id, &entry.status)?;
+                slot.insert((status, entry.title));
+            }
+        }
+        Ok(entries
+            .into_iter()
+            .map(|(id, (status, title))| (id, status, title))
+            .collect())
+    }
 }
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod index_tests {
+    use super::*;
+
+    #[test]
+    fn the_index_lists_id_status_and_title_in_id_order() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let index = "# Index\n\n## decisions/\n\
+            - 1002 proposed — Retry window\n\
+            - 1001 decided — Export of the reading list\n\
+            - 1001 current — A second line for 1001\n\
+            not an entry\n";
+        fs::write(dir.path().join(DEFAULT_INDEX_FILE), index).expect("index");
+
+        let entries = DirDesign::new(dir.path()).index().expect("index");
+
+        let shown: Vec<String> = entries
+            .iter()
+            .map(|(id, status, title)| format!("{id} {status} {title}"))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                "1001 decided Export of the reading list",
+                "1002 proposed Retry window"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_missing_index_file_is_unavailable() {
+        let dir = tempfile::tempdir().expect("temp dir");
+
+        let error = DirDesign::new(dir.path()).index().expect_err("no index");
+
+        assert!(matches!(error, PortError::Unavailable(_)), "{error:?}");
+    }
+}
