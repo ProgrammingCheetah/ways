@@ -58,6 +58,15 @@ impl Design for FakeDesign {
             .map(|page| page.status)
             .ok_or_else(|| not_found(id))
     }
+
+    fn index(&self) -> Result<Vec<(PageId, PageStatus, String)>, PortError> {
+        let entries = self
+            .pages()
+            .values()
+            .map(|page| (page.id.clone(), page.status, page.title.clone()))
+            .collect();
+        Ok(entries)
+    }
 }
 
 #[cfg(test)]

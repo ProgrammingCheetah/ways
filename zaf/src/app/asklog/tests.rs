@@ -13,6 +13,7 @@ fn line(task: u64, kind: &str, question: &str, verdict: &str, pages: &[&str]) ->
         answer: String::new(),
         rung: Some("local".to_owned()),
         check: CheckResult::Passed,
+        read: crate::app::ask::Read::default(),
     }
 }
 
