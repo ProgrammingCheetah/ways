@@ -28,6 +28,9 @@ pub trait Design {
 
     /// A page's index status, without its text.
     fn status(&self, id: &PageId) -> Result<PageStatus, PortError>;
+
+    /// The index: the id, status and title of every page it lists, in id order, without any text.
+    fn index(&self) -> Result<Vec<(PageId, PageStatus, String)>, PortError>;
 }
 
 #[cfg(test)]
