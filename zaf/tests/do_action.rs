@@ -117,10 +117,11 @@ fn files_in(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// The project's logs of `name`.
+/// The project's logs of `name`, as the paths zaf prints: a run takes the root from its real
+/// working directory, and on macOS the temp dir sits behind the `/var` symlink.
 fn logs_of(project: &Project, name: &str) -> Vec<PathBuf> {
     let suffix = format!("_{name}.");
-    files_in(&project.root.join(".zaf/logs"))
+    files_in(&real(&project.root).join(".zaf/logs"))
         .into_iter()
         .filter(|file| file.to_string_lossy().contains(&suffix))
         .collect()
@@ -420,17 +421,18 @@ fn do_unstartable_file_is_not_run() {
         "orphan",
         "#!/no/such/interpreter\n# zaf description: never starts\n# zaf 1: no\n",
     );
-    // Valid metadata and no shebang: the system cannot run it, and nothing falls back to `sh`.
+    // An interpreter that is a folder: refused by the kernel on Linux and macOS alike. A file
+    // with no shebang would not do: macOS's `posix_spawnp` retries it under `/bin/sh`.
     executable(
         &actions,
-        "bare",
-        "# zaf description: never starts\n# zaf 1: no\ntouch \"$ZAF_ROOT/ran\"\n",
+        "hollow",
+        "#!/usr\n# zaf description: never starts\n# zaf 1: no\n",
     );
 
     for (name, reason) in [
         ("stiff", "is not executable"),
         ("orphan", "cannot start"),
-        ("bare", "cannot start"),
+        ("hollow", "cannot start"),
     ] {
         let run = zaf(&project, &["do", name]);
         assert_eq!(outcome(&run).0, 125, "{name}: {}", said(&run));
