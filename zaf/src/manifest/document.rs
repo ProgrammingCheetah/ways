@@ -6,7 +6,7 @@ use std::str::FromStr;
 
 use super::sections::{
     ActionsSection, AskSection, BoardKind, BoardSection, BranchesSection, ChecksSection,
-    DesignKind, DesignSection, ForbiddenSection, ForgeKind, ForgeSection, GateSection,
+    DesignKind, DesignSection, EnvSection, ForbiddenSection, ForgeKind, ForgeSection, GateSection,
     IsolationKind, IsolationSection, PackSection, ProjectSection, RoleSection, RunnerName,
     RunnerSection, SpawnSection, StyleSection, ToolName, VcsSection, WorkspacesSection,
 };
@@ -72,6 +72,9 @@ pub struct Manifest {
     /// `[pack]`; absent means the profiles carry no pack.
     #[serde(default)]
     pub pack: Option<PackSection>,
+    /// `[env]`: variables for every child, merged key by key across the layers.
+    #[serde(default)]
+    pub env: EnvSection,
 }
 
 impl Manifest {

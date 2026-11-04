@@ -625,3 +625,132 @@ fn the_pack_comes_from_a_path_or_a_tag_never_both() {
     ));
     assert!(load(&with("[pack]\nbranch = \"x\"\n")).is_err());
 }
+
+#[test]
+fn env_table_parses_string_pairs() {
+    // Without an [env] table nothing changes.
+    let none = load(MINIMAL).expect("loads");
+    assert!(none.env.is_empty());
+    let resolved = none.env.resolve(Path::new("/p"), None).expect("resolves");
+    assert!(resolved.is_empty());
+    // String pairs parse, and the placeholders resolve to the root and the version.
+    let manifest = load(&with(
+        "[env]\nCARGO_TARGET_DIR = \"{root}/.cache/target\"\nBASE = \"feature/{version}\"\nPLAIN = \"x\"\nBRACES = \"{a} {root}{root} {\"\n",
+    ))
+    .expect("loads");
+    assert_eq!(manifest.env.vars().len(), 4);
+    assert_eq!(manifest.env.vars()["PLAIN"], "x");
+    assert_eq!(manifest.env.vars()["BASE"], "feature/{version}");
+    let resolved = manifest
+        .env
+        .resolve(Path::new("/work/proj"), Some("0.2.0"))
+        .expect("resolves");
+    assert_eq!(resolved["CARGO_TARGET_DIR"], "/work/proj/.cache/target");
+    assert_eq!(resolved["BASE"], "feature/0.2.0");
+    assert_eq!(resolved["PLAIN"], "x");
+    assert_eq!(
+        resolved["BRACES"], "{a} /work/proj/work/proj {",
+        "other braces stay as written"
+    );
+    // A value that uses {version} needs one; the error names the variable.
+    let error = manifest
+        .env
+        .resolve(Path::new("/p"), None)
+        .expect_err("no version");
+    assert!(
+        matches!(&error, ManifestError::EnvNeedsVersion { name } if name == "BASE"),
+        "{error}"
+    );
+    // A root holding a placeholder is not resolved a second time.
+    let manifest = load(&with("[env]\nA = \"{root}\"\nB = \"{version}\"\n")).expect("loads");
+    let resolved = manifest
+        .env
+        .resolve(Path::new("/odd/{version}"), Some("1"))
+        .expect("resolves");
+    assert_eq!(resolved["A"], "/odd/{version}");
+    // Names a process cannot carry are refused.
+    for name in ["\"A=B\"", "\"1A\"", "\"A-B\"", "\"\"", "\"A B\""] {
+        let error = load(&with(&format!("[env]\n{name} = \"x\"\n"))).expect_err("bad name");
+        assert!(error.to_string().contains("not a variable name"), "{error}");
+    }
+    let error = load(&with("[env]\nA = \"x\\u0000y\"\n")).expect_err("NUL");
+    assert!(error.to_string().contains("NUL"), "{error}");
+}
+
+#[test]
+fn env_table_rejects_a_non_string() {
+    for (value, kind) in [
+        ("1", "integer"),
+        ("true", "boolean"),
+        ("1.5", "float"),
+        ("[\"a\"]", "array"),
+        ("{ a = \"b\" }", "table"),
+    ] {
+        let error = load(&with(&format!("[env]\nFINE = \"x\"\nCACHE = {value}\n")))
+            .expect_err("a non-string is a manifest error");
+        let message = error.to_string();
+        assert!(message.contains("CACHE"), "names the key: {message}");
+        assert!(message.contains(kind), "names the type: {message}");
+        assert!(!message.contains("FINE"), "{message}");
+    }
+    // The same through the layers, naming the files combined.
+    let text = format!("[project]\nname = \"p\"\n{BOARD}[env]\nN = 3\n");
+    let error = load_layers(&[(".zaf.toml", &text)], None).expect_err("integer");
+    let message = error.to_string();
+    assert!(
+        message.contains('N') && message.contains(".zaf.toml"),
+        "{message}"
+    );
+}
+
+#[test]
+fn env_table_merges_across_layers() {
+    let machine = format!("{BOARD}[env]\nA = \"machine\"\nB = \"machine\"\nC = \"machine\"\n");
+    let folder = "[project]\nname = \"p\"\n[env]\nB = \"folder\"\nC = \"folder\"\nD = \"{root}\"\n";
+    let root = "[env]\nC = \"root\"\n";
+    let manifest = load_layers(
+        &[(".zaf.toml", root), (".zaf/config.toml", folder)],
+        Some(&machine),
+    )
+    .expect("loads");
+    let vars = manifest.env.vars();
+    assert_eq!(vars["A"], "machine", "a key only the machine sets survives");
+    assert_eq!(vars["B"], "folder", "the project folder beats the machine");
+    assert_eq!(vars["C"], "root", "the root file wins a key");
+    assert_eq!(vars["D"], "{root}");
+    assert_eq!(vars.len(), 4, "merged key by key, not table by table");
+}
+
+#[test]
+fn env_table_cannot_set_any_zaf_name() {
+    for name in [
+        "ZAF_INSTANCE",
+        "ZAF_VERSION",
+        "ZAF_ROOT",
+        "ZAF_SLICE",
+        "ZAF_FUTURE_THING",
+        "ZAF_",
+        "zaf_instance",
+    ] {
+        let error = load(&with(&format!("[env]\n{name} = \"x\"\n")))
+            .expect_err("a ZAF_ name is a manifest error");
+        let message = error.to_string();
+        assert!(message.contains(name), "names the key: {message}");
+        assert!(message.contains("ZAF_"), "{message}");
+    }
+    // A layer cannot slip one in under another's table.
+    let folder = "[project]\nname = \"p\"\n[env]\nZAF_INSTANCE = \"x\"\n";
+    assert!(
+        load_layers(
+            &[
+                (".zaf.toml", "[env]\nOK = \"1\"\n"),
+                (".zaf/config.toml", folder)
+            ],
+            Some(BOARD)
+        )
+        .is_err()
+    );
+    // Names that merely hold ZAF are fine.
+    let manifest = load(&with("[env]\nMY_ZAF_CACHE = \"x\"\nZAFFER = \"y\"\n")).expect("loads");
+    assert_eq!(manifest.env.vars().len(), 2);
+}
