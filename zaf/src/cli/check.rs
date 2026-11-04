@@ -281,6 +281,8 @@ fn runs_dir(composition: &Composition) -> PathBuf {
     composition.root().join(RUNS_DIR)
 }
 
+/// Where a target's record is stored: `.zaf/runs/check-<slug>.json`, one per task and
+/// per pull request.
 fn stored_path(composition: &Composition, target: &Target) -> PathBuf {
     runs_dir(composition).join(format!("check-{}.json", target.slug()))
 }
