@@ -4,6 +4,7 @@
 //! (or `--json`) whether it just ran or ran earlier.
 
 use std::fmt;
+use std::time::SystemTime;
 
 use super::engine::{CheckReport, StepStatus};
 use super::task::{LineStatus, TaskCheck};
@@ -36,11 +37,24 @@ pub struct CheckRecord {
     pub verdict: Verdict,
     /// Every line, in the order checked.
     pub lines: Vec<RecordLine>,
+    /// The pull request's head commit as it stood when the steps began; none for a
+    /// task check, for a forge that reported none, and for a record stored before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head: Option<String>,
+    /// When the check began, UTC at second resolution (RFC 3339); none for a record
+    /// stored before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<String>,
+}
+
+/// A time as a record stores it: RFC 3339, UTC, whole seconds.
+fn stamp(at: SystemTime) -> String {
+    humantime::format_rfc3339_seconds(at).to_string()
 }
 
 impl CheckRecord {
-    /// A task check's record.
-    pub fn from_task(target: &Target, check: &TaskCheck) -> Self {
+    /// A task check's record, which began at `at` and holds no head.
+    pub fn from_task(target: &Target, check: &TaskCheck, at: SystemTime) -> Self {
         let lines = check
             .lines
             .iter()
@@ -58,11 +72,21 @@ impl CheckRecord {
             target: target.to_string(),
             verdict: check.verdict(),
             lines,
+            head: None,
+            at: Some(stamp(at)),
         }
     }
 
     /// A pull request check's record: the steps, then the findings.
-    pub fn from_report(target: &Target, report: &CheckReport) -> Self {
+    ///
+    /// `head` is the head the caller read before the steps ran, and `at` the time it
+    /// began; the record keeps both as given, so a head that moved since stays the old one.
+    pub fn from_report(
+        target: &Target,
+        report: &CheckReport,
+        head: Option<String>,
+        at: SystemTime,
+    ) -> Self {
         let steps = report.steps.iter().map(|result| {
             let (status, text) = match &result.status {
                 StepStatus::Ran => ("ran", String::new()),
@@ -102,6 +126,8 @@ impl CheckRecord {
             target: target.to_string(),
             verdict: report.verdict(),
             lines: steps.chain(findings).collect(),
+            head,
+            at: Some(stamp(at)),
         }
     }
 }

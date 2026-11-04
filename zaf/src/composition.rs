@@ -6,6 +6,7 @@
 //! refusal, never a crash.
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -18,13 +19,19 @@ use crate::adapters::shell::SystemShell;
 use crate::app::profile::{self, CONFIG_DIR_VAR};
 use crate::domain::{Profile, RoleName};
 use crate::manifest::{
-    BoardKind, CommandLine, DesignKind, Effort, ForgeKind, Manifest, ManifestError, ModelName,
-    RunnerName, VcsKind,
+    BoardKind, CommandLine, DesignKind, Effort, FOLDER_FILE, ForgeKind, LEGACY_FILE, Manifest,
+    ManifestError, ModelName, ProjectFiles, ROOT_FILE, RunnerName, VcsKind,
 };
 use crate::ports::{Board, Design, Forge, Gate, RunRequest, Runner, Shell, SliceName, Vcs};
 
-/// The manifest's file name at the project root.
-pub const MANIFEST_FILE: &str = "ZAF.toml";
+/// The retired manifest file name at the project root; `zaf init` still writes it.
+pub const MANIFEST_FILE: &str = LEGACY_FILE;
+
+/// The variable naming the zaf home, where the machine's `config.toml` lives.
+pub const ZAF_HOME_VAR: &str = "ZAF_HOME";
+
+/// The variable naming the user's home, under which `.zaf` is the zaf home by default.
+pub const HOME_VAR: &str = "HOME";
 
 /// The local, git-ignored state folder under the project root.
 pub const STATE_DIR: &str = ".zaf";
@@ -42,8 +49,10 @@ pub enum CompositionError {
     /// The manifest could not be loaded.
     #[error(transparent)]
     Manifest(#[from] ManifestError),
-    /// No `ZAF.toml` in this directory or any parent.
-    #[error("no {MANIFEST_FILE} found in {start} or any directory above it")]
+    /// No manifest file in this directory or any parent.
+    #[error(
+        "no {ROOT_FILE}, {FOLDER_FILE} or {LEGACY_FILE} found in {start} or any directory above it"
+    )]
     NoProject {
         /// Where the search started.
         start: PathBuf,
@@ -82,10 +91,30 @@ pub struct Composition {
     manifest: Manifest,
 }
 
+/// The zaf home, where the machine's `config.toml` lives: `ZAF_HOME`, else `~/.zaf`, else
+/// none (neither `ZAF_HOME` nor `HOME` set), and then the machine layer is absent.
+pub fn zaf_home() -> Option<PathBuf> {
+    zaf_home_from(std::env::var_os(ZAF_HOME_VAR), std::env::var_os(HOME_VAR))
+}
+
+/// [`zaf_home`] from the two variables' values; an empty value counts as unset.
+pub fn zaf_home_from(zaf_home: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
+    let set = |value: Option<OsString>| value.filter(|value| !value.is_empty());
+    set(zaf_home)
+        .map(PathBuf::from)
+        .or_else(|| set(home).map(|home| PathBuf::from(home).join(STATE_DIR)))
+}
+
 impl Composition {
-    /// Loads `ZAF.toml` from the project root.
+    /// Loads the manifest of the project at `project_root` from its manifest files and the
+    /// machine's `config.toml`.
     pub fn load(project_root: &Path) -> Result<Self, ManifestError> {
-        let manifest = Manifest::load(&project_root.join(MANIFEST_FILE))?;
+        Self::load_with_home(project_root, zaf_home().as_deref())
+    }
+
+    /// [`load`](Self::load) with the zaf home given instead of read from the environment.
+    pub fn load_with_home(project_root: &Path, home: Option<&Path>) -> Result<Self, ManifestError> {
+        let manifest = Manifest::load_layers(project_root, home)?;
         Ok(Self {
             root: project_root.to_owned(),
             manifest,
@@ -94,18 +123,30 @@ impl Composition {
 
     /// Finds the project root by walking up from `start`.
     ///
-    /// Every directory on the way up with a `ZAF.toml` is a candidate. The root is the
-    /// topmost candidate whose `[workspaces]` path holds every candidate below it, so a
-    /// manifest copied into a slice workspace still resolves to its project; failing
-    /// that, the nearest candidate is the root.
+    /// Every directory on the way up with a manifest file (`.zaf.toml`, `.zaf/config.toml`
+    /// or the retired `ZAF.toml`) is a candidate; the zaf home's own `config.toml` is not a
+    /// project's. The root is the topmost candidate whose `[workspaces]` path holds every
+    /// candidate below it, so a manifest copied into a slice workspace still resolves to
+    /// its project; failing that, the nearest candidate is the root.
     pub fn discover(start: &Path) -> Result<Self, CompositionError> {
-        let candidates: Vec<&Path> = start
-            .ancestors()
-            .filter(|dir| dir.join(MANIFEST_FILE).is_file())
-            .collect();
+        Self::discover_with_home(start, zaf_home().as_deref())
+    }
+
+    /// [`discover`](Self::discover) with the zaf home given instead of read from the environment.
+    pub fn discover_with_home(start: &Path, home: Option<&Path>) -> Result<Self, CompositionError> {
+        let mut candidates: Vec<&Path> = Vec::new();
+        for dir in start.ancestors() {
+            let files = ProjectFiles::find(dir, home);
+            if files.is_empty() {
+                continue;
+            }
+            // The retired file beside a new one is an error wherever it is found.
+            files.refuse_legacy_beside_new()?;
+            candidates.push(dir);
+        }
         // Nearest first; the loop below tries the topmost first.
         for (index, candidate) in candidates.iter().enumerate().rev() {
-            let Ok(composition) = Self::load(candidate) else {
+            let Ok(composition) = Self::load_with_home(candidate, home) else {
                 continue;
             };
             let workspaces = normalized(&candidate.join(&composition.manifest.workspaces.path));
@@ -118,7 +159,7 @@ impl Composition {
             }
         }
         match candidates.first() {
-            Some(nearest) => Ok(Self::load(nearest)?),
+            Some(nearest) => Ok(Self::load_with_home(nearest, home)?),
             None => Err(CompositionError::NoProject {
                 start: start.to_owned(),
             }),
@@ -136,7 +177,7 @@ impl Composition {
         Self::discover(&here)
     }
 
-    /// The project root: the directory holding `ZAF.toml`.
+    /// The project root: the directory holding the manifest.
     pub fn root(&self) -> &Path {
         &self.root
     }

@@ -94,6 +94,192 @@ fn with(extra: &str) -> String {
     format!("{MINIMAL}\n{extra}")
 }
 
+/// A project dir holding the given `(file, text)` pairs, and an empty zaf home beside it.
+fn layered(files: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf, PathBuf) {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path().join("repo");
+    let home = temp.path().join("zaf-home");
+    std::fs::create_dir_all(&home).expect("home");
+    for (name, text) in files {
+        let file = root.join(name);
+        std::fs::create_dir_all(file.parent().expect("parent")).expect("mkdir");
+        std::fs::write(file, text).expect("write");
+    }
+    (temp, root, home)
+}
+
+fn load_layers(files: &[(&str, &str)], machine: Option<&str>) -> Result<Manifest, ManifestError> {
+    let (_temp, root, home) = layered(files);
+    if let Some(text) = machine {
+        std::fs::write(home.join("config.toml"), text).expect("machine config");
+    }
+    Manifest::load_layers(&root, Some(&home))
+}
+
+const BOARD: &str = "[board]\nkind = \"github-issues\"\nrepo = \"example/b\"\n";
+
+#[test]
+fn manifest_layers_combine_with_root_winning() {
+    let root = "[project]\nname = \"from-root\"\n[spawn]\nslots = 2\n";
+    let folder = format!(
+        "[project]\nname = \"from-folder\"\n{BOARD}[spawn]\nslots = 5\n[vcs]\nkind = \"jj\"\n"
+    );
+    // Each file alone loads.
+    let alone = load_layers(&[(".zaf/config.toml", &folder)], None).expect("folder alone");
+    assert_eq!(alone.project.name.as_ref(), "from-folder");
+    let solo = format!("[project]\nname = \"solo\"\n{BOARD}");
+    let alone = load_layers(&[(".zaf.toml", &solo)], None).expect("root alone");
+    assert_eq!(alone.project.name.as_ref(), "solo");
+    // Together they combine property by property; the root wins a conflict.
+    let both = load_layers(&[(".zaf.toml", root), (".zaf/config.toml", &folder)], None)
+        .expect("both load");
+    assert_eq!(both.project.name.as_ref(), "from-root");
+    assert_eq!(both.spawn.slots, 2);
+    assert!(
+        both.vcs.is_some(),
+        "a property only the folder file sets survives"
+    );
+    assert_eq!(
+        both.board.repo.as_ref().expect("repo").as_ref(),
+        "example/b"
+    );
+}
+
+#[test]
+fn manifest_array_is_replaced() {
+    let root = "[spawn]\nguard = [50]\n";
+    let folder = format!("[project]\nname = \"p\"\n{BOARD}[spawn]\nguard = [10, 20, 30]\n");
+    let manifest =
+        load_layers(&[(".zaf.toml", root), (".zaf/config.toml", &folder)], None).expect("loads");
+    assert_eq!(manifest.spawn.guard, vec![50]);
+}
+
+#[test]
+fn machine_config_sits_below_the_project() {
+    let machine = format!("{BOARD}[spawn]\nslots = 7\nguard = [90]\n");
+    let project = "[project]\nname = \"p\"\n[spawn]\nslots = 3\n";
+    let manifest = load_layers(&[(".zaf.toml", project)], Some(&machine)).expect("loads");
+    assert_eq!(manifest.spawn.slots, 3, "the project wins a conflict");
+    assert_eq!(
+        manifest.spawn.guard,
+        vec![90],
+        "the machine fills what the project leaves out"
+    );
+    assert_eq!(
+        manifest.board.repo.as_ref().expect("repo").as_ref(),
+        "example/b"
+    );
+    // Without a machine file the same project is missing its board.
+    assert!(load_layers(&[(".zaf.toml", project)], None).is_err());
+}
+
+#[test]
+fn merged_manifest_missing_board_is_an_error() {
+    let project = "[project]\nname = \"p\"\n";
+    let error = load_layers(&[(".zaf.toml", project)], None).expect_err("no board anywhere");
+    let text = error.to_string();
+    assert!(text.contains("board"), "{text}");
+    assert!(text.contains(".zaf.toml"), "{text}");
+    let error = load_layers(&[(".zaf.toml", BOARD)], None).expect_err("no project anywhere");
+    assert!(error.to_string().contains("project"), "{error}");
+    // [project] and [board] may come from different layers.
+    let folder = "[project]\nname = \"p\"\n";
+    assert!(load_layers(&[(".zaf.toml", BOARD), (".zaf/config.toml", folder)], None).is_ok());
+}
+
+#[test]
+fn legacy_manifest_still_loads() {
+    let legacy = format!("[project]\nname = \"old\"\n{BOARD}");
+    let manifest = load_layers(&[("ZAF.toml", &legacy)], None).expect("loads");
+    assert_eq!(manifest.project.name.as_ref(), "old");
+}
+
+#[test]
+fn legacy_beside_new_is_an_error() {
+    let text = format!("[project]\nname = \"p\"\n{BOARD}");
+    for new in [".zaf.toml", ".zaf/config.toml"] {
+        let error = load_layers(&[("ZAF.toml", &text), (new, &text)], None)
+            .expect_err("the retired name never mixes with a new one");
+        assert!(
+            matches!(error, ManifestError::LegacyBesideNew { .. }),
+            "{error}"
+        );
+        let message = error.to_string();
+        assert!(message.contains("ZAF.toml"), "{message}");
+        assert!(message.contains(new), "{message}");
+    }
+}
+
+#[test]
+fn manifest_error_names_its_file() {
+    let good = format!("[project]\nname = \"p\"\n{BOARD}");
+    // A syntax error names the one file.
+    let error = load_layers(&[(".zaf.toml", "[project\n")], None).expect_err("syntax");
+    let message = error.to_string();
+    assert!(message.contains(".zaf.toml"), "{message}");
+    assert!(
+        !message.contains("ZAF.toml"),
+        "never the file that was not read: {message}"
+    );
+    // A syntax error in the lower file names that file, not the root.
+    let error = load_layers(
+        &[(".zaf.toml", &good), (".zaf/config.toml", "x = = 1")],
+        None,
+    )
+    .expect_err("syntax");
+    let message = error.to_string();
+    assert!(message.contains(".zaf/config.toml"), "{message}");
+    // A rule broken in the merge names the files combined.
+    let broken = format!("{good}[spawn]\nslots = 0\n");
+    let error = load_layers(&[(".zaf.toml", &broken), (".zaf/config.toml", &good)], None)
+        .expect_err("slots");
+    let message = error.to_string();
+    assert!(
+        message.contains(".zaf.toml") && message.contains(".zaf/config.toml"),
+        "{message}"
+    );
+    assert!(!message.contains("ZAF.toml"), "{message}");
+    // The machine's file is named when it was part of the merge.
+    let error = load_layers(&[(".zaf.toml", &broken)], Some(BOARD)).expect_err("slots");
+    assert!(error.to_string().contains("config.toml"), "{error}");
+    // The retired file is named as itself.
+    let error = load_layers(&[("ZAF.toml", "[project\n")], None).expect_err("syntax");
+    assert!(error.to_string().contains("ZAF.toml"), "{error}");
+    // A missing file is a read error that names it.
+    let (_temp, root, _home) = layered(&[]);
+    let error = Manifest::load(&root.join("ZAF.toml")).expect_err("absent");
+    assert!(matches!(error, ManifestError::Read { .. }), "{error}");
+    assert!(error.to_string().contains("ZAF.toml"), "{error}");
+}
+
+#[test]
+fn actions_timeout_defaults_to_30() {
+    assert_eq!(load(MINIMAL).expect("loads").actions.timeout_minutes, 30);
+    let manifest = load(&with("[actions]\ntimeout_minutes = 45\n")).expect("loads");
+    assert_eq!(manifest.actions.timeout_minutes, 45);
+    let error = load(&with("[actions]\ntimeout_minutes = 0\n")).expect_err("zero");
+    assert!(
+        matches!(
+            error,
+            ManifestError::Invalid {
+                section: "actions",
+                key: "timeout_minutes",
+                ..
+            }
+        ),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_machine_layer_absent_is_not_a_failure() {
+    let good = format!("[project]\nname = \"p\"\n{BOARD}");
+    let (_temp, root, _home) = layered(&[(".zaf.toml", &good)]);
+    assert!(Manifest::load_layers(&root, None).is_ok());
+    let missing = root.join("no-such-home");
+    assert!(Manifest::load_layers(&root, Some(&missing)).is_ok());
+}
+
 #[test]
 fn project_and_board_alone_load_with_the_pack_defaults() {
     let manifest = load(MINIMAL).expect("the minimal manifest loads");

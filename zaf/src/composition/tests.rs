@@ -109,6 +109,111 @@ fn discover_walks_up_to_the_manifest() {
     fs::remove_dir_all(&elsewhere).expect("clean up");
 }
 
+fn write_at(dir: &Path, name: &str, text: &str) {
+    let file = dir.join(name);
+    fs::create_dir_all(file.parent().expect("parent")).expect("mkdir");
+    fs::write(file, text).expect("write");
+}
+
+#[test]
+fn zaf_home_is_not_a_project() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let dir = temp.path().join("dir");
+    let home = dir.join(".zaf");
+    write_at(&home, "config.toml", FULL);
+    let below = dir.join("src");
+    fs::create_dir_all(&below).expect("mkdir");
+    assert!(
+        matches!(
+            Composition::discover_with_home(&below, Some(&home)),
+            Err(CompositionError::NoProject { .. })
+        ),
+        "the home's config.toml is the machine's, not a project's"
+    );
+    // The same file with another home is a project's manifest.
+    let found = Composition::discover_with_home(&below, None).expect("a project");
+    assert_eq!(found.root(), dir.as_path());
+    // A real project manifest in that directory still makes it a project.
+    write_at(&dir, ".zaf.toml", "[project]\nname = \"p\"\n");
+    let found = Composition::discover_with_home(&below, Some(&home)).expect("a project");
+    assert_eq!(found.root(), dir.as_path());
+}
+
+#[test]
+fn workspace_copy_resolves_to_the_root() {
+    for file in [".zaf.toml", ".zaf/config.toml", "ZAF.toml"] {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path().join("repo");
+        let home = temp.path().join("zaf-home");
+        let copy = root.join(".zaf/workspaces/feature/0.2.0-1-2");
+        write_at(&root, file, FULL);
+        write_at(&copy, file, FULL);
+        let inside = copy.join("src");
+        fs::create_dir_all(&inside).expect("mkdir");
+        let found = Composition::discover_with_home(&inside, Some(&home)).expect("finds a root");
+        assert_eq!(found.root(), root.as_path(), "a copy of {file}");
+    }
+}
+
+#[test]
+fn a_project_folder_file_and_a_root_file_are_one_project() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path().join("repo");
+    write_at(&root, ".zaf.toml", "[project]\nname = \"p\"\n");
+    write_at(&root, ".zaf/config.toml", HEAD);
+    let found = Composition::discover_with_home(&root, None).expect("loads");
+    assert_eq!(found.root(), root.as_path());
+    assert_eq!(found.manifest().project.name.as_ref(), "p");
+}
+
+#[test]
+fn legacy_beside_new_is_refused_by_discover_and_load() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path().join("repo");
+    write_at(&root, "ZAF.toml", FULL);
+    write_at(&root, ".zaf.toml", FULL);
+    let inside = root.join("src");
+    fs::create_dir_all(&inside).expect("mkdir");
+    let load = Composition::load_with_home(&root, None).expect_err("refused");
+    assert!(matches!(load, ManifestError::LegacyBesideNew { .. }));
+    let found = Composition::discover_with_home(&inside, None).expect_err("refused");
+    let message = found.to_string();
+    assert!(
+        message.contains("ZAF.toml") && message.contains(".zaf.toml"),
+        "{message}"
+    );
+}
+
+#[test]
+fn no_project_text_names_the_files_it_looked_for() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let error = Composition::discover_with_home(temp.path(), None).expect_err("none");
+    let message = error.to_string();
+    assert!(
+        message.contains(".zaf.toml") && message.contains(".zaf/config.toml"),
+        "{message}"
+    );
+}
+
+#[test]
+fn zaf_home_comes_from_zaf_home_then_home_then_nothing() {
+    let os = |text: &str| Some(std::ffi::OsString::from(text));
+    assert_eq!(
+        zaf_home_from(os("/x/zaf"), os("/u")),
+        Some(PathBuf::from("/x/zaf"))
+    );
+    assert_eq!(
+        zaf_home_from(None, os("/u")),
+        Some(PathBuf::from("/u/.zaf"))
+    );
+    assert_eq!(
+        zaf_home_from(os(""), os("/u")),
+        Some(PathBuf::from("/u/.zaf"))
+    );
+    assert_eq!(zaf_home_from(None, None), None);
+    assert_eq!(zaf_home_from(os(""), os("")), None);
+}
+
 const HEAD: &str =
     "[project]\nname = \"bookshelf\"\n[board]\nkind = \"github-issues\"\nrepo = \"example/b\"\n";
 

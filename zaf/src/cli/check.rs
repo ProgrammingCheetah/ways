@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use super::Cli;
 use super::exit::{self, BACKEND, REFUSED};
@@ -162,9 +162,10 @@ fn check_task_in_slice(
         shell: shell.as_ref(),
         root: &dir,
     };
+    let began = SystemTime::now();
     let check = check_task(&template, &inputs);
     let line = format!("slice {} at {}", resolved.slice, dir.display());
-    Ok((CheckRecord::from_task(target, &check), line))
+    Ok((CheckRecord::from_task(target, &check, began), line))
 }
 
 /// Why a task whose slice has no workspace is refused.
@@ -209,8 +210,30 @@ fn check_pr_target(
     });
     let mut settings = EngineSettings::new(composition.root().to_owned(), runs_dir(composition));
     settings.ci_grace = Duration::from_secs(composition.manifest().check.ci_grace_seconds);
-    let report = Engine::new(ports, settings).run(&steps, pr, flagged);
-    Ok(CheckRecord::from_report(target, &report))
+    Ok(run_steps(ports, settings, &steps, target, pr, flagged))
+}
+
+/// Runs the steps and builds the pull request's record.
+///
+/// The head is read before any step starts and stored as read: a head that moves during
+/// the run leaves the old one in the record, so the result does not count for the new one.
+/// A forge that fails or reports no head leaves none, and nothing else changes.
+fn run_steps(
+    ports: Arc<dyn StepPorts>,
+    settings: EngineSettings,
+    steps: &[Step],
+    target: &Target,
+    pr: PrNumber,
+    flagged: bool,
+) -> CheckRecord {
+    let began = SystemTime::now();
+    let head = ports
+        .forge()
+        .and_then(|forge| forge.head(pr))
+        .ok()
+        .flatten();
+    let report = Engine::new(ports, settings).run(steps, pr, flagged);
+    CheckRecord::from_report(target, &report, head, began)
 }
 
 fn task_template(
@@ -258,6 +281,8 @@ fn runs_dir(composition: &Composition) -> PathBuf {
     composition.root().join(RUNS_DIR)
 }
 
+/// Where a target's record is stored: `.zaf/runs/check-<slug>.json`, one per task and
+/// per pull request.
 fn stored_path(composition: &Composition, target: &Target) -> PathBuf {
     runs_dir(composition).join(format!("check-{}.json", target.slug()))
 }
@@ -463,6 +488,151 @@ mod tests {
         assert!(runs.is_empty(), "the gate ran at {runs:?}");
     }
 
+    /// Lends a shared fake forge to a step's thread.
+    struct SharedForge(Arc<crate::fakes::FakeForge>);
+
+    impl Forge for SharedForge {
+        fn open_pr(&self, request: &crate::ports::PrRequest) -> Result<PrNumber, PortError> {
+            self.0.open_pr(request)
+        }
+
+        fn checks(&self, pr: PrNumber) -> Result<Vec<crate::ports::Check>, PortError> {
+            self.0.checks(pr)
+        }
+
+        fn review_comments(
+            &self,
+            pr: PrNumber,
+        ) -> Result<Vec<crate::ports::ReviewComment>, PortError> {
+            self.0.review_comments(pr)
+        }
+
+        fn head(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
+            self.0.head(pr)
+        }
+
+        fn scanning_alerts(
+            &self,
+            pr: PrNumber,
+        ) -> Result<Vec<crate::ports::ScanningAlert>, PortError> {
+            self.0.scanning_alerts(pr)
+        }
+
+        fn merge(&self, pr: PrNumber) -> Result<crate::ports::PrMerge, PortError> {
+            self.0.merge(pr)
+        }
+    }
+
+    /// Ports whose shell fails the one step and, when told, moves the pull request's head
+    /// while it runs.
+    struct MovingPorts {
+        forge: Arc<crate::fakes::FakeForge>,
+        pr: PrNumber,
+        moves_to: Option<&'static str>,
+    }
+
+    impl Shell for MovingPorts {
+        fn run(&self, _line: &CommandLine) -> Result<GateRun, PortError> {
+            if let Some(head) = self.moves_to {
+                self.forge.set_head(self.pr, Some(head))?;
+            }
+            Ok(GateRun {
+                verdict: crate::ports::GateVerdict::Failed,
+                output: "error: something broke\n".to_owned(),
+            })
+        }
+    }
+
+    impl StepPorts for MovingPorts {
+        fn forge(&self) -> Result<Box<dyn Forge>, PortError> {
+            Ok(Box::new(SharedForge(Arc::clone(&self.forge))))
+        }
+
+        fn runner(&self, name: &RunnerName) -> Result<Box<dyn Runner>, PortError> {
+            Err(PortError::Unavailable(format!("no runner {name}")))
+        }
+    }
+
+    /// A pull request on a fake forge, at `head` when one is given.
+    fn pull_request(head: Option<&str>) -> (Arc<crate::fakes::FakeForge>, PrNumber) {
+        let forge = Arc::new(crate::fakes::FakeForge::default());
+        let pr = forge
+            .open_pr(&crate::ports::PrRequest {
+                slice: SliceName::from("feature/one-task"),
+                base: crate::ports::BaseName::from("feature/one"),
+                title: "#7 one task".to_owned(),
+                body: String::new(),
+            })
+            .expect("opens");
+        forge.set_head(pr, head).expect("sets the head");
+        (forge, pr)
+    }
+
+    /// Runs one failing `command:lint` step over the ports.
+    fn run_lint(ports: MovingPorts) -> CheckRecord {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let pr = ports.pr;
+        let settings = EngineSettings::new(dir.path().to_owned(), dir.path().join(".zaf/runs"));
+        let steps = vec!["command:lint".parse::<Step>().expect("step")];
+        let target = Target::Pr { pr, task: None };
+        run_steps(Arc::new(ports), settings, &steps, &target, pr, false)
+    }
+
+    #[test]
+    fn record_keeps_the_head_from_before_the_steps() {
+        let (forge, pr) = pull_request(Some("old-head"));
+        let ports = MovingPorts {
+            forge: Arc::clone(&forge),
+            pr,
+            moves_to: Some("new-head"),
+        };
+        let record = run_lint(ports);
+        assert_eq!(
+            forge.head(pr).expect("reads"),
+            Some("new-head".to_owned()),
+            "the head moved during the run"
+        );
+        assert_eq!(record.head.as_deref(), Some("old-head"));
+        assert!(record.at.is_some());
+    }
+
+    #[test]
+    fn no_head_from_the_forge_keeps_the_verdict() {
+        let run = |head: Option<&str>| {
+            let (forge, pr) = pull_request(head);
+            run_lint(MovingPorts {
+                forge,
+                pr,
+                moves_to: None,
+            })
+        };
+        let with_head = run(Some("abc123"));
+        let without = run(None);
+        assert_eq!(with_head.head.as_deref(), Some("abc123"));
+        assert_eq!(without.head, None);
+        assert_eq!(without.verdict, with_head.verdict);
+        assert_eq!(without.verdict.code(), 1);
+        assert_eq!(without.lines, with_head.lines);
+        // A forge that cannot answer at all (no such pull request) is the same: none.
+        let (forge, _) = pull_request(None);
+        let elsewhere = PrNumber::from(99);
+        let dir = tempfile::tempdir().expect("temp dir");
+        let settings = EngineSettings::new(dir.path().to_owned(), dir.path().join(".zaf/runs"));
+        let steps = vec!["command:lint".parse::<Step>().expect("step")];
+        let target = Target::Pr {
+            pr: elsewhere,
+            task: None,
+        };
+        let ports = MovingPorts {
+            forge,
+            pr: elsewhere,
+            moves_to: None,
+        };
+        let record = run_steps(Arc::new(ports), settings, &steps, &target, elsewhere, false);
+        assert_eq!(record.head, None);
+        assert_eq!(record.verdict, with_head.verdict);
+    }
+
     #[test]
     fn a_stored_record_reads_back_with_its_exit_code() {
         let dir = project(MANIFEST);
@@ -476,6 +646,8 @@ mod tests {
             target: target.to_string(),
             verdict: crate::app::check::Verdict::MustFix,
             lines: Vec::new(),
+            head: None,
+            at: None,
         };
         store(&stored, &record).expect("stores");
         assert!(stored.ends_with(".zaf/runs/check-pr-5.json"));

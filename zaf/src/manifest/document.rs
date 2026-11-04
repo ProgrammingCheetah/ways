@@ -5,12 +5,12 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use super::sections::{
-    AskSection, BoardKind, BoardSection, BranchesSection, ChecksSection, DesignKind, DesignSection,
-    ForbiddenSection, ForgeKind, ForgeSection, GateSection, IsolationKind, IsolationSection,
-    PackSection, ProjectSection, RoleSection, RunnerName, RunnerSection, SpawnSection,
-    StyleSection, ToolName, VcsSection, WorkspacesSection,
+    ActionsSection, AskSection, BoardKind, BoardSection, BranchesSection, ChecksSection,
+    DesignKind, DesignSection, ForbiddenSection, ForgeKind, ForgeSection, GateSection,
+    IsolationKind, IsolationSection, PackSection, ProjectSection, RoleSection, RunnerName,
+    RunnerSection, SpawnSection, StyleSection, ToolName, VcsSection, WorkspacesSection,
 };
-use super::{ManifestError, Requirement};
+use super::{ManifestError, Requirement, layers};
 use crate::domain::{MAX_QUESTIONS, RoleName};
 
 /// A project's `ZAF.toml`. Only `[project]` and `[board]` are required.
@@ -54,6 +54,9 @@ pub struct Manifest {
     /// `[check]` and `[check.<target>]`; a target left out runs no steps.
     #[serde(default)]
     pub check: ChecksSection,
+    /// `[actions]`.
+    #[serde(default)]
+    pub actions: ActionsSection,
     /// `[ask]`.
     #[serde(default)]
     pub ask: AskSection,
@@ -72,13 +75,25 @@ pub struct Manifest {
 }
 
 impl Manifest {
-    /// Reads, defaults and validates the manifest at `path`.
+    /// Reads, defaults and validates the one manifest file at `path`; an error names it.
     pub fn load(path: &Path) -> Result<Self, ManifestError> {
-        let text = std::fs::read_to_string(path).map_err(|source| ManifestError::Read {
-            path: path.to_owned(),
-            source,
-        })?;
-        text.parse()
+        let table = layers::read_table(path)?;
+        Self::from_table(table).map_err(|error| error.in_files(&[path]))
+    }
+
+    /// Reads the manifest of the project at `root` from the files it holds (`.zaf.toml`,
+    /// `.zaf/config.toml` or a lone legacy `ZAF.toml`), with the `config.toml` of the zaf
+    /// `home` below them, combined property by property. Every error names its file.
+    pub fn load_layers(root: &Path, home: Option<&Path>) -> Result<Self, ManifestError> {
+        layers::load(root, home)
+    }
+
+    /// Parses, defaults and validates a merged table.
+    pub(super) fn from_table(table: toml::Table) -> Result<Self, ManifestError> {
+        let mut manifest: Self = table.try_into()?;
+        manifest.fill_pack_defaults();
+        manifest.validate()?;
+        Ok(manifest)
     }
 
     /// Checks the rules serde cannot express: keys a kind needs, relative paths, ranges.
@@ -169,6 +184,9 @@ impl Manifest {
                 "must be strictly ascending percentages from 1 to 100",
             ));
         }
+        if self.actions.timeout_minutes == 0 {
+            return Err(invalid("actions", "timeout_minutes", "must be at least 1"));
+        }
         if self.ask.ladder.is_empty() {
             return Err(invalid("ask", "ladder", "must name at least one rung"));
         }
@@ -208,10 +226,7 @@ impl FromStr for Manifest {
 
     /// Parses the manifest, fills the pack's defaults and validates the result.
     fn from_str(text: &str) -> Result<Self, Self::Err> {
-        let mut manifest: Self = toml::from_str(text)?;
-        manifest.fill_pack_defaults();
-        manifest.validate()?;
-        Ok(manifest)
+        Self::from_table(text.parse::<toml::Table>()?)
     }
 }
 

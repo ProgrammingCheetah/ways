@@ -337,6 +337,25 @@ pub struct CheckSection {
     pub steps: Vec<String>,
 }
 
+/// The action timeout when `[actions]` gives none, in minutes.
+pub const DEFAULT_ACTION_TIMEOUT_MINUTES: u64 = 30;
+
+/// `[actions]`: how long an action may run.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ActionsSection {
+    /// Minutes before an action run is killed, at least 1. Default: 30.
+    pub timeout_minutes: u64,
+}
+
+impl Default for ActionsSection {
+    fn default() -> Self {
+        Self {
+            timeout_minutes: DEFAULT_ACTION_TIMEOUT_MINUTES,
+        }
+    }
+}
+
 /// `[ask]`: the ladder of models a question climbs when a quote check fails.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
