@@ -5,6 +5,9 @@
 //! `usage` block is one turn. The same assistant message is written to the file
 //! more than once, so a turn is counted once per message id. A line that is not
 //! JSON is skipped, never fatal.
+//!
+//! The whole first prompt is read once, for the run's [`Attribution`], and dropped:
+//! a [`Run`] keeps only its first 120 characters.
 
 use std::path::{Path, PathBuf};
 
@@ -14,6 +17,24 @@ use super::prices::PriceTable;
 
 /// How long a run's name may be.
 const FIRST_PROMPT_CHARS: usize = 120;
+
+/// The role of a prompt carrying an ask's `for: #<task>` line.
+const KEEPER_ROLE: &str = "keeper";
+/// The role of a prompt opening with `Epic #<n>`.
+const PLANNING_ROLE: &str = "planning";
+/// The role of a subagent whose own prompt names no other.
+const PROGRAMMER_ROLE: &str = "programmer";
+
+/// Who a run worked for, read from its whole first prompt.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Attribution {
+    /// The run's role, when the prompt gives one.
+    pub role: Option<String>,
+    /// The epic the prompt names; a subagent takes its parent's in the ledger.
+    pub epic: Option<u64>,
+    /// The tasks the prompt names.
+    pub tasks: Vec<u64>,
+}
 
 /// One transcript, summed.
 #[derive(Debug, Clone, PartialEq)]
@@ -38,6 +59,12 @@ pub struct Run {
     pub output: u64,
     /// Estimated dollars, each message at its own model's rates.
     pub cost: f64,
+    /// The role, epic and tasks its first prompt gives.
+    pub attribution: Attribution,
+    /// The first line's `timestamp`, as written.
+    pub first_time: Option<String>,
+    /// The last line's `timestamp`, as written.
+    pub last_time: Option<String>,
 }
 
 impl Run {
@@ -52,7 +79,7 @@ pub fn parse_run(path: &Path, prices: &PriceTable) -> Option<Run> {
     let bytes = std::fs::read(path).ok()?;
     let text = String::from_utf8_lossy(&bytes);
     let mut seen = std::collections::HashSet::new();
-    let mut first_prompt: Option<String> = None;
+    let mut whole_prompt: Option<String> = None;
     let mut models: Vec<(String, u64)> = Vec::new();
     let mut run = Run {
         path: path.to_owned(),
@@ -65,14 +92,23 @@ pub fn parse_run(path: &Path, prices: &PriceTable) -> Option<Run> {
         cache_read: 0,
         output: 0,
         cost: 0.0,
+        attribution: Attribution::default(),
+        first_time: None,
+        last_time: None,
     };
     for line in text.lines() {
         let Ok(object) = serde_json::from_str::<Value>(line) else {
             continue;
         };
+        if let Some(time) = object.get("timestamp").and_then(Value::as_str) {
+            if run.first_time.is_none() {
+                run.first_time = Some(time.to_owned());
+            }
+            run.last_time = Some(time.to_owned());
+        }
         match object.get("type").and_then(Value::as_str) {
-            Some("user") if first_prompt.is_none() => {
-                first_prompt = prompt_of(&object);
+            Some("user") if whole_prompt.is_none() => {
+                whole_prompt = prompt_of(&object);
             }
             Some("assistant") => take_turn(&object, prices, &mut seen, &mut models, &mut run),
             _ => {}
@@ -81,12 +117,139 @@ pub fn parse_run(path: &Path, prices: &PriceTable) -> Option<Run> {
     if run.turns == 0 {
         return None;
     }
-    run.first_prompt = first_prompt.unwrap_or_default();
+    let whole_prompt = whole_prompt.unwrap_or_default();
+    run.first_prompt = collapse_whitespace(&whole_prompt)
+        .chars()
+        .take(FIRST_PROMPT_CHARS)
+        .collect();
+    run.attribution = attribute(&whole_prompt, run.is_subagent());
     run.model = dominant(&models);
     Some(run)
 }
 
-/// The run's name from a user line, if that line is a real prompt.
+/// What a whole first prompt says of its run. An ask's `for:` line comes first: a keeper's
+/// prompt also carries its asker's instance on the `from:` line, and any page text after it.
+fn attribute(prompt: &str, subagent: bool) -> Attribution {
+    if let Some((task, epic)) = keeper_ask(prompt) {
+        return Attribution {
+            role: Some(KEEPER_ROLE.to_owned()),
+            epic,
+            tasks: vec![task],
+        };
+    }
+    let default_role = subagent.then(|| PROGRAMMER_ROLE.to_owned());
+    let tasks = tasks_named(prompt);
+    if let Some((role, epic)) = instance_named(prompt) {
+        return Attribution {
+            role: Some(role),
+            epic: Some(epic),
+            tasks,
+        };
+    }
+    if let Some(epic) = opening_epic(prompt) {
+        return Attribution {
+            role: default_role.or_else(|| Some(PLANNING_ROLE.to_owned())),
+            epic: Some(epic),
+            tasks,
+        };
+    }
+    Attribution {
+        role: default_role,
+        epic: None,
+        tasks,
+    }
+}
+
+/// The first `for: #<task>` line, with the epic of an instance on the `from:` line above it.
+fn keeper_ask(prompt: &str) -> Option<(u64, Option<u64>)> {
+    let mut previous = "";
+    for line in prompt.lines() {
+        let task = line
+            .trim()
+            .strip_prefix("for:")
+            .map(str::trim)
+            .filter(|rest| !rest.contains(char::is_whitespace))
+            .and_then(issue_number);
+        if let Some(task) = task {
+            let epic = previous
+                .trim()
+                .strip_prefix("from:")
+                .and_then(instance_named)
+                .map(|(_, epic)| epic);
+            return Some((task, epic));
+        }
+        previous = line;
+    }
+    None
+}
+
+/// The first `<role> instance <n> on #<epic>` in `text`.
+fn instance_named(text: &str) -> Option<(String, u64)> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    words.windows(5).find_map(|window| {
+        let [role, "instance", number, "on", epic] = window else {
+            return None;
+        };
+        if !number.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        let role = role.trim_start_matches(|character: char| !character.is_alphanumeric());
+        let role_is_a_name = !role.is_empty()
+            && role
+                .chars()
+                .all(|character| character.is_alphanumeric() || "-_".contains(character));
+        let epic = issue_number(epic)?;
+        role_is_a_name.then(|| (role.to_owned(), epic))
+    })
+}
+
+/// The `<n>` of a prompt opening with `Epic #<n>`.
+fn opening_epic(prompt: &str) -> Option<u64> {
+    let rest = prompt.trim_start().strip_prefix("Epic")?;
+    let word = rest.split_whitespace().next()?;
+    rest.starts_with(char::is_whitespace)
+        .then(|| issue_number(word))
+        .flatten()
+}
+
+/// Every task named by `task #<n>` or `Tasks: #<a> #<b>`, in any case, each once.
+fn tasks_named(prompt: &str) -> Vec<u64> {
+    let words: Vec<&str> = prompt.split_whitespace().collect();
+    let mut tasks = Vec::new();
+    for (index, word) in words.iter().enumerate() {
+        let word = word
+            .trim_start_matches(|character: char| !character.is_alphanumeric())
+            .trim_end_matches(':')
+            .to_ascii_lowercase();
+        if word != "task" && word != "tasks" {
+            continue;
+        }
+        let numbers = words[index + 1..]
+            .iter()
+            .map_while(|next| issue_number(next));
+        for task in numbers {
+            if !tasks.contains(&task) {
+                tasks.push(task);
+            }
+        }
+    }
+    tasks
+}
+
+/// The issue number a word opens with: `#12`, `#12,`, `#12's`; not `#12a`, `#0` or `12`.
+fn issue_number(word: &str) -> Option<u64> {
+    let rest = word.strip_prefix('#')?;
+    let end = rest
+        .find(|character: char| !character.is_ascii_digit())
+        .unwrap_or(rest.len());
+    let (digits, after) = rest.split_at(end);
+    if after.starts_with(char::is_alphanumeric) {
+        return None;
+    }
+    digits.parse().ok().filter(|number| *number > 0)
+}
+
+/// The whole text of a user line, if that line is a real prompt.
 fn prompt_of(object: &Value) -> Option<String> {
     let content = object.get("message")?.get("content")?;
     let text = match content {
@@ -102,12 +265,7 @@ fn prompt_of(object: &Value) -> Option<String> {
     if text.trim().is_empty() || text.starts_with('<') {
         return None;
     }
-    Some(
-        collapse_whitespace(&text)
-            .chars()
-            .take(FIRST_PROMPT_CHARS)
-            .collect(),
-    )
+    Some(text)
 }
 
 /// Every run of whitespace becomes one space; the ends keep theirs.

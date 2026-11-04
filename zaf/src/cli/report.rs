@@ -6,8 +6,9 @@ use std::time::SystemTime;
 use super::Cli;
 use super::exit::{self, BACKEND, OK};
 use crate::app::guard;
+use crate::app::report::ledger::{self, LEDGER_FILE, Ledger};
 use crate::app::report::{self, PriceTable, Query};
-use crate::composition::Composition;
+use crate::composition::{Composition, zaf_home};
 
 /// The flags of `zaf report`.
 #[derive(Debug, clap::Args)]
@@ -35,13 +36,32 @@ pub(super) fn default_config_dir() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude")))
 }
 
-/// Prints the report.
+/// Ingests the project's profiles and the default Claude config dir into the ledger in the
+/// zaf home; a failure's message names the file.
+pub(super) fn ingest_ledger(composition: &Composition) -> Result<usize, String> {
+    let home = zaf_home().ok_or_else(|| {
+        format!("no home for the ledger ~/.zaf/{LEDGER_FILE}: set ZAF_HOME or HOME")
+    })?;
+    let mut ledger = Ledger::open(&home.join(LEDGER_FILE)).map_err(|error| error.to_string())?;
+    let sources = ledger::sources(
+        &composition.state_dir(),
+        composition.manifest().project.name.as_ref(),
+        default_config_dir().as_deref(),
+    );
+    ledger.ingest(&sources).map_err(|error| error.to_string())
+}
+
+/// Fills the ledger, then prints the report.
 pub fn run(cli: &Cli, args: &ReportArgs) -> u8 {
     let path = cli.verb.path();
     let composition = match Composition::discover_here() {
         Ok(composition) => composition,
         Err(error) => return exit::fail_composition(&path, &error),
     };
+    if let Err(message) = ingest_ledger(&composition) {
+        eprintln!("zaf {path}: {message}");
+        return BACKEND;
+    }
     let config_dir = if args.all { default_config_dir() } else { None };
     print_report(cli, &composition, args, config_dir.as_deref())
 }
