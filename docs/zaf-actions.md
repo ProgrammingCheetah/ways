@@ -1,14 +1,14 @@
 # zaf actions
 
-Draft v4, 2026-11-03, with the Engineer's rulings of this session and of the planning questions (§8). An **action** is a runnable file that `zaf` names, lists and runs through `zaf do <name>`. Actions are how a project or a machine makes zaf its own, and zaf is the abstraction layer over them: it owns the names, the listing, the environment, the log, the modes, the phases and one exit contract; what a name *does* is the action behind it. zaf ships none: whoever sets zaf up writes them, and every place a verb shells out is a name the project or the machine must provide. What Claude assumed beyond the rulings is listed in §9, open to veto.
+Draft v5, 2026-11-04, with the Engineer's rulings and the answers to the planning questions (§8). An **action** is a runnable file that `zaf` names, lists and runs through `zaf do <name>`. Actions are how a project or a machine makes zaf its own, and zaf is the abstraction layer over them: it owns the names, the listing, the environment, the log, the modes, the phases and one exit contract; what a name *does* is the action behind it. zaf ships none: whoever sets zaf up writes them, and every place a verb shells out is a name the project or the machine must provide. What Claude assumed beyond the rulings is listed in §9, open to veto.
 
 ## 1. Principles
 
 1. **Make it yours.** A project or a machine decides what a name does by putting a file of that name in its actions folder. zaf ships no actions and has no last word on a step that shells out.
 2. **zaf is an abstraction over actions.** A verb is a stable name and a composition of named steps; each step resolves to an action the project or the machine provides. `zaf do push` is the project's `push`, or the machine's, and so is every verb that pushes.
-3. **Two tiers, resolved by name.** The project's `.zaf/actions/`, then the machine's `~/.zaf/actions/`. The first file found wins; `zaf do` lists every name with its tier. A name no tier provides is a missing backend: exit 2.
+3. **Two tiers, resolved by name.** The project's `.zaf/actions/`, then the machine's `~/.zaf/actions/`. The first file found wins; `zaf do` lists every name with its tier. `zaf do` on a name no tier provides is `NOT_RUN`, exit 125 (§5); a verb's step with no action is exit 2 (§4).
 4. **Composable.** An action's body may call `zaf do <other>` and any verb: `zaf do something` may be `zaf do something_1; zaf do something_2`. Each call gets its own log; an outer log names the inner ones.
-5. **One contract.** Exit 0 is success, non-zero is failure, 1 the canonical one; every non-zero code an action can return is declared in its metadata with its meaning. Nothing else is promised about its output: the log holds it.
+5. **One contract.** Exit 0 is success, non-zero is failure, 1 the canonical one; every non-zero code an action can return is declared in its metadata with its meaning. Code 125 is reserved for zaf: `NOT_RUN`, the body never ran. What zaf prints on a failure leads with a word, `FAIL` or `NOT_RUN`, because a model reads words; a pass prints nothing. Nothing else is promised about an action's output: the log holds it.
 6. **Metadata and body.** Every action file has two parts: the metadata, which names it to zaf (description, exit meanings, mode, group, phases, limits), and the body, which runs. A file without metadata is not an action.
 7. **Every action has a mode.** Callable by anybody by default, not every action by everybody: a mode like a file's (§3), three digits for the Engineer, the action's group of roles and every other role, bits for seeing, overriding and running.
 8. **Phases are the guard that holds.** An action names the Team Phases it may run in; zaf derives a task's phase from the board and its own records, never from the environment, and refuses the action outside them.
@@ -44,7 +44,7 @@ Two parts. The **metadata** is the comment block that opens the file, right afte
 ```sh
 #!/bin/sh
 # zaf description: merge the task's pull request and mark the task done
-# zaf 1: the merge conditions do not hold, or the forge refused
+# zaf 1: the base conflicts, or the forge refused
 # zaf 2: a backend failed
 # zaf mode: 750
 # zaf group: team, release
@@ -52,43 +52,48 @@ Two parts. The **metadata** is the comment block that opens the file, right afte
 # zaf phases: land
 # zaf timeout: 10
 set -e
-zaf do --tier machine merge-base "$1" "$ZAF_BASE"
-zaf do pr-merge "$1"
+zaf do --tier machine merge-base "$ZAF_SLICE" "$ZAF_BASE"
+zaf do pr-merge "$ZAF_PR"
+zaf board done "$1"
 ```
 
 | Key | Required | Meaning |
 |---|---|---|
 | `description` | yes | one line, what `zaf do` prints beside the name |
-| `<n>` (a non-zero integer) | at least `1` | what that exit code means; every code the body can return is declared |
+| `<n>` (a non-zero integer, never `125`) | at least `1` | what that exit code means; every code the body can return is declared |
 | `mode` | no | three octal digits, as a file's; default `755` |
 | `group` | no | the roles the mode's group digit covers, comma-separated; default none |
 | `target` | no | what the first argument names: `task` (its phase is checked) or nothing; default nothing |
 | `phases` | no | the Team Phases the action may run in, comma-separated; default any; requires `target: task` |
 | `timeout` | no | minutes before the run is killed; default `[actions] timeout_minutes` (30) |
 
-A file with no metadata, no description or no declared code is refused by `zaf do` (exit 1, naming the line) and reported by `zaf doctor`. A comment marker is any run of non-alphanumeric characters (`#`, `//`, `--`, `;`, `REM`), so the format is the same in every language.
+A file with no metadata, no description or no declared code, or one that declares `125`, is refused by `zaf do` (`NOT_RUN`, exit 125, naming the line) and reported by `zaf doctor`. A comment marker is any run of non-alphanumeric characters (`#`, `//`, `--`, `;`, `REM`), so the format is the same in every language.
 
-**Modes.** Three subjects: *owner* is the Engineer (a hand run, no `ZAF_INSTANCE`); *group* is the roles the action names; *others* is every other role. Three bits: `r` (4) the action is listed by `zaf do` and shown by `--show`; `w` (2) it may be overridden by a file in a higher tier, which only the owner digit can say, since the Engineer writes those files (`7xx` can be shadowed, `5xx` cannot); `x` (1) it may be run. A shadowing file never widens the run bits of the file it shadows, whatever mode it declares. The caller's class comes from `ZAF_INSTANCE`'s role and passes through nested `zaf do` calls. A run the mode refuses exits 1, `<name>: not permitted for <role>`; a listing shows only what the caller may read; `zaf doctor` validates every mode and group. Modes guard against mistakes: `ZAF_INSTANCE` is an environment variable a process can set, so the guard that holds is the phase.
+**Modes.** Three subjects: *owner* is the Engineer (a hand run, no `ZAF_INSTANCE`); *group* is the roles the action names; *others* is every other role. Three bits: `r` (4) the action is listed by `zaf do` and shown by `--show`; `w` (2) it may be overridden by a file in a higher tier, which only the owner digit can say, since the Engineer writes those files (`7xx` can be shadowed, `5xx` cannot); `x` (1) it may be run. A shadowing file never widens the run bits of the file it shadows, whatever mode it declares. The caller's class comes from `ZAF_INSTANCE`'s role and passes through nested `zaf do` calls. A run the mode refuses prints `NOT_RUN <name>: not permitted for <role>` and exits 125; a listing shows only what the caller may read; `zaf doctor` validates every mode and group. Modes guard against mistakes: `ZAF_INSTANCE` is an environment variable a process can set, so the guard that holds is the phase.
 
-**Team Phases.** A task's phase is state zaf derives, never reads from the environment: from the board (labels, the lease) and from zaf's own records (the slice, the check records). An action with `target: task` and `phases:` runs only while the task its first argument names is in one of them; outside, exit 1, `<name>: #<task> is in <phase>, not <phases>`.
+**Team Phases.** A task's phase is state zaf derives, never reads from the environment: from the board (labels, the lease) and from zaf's own records (the slice, the check records). An action with `target: task` and `phases:` runs only while the task its first argument names is in one of them; outside, `NOT_RUN <name>: #<task> is in <phase>, not <phases>`, exit 125.
 
 | Phase | The task is | Derived from |
 |---|---|---|
 | `claim` | claimed under a live lease, no slice yet | the `claimed` label and the lease comment |
 | `build` | its slice open, a programmer at work (or a fix round) | the workspace and `.zaf/slices/<task>` exist |
-| `check` | its task checks have run on the workspace | the last `zaf check <task>` record |
+| `check` | its task checks have passed on the workspace; a must-fix or a failed step stays in `build` | the last `zaf check <task>` record, clean |
 | `publish` | its pull request open, review steps not yet run | `.zaf/slices/<task>.pr` |
 | `review` | the PR's steps have run; a must-fix returns it to `build` | the last `zaf check pr` record |
-| `land` | the last `zaf check pr` result for the PR and its current head is clean; no result is not clean | that record's head against the PR's head |
+| `land` | the last `zaf check pr` result for the PR and its current head is clean, and the workspace's latest commit is that head; no result is not clean | that record's head against the PR's head and the workspace's latest commit |
 | `done` | merged | the `done` label |
+
+The first rule that holds decides: the `done` label is `done`; a `check pr` record clean for the PR's current head, with the workspace's latest commit at that head, is `land`; a clean record with the workspace ahead of it, or a must-fix record, is `build`, or `check` when a clean task check is newer; a failed step is `review`; a `.pr` record with no result for the current head is `publish`, or `check` when a clean task check is newer than the `.pr` record; a clean task check is `check`; a workspace record is `build`; the `claimed` label with a live lease is `claim`; anything else is `unclaimed`, which no `phases:` may name.
+
+**The records.** zaf writes them, never a script. When `slice-open` or `slice-pr` exits 0, zaf stores what it handed back in `.zaf/slices/<task>` (the workspace path) or `.zaf/slices/<task>.pr` (the number). When `slice-merge` or `slice-drop` exits 0, zaf forgets both and the task's check records, so a drop returns the task to `claim` and a reopened slice starts clean. `zaf check` and `zaf changes` read the workspace from the record and fill the base from `ZAF_VERSION` and the branch pattern. These are plain files, so this stops a script's mistake, not a process set on forging them.
 
 **Name.** The file name, as is: `.zaf/actions/land` is `land`. No spaces; hyphens, dots and underscores are fine; no extension is dropped.
 
-**Environment.** Run in the caller's current directory (the project root for a hand run, the slice workspace for a programmer), with `ZAF_ROOT` (the project root), `ZAF_HOME`, `ZAF_ACTION` (the name), `ZAF_DEPTH` (how many `zaf do` calls are above this one), `ZAF_BASE` (the integration branch, from `ZAF_VERSION` and the branch pattern) and `ZAF_INSTANCE` and `ZAF_VERSION` passed through. A manifest `[env]` table applies to every action run but can set none of these. Arguments after the name go to the body as given.
+**Environment.** Run in the caller's current directory (the project root for a hand run, the slice workspace for a programmer), with `ZAF_ROOT` (the project root), `ZAF_HOME`, `ZAF_ACTION` (the name), `ZAF_DEPTH` (how many `zaf do` calls are above this one), `ZAF_BASE` (the integration branch, from `ZAF_VERSION` and the branch pattern) and `ZAF_INSTANCE` and `ZAF_VERSION` passed through. A `target: task` run also has `ZAF_SLICE` (from the task branch pattern), `ZAF_PR` (from the record, when one exists) and `ZAF_TASK_TITLE` (from the board). A manifest `[env]` table applies to every action run but can set none of these. Arguments after the name go to the body as given.
 
 **Handing a value back.** An action that stands in for a verb's step hands its value back as the last non-empty line of its log: `pr-open` a pull request number, `commit` a commit id, `slice-open` the workspace path. `merge-base` exit 1 means conflicted, with the paths in the log; any other non-zero is a backend failure.
 
-**Output and exit.** Everything the body writes, stdout and stderr, goes to `.zaf/logs/<DATETIME>_<ZAF_ACTION_NAME>.log` (`~/.zaf/logs/` outside a project), `<DATETIME>` as `YYYYMMDDTHHMMSSZ`. On exit 0 `zaf` prints nothing. On a non-zero exit it prints `<name>: exit <n>, <its declared meaning>, log <path>` and the last ten lines of the log; an undeclared code prints `exit <n>, undeclared`. The code passes through unchanged; a file that cannot start, or a run past its time bound, is `2`. `--more` prints the whole log after the run; `--json` gives name, tier, exit, meaning, seconds and log. A nested `zaf do` writes its own log and its path into the outer one.
+**Output and exit.** Everything the body writes, stdout and stderr, goes to `.zaf/logs/<DATETIME>_<ZAF_ACTION_NAME>.log` (`~/.zaf/logs/` outside a project), `<DATETIME>` as `YYYYMMDDTHHMMSSZ`. On exit 0 `zaf` prints nothing. When the body ran and exits non-zero, it prints `FAIL <name>: exit <n>, <its declared meaning>, log <path>` and the last ten lines of the log; an undeclared code prints `exit <n>, undeclared`. The code passes through unchanged. A run past its time bound did run, so it is `FAIL`, exit 2. When the body never ran (§5), it prints `NOT_RUN <name>: <reason>` and exits 125. A body that exits 125 because a nested action did not run is `FAIL`, `exit 125, a nested action did not run`, and the code passes through. `--more` prints the whole log after the run; `--json` gives result (`OK`, `FAIL` or `NOT_RUN`), name, tier, exit, meaning, seconds and log. A nested `zaf do` writes its own log and its path into the outer one.
 
 ## 4. The verbs, as compositions
 
@@ -96,7 +101,7 @@ Each verb keeps its name, its exit codes and its logic; the steps where it shell
 
 | Verb | Stays in zaf | Named steps the project provides |
 |---|---|---|
-| `board ready\|claim\|report\|question\|ruling` | leases, labels, comment markers, through the Board port | none: the board is state, not a step |
+| `board ready\|claim\|report\|question\|ruling\|done` | leases, labels, comment markers, through the Board port; `done <task>` sets the `done` label, drops `ready` and `claimed`, and refuses unless the task is in `land` or the pull request recorded for it has merged | none: the board is state, not a step |
 | `ask`, `asklog` | the ladder, the quote check, the log | none |
 | `brief` | the pack's composition; **it lists the project's actions** | none |
 | `check <task>` / `verify` | the engine, the dedupe, the record, the phase it records | `gate-light` and `test <name>` when the manifest names them as actions; a `[check.*]` step may be `action:<name>` beside `command:<cmd>` |
@@ -112,7 +117,7 @@ Each verb keeps its name, its exit codes and its logic; the steps where it shell
 | `[gate]` | the gate port keeps its levels; a line may be `zaf do gate` | the profile allow-list derives its tool rules from a literal line, so a project that wants both keeps the line |
 | `[runners.<name>]` | the template and its placeholders | none now |
 
-The release brief's "merge and tag" is the project's `release` action; a hand-made PR lands with `zaf do land <pr>`; `[check.pr]` names `action:nodes-check` instead of a line. The jj and gh code the slice verbs used leaves zaf for the project's scripts; the Vcs port keeps what `changes` needs.
+The release brief's "merge and tag" is the project's `release` action; the Engineer's hand-made PR lands with `zaf do land <pr>`; `[check.pr]` names `action:nodes-check` instead of a line. The jj and gh code the slice verbs used leaves zaf for the project's scripts; the Vcs port keeps what `changes` needs.
 
 ## 5. The verb added
 
@@ -123,7 +128,7 @@ The release brief's "merge and tag" is the project's `release` action; a hand-ma
 | `zaf do --show <name>` | print the file a name resolves to |
 | `zaf do --tier machine <name> [args…]` | run the machine's action when the project's shadows it; modes and phases apply as ever |
 
-Exit codes as every verb: `0` done, `1` refused (no such action, a file without metadata or not runnable, a mode or phase that refuses), `2` the file could not start or timed out, and the action's own declared code otherwise.
+`zaf do <name>` exits `0` when it is done (`OK`). It exits `125` when the body never ran (`NOT_RUN`): no such action, a file without metadata or not runnable, a mode or phase that refuses, or a file that could not start. Otherwise the body ran (`FAIL`): the action's own declared code, or `2` for a timeout. No action may declare `125`, and `zaf doctor` rejects a file that does, so a caller never reads a refusal as a declared code such as `merge-base`'s `1`, conflicted. Every other verb keeps `0`, `1` and `2`, and a verb's step with no action stays exit 2, `missing action <name>` (ruling 17).
 
 ## 6. The manifest
 
@@ -137,23 +142,27 @@ The actions folder is not configurable: `.zaf/actions/` in a project, `actions/`
 
 ## 7. Dogfood: the ways set
 
-Built through the lifecycle on this repo (epic #103, planned, built by team instances on `feature/0.2.0`); 0.1.3 (#99) is folded into it as one release. The ways repo moves first: `ZAF.toml` becomes `.zaf.toml`, the `.gitignore` line `.zaf/` becomes `.zaf/.gitignore`, and `.zaf/actions/` holds the set below, ways' own and nobody else's. Any other project (Zurfur) writes its own; this set is a reference to copy, never a dependency.
+Built through the lifecycle on this repo (epic #103, planned, built by team instances on `feature/0.2.0`); 0.1.3 (#99) is folded into it as one release. The ways repo moves before any other project: `ZAF.toml` becomes `.zaf.toml`, the `.gitignore` line `.zaf/` becomes `.zaf/.gitignore`, and `.zaf/actions/` holds the set below, ways' own and nobody else's. Within this epic the `ZAF.toml` rename comes last, because an installed older zaf reads only that name. Any other project (Zurfur) writes its own; this set is a reference to copy, never a dependency.
 
 | Action | Mode, group | Target, phases | Does |
 |---|---|---|---|
 | `slice-open` | `750` team, release | task: `claim` | a jj workspace and a same-named bookmark at the base; hands back the workspace path |
 | `slice-pr` | `750` team, release | task: `check`, `review` | `commit`, `push`, `pr-open`; hands back the PR number |
-| `slice-merge` | `750` team, release | task: `land` | `merge-base`, `gate-light`, `push`, `pr-merge`, `workspace-drop`; marks the task done through `zaf board` |
-| `slice-drop` | `750` team, release | task: `build`, `done` | `workspace-drop` |
+| `slice-merge` | `750` team, release | task: `land` | `merge-base`, `gate-light`, `push`, `pr-merge`, `zaf board done`, `workspace-drop`; a task already done is refused by its phase |
+| `slice-drop` | `750` team, release | task: `build`, `check`, `done` | `workspace-drop` |
 | `commit`, `push`, `pr-open`, `pr-merge`, `merge-base`, `sync`, `tag`, `workspace-open`, `workspace-drop` | `750` team, release | none | the jj and gh steps the four above compose |
 | `land <pr>` | `750` team, release | none | `pr-merge` then `sync main`: the Engineer's `gh pr merge … && jj git fetch && jj new main` |
-| `release <version>` | `750` release | none | check `zaf/Cargo.toml` is at `<version>`, `tag zaf-v<version>`; the workflow does the rest |
+| `release <version>` | `750` release | none | check `zaf/Cargo.toml` is at `<version>`, `pr-merge` the integration branch's pull request, `sync main`, `tag zaf-v<version>`; the workflow does the rest |
 | `gate-light`, `gate` | `755` | none | the cargo lines of today's `[gate]` |
 | `nodes-check` | `755` | none | `nodes check --root "$ZAF_ROOT"`; the `[check.pr]` step |
 
+**What an instance may not run.** The ways manifest's `[forbidden] commands` denies `gh pr merge`, `zaf do pr-merge`, `zaf do land` and their `--tier machine` forms in every instance profile. An instance merges only through `slice-merge`, which the phase guards, or `release`, whose mode names only the release role. Nested calls run inside an action's process, where the permission layer does not see them, so those two still work. The Engineer's own session is under no profile, so `zaf do land <pr>` stays theirs. This is not a wall: `gh api` can still reach the merge endpoint, and the forge's ruleset covers only `main`.
+
 Not actions: `/nodes:chart --diff` (a model's job, a skill) and the spawner's missing launches (verbs, their own epic).
 
-## 8. Rulings, 2026-11-03
+## 8. Rulings
+
+Rulings 1 to 19 are of 2026-11-03; 20 to 28 of 2026-11-04.
 
 1. **Global home:** a configurable zaf home, default `~/.zaf/`, laid out like a project; `zaf setup` makes it first when it has not run, and may be called from the beginning.
 2. **Local home:** projects gain a committed `.zaf/` folder; actions live in `.zaf/actions/`; the file name is the action name, no spaces, hyphens and the like allowed.
@@ -174,6 +183,15 @@ Not actions: `/nodes:chart --diff` (a model's job, a skill) and the spawner's mi
 17. **No shipped actions (#128):** zaf ships none; whoever set zaf up writes them; two tiers; the ways repo writes its own set, isolated from Zurfur's.
 18. **Team Phases (#129):** an action's metadata names the phases it may run in; zaf derives a task's phase from the board and its records, never the environment; phases are the guard that holds, modes guard against mistakes.
 19. **Merge conditions (#130):** enforced through phases: `slice-merge` runs in `land`, which needs a clean `zaf check pr` on the PR's current head; no result is not clean.
+20. **Slice records (#134):** zaf writes them from the hand-back of `slice-open` and `slice-pr` on exit 0 and forgets them on `slice-merge` and `slice-drop`; `check` and `changes` read the workspace from them.
+21. **Merging outside `land` (#135):** `[forbidden]` denies `gh pr merge`, `zaf do pr-merge` and `zaf do land` for instances; they merge through `slice-merge`, and the release instance through the `release` action. The depth guard was rejected because it keys on the environment (principle 8), and leaving the hole was rejected because the forge protects only `main`.
+22. **Marking done (#136):** `zaf board done <task>`, refused unless the task is in `land` or its recorded pull request has merged.
+23. **A slice action's slice (#137):** a `target: task` run gets `ZAF_SLICE`, `ZAF_PR` and `ZAF_TASK_TITLE`; `[env]` cannot set them.
+24. **Result words and `NOT_RUN` (#138):** exit codes stay numbers, because the OS carries only an integer and a script branches on it, and what zaf prints gains words, because a model reads words. A body that never ran is `NOT_RUN`, exit 125, reserved. Verbs keep `0`, `1` and `2`.
+25. **`land` needs the workspace at the PR head (planning decision 1):** a workspace ahead of the PR head is not `land`, otherwise `slice-merge`'s `push` merges commits nobody reviewed.
+26. **A failed task check stays in `build` (planning decision 2):** only a clean one moves the task to `check`, so no pull request opens on red and `slice-drop` still works.
+27. **Drop and reopen (planning decision 4):** `slice-open` is refused past `claim`; forgetting a slice also removes the task's check records; `slice-drop` also runs in `check`.
+28. **Accepted as planned:** `slice-merge` on a done task refuses (decision 3); a base merge pushed by `slice-merge` followed by a failed `pr-merge` needs a new `check pr` (5); doctor finds needed names by scanning bodies for a literal `zaf do` (6); the `ZAF.toml` rename comes last (7); `ZAF_BASE` arrives in #140 (8).
 
 ## 9. Assumed by Claude, open to veto
 
@@ -189,3 +207,26 @@ Not actions: `/nodes:chart --diff` (a model's job, a skill) and the spawner's mi
 10. `command:` check steps and the `zaf slice …` verbs stay one release beside `action:` and `zaf do slice-…`, then retire; `changes` stays a verb over a Vcs port shrunk to diffs.
 11. The manifest combines table by table, property by property; an array is replaced, not merged. `[env]` applies to every gate, test, check and action run and can set no `ZAF_*` variable.
 12. The group digit covers exactly the roles named; a role not in `ZAF_INSTANCE`'s vocabulary is others; programmers share their team's identity until they run as their own process, which no task in this epic needs.
+13. The unit, the verb and the ledger of §10 are Claude's design, for the Engineer's ask of 2026-11-04.
+
+## 10. Is it saving tokens
+
+Raw totals cannot answer this, because they move with how much work was done. The question is whether the same work costs less than it did.
+
+**The unit.** Estimated dollars per merged task, per epic, because dollars weight the token kinds by price. Each epic also shows tokens by kind, turns per task and context at turn one and at the end. The figure to compare is the median by size (S, M), since one large task skews a mean. Everything the epic cost counts: planning and re-plans, team instances, programmers and keepers.
+
+**The verb.** `zaf report --epics` prints one row per epic with its share per role, from the transcripts, a subagent counted through its parent session, and the tasks done from the board. It also prints one line for what ran outside any epic, because that spend is invisible otherwise. This is the tokens-per-role table the framework's verb list promises and `zaf report` does not yet print.
+
+**The ledger.** Transcripts expire (30 days by default), so the numbers must outlive them. `zaf report --epics --ledger` appends each closed epic's row to `.zaf/ledger.jsonl`, committed; the release instance runs it before it tags. A row is never rewritten.
+
+**Reading it.** An epic saved tokens when its median per size is lower than the last epic's on at least five tasks of that size; with fewer, the row says `too few`, not a verdict. Different work still differs, so a change that claims a large saving gets a benchmark: one old task re-run from its parent commit under the current pack, the only direct comparison, at the cost of that run.
+
+**First reading, 2026-11-04,** from `zaf report --hours 1000 --match "#<epic>"`, so by prompt text, unsplit by size and without planning runs whose prompts name no epic:
+
+| Epic | Tasks done | Est. $ | $ per task | Turns per task | Programmer context at turn 1 |
+|---|---|---|---|---|---|
+| #37, zaf 0.1.1 | 14 | 17 | 1.2 | 49 | 26k |
+| #76, zaf 0.1.2 | 6 | 9 | 1.5 | 56 | 26k |
+| #103, zaf 0.2.0 | 0 | 8 | planning only, three runs | | |
+
+Turn-one context has fallen, from a 58k subagent median in the 2026-10-27 baseline to 26k. Per-task cost is not yet a verdict: 0.1.2 cost more per task than 0.1.1, on too few tasks and different work. Over the same week, `zaf report --all` shows $214, of which $33 is this project's instances; the other $181 ran outside them, so instances are the smaller part of the spend.
