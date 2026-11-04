@@ -239,8 +239,11 @@ fn report_output_is_unchanged() {
     );
     assert_eq!(rows(&project.home.join(LEDGER_FILE)).len(), 3);
 
+    // The binary finds its root from its working directory, which comes back with symlinks
+    // resolved; macOS's temp dir sits behind one (`/var` is `/private/var`).
+    let root = project.root.canonicalize().expect("root");
     let query = Query {
-        roots: vec![project.root.join(".zaf/profiles/build/projects")],
+        roots: vec![root.join(".zaf/profiles/build/projects")],
         hours: 100_000.0,
         matching: String::new(),
         top: 25,
