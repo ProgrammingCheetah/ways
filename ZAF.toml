@@ -64,7 +64,7 @@ model = "opus"
 effort = "xhigh"
 profile = "build"
 turns = 200
-batch = 4
+batch = 2
 
 [check.pr]
 steps = ["ci", "runner:gemini:security?flagged"]
