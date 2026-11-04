@@ -166,8 +166,20 @@ impl Composition {
         }
     }
 
-    /// Finds the project root from the current directory.
+    /// Finds the project root from the current directory, as every verb but `setup` does.
+    /// A project still on the retired `ZAF.toml` loads as it is, with one line on stderr
+    /// ([`legacy_notice`](Self::legacy_notice)); nothing is moved and stdout is untouched.
     pub fn discover_here() -> Result<Self, CompositionError> {
+        let composition = Self::discover_here_quiet()?;
+        if let Some(notice) = composition.legacy_notice() {
+            eprintln!("{notice}");
+        }
+        Ok(composition)
+    }
+
+    /// [`discover_here`](Self::discover_here) without the legacy warning: `setup`'s, which
+    /// is the verb that moves the file.
+    pub fn discover_here_quiet() -> Result<Self, CompositionError> {
         let here = std::env::current_dir().map_err(|source| {
             CompositionError::Manifest(ManifestError::Read {
                 path: PathBuf::from("."),
@@ -180,6 +192,16 @@ impl Composition {
     /// The project root: the directory holding the manifest.
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// The warning for a project that still has the retired root `ZAF.toml`: the line that
+    /// says to run `zaf setup`; `None` once it is `.zaf.toml`.
+    pub fn legacy_notice(&self) -> Option<String> {
+        self.root.join(LEGACY_FILE).is_file().then(|| {
+            format!(
+                "zaf: {LEGACY_FILE} is the retired name; run `zaf setup` to move it to {ROOT_FILE}"
+            )
+        })
     }
 
     /// The local state folder, `<root>/.zaf`.

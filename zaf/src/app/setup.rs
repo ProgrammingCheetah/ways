@@ -8,6 +8,9 @@
 //! missing and never rewritten. Every other verb runs it first; only an explicit `setup`
 //! goes further and replaces an old `.zaf/.gitignore` that holds just `*`.
 //!
+//! A root `ZAF.toml` is renamed to `.zaf.toml` by [`move_legacy_manifest`], and only here:
+//! `setup` outside an instance. Every other verb reads the old name and warns.
+//!
 //! A profile already generated gets its login linked to the Claude home's before doctor asks
 //! about it. `setup` generates no profile: that takes the pack's commands, `zaf profile init`'s.
 
@@ -19,7 +22,7 @@ use std::time::SystemTime;
 use super::doctor::{Commands, Report, ToolStatus, design_dir, doctor_with};
 use super::profile;
 use crate::composition::STATE_DIR;
-use crate::manifest::{DesignKind, HOME_FILE, Manifest};
+use crate::manifest::{DesignKind, HOME_FILE, LEGACY_FILE, Manifest, ProjectFiles, ROOT_FILE};
 
 /// The folders under the project's `.zaf/` that `setup` makes.
 pub const PROJECT_DIRS: [&str; 3] = ["actions", "roles", "logs"];
@@ -184,6 +187,54 @@ pub fn root_ignores_state_dir(root: &Path) -> bool {
             ".zaf" | ".zaf/" | "/.zaf" | "/.zaf/" | "**/.zaf" | "**/.zaf/"
         )
     })
+}
+
+/// What [`move_legacy_manifest`] did with a root `ZAF.toml`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegacyMove {
+    /// There is no root `ZAF.toml`: nothing to move.
+    Absent,
+    /// It was renamed to `.zaf.toml`.
+    Moved,
+    /// It is there, and an instance does not move it: the move is the Engineer's.
+    ForEngineer,
+}
+
+impl LegacyMove {
+    /// The one line `setup` prints about the move; `None` when there was nothing to say.
+    pub fn line(self) -> Option<String> {
+        match self {
+            Self::Absent => None,
+            Self::Moved => Some(format!("moved {LEGACY_FILE} to {ROOT_FILE}")),
+            Self::ForEngineer => Some(format!(
+                "{LEGACY_FILE} stays: moving it to {ROOT_FILE} is for the Engineer, who runs `zaf setup` outside an instance"
+            )),
+        }
+    }
+}
+
+/// Renames the project's root `ZAF.toml` to `.zaf.toml`, but only for the Engineer: with
+/// `as_instance` set (a `ZAF_INSTANCE` run) it moves nothing and says so. The only place
+/// that moves the file; every other verb reads it. A `ZAF.toml` beside `.zaf.toml` or
+/// `.zaf/config.toml` is refused as the manifest layers refuse it, naming both, and nothing
+/// moves. A second call finds nothing to move.
+pub fn move_legacy_manifest(
+    root: &Path,
+    home: Option<&Path>,
+    as_instance: bool,
+) -> io::Result<LegacyMove> {
+    let files = ProjectFiles::find(root, home);
+    let Some(legacy) = &files.legacy else {
+        return Ok(LegacyMove::Absent);
+    };
+    files
+        .refuse_legacy_beside_new()
+        .map_err(|error| io::Error::new(io::ErrorKind::AlreadyExists, error.to_string()))?;
+    if as_instance {
+        return Ok(LegacyMove::ForEngineer);
+    }
+    fs::rename(legacy, root.join(ROOT_FILE))?;
+    Ok(LegacyMove::Moved)
 }
 
 /// What happened to the design repo.

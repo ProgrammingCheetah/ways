@@ -479,3 +479,22 @@ fn a_runner_command_carries_the_project_root_single_quoted() {
         format!("{}|{}", composition.root().display(), run_dir.display())
     );
 }
+
+#[test]
+fn a_legacy_manifest_has_a_notice_that_says_to_run_setup_and_a_new_one_has_none() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let legacy = temp.path().join("legacy");
+    write_at(&legacy, "ZAF.toml", FULL);
+    let composition = Composition::load_with_home(&legacy, None).expect("loads");
+    let notice = composition.legacy_notice().expect("a notice");
+    assert!(
+        notice.contains("zaf setup") && notice.contains("ZAF.toml") && !notice.contains('\n'),
+        "{notice}"
+    );
+    assert!(legacy.join("ZAF.toml").is_file(), "reading never moves it");
+
+    let current = temp.path().join("current");
+    write_at(&current, ".zaf.toml", FULL);
+    let composition = Composition::load_with_home(&current, None).expect("loads");
+    assert_eq!(composition.legacy_notice(), None);
+}

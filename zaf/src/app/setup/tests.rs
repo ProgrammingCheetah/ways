@@ -291,3 +291,74 @@ fn setup_leaves_a_copy_alone_and_links_nothing_without_a_login_at_home() {
             .is_symlink()
     );
 }
+
+#[test]
+fn the_legacy_manifest_is_renamed_for_the_engineer_and_a_second_call_does_nothing() {
+    let (_dir, root, _home) = places();
+    fs::write(root.join("ZAF.toml"), HEAD).expect("legacy manifest");
+
+    let moved = move_legacy_manifest(&root, None, false).expect("moves");
+    assert_eq!(moved, LegacyMove::Moved);
+    assert_eq!(moved.line().as_deref(), Some("moved ZAF.toml to .zaf.toml"));
+    assert!(!root.join("ZAF.toml").exists());
+    assert_eq!(read(&root.join(".zaf.toml")), HEAD, "the content is kept");
+
+    let again = move_legacy_manifest(&root, None, false).expect("nothing to do");
+    assert_eq!(again, LegacyMove::Absent);
+    assert_eq!(again.line(), None);
+    assert_eq!(read(&root.join(".zaf.toml")), HEAD);
+}
+
+#[test]
+fn an_instance_moves_nothing_and_says_the_move_is_the_engineers() {
+    let (_dir, root, _home) = places();
+    fs::write(root.join("ZAF.toml"), HEAD).expect("legacy manifest");
+
+    let outcome = move_legacy_manifest(&root, None, true).expect("leaves it");
+    assert_eq!(outcome, LegacyMove::ForEngineer);
+    let line = outcome.line().expect("it says so");
+    assert!(line.contains("Engineer"), "{line}");
+    assert!(root.join("ZAF.toml").is_file());
+    assert!(!root.join(".zaf.toml").exists());
+}
+
+#[test]
+fn the_legacy_manifest_beside_a_new_one_is_refused_naming_both_and_nothing_moves() {
+    for new in [".zaf.toml", ".zaf/config.toml"] {
+        let (_dir, root, _home) = places();
+        fs::create_dir_all(root.join(".zaf")).expect("state dir");
+        fs::write(root.join("ZAF.toml"), HEAD).expect("legacy manifest");
+        fs::write(root.join(new), "# new\n").expect("new manifest");
+
+        let error = move_legacy_manifest(&root, None, false).expect_err("refused");
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists, "{new}");
+        let message = error.to_string();
+        assert!(
+            message.contains("ZAF.toml") && message.contains(new),
+            "{message}"
+        );
+        assert_eq!(read(&root.join("ZAF.toml")), HEAD, "{new}");
+        assert_eq!(read(&root.join(new)), "# new\n", "{new}: never overwritten");
+    }
+}
+
+#[test]
+fn a_zaf_home_config_beside_the_legacy_manifest_is_not_a_new_manifest() {
+    let (_dir, root, _home) = places();
+    let home = root.join(".zaf");
+    fs::create_dir_all(&home).expect("home inside the project");
+    fs::write(home.join("config.toml"), "# machine\n").expect("machine config");
+    fs::write(root.join("ZAF.toml"), HEAD).expect("legacy manifest");
+
+    let moved = move_legacy_manifest(&root, Some(&home), false).expect("moves");
+    assert_eq!(moved, LegacyMove::Moved);
+}
+
+#[test]
+fn ensure_homes_leaves_a_legacy_manifest_where_it_is() {
+    let (_dir, root, home) = places();
+    fs::write(root.join("ZAF.toml"), HEAD).expect("legacy manifest");
+    ensure_homes(Some(&root), Some(&home)).expect("makes the homes");
+    assert_eq!(read(&root.join("ZAF.toml")), HEAD);
+    assert!(!root.join(".zaf.toml").exists());
+}
