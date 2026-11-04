@@ -1,6 +1,6 @@
 # zaf actions
 
-Draft v7, 2026-11-04, with the Engineer's rulings and the answers to the planning questions (§8). An **action** is a runnable file that `zaf` names, lists and runs through `zaf do <name>`. Actions are how a project or a machine makes zaf its own, and zaf is the abstraction layer over them: it owns the names, the listing, the environment, the log, the modes, the phases and one exit contract; what a name *does* is the action behind it. zaf ships none: whoever sets zaf up writes them, and every place a verb shells out is a name the project or the machine must provide. What Claude assumed beyond the rulings is listed in §9, open to veto.
+Draft v8, 2026-11-04, with the Engineer's rulings and the answers to the planning questions (§8). An **action** is a runnable file that `zaf` names, lists and runs through `zaf do <name>`. Actions are how a project or a machine makes zaf its own, and zaf is the abstraction layer over them: it owns the names, the listing, the environment, the log, the modes, the phases and one exit contract; what a name *does* is the action behind it. zaf ships none: whoever sets zaf up writes them, and every place a verb shells out is a name the project or the machine must provide. What Claude assumed beyond the rulings is listed in §9, open to veto.
 
 ## 1. Principles
 
@@ -194,6 +194,9 @@ Rulings 1 to 19 are of 2026-11-03; 20 to 30 of 2026-11-04.
 28. **Accepted as planned:** `slice-merge` on a done task refuses (decision 3); a base merge pushed by `slice-merge` followed by a failed `pr-merge` needs a new `check pr` (5); doctor finds needed names by scanning bodies for a literal `zaf do` (6); the `ZAF.toml` rename comes last (7); `ZAF_BASE` arrives in #140 (8).
 29. **The ledger (#147):** zaf holds an SQLite ledger. It is zaf's own state, not a committed file, so no row has to reach `main` and the release has no step for it.
 30. **Logs are kept (#158):** a check step's whole output goes to `.zaf/logs/<DATETIME>_<name>.log`, git-ignored, as an action's does (§3). What the step returns is short: a word and the log's path.
+31. **Tickets state scope, not files:** a ticket's `Owned paths` becomes `Scope`, the capability it changes in words, with a file or folder named only as a place to start, and `Out of scope`, what it leaves alone and the ticket that has it. The programmer goes where the goal needs and stops at `Out of scope`. `Architecture` goes: `zaf check` takes its symbols from `Interfaces` and looks for them in the whole tree. The reason: 5 of the 8 questions raised during this build came from a closed file list (#149, #157, #158, #166, #173), and each one stops the loop for the Engineer. Tickets written for people state scope as behaviour with explicit exclusions; agent vendors treat a named file as a hint; no measurement supports a closed list.
+32. **One behaviour per ticket:** the Goal is one sentence with no "and". Size S expects a pull request under 200 lines and M under 400; anything larger splits. These are planning targets read against the merged pull request, not gates. The numbers come from review research on people and are unproven for agents.
+33. **Batch two, limit 45:** `[roles.team] batch = 2`, which matches the two programmers an instance runs at once. The runner limit stays 45 minutes: instances are short-lived by design, so one that reaches the limit is carrying too much work.
 
 ## 9. Assumed by Claude, open to veto
 
@@ -211,6 +214,9 @@ Rulings 1 to 19 are of 2026-11-03; 20 to 30 of 2026-11-04.
 12. The group digit covers exactly the roles named; a role not in `ZAF_INSTANCE`'s vocabulary is others; programmers share their team's identity until they run as their own process, which no task in this epic needs.
 13. The unit and the verb of §10, and the ledger's place and per-run shape, are Claude's design, for the Engineer's ask of 2026-11-04.
 14. The ledger uses `rusqlite` with SQLite bundled, zaf's first C dependency. "Every backend is reached by shelling out" still holds, because the ledger is zaf's own state, not a backend, and no `sqlite3` needs installing.
+15. Until 0.2.0 is installed, tickets keep the labels installed 0.1.2 requires, because its parser needs them and refuses an unknown field: scope in words under `Owned paths`, `Architecture: none`, and out of scope as the first acceptance line. 0.2.0 reads both forms.
+16. With no file lists, tickets that touch the same area are ordered with `Blocked by`. A collision that still happens is met at merge: the base is merged, the gate runs again, and a conflict goes back as a round. No source publishes a conflict rate for this, so ours is read from the rounds per task after the re-plan.
+17. `zaf brief` prints a map for each place a ticket names to start and each node once. Today it repeats the chain per path, and 74 to 83% of that section's lines are repeats.
 
 ## 10. Is it saving tokens
 
