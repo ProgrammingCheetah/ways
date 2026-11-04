@@ -6,8 +6,10 @@ use std::time::SystemTime;
 use super::Cli;
 use super::exit::{self, BACKEND, OK};
 use crate::app::guard;
-use crate::app::report::{self, PriceTable, Query};
-use crate::composition::Composition;
+use crate::app::report::ledger::{self, LEDGER_FILE, Ledger, LedgerRow};
+use crate::app::report::{self, PriceTable, Query, epics};
+use crate::composition::{Composition, zaf_home};
+use crate::ports::Board;
 
 /// The flags of `zaf report`.
 #[derive(Debug, clap::Args)]
@@ -25,6 +27,11 @@ pub struct ReportArgs {
     /// How many rows of the per-run table.
     #[arg(long, default_value_t = 25)]
     pub top: usize,
+    /// Print one row per epic from the ledger and the board instead: what it cost beside
+    /// what it finished. The ledger outlives transcripts, so `--hours`, `--match` and
+    /// `--top` do not apply; `--all` adds the runs of every project.
+    #[arg(long)]
+    pub epics: bool,
 }
 
 /// The default Claude config dir: `$CLAUDE_CONFIG_DIR`, else `~/.claude`.
@@ -35,15 +42,99 @@ pub(super) fn default_config_dir() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude")))
 }
 
-/// Prints the report.
+/// Ingests the project's profiles and the default Claude config dir into the ledger in the
+/// zaf home; a failure's message names the file.
+pub(super) fn ingest_ledger(composition: &Composition) -> Result<usize, String> {
+    let home = zaf_home().ok_or_else(|| {
+        format!("no home for the ledger ~/.zaf/{LEDGER_FILE}: set ZAF_HOME or HOME")
+    })?;
+    let mut ledger = Ledger::open(&home.join(LEDGER_FILE)).map_err(|error| error.to_string())?;
+    let sources = ledger::sources(
+        &composition.state_dir(),
+        composition.manifest().project.name.as_ref(),
+        default_config_dir().as_deref(),
+    );
+    ledger.ingest(&sources).map_err(|error| error.to_string())
+}
+
+/// Fills the ledger, then prints the report.
 pub fn run(cli: &Cli, args: &ReportArgs) -> u8 {
     let path = cli.verb.path();
     let composition = match Composition::discover_here() {
         Ok(composition) => composition,
         Err(error) => return exit::fail_composition(&path, &error),
     };
+    if let Err(message) = ingest_ledger(&composition) {
+        eprintln!("zaf {path}: {message}");
+        return BACKEND;
+    }
+    if args.epics {
+        return run_epics(cli, &composition, args);
+    }
     let config_dir = if args.all { default_config_dir() } else { None };
     print_report(cli, &composition, args, config_dir.as_deref())
+}
+
+/// Reads the ledger and the board and prints the per-epic rows.
+fn run_epics(cli: &Cli, composition: &Composition, args: &ReportArgs) -> u8 {
+    let path = cli.verb.path();
+    let board = match composition.board() {
+        Ok(board) => board,
+        Err(error) => return exit::fail_composition(&path, &error),
+    };
+    let rows = match ledger_rows(composition, args.all) {
+        Ok(rows) => rows,
+        Err(message) => {
+            eprintln!("zaf {path}: {message}");
+            return BACKEND;
+        }
+    };
+    let prices = match read_prices(composition) {
+        Ok(prices) => prices,
+        Err(message) => {
+            eprintln!("zaf {path}: {message}");
+            return BACKEND;
+        }
+    };
+    print_epics(cli, &rows, board.as_ref(), &prices)
+}
+
+/// The ledger's rows for the project, or for every project with `all`.
+fn ledger_rows(composition: &Composition, all: bool) -> Result<Vec<LedgerRow>, String> {
+    let home = zaf_home().ok_or_else(|| {
+        format!("no home for the ledger ~/.zaf/{LEDGER_FILE}: set ZAF_HOME or HOME")
+    })?;
+    let ledger = Ledger::open(&home.join(LEDGER_FILE)).map_err(|error| error.to_string())?;
+    let project = composition.manifest().project.name.as_ref();
+    let rows = ledger.rows().map_err(|error| error.to_string())?;
+    Ok(rows
+        .into_iter()
+        .filter(|row| all || row.project == project)
+        .collect())
+}
+
+/// Prints the per-epic rows; a board that fails exits `2`.
+fn print_epics(cli: &Cli, rows: &[LedgerRow], board: &dyn Board, prices: &PriceTable) -> u8 {
+    let rows = match epics::epic_rows(rows, board, prices) {
+        Ok(rows) => rows,
+        Err(error) => {
+            eprintln!("zaf {}: the board failed: {error}", cli.verb.path());
+            return BACKEND;
+        }
+    };
+    if cli.json {
+        println!("{}", epics::to_json(&rows));
+    } else {
+        print!("{}", epics::render_text(&rows));
+    }
+    OK
+}
+
+/// The price table: the defaults with `[report.prices]` of `local.toml` over them.
+fn read_prices(composition: &Composition) -> Result<PriceTable, String> {
+    guard::read_local(&composition.state_dir())
+        .map_err(|error| error.to_string())
+        .and_then(|local| PriceTable::from_local_toml(&local).map_err(|error| error.to_string()))
 }
 
 /// Reads and prints the report for a project, with the default config dir given or not.
@@ -55,10 +146,7 @@ fn print_report(
 ) -> u8 {
     let path = cli.verb.path();
     let state_dir = composition.state_dir();
-    let prices = guard::read_local(&state_dir)
-        .map_err(|error| error.to_string())
-        .and_then(|local| PriceTable::from_local_toml(&local).map_err(|error| error.to_string()));
-    let prices = match prices {
+    let prices = match read_prices(composition) {
         Ok(prices) => prices,
         Err(message) => {
             eprintln!("zaf {path}: {message}");

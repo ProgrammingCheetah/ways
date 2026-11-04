@@ -43,7 +43,7 @@ Every release runs the phases in order. Each has one owner, one artifact, one ex
 | 4 | Verification | the review layer, `zaf verify`, mutants | PRs, the integration branch | findings resolved, mutant score above the threshold | no open must-fix |
 | 5 | Release | release instance | the milestone | per-must results, release reviews, corpus pages synced to as-built, the squash into `main`, the tag | tagged |
 
-**Adhere, adjust through tickets.** Implementation follows the architecture package. A change inside a task's owned paths that keeps every interface is the programmer's to make. A change that moves a module boundary, alters an interface or touches data shape is a `design-gap` ticket: a short Architect instance rules on it against the package, updates the page, and the planning instance re-cuts the affected tasks. Nothing drifts silently; `/corpus-sync` at phase 5 reconciles the pages to what was built and names any gap that slipped.
+**Adhere, adjust through tickets.** Implementation follows the architecture package. A change within a task's scope that keeps every interface is the programmer's to make. A change that moves a module boundary, alters an interface or touches data shape is a `design-gap` ticket: a short Architect instance rules on it against the package, updates the page, and the planning instance re-cuts the affected tasks. Nothing drifts silently; `/corpus-sync` at phase 5 reconciles the pages to what was built and names any gap that slipped.
 
 **Adherence is checkable.** Because interfaces carry ids, `zaf verify` can check that a task's declared interfaces exist where the package says (the trait, the route, the table), deterministically, before any reviewer reads the diff.
 
@@ -66,7 +66,7 @@ Each role is defined by the same eight lines. "Never" is the scope fence.
 - **Input:** the board, the slot lock (`build-slot.sh`), the budget guard.
 - **Output:** instances, each logged as a comment on its epic.
 - **Lifecycle:** one pass per tick: for each signed epic with ready, unblocked, unclaimed tasks and a free slot, launch a team instance; for a signed epic with no tasks, a planning instance; for a planned epic, a challenger; for a milestone whose epics are all done, a release instance.
-- **Budget:** two slots; batch size four; the guard (§8) lowers both.
+- **Budget:** two slots; batch size two; the guard (§8) lowers both.
 - **Never:** reads a report, writes a brief, answers a question, chooses what to build.
 
 ### 3.3 The Planning instance (the Epic Designer)
@@ -157,7 +157,7 @@ The ask log is the corpus's own analytics: the pages consulted most, the questio
 7. **Re-plan on ruling.** A comment labelled `ruling` on an epic, at any time, triggers a fresh planning instance before the next team instance.
 
 ### 4.2 Rules of exactness
-- Size S (one file area, under a day) or M (one crate or one UI piece); L is a planning defect and splits.
+- One behaviour per task: the Goal is one sentence with no "and". Size S expects a pull request under 200 lines and M under 400; anything larger is a planning defect and splits. These are planning targets read against the merged pull request, not gates.
 - Every task names its corpus pages by id, and the module and interface ids from the architecture package it implements. A task that needs a page or an interface it does not name is a design gap.
 - Acceptance criteria are checkable by `zaf verify`: named tests, named HTTP outcomes, named UI states.
 - The security trigger flag follows `.claude/TEAMS.md › Reviews › security triggers`.
@@ -166,11 +166,11 @@ The ask log is the corpus's own analytics: the pages consulted most, the questio
 
 ### 4.3 The task template
 ```
-Goal: <one sentence, the user-visible or system-visible outcome>
-Owned paths: <files or folders this task may change; nothing else>
+Goal: <one sentence, one behaviour, the user-visible or system-visible outcome>
+Scope: <the capability this task changes, in words; a file or folder only as a place to start>
+Out of scope: <what it leaves alone, and the ticket that has it>
 Interfaces: <new or changed ports, types, routes; who defines, who consumes>
 Design pages: <ids>
-Architecture: <module id>, <interface ids this task defines or consumes>
 Acceptance:
   - <checkable statement>
   - <checkable statement>
@@ -248,7 +248,7 @@ One binary, `zaf` (§11.5), one page of help pasted into every standing brief, e
 |---|---|---|
 | `zaf board ready|claim|report|question|ruling` | hand-crafted `gh` queries and JSON | six-line answers; `question` sets the `question` label only on a task that is `claimed` or `ready` (on an epic or any other task it posts the comment and leaves labels alone); `ruling` closes the question and returns its task to `ready` unless the task is `done` or an epic (the same ruling again changes nothing) |
 | `zaf ask -t <task> "<kind>: <question>"` (up to five) | reading corpus pages into a working context; asking the lead | a keeper's cited answer; the tool checks each quote exists verbatim in the cited page and re-asks on Haiku or Sonnet if the local model fails; a question whose answer failed only because a cited page could not be read prints `q1: check failed — page <id> could not be read (design dir or index misconfigured)` and the verb exits 2, so a misconfigured design source is never read as `not settled` |
-| `zaf brief <task>` | the opening burst of rg, cat, ls (the biggest look-around cost) | one context pack: ticket, a `## Rulings` section (every question raised on the task, `#<q> <text>` then `ruling: <text>` or `open`, newest last; `— none` when there are none), named corpus pages, `nodes chain` of owned paths, the style page, the help page |
+| `zaf brief <task>` | the opening burst of rg, cat, ls (the biggest look-around cost) | one context pack: ticket, a `## Rulings` section (every question raised on the task, `#<q> <text>` then `ruling: <text>` or `open`, newest last; `— none` when there are none), named corpus pages, `nodes chain` of each place the scope names to start, the style page, the help page |
 | `zaf check <task>` or `zaf check pr:<n>[:<task>]` | reading PR threads turn by turn; hand-run reviews; the LLM QA's checklist | runs the step list configured for the target's kind (task: acceptance checks, run inside the task's slice workspace and refused when the slice is not open; PR: CI, CodeQL, CodeRabbit, Gemini critique, Gemini security when flagged; milestone: objectives check, release reviews, mutant score), waits inside the verb, and returns one deduplicated findings list tagged by source with an exit code: clean, must-fix present, or a step failed. `--status` reads without running. Steps are configured in `ZAF.toml` with a kind (wait on CI, wait for a bot, run a role on a runner, run a command, read scanner alerts), a `when`, a timeout and a must flag; independent steps run in parallel |
 | `zaf changes <task>` | raw `jj diff` (1.2M tokens last week) | stat first, hunks on request |
 | `zaf verify <task>` | ad-hoc test runs and reading their logs | the task-kind steps of `check`: pass or fail per acceptance line and per declared interface id, output captured to a file first; `zaf check <task>` is its alias |
@@ -287,7 +287,7 @@ No project word in the binary, no assumed language, VCS, forge or design source.
 [runners.gemini] command = "agy -p {prompt} --add-dir {root} --model gemini-4-argon-high --print-timeout 60m"
 [runners.local]  command = "zuri -p {prompt}"
 [roles.programmer]  model = "sonnet"  effort = "high"  profile = "lean"  turns = 60
-[roles.team]        model = "opus"    effort = "xhigh" profile = "build" turns = 200  batch = 4
+[roles.team]        model = "opus"    effort = "xhigh" profile = "build" turns = 200  batch = 2
 [check]          ci_grace_seconds = 120     # optional: how long after a push an empty check list still counts as pending
 [check.pr]       steps = ["ci", "codeql", "bot:coderabbitai", "runner:gemini:critique", "runner:gemini:security?flagged"]
 [check.milestone] steps = ["runner:gemini:objectives", "runner:gemini:release-reviews", "command:cargo mutants"]
@@ -372,7 +372,7 @@ One crate, a library target and a thin binary, layered the way Zurfur is:
 The VCS port is expressed in slice terms (open, publish, merge the base in), not VCS terms (branch, worktree, bookmark, stage), because jj and git disagree on the latter and a verb should not care.
 
 ## 8. Budget rules
-- Two slots; batch four; two programmers per instance at once.
+- Two slots; batch two; two programmers per instance at once.
 - Programmers: Sonnet, effort high. Leads and planners: Opus, effort xhigh. Instances: compaction window 150k.
 - Guard: `zaf guard` reads the weekly usage (mechanism to settle: `/usage` has no CLI form today; the fallback is `zaf burn`'s running total against a weekly budget the Engineer sets in `ZAF.toml`). Above 70%: Sonnet-only and batch two. Above 85%: one slot. Above 95%: the spawner stops.
 - `zaf burn` posts the weekly table as a comment on the milestone.
@@ -400,7 +400,7 @@ Each line: the options, then Claude's answer.
 4. **Where the framework lives:** teams 2.0, a major version of the same pack, the work Mac pinned to 1.x until migrated · a new `zaf` pack beside teams. *Claude: teams 2.0 (revised 2026-10-27: it is the next iteration of teams, and the marketplace ruling wants one source). The framework itself is the method, written in the ways README; `zaf` is the binary.*
 5. **The tool:** one `zaf` binary in Rust, in the ways repo beside the teams pack (`ways/zaf/`), released with the pack under one tag, linux x86_64 and macOS arm64 archives plus `cargo install --git … zaf` as the fallback; the pack's SessionStart hook pins the version · its own repo like nodes · shell scripts in the pack. *Ruled by the Engineer 2026-10-27: same place as the teams plugin. Claude: beside the pack rather than inside it, so the plugin cache carries no Rust source.*
 6. **The challenger:** Opus · Gemini. *Claude: Opus (revised 2026-10-27): rare and judgment-heavy, so quality wins and the budget barely notices.*
-7. **Batch size:** four · an epic at a time. *Claude: four.*
+7. **Batch size:** two · an epic at a time. *Claude: four, then two (zaf-actions.md ruling 33).*
 8. **Previews:** Storybook and staging on every integration merge · on milestone only. *Claude: every merge; it is iteration point 5.*
 
 ## 12. Gaps closed on review (2026-10-27)

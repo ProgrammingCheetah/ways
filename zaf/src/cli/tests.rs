@@ -18,7 +18,7 @@ fn every_verb_is_listed() {
         verbs,
         [
             "board", "ask", "brief", "check", "changes", "verify", "slice", "spawn", "asklog",
-            "status", "report", "guard", "init", "doctor", "setup", "profile",
+            "status", "report", "guard", "init", "doctor", "setup", "profile", "do",
         ]
     );
     let board = command.find_subcommand("board").expect("board");

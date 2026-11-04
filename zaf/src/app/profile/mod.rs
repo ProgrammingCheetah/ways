@@ -583,9 +583,9 @@ const ZAF_ALLOW: &str = "Bash(zaf *)";
 /// programmer never stops on a listing, a loop or a search. `sh -c` is not here: a shell
 /// run from a string can write. Neither are `env`, `find`, `sed` and `awk`: `env <cmd>` runs
 /// anything, `find -exec`/`-delete` and `sed -i` write, and `awk` can call `system()`.
-pub const READ_ONLY: [&str; 21] = [
+pub const READ_ONLY: [&str; 22] = [
     "ls", "cat", "head", "tail", "wc", "diff", "rg", "grep", "fd", "pwd", "echo", "printf", "for",
-    "while", "test", "sort", "uniq", "cut", "stat", "du", "which",
+    "while", "test", "sort", "uniq", "cut", "stat", "du", "which", "printenv",
 ];
 
 /// The `git` read verbs a colocated repo (a manifest that requires `jj`) allows besides `jj`.
@@ -727,9 +727,23 @@ const NO_TOOL: [&str; 24] = [
     "builtin",
 ];
 
+/// Shells and wrapper tools that run whatever follows them. A bare `Bash(<one of these> *)`
+/// rule would let a programmer run anything, so a segment starting with one gets no tool rule:
+/// only [`allow_rule`]'s exact line covers it.
+const SHELL_OR_WRAPPER: [&str; 12] = [
+    "sh", "bash", "zsh", "dash", "env", "xargs", "nohup", "timeout", "time", "nice", "sudo", "doas",
+];
+
+/// Whether `tool`, by its file name (`/bin/sh` is `sh`), is a shell or wrapper tool.
+fn is_shell_or_wrapper(tool: &str) -> bool {
+    let name = tool.rsplit('/').next().unwrap_or(tool);
+    SHELL_OR_WRAPPER.contains(&name)
+}
+
 /// One `Bash(<tool> *)` rule per tool the command invokes, in order of appearance: the first
-/// word of each segment split on `&&`, `||`, `;` and `|` (`env` and `NAME=value` words aside),
-/// so a gate tool is allowed from any directory, not only as the verbatim line from the root.
+/// word of each segment split on `&&`, `||`, `;` and `|` (`NAME=value` words aside), so a gate
+/// tool is allowed from any directory, not only as the verbatim line from the root. A segment
+/// that starts with a shell or wrapper tool ([`SHELL_OR_WRAPPER`]) yields no rule.
 fn tool_rules(command: &CommandLine) -> Vec<String> {
     command
         .as_ref()
@@ -737,9 +751,9 @@ fn tool_rules(command: &CommandLine) -> Vec<String> {
         .filter_map(|segment| {
             let tool = segment
                 .split_whitespace()
-                .find(|word| !word.contains('=') && *word != "env")?;
+                .find(|word| !word.contains('='))?;
             let named = !tool.starts_with(['{', '$', '(', '"', '\'']);
-            (named && !NO_TOOL.contains(&tool)).then_some(tool)
+            (named && !NO_TOOL.contains(&tool) && !is_shell_or_wrapper(tool)).then_some(tool)
         })
         .map(|tool| format!("Bash({tool} *)"))
         .collect()
