@@ -7,12 +7,17 @@
 //! The folders are [`ensure_homes`]: the project's `.zaf/` and the zaf home, created when
 //! missing and never rewritten. Every other verb runs it first; only an explicit `setup`
 //! goes further and replaces an old `.zaf/.gitignore` that holds just `*`.
+//!
+//! A profile already generated gets its login linked to the Claude home's before doctor asks
+//! about it. `setup` generates no profile: that takes the pack's commands, `zaf profile init`'s.
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
-use super::doctor::{Commands, Report, ToolStatus, design_dir, doctor};
+use super::doctor::{Commands, Report, ToolStatus, design_dir, doctor_with};
+use super::profile;
 use crate::composition::STATE_DIR;
 use crate::manifest::{DesignKind, HOME_FILE, Manifest};
 
@@ -323,13 +328,38 @@ fn worksheet(
     steps
 }
 
+/// Links the login of every generated profile whose folder is already there to `claude_home`.
+fn link_logins(root: &Path, manifest: &Manifest, claude_home: &Path) -> io::Result<()> {
+    let state_dir = root.join(STATE_DIR);
+    for name in profile::generated(manifest) {
+        let home = profile::home(&state_dir, name);
+        if home.is_dir() {
+            profile::link_credentials(&home, claude_home)?;
+        }
+    }
+    Ok(())
+}
+
 /// Ensures both homes, replaces an old `.zaf/.gitignore` that holds only `*`, clones a declared
-/// design repo that is missing, runs doctor and builds the worksheet. Idempotent.
+/// design repo that is missing, links the logins of the profiles already there, runs doctor
+/// and builds the worksheet. Idempotent.
 pub fn setup(
     root: &Path,
     home: Option<&Path>,
     manifest: &Manifest,
     commands: &dyn Commands,
+) -> io::Result<SetupReport> {
+    let claude_home = profile::claude_home();
+    setup_with(root, home, manifest, commands, claude_home.as_deref())
+}
+
+/// [`setup`] against a given Claude home; `None`, when there is none, links nothing.
+fn setup_with(
+    root: &Path,
+    home: Option<&Path>,
+    manifest: &Manifest,
+    commands: &dyn Commands,
+    claude_home: Option<&Path>,
 ) -> io::Result<SetupReport> {
     let mut homes = ensure_homes(Some(root), home)?;
     if homes.ignore == Some(IgnoreState::Star) {
@@ -337,7 +367,10 @@ pub fn setup(
         homes.ignore = Some(IgnoreState::Replaced);
     }
     let clone = clone_design(root, manifest, commands);
-    let report = doctor(root, manifest, commands);
+    if let Some(claude_home) = claude_home {
+        link_logins(root, manifest, claude_home)?;
+    }
+    let report = doctor_with(root, manifest, commands, claude_home, SystemTime::now());
     let worksheet = worksheet(manifest, root, clone.as_ref(), &report, &homes);
     Ok(SetupReport {
         homes,

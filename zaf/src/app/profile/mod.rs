@@ -15,15 +15,24 @@
 //! - `[pack] tag`: the pack is installed from the marketplace on GitHub at that tag.
 //!
 //! The two share the install step. The profile's settings enable the pack.
+//!
+//! The login is shared, never copied: a profile's `.credentials.json` is a symlink to the one
+//! file in the Claude home, so a rotated refresh token reaches every profile at once. The
+//! Claude home is `$HOME/.claude` and never `CLAUDE_CONFIG_DIR`, which in a spawned instance
+//! names a profile. A file already at the profile's path is left alone for doctor to report.
 
+use std::env;
+use std::ffi::OsString;
 use std::fmt;
 use std::fs;
 use std::io;
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value, json};
 
 use crate::app::brief::INTERFACE_PAGE;
+use crate::composition::HOME_VAR;
 use crate::domain::Profile;
 use crate::manifest::{CommandLine, Effort, Manifest, PackSection, RoleSection, ToolName};
 use crate::ports::{GateVerdict, Shell};
@@ -48,6 +57,10 @@ pub const CONFIG_DIR_VAR: &str = "CLAUDE_CONFIG_DIR";
 /// The record, under a profile's `plugins/`, of the tag installed from the marketplace,
 /// so a rerun with the same tag installs nothing.
 pub const INSTALLED_TAG_FILE: &str = ".zaf-pack-tag";
+/// The file a Claude home keeps its login in.
+pub const CREDENTIALS_FILE: &str = ".credentials.json";
+/// The Claude home's folder under the user's home.
+const CLAUDE_HOME_DIR: &str = ".claude";
 
 const LEAN_SETTINGS: &str = include_str!("../../../assets/profiles/lean/settings.json");
 const BUILD_SETTINGS: &str = include_str!("../../../assets/profiles/build/settings.json");
@@ -158,12 +171,23 @@ fn io_error(path: &Path) -> impl FnOnce(io::Error) -> ProfileError {
 ///
 /// `root` is the project root, which `[pack] path` is relative to and which is added as the
 /// marketplace; `shell` runs the `claude plugin` commands that register the pack and
-/// nothing else.
+/// nothing else. Each profile's login is linked to the Claude home's, see [`link_credentials`].
 pub fn init(
     root: &Path,
     state_dir: &Path,
     manifest: &Manifest,
     shell: &dyn Shell,
+) -> Result<Report, ProfileError> {
+    init_with(root, state_dir, manifest, shell, claude_home().as_deref())
+}
+
+/// [`init`] against a given Claude home; `None`, when there is none, links nothing.
+fn init_with(
+    root: &Path,
+    state_dir: &Path,
+    manifest: &Manifest,
+    shell: &dyn Shell,
+    claude_home: Option<&Path>,
 ) -> Result<Report, ProfileError> {
     let mut report = Report::default();
     let project = read_project_rules(state_dir)?;
@@ -180,6 +204,16 @@ pub fn init(
         for dir in PROFILE_DIRS {
             let dir = home.join(dir);
             fs::create_dir_all(&dir).map_err(io_error(&dir))?;
+        }
+        // Before the pack: `claude plugin` runs inside this profile, under its login.
+        if let Some(claude_home) = claude_home {
+            let link = home.join(CREDENTIALS_FILE);
+            if link_credentials(&home, claude_home).map_err(io_error(&link))? {
+                report.written.push(Written {
+                    path: relative(state_dir, &link),
+                    change: Change::Created,
+                });
+            }
         }
         let pack = pack_ref.as_ref().filter(|_| carries_pack(profile));
         if let (Some(pack_section), Some(pack)) = (&manifest.pack, pack) {
@@ -223,6 +257,48 @@ pub fn generated(manifest: &Manifest) -> Vec<Profile> {
 /// A profile's home: `<state_dir>/profiles/<name>`, what `CLAUDE_CONFIG_DIR` points at.
 pub fn home(state_dir: &Path, profile: Profile) -> PathBuf {
     state_dir.join(PROFILES_DIR).join(profile.to_string())
+}
+
+/// The host's Claude home, `$HOME/.claude`; `None` without a usable `HOME`.
+pub fn claude_home() -> Option<PathBuf> {
+    claude_home_under(env::var_os(HOME_VAR))
+}
+
+/// The Claude home under `home`, which must be absolute: a symlink holding a relative path
+/// would resolve against the profile's folder and point somewhere else.
+fn claude_home_under(home: Option<OsString>) -> Option<PathBuf> {
+    let home = PathBuf::from(home?);
+    home.is_absolute().then(|| home.join(CLAUDE_HOME_DIR))
+}
+
+/// Makes the `.credentials.json` of the profile at `home` a symlink to the one in
+/// `claude_home`, and says whether it made the link.
+///
+/// Makes nothing when the Claude home holds no such file, and never replaces what is already
+/// at the profile's path, be it a file or a link.
+pub fn link_credentials(home: &Path, claude_home: &Path) -> io::Result<bool> {
+    let source = claude_home.join(CREDENTIALS_FILE);
+    if !source.is_file() {
+        return Ok(false);
+    }
+    match symlink(&source, home.join(CREDENTIALS_FILE)) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+/// Whether the symlink at `link` leads to the credentials file of `claude_home`.
+///
+/// By its written target, so a link survives the Claude home being logged out, or by where
+/// both resolve, so a link through another spelling of the path still counts.
+pub fn links_to_claude_home(link: &Path, claude_home: &Path) -> bool {
+    let source = claude_home.join(CREDENTIALS_FILE);
+    fs::read_link(link).is_ok_and(|target| target == source)
+        || matches!(
+            (fs::canonicalize(link), fs::canonicalize(&source)),
+            (Ok(resolved), Ok(wanted)) if resolved == wanted
+        )
 }
 
 /// Whether the profile carries the pack: every generated one but `lean`, which runs plugin-free.
