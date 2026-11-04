@@ -67,7 +67,8 @@ Asking well:
 
 ## Rules of exactness
 
-- Size S (one file area, under a day) or M (one crate or one UI piece). L is a planning defect: split it.
+- One behaviour per task: the Goal is one sentence with no "and". Size S expects a pull request under 200 lines, M under 400. Anything larger is a planning defect: split it.
+- State scope, not files: the capability the task changes, in words, with a file or folder only as a place to start, and what it leaves alone. Order tasks that touch the same area with `Blocked by`.
 - Every task names its design pages by id, and the module and interface ids it implements. A task that needs a page or an interface it does not name is a design gap: a question, not a guess.
 - Acceptance is checkable by `zaf check <task>`: named tests, named HTTP outcomes, named UI states.
 - The security trigger is `yes` when the task touches a trigger the project lists; without a list: authentication, authorization, sessions, tokens, secrets and keys, cryptography, untrusted input, trust boundaries, network egress, personal data.
@@ -78,7 +79,7 @@ Asking well:
 
 1. Read the epic and what it links, with the tool of the board `ZAF.toml` names (`gh` for `github-issues`), then the objectives, the design documents and the pages they cite. For a re-plan, also the rulings and every task already filed.
 2. `zaf ask -t <epic>` for whether a decision exists or where it lives, five at a time.
-3. Draft each task in the template, the fields `zaf brief` reads: Goal, Owned paths, Interfaces, Design pages, Architecture, Acceptance, Tests, Security trigger, Model, Size, Blocked by.
+3. Draft each task in the template, the fields `zaf brief` reads: Goal, Scope, Out of scope, Interfaces, Design pages, Acceptance, Tests, Security trigger, Model, Size, Blocked by. Until 0.2.0 is installed keep the labels 0.1.2 requires: scope in words under `Owned paths`, `Architecture: none`, and out of scope as the first acceptance line.
 4. File each as a sub-issue of the epic with the board's own tool, the way the board's existing tasks are filed: zaf has no filing verb yet.
 5. Each door or design gap: `zaf board question <epic> "<question>" [--door]`.
 6. `zaf board report <epic> "<tasks filed, what could not be scoped and why>"`. Then end.

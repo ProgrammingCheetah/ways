@@ -6,6 +6,7 @@
 //! under a config dir's `projects/` folder; [`transcript_roots`] names the
 //! folders to read, [`report`] reads them.
 
+pub mod epics;
 pub mod ledger;
 mod prices;
 mod transcript;

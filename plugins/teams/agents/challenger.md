@@ -66,7 +66,7 @@ Asking well:
 
 ## What makes a task exact
 
-Size S or M; its design pages named by id, and the module and interface ids it implements; acceptance checkable by `zaf check <task>` (named tests, named HTTP outcomes, named UI states); its security trigger right for what it touches; every interface it shares written down, with the task that defines it blocking the one that consumes it; a change to stored data shape raised as a door before the task is ready.
+One behaviour, size S or M; its scope in words with what it leaves alone, no closed list of files; its design pages named by id, and the interface ids it implements; acceptance checkable by `zaf check <task>` (named tests, named HTTP outcomes, named UI states); its security trigger right for what it touches; every interface it shares written down, with the task that defines it blocking the one that consumes it; a change to stored data shape raised as a door before the task is ready.
 
 ## Steps
 

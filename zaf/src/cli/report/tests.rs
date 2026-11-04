@@ -1,6 +1,9 @@
 use clap::Parser;
 
 use super::*;
+use crate::domain::{Instance, IssueNumber, TaskLabel};
+use crate::fakes::FakeBoard;
+use crate::ports::{ClaimOutcome, ClaimRecord, NewQuestion, PortError, Ticket};
 
 const MANIFEST: &str =
     "[project]\nname = \"demo\"\n[board]\nkind = \"github-issues\"\nrepo = \"owner/demo\"\n";
@@ -23,6 +26,7 @@ fn parsed(args: &[&str]) -> (Cli, ReportArgs) {
         hours: report_args.hours,
         matching: report_args.matching.clone(),
         top: report_args.top,
+        epics: report_args.epics,
     };
     (cli, report_args)
 }
@@ -57,4 +61,103 @@ fn a_malformed_price_table_exits_backend() {
     .expect("local.toml");
     let (cli, args) = parsed(&["report"]);
     assert_eq!(print_report(&cli, &composition, &args, None), BACKEND);
+}
+
+#[test]
+fn report_without_epics_is_unchanged() {
+    let (_dir, composition) = project();
+    let (cli, args) = parsed(&["report"]);
+    assert!(!args.epics, "--epics is opt-in");
+    assert_eq!(print_report(&cli, &composition, &args, None), OK);
+    let (_, args) = parsed(&["report", "--epics"]);
+    assert!(args.epics);
+}
+
+fn down() -> PortError {
+    PortError::Backend("gh is down".to_owned())
+}
+
+/// A board whose every call fails as a backend does.
+struct Down;
+
+impl Board for Down {
+    fn ready(&self) -> Result<Vec<Ticket>, PortError> {
+        Err(down())
+    }
+    fn task(&self, _: IssueNumber) -> Result<Ticket, PortError> {
+        Err(down())
+    }
+    fn claim(&self, _: IssueNumber, _: &Instance) -> Result<ClaimOutcome, PortError> {
+        Err(down())
+    }
+    fn heartbeat(&self, _: IssueNumber, _: &Instance) -> Result<(), PortError> {
+        Err(down())
+    }
+    fn claims(&self) -> Result<Vec<ClaimRecord>, PortError> {
+        Err(down())
+    }
+    fn release(&self, _: IssueNumber, _: &Instance) -> Result<(), PortError> {
+        Err(down())
+    }
+    fn label(&self, _: IssueNumber, _: TaskLabel) -> Result<(), PortError> {
+        Err(down())
+    }
+    fn comment(&self, _: IssueNumber, _: &str) -> Result<(), PortError> {
+        Err(down())
+    }
+    fn report(&self, _: IssueNumber, _: &Instance, _: &str) -> Result<(), PortError> {
+        Err(down())
+    }
+    fn questions(&self) -> Result<Vec<Ticket>, PortError> {
+        Err(down())
+    }
+    fn open_question(&self, _: &NewQuestion) -> Result<IssueNumber, PortError> {
+        Err(down())
+    }
+    fn record_ruling(&self, _: IssueNumber, _: &str) -> Result<Option<IssueNumber>, PortError> {
+        Err(down())
+    }
+}
+
+fn ledger_row(tasks: Vec<u64>) -> LedgerRow {
+    LedgerRow {
+        run_id: "s".to_owned(),
+        parent_run: None,
+        project: "demo".to_owned(),
+        role: Some("team".to_owned()),
+        epic: Some(103),
+        tasks,
+        model: "claude-opus-5-5".to_owned(),
+        first_time: None,
+        last_time: None,
+        turns: 3,
+        input: 1,
+        cache_write: 1,
+        cache_read: 1,
+        output: 1,
+        context_first: 1,
+        context_last: 1,
+        first_prompt: String::new(),
+        path: "/gone/s.jsonl".to_owned(),
+        size: 1,
+        modified_ns: 1,
+    }
+}
+
+#[test]
+fn epics_board_failure_exits_2() {
+    let (cli, _) = parsed(&["report", "--epics"]);
+    let rows = [ledger_row(vec![96])];
+    assert_eq!(
+        print_epics(&cli, &rows, &Down, &PriceTable::default()),
+        BACKEND
+    );
+}
+
+#[test]
+fn epics_prints_and_exits_ok_when_the_board_answers() {
+    let board = FakeBoard::default();
+    let (cli, _) = parsed(&["report", "--epics"]);
+    let rows = [ledger_row(vec![])];
+    assert_eq!(print_epics(&cli, &rows, &board, &PriceTable::default()), OK);
 }
