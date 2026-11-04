@@ -17,6 +17,7 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
+use super::caller::Caller;
 use super::metadata::{ActionMetadata, parse};
 use super::resolve::{ResolveError, Resolved, Tier, list, resolve, resolve_in};
 use crate::composition::{STATE_DIR, ZAF_HOME_VAR};
@@ -129,6 +130,8 @@ pub struct RunRequest<'a> {
     pub minute: Duration,
     /// Where this call sits.
     pub nesting: Nesting,
+    /// Who asks: the file's mode decides for them before anything starts.
+    pub caller: Caller,
 }
 
 /// One minute of a time bound.
@@ -324,7 +327,8 @@ impl Refused {
     }
 }
 
-/// Everything up to a running body: the guard, the file, its metadata, the log, the start.
+/// Everything up to a running body: the guard, the file, its metadata, its mode, the log, the
+/// start.
 fn start(request: &RunRequest<'_>) -> Result<Started, Refused> {
     let RunRequest { name, nesting, .. } = request;
     if nesting.above >= MAX_DEPTH {
@@ -341,6 +345,9 @@ fn start(request: &RunRequest<'_>) -> Result<Started, Refused> {
         reason,
     };
     let metadata = read_metadata(&found.path).map_err(refused)?;
+    if !request.caller.permits(metadata.mode, &metadata.group) {
+        return Err(refused(format!("not permitted for {}", request.caller)));
+    }
     let mode = fs::metadata(&found.path)
         .map_err(|error| refused(format!("cannot read {}: {error}", found.path.display())))?
         .permissions()

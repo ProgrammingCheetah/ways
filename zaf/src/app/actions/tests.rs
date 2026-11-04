@@ -480,3 +480,65 @@ fn workspace_actions_are_not_resolved() {
         None
     );
 }
+
+fn role(name: &str) -> Caller {
+    Caller::Role(name.into())
+}
+
+/// Whether `caller` may run under `digits` with `group`.
+fn permits(caller: &Caller, digits: &str, group: &[&str]) -> bool {
+    let mode = ActionMode::parse(digits).expect("a mode");
+    let group: Vec<String> = group.iter().map(|name| (*name).to_owned()).collect();
+    caller.permits(mode, &group)
+}
+
+#[test]
+fn permits_reads_only_the_callers_digit() {
+    for digit in 0..8_u8 {
+        let open = digit & 1 == 1;
+        let group = ["team"];
+        let cases = [
+            (Caller::Engineer, format!("{digit}00")),
+            (role("team"), format!("0{digit}0")),
+            (role("programmer"), format!("00{digit}")),
+            (role("auditor"), format!("00{digit}")),
+        ];
+        for (caller, mode) in cases {
+            assert_eq!(permits(&caller, &mode, &group), open, "{caller:?} {mode}");
+        }
+        // Outside the vocabulary a role named in the group still reads the others digit.
+        let auditor = ["auditor"];
+        assert!(!permits(&role("auditor"), &format!("0{digit}0"), &auditor));
+    }
+}
+
+#[test]
+fn only_an_absent_instance_is_the_engineer() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    assert_eq!(Caller::from_value(None), Ok(Caller::Engineer));
+    assert_eq!(
+        Caller::from_value(Some(OsStr::new("team instance 2 on #7"))),
+        Ok(role("team"))
+    );
+    assert_eq!(
+        Caller::from_value(Some(OsStr::new("engineer instance 2 on #7"))),
+        Ok(role("engineer"))
+    );
+    for value in [
+        OsStr::new(""),
+        OsStr::new("local"),
+        OsStr::from_bytes(b"team\xff instance 2 on #7"),
+    ] {
+        let refusal = Caller::from_value(Some(value)).expect_err("should be refused");
+        assert!(refusal.starts_with("ZAF_INSTANCE is "), "{refusal}");
+    }
+}
+
+#[test]
+fn a_caller_prints_on_one_line() {
+    assert_eq!(Caller::Engineer.to_string(), "the Engineer");
+    assert_eq!(role("programmer").to_string(), "programmer");
+    assert_eq!(role("a\nNOT_RUN b").to_string(), "a\\nNOT_RUN b");
+}

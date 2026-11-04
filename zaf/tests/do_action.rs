@@ -12,7 +12,7 @@ use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use common::{Project, outcome, write};
-use zaf::app::actions::{MINUTE, Nesting, RunRequest, RunResult, Tier, run_action};
+use zaf::app::actions::{Caller, MINUTE, Nesting, RunRequest, RunResult, Tier, run_action};
 
 const MANIFEST: &str = r#"[project]
 name = "example"
@@ -483,6 +483,7 @@ fn request<'a>(
         timeout_minutes: minutes,
         minute,
         nesting: Nesting::default(),
+        caller: Caller::Engineer,
     }
 }
 
@@ -894,4 +895,306 @@ fn do_works_outside_a_project() {
     assert_eq!(outcome(&run).0, 125, "{}", said(&run));
     assert!(said(&run).contains("timeout_minutes"), "{}", said(&run));
     assert_eq!(files_in(&project.home.join("logs")).len(), 1, "no new log");
+}
+
+const PROGRAMMER: &str = "programmer instance 1 on #9";
+const TEAM: &str = "team instance 1 on #9";
+const RELEASE: &str = "release instance 1 on #9";
+
+/// An action named `name` under `metadata` that leaves `name.ran` in the project when it runs.
+fn gated(project: &Project, name: &str, metadata: &str) -> PathBuf {
+    action(project, name, metadata, &format!("touch {name}.ran"))
+}
+
+/// The run of `name` by `instance`, or by hand with none.
+fn run_as(project: &Project, name: &str, instance: Option<&str>) -> Output {
+    match instance {
+        Some(instance) => zaf_in(
+            project,
+            &project.root,
+            &["do", name],
+            &[("ZAF_INSTANCE", instance)],
+        ),
+        None => zaf(project, &["do", name]),
+    }
+}
+
+/// The body ran: exit 0 and its mark. Clears the mark and the log, for a refusal to be judged by.
+fn assert_ran(project: &Project, name: &str, run: &Output) {
+    assert_eq!(outcome(run).0, 0, "{name}: {}", said(run));
+    let mark = project.root.join(format!("{name}.ran"));
+    assert!(mark.exists(), "{name} should have run");
+    fs::remove_file(mark).expect("clear the mark");
+    for log in logs_of(project, name) {
+        fs::remove_file(log).expect("clear the log");
+    }
+}
+
+/// Nothing started: no mark and no log.
+fn assert_nothing_started(project: &Project, name: &str) {
+    assert!(
+        !project.root.join(format!("{name}.ran")).exists(),
+        "{name} ran"
+    );
+    assert_eq!(logs_of(project, name), Vec::<PathBuf>::new(), "{name}");
+}
+
+/// The mode refused `role`: the one line, exit 125 and nothing started.
+fn assert_refused(project: &Project, name: &str, run: &Output, role: &str) {
+    let (code, stdout, stderr) = outcome(run);
+    assert_eq!(code, 125, "{name}: {stdout}{stderr}");
+    assert_eq!(stdout, "", "{name}");
+    assert_eq!(
+        stderr,
+        format!("NOT_RUN {name}: not permitted for {role}\n")
+    );
+    assert_nothing_started(project, name);
+}
+
+#[test]
+fn engineer_digit_applies() {
+    let project = project();
+    // The owner digit alone opens or closes a hand run, whatever the other two say.
+    gated(&project, "owner-open", "# zaf mode: 100\n");
+    assert_ran(
+        &project,
+        "owner-open",
+        &run_as(&project, "owner-open", None),
+    );
+    for mode in ["077", "677", "477", "277"] {
+        let name = format!("owner-shut-{mode}");
+        gated(&project, &name, &format!("# zaf mode: {mode}\n"));
+        assert_refused(
+            &project,
+            &name,
+            &run_as(&project, &name, None),
+            "the Engineer",
+        );
+    }
+    // The same files answer a role by another digit: the digit is the caller's own.
+    assert_refused(
+        &project,
+        "owner-open",
+        &run_as(&project, "owner-open", Some(PROGRAMMER)),
+        "programmer",
+    );
+    assert_ran(
+        &project,
+        "owner-shut-077",
+        &run_as(&project, "owner-shut-077", Some(PROGRAMMER)),
+    );
+}
+
+#[test]
+fn group_digit_applies() {
+    let project = project();
+    let named = "# zaf group: team, release\n";
+    gated(&project, "landing", &format!("# zaf mode: 010\n{named}"));
+    for instance in [TEAM, RELEASE] {
+        assert_ran(
+            &project,
+            "landing",
+            &run_as(&project, "landing", Some(instance)),
+        );
+    }
+    assert_refused(
+        &project,
+        "landing",
+        &run_as(&project, "landing", Some(PROGRAMMER)),
+        "programmer",
+    );
+    assert_refused(
+        &project,
+        "landing",
+        &run_as(&project, "landing", None),
+        "the Engineer",
+    );
+
+    // No falling through to a wider digit: the group is refused where others may run.
+    gated(
+        &project,
+        "not-landing",
+        &format!("# zaf mode: 701\n{named}"),
+    );
+    assert_refused(
+        &project,
+        "not-landing",
+        &run_as(&project, "not-landing", Some(TEAM)),
+        "team",
+    );
+    assert_ran(
+        &project,
+        "not-landing",
+        &run_as(&project, "not-landing", Some(PROGRAMMER)),
+    );
+}
+
+#[test]
+fn others_digit_applies() {
+    let project = project();
+    // A mode with no group: every role is others.
+    gated(&project, "open", "# zaf mode: 701\n");
+    gated(&project, "shut", "# zaf mode: 710\n");
+    for instance in [TEAM, PROGRAMMER] {
+        assert_ran(&project, "open", &run_as(&project, "open", Some(instance)));
+    }
+    assert_refused(
+        &project,
+        "shut",
+        &run_as(&project, "shut", Some(TEAM)),
+        "team",
+    );
+
+    // A role not named in the group is others.
+    gated(&project, "unnamed", "# zaf mode: 710\n# zaf group: team\n");
+    assert_refused(
+        &project,
+        "unnamed",
+        &run_as(&project, "unnamed", Some(PROGRAMMER)),
+        "programmer",
+    );
+
+    // A role outside the vocabulary is others, even named in the group.
+    let auditor = "auditor instance 1 on #9";
+    gated(
+        &project,
+        "group-shut",
+        "# zaf mode: 710\n# zaf group: auditor\n",
+    );
+    assert_refused(
+        &project,
+        "group-shut",
+        &run_as(&project, "group-shut", Some(auditor)),
+        "auditor",
+    );
+    gated(
+        &project,
+        "others-open",
+        "# zaf mode: 701\n# zaf group: auditor\n",
+    );
+    assert_ran(
+        &project,
+        "others-open",
+        &run_as(&project, "others-open", Some(auditor)),
+    );
+
+    // No role name reaches the Engineer's digit.
+    gated(&project, "hand-only", "# zaf mode: 700\n");
+    for role in ["engineer", "Engineer", "owner", "the Engineer", "local"] {
+        let instance = format!("{role} instance 1 on #9");
+        assert_refused(
+            &project,
+            "hand-only",
+            &run_as(&project, "hand-only", Some(&instance)),
+            role,
+        );
+    }
+    assert_ran(&project, "hand-only", &run_as(&project, "hand-only", None));
+}
+
+#[test]
+fn flags_do_not_dodge_a_mode() {
+    let project = project();
+    gated(&project, "gated", "# zaf mode: 750\n# zaf group: team\n");
+    let env = [("ZAF_INSTANCE", PROGRAMMER)];
+
+    for args in [
+        &["do", "--more", "gated"][..],
+        &["--more", "do", "gated"],
+        &["do", "--", "gated"],
+        &["do", "--more", "--", "gated"],
+        &["do", "gated", "--json"],
+        &["do", "gated", "--show"],
+        &["do", "gated", "--help"],
+    ] {
+        let run = zaf_in(&project, &project.root, args, &env);
+        assert_refused(&project, "gated", &run, "programmer");
+    }
+
+    for args in [&["do", "--json", "gated"][..], &["--json", "do", "gated"]] {
+        let run = zaf_in(&project, &project.root, args, &env);
+        let (code, stdout, stderr) = outcome(&run);
+        assert_eq!(code, 125, "{args:?}: {stdout}{stderr}");
+        let report: serde_json::Value = serde_json::from_str(&stdout).expect("one JSON line");
+        assert_eq!(report["result"], "NOT_RUN", "{args:?}");
+        assert_eq!(report["exit"], 125, "{args:?}");
+        assert_eq!(
+            report["meaning"], "not permitted for programmer",
+            "{args:?}"
+        );
+        assert_eq!(report["log"], serde_json::Value::Null, "{args:?}");
+        assert_nothing_started(&project, "gated");
+    }
+}
+
+#[test]
+fn nesting_cannot_launder_a_role() {
+    let project = project();
+    gated(&project, "inner", "# zaf mode: 750\n# zaf group: team\n");
+    action(&project, "outer", "", "zaf do inner\nexit $?");
+    action(&project, "outermost", "", "zaf do outer\nexit $?");
+
+    // The body passes the refusal on: the inner run is NOT_RUN and the outer FAIL.
+    let run = run_as(&project, "outer", Some(PROGRAMMER));
+    assert_eq!(outcome(&run).0, 125, "{}", said(&run));
+    let log = log_of(&project, "outer");
+    assert!(
+        said(&run).starts_with(&format!(
+            "FAIL outer: exit 125, a nested action did not run, log {}\n",
+            log.display()
+        )),
+        "{}",
+        said(&run)
+    );
+    assert!(
+        read(&log).contains("NOT_RUN inner: not permitted for programmer\n"),
+        "{}",
+        read(&log)
+    );
+    assert_nothing_started(&project, "inner");
+
+    // Two levels down the role is still the programmer's.
+    let run = run_as(&project, "outermost", Some(PROGRAMMER));
+    assert_eq!(outcome(&run).0, 125, "{}", said(&run));
+    assert_nothing_started(&project, "inner");
+
+    // The same chain opens for a caller the inner mode permits, so the role is what closed it.
+    for caller in [Some(TEAM), None] {
+        let run = run_as(&project, "outermost", caller);
+        assert_eq!(outcome(&run).0, 0, "{caller:?}: {}", said(&run));
+        let mark = project.root.join("inner.ran");
+        assert!(mark.exists(), "{caller:?}: inner should have run");
+        fs::remove_file(mark).expect("clear the mark");
+    }
+}
+
+#[test]
+fn bad_instance_is_refused() {
+    let project = project();
+    // Open to the Engineer alone, and open to everyone: neither is a way in.
+    gated(&project, "hand-only", "# zaf mode: 700\n");
+    gated(&project, "open", "# zaf mode: 755\n");
+    for value in [
+        "",
+        " ",
+        "local",
+        "nonsense",
+        "team",
+        "team instance",
+        "team instance x on #9",
+        " instance 1 on #9",
+        "team instance 1 on #9\nengineer",
+    ] {
+        for name in ["hand-only", "open"] {
+            let run = run_as(&project, name, Some(value));
+            let (code, stdout, stderr) = outcome(&run);
+            assert_eq!(code, 125, "{value:?}: {stdout}{stderr}");
+            assert_eq!(stdout, "", "{value:?}");
+            let expected = format!(
+                "NOT_RUN {name}: ZAF_INSTANCE is {value:?}, not `<role> instance <n> on #<epic>`\n"
+            );
+            assert_eq!(stderr, expected, "{value:?}");
+            assert_nothing_started(&project, name);
+        }
+    }
 }

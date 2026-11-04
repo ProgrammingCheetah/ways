@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use super::Cli;
 use super::exit::{BACKEND, OK};
 use crate::app::actions::{
-    MINUTE, Nesting, RunOutcome, RunRequest, RunResult, find_action, last_lines, list_actions,
-    run_action,
+    Caller, MINUTE, Nesting, RunOutcome, RunRequest, RunResult, find_action, last_lines,
+    list_actions, run_action,
 };
 use crate::composition::{Composition, CompositionError, zaf_home};
 use crate::manifest::{ActionsSection, HOME_FILE};
@@ -123,6 +123,10 @@ fn run_named(name: &str, args: &[OsString]) -> RunOutcome {
         Ok(nesting) => nesting,
         Err(reason) => return not_run(reason),
     };
+    let caller = match Caller::from_env() {
+        Ok(caller) => caller,
+        Err(reason) => return not_run(reason),
+    };
     run_action(&RunRequest {
         name,
         args,
@@ -132,6 +136,7 @@ fn run_named(name: &str, args: &[OsString]) -> RunOutcome {
         timeout_minutes: place.timeout_minutes,
         minute: MINUTE,
         nesting,
+        caller,
     })
 }
 
