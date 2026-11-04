@@ -1,6 +1,6 @@
 # zaf actions
 
-Draft v6, 2026-11-04, with the Engineer's rulings and the answers to the planning questions (§8). An **action** is a runnable file that `zaf` names, lists and runs through `zaf do <name>`. Actions are how a project or a machine makes zaf its own, and zaf is the abstraction layer over them: it owns the names, the listing, the environment, the log, the modes, the phases and one exit contract; what a name *does* is the action behind it. zaf ships none: whoever sets zaf up writes them, and every place a verb shells out is a name the project or the machine must provide. What Claude assumed beyond the rulings is listed in §9, open to veto.
+Draft v7, 2026-11-04, with the Engineer's rulings and the answers to the planning questions (§8). An **action** is a runnable file that `zaf` names, lists and runs through `zaf do <name>`. Actions are how a project or a machine makes zaf its own, and zaf is the abstraction layer over them: it owns the names, the listing, the environment, the log, the modes, the phases and one exit contract; what a name *does* is the action behind it. zaf ships none: whoever sets zaf up writes them, and every place a verb shells out is a name the project or the machine must provide. What Claude assumed beyond the rulings is listed in §9, open to veto.
 
 ## 1. Principles
 
@@ -93,7 +93,7 @@ The first rule that holds decides: the `done` label is `done`; a `check pr` reco
 
 **Handing a value back.** An action that stands in for a verb's step hands its value back as the last non-empty line of its log: `pr-open` a pull request number, `commit` a commit id, `slice-open` the workspace path. `merge-base` exit 1 means conflicted, with the paths in the log; any other non-zero is a backend failure.
 
-**Output and exit.** Everything the body writes, stdout and stderr, goes to `.zaf/logs/<DATETIME>_<ZAF_ACTION_NAME>.log` (`~/.zaf/logs/` outside a project), `<DATETIME>` as `YYYYMMDDTHHMMSSZ`. On exit 0 `zaf` prints nothing. When the body ran and exits non-zero, it prints `FAIL <name>: exit <n>, <its declared meaning>, log <path>` and the last ten lines of the log; an undeclared code prints `exit <n>, undeclared`. The code passes through unchanged. A run past its time bound did run, so it is `FAIL`, exit 2. When the body never ran (§5), it prints `NOT_RUN <name>: <reason>` and exits 125. A body that exits 125 because a nested action did not run is `FAIL`, `exit 125, a nested action did not run`, and the code passes through. `--more` prints the whole log after the run; `--json` gives result (`OK`, `FAIL` or `NOT_RUN`), name, tier, exit, meaning, seconds and log. A nested `zaf do` writes its own log and its path into the outer one.
+**Output and exit.** Everything the body writes, stdout and stderr, goes to `.zaf/logs/<DATETIME>_<ZAF_ACTION_NAME>.log` (`~/.zaf/logs/` outside a project), `<DATETIME>` as `YYYYMMDDTHHMMSSZ`. On exit 0 `zaf` prints nothing. When the body ran and exits non-zero, it prints `FAIL <name>: exit <n>, <its declared meaning>, log <path>` and the last ten lines of the log; an undeclared code prints `exit <n>, undeclared`. The code passes through unchanged. A run past its time bound did run, so it is `FAIL`, exit 2. When the body never ran (§5), it prints `NOT_RUN <name>: <reason>` and exits 125. A body that exits 125 because a nested action did not run is `FAIL`, `exit 125, a nested action did not run`, and the code passes through. `--more` prints the whole log after the run; `--json` gives result (`OK`, `FAIL` or `NOT_RUN`), name, tier, exit, meaning, seconds and log. A nested `zaf do` writes its own log and its path into the outer one. A `zaf check` step that runs a process logs the same way (ruling 30).
 
 ## 4. The verbs, as compositions
 
@@ -162,7 +162,7 @@ Not actions: `/nodes:chart --diff` (a model's job, a skill) and the spawner's mi
 
 ## 8. Rulings
 
-Rulings 1 to 19 are of 2026-11-03; 20 to 29 of 2026-11-04.
+Rulings 1 to 19 are of 2026-11-03; 20 to 30 of 2026-11-04.
 
 1. **Global home:** a configurable zaf home, default `~/.zaf/`, laid out like a project; `zaf setup` makes it first when it has not run, and may be called from the beginning.
 2. **Local home:** projects gain a committed `.zaf/` folder; actions live in `.zaf/actions/`; the file name is the action name, no spaces, hyphens and the like allowed.
@@ -193,6 +193,7 @@ Rulings 1 to 19 are of 2026-11-03; 20 to 29 of 2026-11-04.
 27. **Drop and reopen (planning decision 4):** `slice-open` is refused past `claim`; forgetting a slice also removes the task's check records; `slice-drop` also runs in `check`.
 28. **Accepted as planned:** `slice-merge` on a done task refuses (decision 3); a base merge pushed by `slice-merge` followed by a failed `pr-merge` needs a new `check pr` (5); doctor finds needed names by scanning bodies for a literal `zaf do` (6); the `ZAF.toml` rename comes last (7); `ZAF_BASE` arrives in #140 (8).
 29. **The ledger (#147):** zaf holds an SQLite ledger. It is zaf's own state, not a committed file, so no row has to reach `main` and the release has no step for it.
+30. **Logs are kept (#158):** a check step's whole output goes to `.zaf/logs/<DATETIME>_<name>.log`, git-ignored, as an action's does (§3). What the step returns is short: a word and the log's path.
 
 ## 9. Assumed by Claude, open to veto
 

@@ -10,9 +10,10 @@
 prompt=$1
 root=$2
 
-# zaf reports only the exit code, so keep the reason where it can be read.
-exec 2>>"$root/.zaf/runs/gemini-review.log"
-echo "--- $(date -u +%FT%TZ) in $(pwd)" >&2
+# zaf reports only the exit code, so the whole run is kept in a git-ignored log.
+mkdir -p "$root/.zaf/logs" || exit 2
+log="$root/.zaf/logs/$(date -u +%Y%m%dT%H%M%SZ)_gemini-review.log"
+exec 2>>"$log"
 
 # zaf's prompt only points at brief.md in the step's folder, which names the pull request.
 brief=$prompt
@@ -37,7 +38,7 @@ instructions="
 The diff is already in the file $diff: read that file, all of it, and run no commands to fetch it. Whatever you found, end your report with one last line, exactly: REVIEWED: <the path of the last file in that diff>"
 
 report=$(agy -p "$prompt$instructions" --add-dir "$root" --model gemini-4-argon-high --print-timeout 60m </dev/null) || exit 2
-printf '%s\n' "$report"
+printf '%s\n' "$report" | tee -a "$log"
 if ! printf '%s\n' "$report" | grep -qxF "REVIEWED: $last"; then
     echo "gemini-review: no line 'REVIEWED: $last', so no review happened" >&2
     exit 2
