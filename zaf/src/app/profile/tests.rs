@@ -317,7 +317,7 @@ fn every_profile_allows_the_read_only_shell_basics() {
         let allow = strings(&settings["permissions"]["allow"]);
         for word in [
             "ls", "cat", "head", "tail", "wc", "diff", "rg", "grep", "fd", "pwd", "echo", "printf",
-            "for", "while", "test", "sort", "uniq", "cut", "stat", "du", "which",
+            "for", "while", "test", "sort", "uniq", "cut", "stat", "du", "which", "printenv",
         ] {
             let rule = format!("Bash({word} *)");
             assert!(allow.contains(&rule.as_str()), "{profile} allows {rule}");
@@ -459,9 +459,69 @@ fn a_gate_and_its_tests_allow_each_tool_once() {
 #[test]
 fn tools_are_found_across_every_separator_and_builtins_are_skipped() {
     assert_eq!(
-        tool_rules(&CommandLine::from("cd a; env X=1 b | c || d && FOO=1 e")),
+        tool_rules(&CommandLine::from("cd a; b | c || d && FOO=1 e")),
         ["Bash(b *)", "Bash(c *)", "Bash(d *)", "Bash(e *)"]
     );
+}
+
+#[test]
+fn shell_tools_get_no_wildcard_rule() {
+    for line in [
+        "sh scripts/zaf-tests.sh {name}",
+        "bash -c make",
+        "zsh x",
+        "dash x",
+        "env X=1 b",
+        "FOO=1 sh x",
+        "xargs b",
+        "nohup b",
+        "timeout 5 b",
+        "time b",
+        "nice b",
+        "sudo b",
+        "doas b",
+        "/bin/sh x",
+        "cd a && sh x | bash y",
+    ] {
+        assert_eq!(
+            tool_rules(&CommandLine::from(line)),
+            Vec::<String>::new(),
+            "{line}"
+        );
+    }
+    assert_eq!(
+        tool_rules(&CommandLine::from("cd a && sh x && cargo test")),
+        ["Bash(cargo *)"]
+    );
+}
+
+#[test]
+fn a_shell_gate_command_is_allowed_exactly_and_never_as_a_wildcard_shell() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    init_here(
+        &state,
+        &manifest("[gate]\nfull = \"make check\"\ntests = \"sh scripts/zaf-tests.sh {name}\"\n"),
+    )
+    .expect("generates");
+    for profile in ["lean", "build"] {
+        let settings = settings(&state, profile);
+        let allow = strings(&settings["permissions"]["allow"]);
+        assert!(
+            allow.contains(&"Bash(sh scripts/zaf-tests.sh *)"),
+            "{profile}"
+        );
+        assert!(!allow.contains(&"Bash(sh *)"), "{profile}");
+    }
+}
+
+#[test]
+fn a_required_shell_tool_is_still_allowed() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    init_here(&state, &manifest("[requires]\nsh = \"*\"\n")).expect("generates");
+    let settings = settings(&state, "build");
+    assert!(strings(&settings["permissions"]["allow"]).contains(&"Bash(sh *)"));
 }
 
 #[test]
