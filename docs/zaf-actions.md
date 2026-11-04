@@ -1,6 +1,6 @@
 # zaf actions
 
-Draft v5, 2026-11-04, with the Engineer's rulings and the answers to the planning questions (§8). An **action** is a runnable file that `zaf` names, lists and runs through `zaf do <name>`. Actions are how a project or a machine makes zaf its own, and zaf is the abstraction layer over them: it owns the names, the listing, the environment, the log, the modes, the phases and one exit contract; what a name *does* is the action behind it. zaf ships none: whoever sets zaf up writes them, and every place a verb shells out is a name the project or the machine must provide. What Claude assumed beyond the rulings is listed in §9, open to veto.
+Draft v6, 2026-11-04, with the Engineer's rulings and the answers to the planning questions (§8). An **action** is a runnable file that `zaf` names, lists and runs through `zaf do <name>`. Actions are how a project or a machine makes zaf its own, and zaf is the abstraction layer over them: it owns the names, the listing, the environment, the log, the modes, the phases and one exit contract; what a name *does* is the action behind it. zaf ships none: whoever sets zaf up writes them, and every place a verb shells out is a name the project or the machine must provide. What Claude assumed beyond the rulings is listed in §9, open to veto.
 
 ## 1. Principles
 
@@ -29,7 +29,7 @@ Draft v5, 2026-11-04, with the Engineer's rulings and the answers to the plannin
 .zaf/runs/ .zaf/profiles/ .zaf/workspaces/ .zaf/slices/ .zaf/spawn.state .zaf/guard.json .zaf/asklog.jsonl   as today (ignored)
 ```
 
-**The machine's `~/.zaf/`, the global home.** Laid out like a project's `.zaf/`: `config.toml` (machine-wide defaults every project here inherits, below the project's own manifest) and `actions/` (the machine's actions, seen by every instance on it). Its place is configurable (`ZAF_HOME`); the default is `~/.zaf/`. `zaf setup` creates it, with a commented `config.toml` and an empty `actions/`, and creates the project's `.zaf/` with its `.gitignore`; any verb that finds either missing runs that setup first, non-destructively, so the Engineer may call `zaf setup` from the beginning or let the first verb do it. A `ZAF.toml` still at the root is read as before, with a warning on stderr; only an explicit `zaf setup`, run by the Engineer, moves it to `.zaf.toml`, once, and says so.
+**The machine's `~/.zaf/`, the global home.** Laid out like a project's `.zaf/`: `config.toml` (machine-wide defaults every project here inherits, below the project's own manifest) `actions/` (the machine's actions, seen by every instance on it) and `ledger.db` (zaf's record of what every run cost, §10). Its place is configurable (`ZAF_HOME`); the default is `~/.zaf/`. `zaf setup` creates it, with a commented `config.toml` and an empty `actions/`, and creates the project's `.zaf/` with its `.gitignore`; any verb that finds either missing runs that setup first, non-destructively, so the Engineer may call `zaf setup` from the beginning or let the first verb do it. A `ZAF.toml` still at the root is read as before, with a warning on stderr; only an explicit `zaf setup`, run by the Engineer, moves it to `.zaf.toml`, once, and says so.
 
 **Precedence.** Manifest: `.zaf.toml` > `.zaf/config.toml` > `~/.zaf/config.toml` > the pack's defaults, property by property. Actions: project > machine; a project file shadowing a machine file can never widen its run bits (§3), and `zaf doctor` names every shadowing.
 
@@ -162,7 +162,7 @@ Not actions: `/nodes:chart --diff` (a model's job, a skill) and the spawner's mi
 
 ## 8. Rulings
 
-Rulings 1 to 19 are of 2026-11-03; 20 to 28 of 2026-11-04.
+Rulings 1 to 19 are of 2026-11-03; 20 to 29 of 2026-11-04.
 
 1. **Global home:** a configurable zaf home, default `~/.zaf/`, laid out like a project; `zaf setup` makes it first when it has not run, and may be called from the beginning.
 2. **Local home:** projects gain a committed `.zaf/` folder; actions live in `.zaf/actions/`; the file name is the action name, no spaces, hyphens and the like allowed.
@@ -192,6 +192,7 @@ Rulings 1 to 19 are of 2026-11-03; 20 to 28 of 2026-11-04.
 26. **A failed task check stays in `build` (planning decision 2):** only a clean one moves the task to `check`, so no pull request opens on red and `slice-drop` still works.
 27. **Drop and reopen (planning decision 4):** `slice-open` is refused past `claim`; forgetting a slice also removes the task's check records; `slice-drop` also runs in `check`.
 28. **Accepted as planned:** `slice-merge` on a done task refuses (decision 3); a base merge pushed by `slice-merge` followed by a failed `pr-merge` needs a new `check pr` (5); doctor finds needed names by scanning bodies for a literal `zaf do` (6); the `ZAF.toml` rename comes last (7); `ZAF_BASE` arrives in #140 (8).
+29. **The ledger (#147):** zaf holds an SQLite ledger. It is zaf's own state, not a committed file, so no row has to reach `main` and the release has no step for it.
 
 ## 9. Assumed by Claude, open to veto
 
@@ -207,7 +208,8 @@ Rulings 1 to 19 are of 2026-11-03; 20 to 28 of 2026-11-04.
 10. `command:` check steps and the `zaf slice …` verbs stay one release beside `action:` and `zaf do slice-…`, then retire; `changes` stays a verb over a Vcs port shrunk to diffs.
 11. The manifest combines table by table, property by property; an array is replaced, not merged. `[env]` applies to every gate, test, check and action run and can set no `ZAF_*` variable.
 12. The group digit covers exactly the roles named; a role not in `ZAF_INSTANCE`'s vocabulary is others; programmers share their team's identity until they run as their own process, which no task in this epic needs.
-13. The unit, the verb and the ledger of §10 are Claude's design, for the Engineer's ask of 2026-11-04.
+13. The unit and the verb of §10, and the ledger's place and per-run shape, are Claude's design, for the Engineer's ask of 2026-11-04.
+14. The ledger uses `rusqlite` with SQLite bundled, zaf's first C dependency. "Every backend is reached by shelling out" still holds, because the ledger is zaf's own state, not a backend, and no `sqlite3` needs installing.
 
 ## 10. Is it saving tokens
 
@@ -215,9 +217,9 @@ Raw totals cannot answer this, because they move with how much work was done. Th
 
 **The unit.** Estimated dollars per merged task, per epic, because dollars weight the token kinds by price. Each epic also shows tokens by kind, turns per task and context at turn one and at the end. The figure to compare is the median by size (S, M), since one large task skews a mean. Everything the epic cost counts: planning and re-plans, team instances, programmers and keepers.
 
-**The verb.** `zaf report --epics` prints one row per epic with its share per role, from the transcripts, a subagent counted through its parent session, and the tasks done from the board. It also prints one line for what ran outside any epic, because that spend is invisible otherwise. This is the tokens-per-role table the framework's verb list promises and `zaf report` does not yet print.
+**The verb.** `zaf report --epics` prints one row per epic with its share per role, from the ledger, a subagent counted through its parent session, and the tasks done from the board. It also prints one line for what ran outside any epic, because that spend is invisible otherwise. This is the tokens-per-role table the framework's verb list promises and `zaf report` does not yet print.
 
-**The ledger.** Transcripts expire (30 days by default), so the numbers must outlive them. `zaf report --epics --ledger` appends each closed epic's row to `.zaf/ledger.jsonl`, committed; the release instance runs it before it tags. A row is never rewritten.
+**The ledger.** Transcripts expire (30 days by default), so zaf holds the numbers itself: an SQLite database at `~/.zaf/ledger.db`, one row per run, with its project, role, epic, tasks, model, turns, tokens by kind, context at turn one and at the end, and times. `zaf report` and each `zaf spawn` tick ingest the transcripts they find, updating a run while its transcript still grows, and a row outlives its transcript. Dollars are computed on reading, so a price change cannot look like a saving. The ledger is machine state, never committed, so a rebuilt machine starts empty unless it is backed up.
 
 **Reading it.** An epic saved tokens when its median per size is lower than the last epic's on at least five tasks of that size; with fewer, the row says `too few`, not a verdict. Different work still differs, so a change that claims a large saving gets a benchmark: one old task re-run from its parent commit under the current pack, the only direct comparison, at the cost of that run.
 
