@@ -12,6 +12,7 @@ Change nothing. Write your report to standard output, one finding per line, in e
 ```
 MUST: <path>:<line> <title>
 NOTE: <path>:<line> <title>
+REVIEWED: <the path of the last file in the diff>
 ```
 
 - `MUST` blocks the merge: a bug, a missing test for a stated rule, a broken acceptance line.
@@ -19,4 +20,6 @@ NOTE: <path>:<line> <title>
 - `<path>` is relative to the project root; `<line>` is the line in the new version.
 - `<title>` is one short sentence naming what is wrong.
 
-Lines that do not start with `MUST:` or `NOTE:` are ignored. If nothing is wrong, print nothing.
+Whatever you found, the `REVIEWED:` line is the report's last line, with nothing after it. A report without it counts as a review that never happened, and fails the check. If nothing is wrong, that line is the whole report.
+
+Other lines are ignored.

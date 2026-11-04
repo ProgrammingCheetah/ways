@@ -1,8 +1,9 @@
 //! `runner:<name>:<role>`: write the review brief, run the role on the runner,
 //! and parse its report into findings.
 
+use crate::app::check::report::reviewed_path;
 use crate::app::check::{StepPorts, parse_report};
-use crate::domain::{Finding, FindingSource, Profile};
+use crate::domain::{Finding, FindingSource, Profile, Severity};
 use crate::ports::{PortError, RunRequest};
 
 use super::{RunnerStep, StepContext};
@@ -55,7 +56,33 @@ pub(super) fn run(
             output.exit_code
         )));
     }
-    Ok(parse_report(source, &output.transcript))
+    let findings = parse_report(source, &output.transcript);
+    if reviewed_path(&output.transcript).is_none() {
+        return Err(PortError::Backend(not_reviewed(source, &findings)));
+    }
+    Ok(findings)
+}
+
+/// Why a report without a `REVIEWED:` line fails its step, with the findings it
+/// did carry: a failed step's only text is this reason, so they are printed here.
+fn not_reviewed(source: &FindingSource, findings: &[Finding]) -> String {
+    let mut reason = format!("{source} ended without a REVIEWED line, so no review is on record");
+    for finding in findings {
+        let label = match finding.severity {
+            Severity::MustFix => "MUST",
+            Severity::Advisory => "NOTE",
+        };
+        let place = finding
+            .location
+            .as_ref()
+            .map(|location| match location.line {
+                Some(line) => format!("{}:{line} ", location.path),
+                None => format!("{} ", location.path),
+            })
+            .unwrap_or_default();
+        reason.push_str(&format!("\n{label}: {place}{}", finding.message));
+    }
+    reason
 }
 
 fn file_error(path: &std::path::Path, error: &std::io::Error) -> PortError {

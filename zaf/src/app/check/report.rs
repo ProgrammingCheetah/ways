@@ -4,11 +4,30 @@
 //! every other line is prose and ignored. Two findings are one when they share
 //! the path, sit within [`LINE_WINDOW`] lines of each other, and their titles
 //! match once normalized.
+//!
+//! A review's report ends with `REVIEWED: <the path of the last file in the diff>`,
+//! the proof that the reviewer got through the diff: [`reviewed_path`] reads it.
 
 use crate::domain::{Finding, FindingSource, Location, Severity};
 
 /// How far apart two lines may be and still name one finding.
 pub const LINE_WINDOW: u32 = 3;
+
+/// The prefix of a review report's last line.
+const REVIEWED_PREFIX: &str = "REVIEWED:";
+
+/// The path a report's `REVIEWED:` line names, or none when the report has no such line.
+///
+/// Only the last line that is not blank counts, and it must name a path: a report
+/// that stopped early, or wrote on after the line, is not a finished review.
+pub fn reviewed_path(report: &str) -> Option<&str> {
+    let last = report
+        .lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty())?;
+    let path = last.strip_prefix(REVIEWED_PREFIX)?.trim();
+    (!path.is_empty()).then_some(path)
+}
 
 /// Reads a report's `MUST:` and `NOTE:` lines as findings from `source`.
 ///
