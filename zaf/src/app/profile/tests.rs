@@ -65,7 +65,8 @@ const SHELF_ADDED: &str =
 /// `init` for a project rooted at the state folder's parent, with a shell that must stay unused.
 fn init_here(state: &Path, manifest: &Manifest) -> Result<Report, ProfileError> {
     let shell = RecordingShell::answering(GateVerdict::Failed);
-    let report = init(state.parent().expect("a parent"), state, manifest, &shell);
+    let root = state.parent().expect("a parent");
+    let report = init_with(root, state, manifest, &shell, None);
     assert!(shell.lines().is_empty(), "no pack, no shell");
     report
 }
@@ -497,7 +498,8 @@ fn init_through(
     manifest: &Manifest,
     shell: &RecordingShell,
 ) -> Result<Report, ProfileError> {
-    init(state.parent().expect("a parent"), state, manifest, shell)
+    let root = state.parent().expect("a parent");
+    init_with(root, state, manifest, shell, None)
 }
 
 const PATH_PACK: &str = "[pack]\npath = \"vendor/kit\"\n";
@@ -669,7 +671,7 @@ fn a_pack_tag_is_installed_from_the_marketplace_into_the_profile_once() {
     let state = dir.path().join(".zaf");
     let manifest = manifest("[pack]\ntag = \"kit--v1.0.0\"\n");
     let shell = RecordingShell::answering(GateVerdict::Passed);
-    let report = init(dir.path(), &state, &manifest, &shell).expect("generates");
+    let report = init_through(&state, &manifest, &shell).expect("generates");
     let home = state.join("profiles/build");
     assert_eq!(
         shell.lines(),
@@ -687,11 +689,11 @@ fn a_pack_tag_is_installed_from_the_marketplace_into_the_profile_once() {
         settings(&state, "build")["enabledPlugins"]["teams@ways"],
         true
     );
-    let again = init(dir.path(), &state, &manifest, &shell).expect("again");
+    let again = init_through(&state, &manifest, &shell).expect("again");
     assert_eq!(shell.lines().len(), 1, "the same tag installs nothing");
     assert!(again.unchanged());
     let newer = manifest_with_tag("kit--v1.1.0");
-    init(dir.path(), &state, &newer, &shell).expect("a new tag");
+    init_through(&state, &newer, &shell).expect("a new tag");
     assert_eq!(shell.lines().len(), 2, "a new tag installs again");
 }
 
@@ -704,12 +706,7 @@ fn a_failed_install_is_an_error_naming_the_line() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state = dir.path().join(".zaf");
     let shell = RecordingShell::answering(GateVerdict::Failed);
-    let result = init(
-        dir.path(),
-        &state,
-        &manifest_with_tag("kit--v1.0.0"),
-        &shell,
-    );
+    let result = init_through(&state, &manifest_with_tag("kit--v1.0.0"), &shell);
     let Err(ProfileError::Install { line, output }) = result else {
         panic!("an install error");
     };
@@ -720,5 +717,149 @@ fn a_failed_install_is_an_error_naming_the_line() {
             .join("profiles/build/plugins")
             .join(INSTALLED_TAG_FILE)
             .exists()
+    );
+}
+
+/// A Claude home in `dir`; logged in when `login` is given.
+fn a_claude_home(dir: &Path, login: Option<&str>) -> PathBuf {
+    let claude_home = dir.join("claude-home");
+    fs::create_dir(&claude_home).expect("claude home");
+    if let Some(login) = login {
+        fs::write(claude_home.join(CREDENTIALS_FILE), login).expect("credentials");
+    }
+    claude_home
+}
+
+/// `init` with no pack, against `claude_home`.
+fn init_against(state: &Path, claude_home: &Path) -> Report {
+    let shell = RecordingShell::answering(GateVerdict::Failed);
+    let root = state.parent().expect("a parent");
+    init_with(root, state, &manifest(""), &shell, Some(claude_home)).expect("generates")
+}
+
+#[test]
+fn profile_init_links_the_home_credentials() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    let claude_home = a_claude_home(dir.path(), Some("old"));
+    let source = claude_home.join(CREDENTIALS_FILE);
+    let report = init_against(&state, &claude_home);
+    for profile in ["lean", "build"] {
+        let relative = PathBuf::from("profiles")
+            .join(profile)
+            .join(CREDENTIALS_FILE);
+        let link = state.join(&relative);
+        assert_eq!(
+            fs::read_link(&link).expect("a symlink"),
+            source,
+            "{profile}"
+        );
+        assert!(
+            report.written.contains(&Written {
+                path: relative,
+                change: Change::Created
+            }),
+            "{:?}",
+            report.written
+        );
+        assert!(links_to_claude_home(&link, &claude_home), "{profile}");
+    }
+    fs::write(
+        state.join("profiles/lean").join(CREDENTIALS_FILE),
+        "rotated",
+    )
+    .expect("writes");
+    assert_eq!(
+        fs::read_to_string(state.join("profiles/build").join(CREDENTIALS_FILE)).expect("reads"),
+        "rotated",
+        "a token one profile rotates reaches every other profile"
+    );
+    assert_eq!(fs::read_to_string(&source).expect("reads"), "rotated");
+    let again = init_against(&state, &claude_home);
+    assert!(again.unchanged(), "{:?}", again.lines());
+}
+
+#[test]
+fn profile_init_writes_no_credentials_when_the_home_has_none() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    let claude_home = a_claude_home(dir.path(), None);
+    let report = init_against(&state, &claude_home);
+    assert_eq!(report.written.len(), 4, "{:?}", report.written);
+    let link = state.join("profiles/build").join(CREDENTIALS_FILE);
+    assert!(fs::symlink_metadata(&link).is_err());
+
+    symlink(
+        dir.path().join("nowhere"),
+        claude_home.join(CREDENTIALS_FILE),
+    )
+    .expect("a dangling link");
+    init_against(&state, &claude_home);
+    assert!(
+        fs::symlink_metadata(&link).is_err(),
+        "a dangling link in the home is not its file"
+    );
+}
+
+#[test]
+fn profile_init_leaves_what_is_already_at_the_path_alone() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    let claude_home = a_claude_home(dir.path(), Some("live"));
+    let build = state.join("profiles/build");
+    let lean = state.join("profiles/lean");
+    fs::create_dir_all(&build).expect("build");
+    fs::create_dir_all(&lean).expect("lean");
+    let copy = build.join(CREDENTIALS_FILE);
+    fs::write(&copy, "my copy").expect("a copy");
+    let elsewhere = dir.path().join("elsewhere.json");
+    let foreign = lean.join(CREDENTIALS_FILE);
+    symlink(&elsewhere, &foreign).expect("a dangling link elsewhere");
+
+    let report = init_against(&state, &claude_home);
+
+    assert!(
+        report
+            .written
+            .iter()
+            .all(|file| !file.path.ends_with(CREDENTIALS_FILE)),
+        "{:?}",
+        report.written
+    );
+    let kind = fs::symlink_metadata(&copy).expect("there").file_type();
+    assert!(kind.is_file(), "the copy stays a regular file");
+    assert_eq!(fs::read_to_string(&copy).expect("reads"), "my copy");
+    assert_eq!(fs::read_link(&foreign).expect("a link"), elsewhere);
+    assert!(!links_to_claude_home(&foreign, &claude_home));
+}
+
+#[test]
+fn the_claude_home_is_only_ever_under_an_absolute_home() {
+    assert_eq!(
+        claude_home_under(Some(OsString::from("/home/someone"))),
+        Some(PathBuf::from("/home/someone/.claude"))
+    );
+    assert_eq!(claude_home_under(None), None);
+    assert_eq!(claude_home_under(Some(OsString::new())), None);
+    assert_eq!(claude_home_under(Some(OsString::from("relative"))), None);
+}
+
+#[test]
+fn a_link_through_another_spelling_of_the_home_still_leads_to_it() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let claude_home = a_claude_home(dir.path(), Some("live"));
+    let alias = dir.path().join("alias");
+    symlink(&claude_home, &alias).expect("an alias of the home");
+    let link = dir.path().join(CREDENTIALS_FILE);
+    symlink(alias.join(CREDENTIALS_FILE), &link).expect("a link");
+    assert!(links_to_claude_home(&link, &claude_home));
+
+    let other = tempfile::tempdir().expect("temp dir");
+    let logged_out = a_claude_home(other.path(), None);
+    let waiting = other.path().join(CREDENTIALS_FILE);
+    symlink(logged_out.join(CREDENTIALS_FILE), &waiting).expect("a link");
+    assert!(
+        links_to_claude_home(&waiting, &logged_out),
+        "the home's file is the target even while the home is logged out"
     );
 }

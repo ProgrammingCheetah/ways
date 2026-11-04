@@ -230,3 +230,64 @@ fn other_design_kinds_clone_nothing() {
     assert_eq!(report.clone, None);
     assert!(commands.calls().is_empty());
 }
+
+#[test]
+fn setup_links_the_home_credentials_into_a_profile_already_there() {
+    let (dir, root, home) = places();
+    let claude_home = dir.path().join("claude-home");
+    fs::create_dir(&claude_home).expect("claude home");
+    let source = claude_home.join(profile::CREDENTIALS_FILE);
+    fs::write(&source, "{}").expect("credentials");
+    let build = root.join(".zaf/profiles/build");
+    fs::create_dir_all(&build).expect("the build profile");
+    let manifest = manifest("");
+    let commands = FakeCommands::new().with("env", "{\"loggedIn\": true}\n");
+
+    let first =
+        setup_with(&root, Some(&home), &manifest, &commands, Some(&claude_home)).expect("sets up");
+
+    let link = build.join(profile::CREDENTIALS_FILE);
+    assert_eq!(fs::read_link(&link).expect("a symlink"), source);
+    assert!(
+        first
+            .doctor
+            .lines()
+            .contains(&"profile build: login ok (shared)".to_owned()),
+        "doctor runs after the link: {:?}",
+        first.doctor.lines()
+    );
+    assert!(
+        !root.join(".zaf/profiles/lean").exists(),
+        "a profile not generated stays for `zaf profile init`"
+    );
+    setup_with(&root, Some(&home), &manifest, &commands, Some(&claude_home)).expect("again");
+    assert_eq!(fs::read_link(&link).expect("a symlink"), source);
+}
+
+#[test]
+fn setup_leaves_a_copy_alone_and_links_nothing_without_a_login_at_home() {
+    let (dir, root, home) = places();
+    let claude_home = dir.path().join("claude-home");
+    fs::create_dir(&claude_home).expect("claude home");
+    let build = root.join(".zaf/profiles/build");
+    let lean = root.join(".zaf/profiles/lean");
+    fs::create_dir_all(&build).expect("the build profile");
+    fs::create_dir_all(&lean).expect("the lean profile");
+    let manifest = manifest("");
+    let commands = FakeCommands::new().with("env", "ok");
+
+    setup_with(&root, Some(&home), &manifest, &commands, Some(&claude_home)).expect("sets up");
+    assert!(fs::symlink_metadata(build.join(profile::CREDENTIALS_FILE)).is_err());
+
+    fs::write(claude_home.join(profile::CREDENTIALS_FILE), "{}").expect("logs in");
+    let copy = build.join(profile::CREDENTIALS_FILE);
+    fs::write(&copy, "my copy").expect("a copy");
+    setup_with(&root, Some(&home), &manifest, &commands, Some(&claude_home)).expect("again");
+    assert_eq!(read(&copy), "my copy");
+    assert!(fs::symlink_metadata(&copy).expect("there").is_file());
+    assert!(
+        fs::symlink_metadata(lean.join(profile::CREDENTIALS_FILE))
+            .expect("linked")
+            .is_symlink()
+    );
+}
