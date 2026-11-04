@@ -5,14 +5,18 @@
 //! [`Commands`], which tests fake and the command line backs with real processes.
 //! Each generated profile is asked whether it carries a login, by `claude auth status`
 //! run with `CLAUDE_CONFIG_DIR` set to it; a missing login is reported with its fix,
-//! never fixed, and does not fail the doctor. Each profile that carries the pack is asked
-//! `claude plugin list` the same way and reports the pack's version, or that it is missing.
+//! never fixed, and does not fail the doctor. Its line also says what its `.credentials.json`
+//! is: shared with the Claude home, or a copy that goes stale; the token is never printed.
+//! Each profile that carries the pack is asked `claude plugin list` the same way and
+//! reports the pack's version, or that it is missing.
 
 use std::fmt;
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::app::profile::{self, CONFIG_DIR_VAR};
+use crate::app::profile::{self, CONFIG_DIR_VAR, CREDENTIALS_FILE};
 use crate::composition::STATE_DIR;
 use crate::manifest::{DesignSection, Manifest, Requirement, ToolName};
 
@@ -21,6 +25,8 @@ pub mod fake;
 /// The design index's name when `[design] index` names none; the design adapter's default,
 /// which a test keeps in step (the app layer does not import adapters).
 const DEFAULT_DESIGN_INDEX: &str = "index.md";
+/// Where a credentials file holds its access token's expiry, in milliseconds since the epoch.
+const EXPIRES_AT: &str = "/claudeAiOauth/expiresAt";
 
 /// What a finished command wrote.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,6 +106,35 @@ pub struct PathCheck {
     pub ok: bool,
 }
 
+/// What a profile's `.credentials.json` is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Credentials {
+    /// There is none: the login, if any, comes from elsewhere, such as `[auth] token_env`.
+    Absent,
+    /// A symlink to the file of the Claude home: the one live token.
+    Shared,
+    /// A symlink to anything else, which is never called shared.
+    Foreign,
+    /// A regular file, not past its `expiresAt` as far as it can be read.
+    Copy,
+    /// A regular file whose access token is past its `expiresAt`.
+    Stale,
+}
+
+impl Credentials {
+    /// The words the profile's line adds; `None` when there is no file to speak of.
+    fn words(self) -> Option<&'static str> {
+        match self {
+            Self::Absent => None,
+            Self::Shared => Some("shared"),
+            Self::Foreign => Some("links outside the Claude home"),
+            Self::Copy => Some("copy"),
+            Self::Stale => Some("copy, stale"),
+        }
+    }
+}
+
 /// Whether a profile carries a login, as `claude auth status` inside it says.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct LoginCheck {
@@ -109,21 +144,45 @@ pub struct LoginCheck {
     pub path: PathBuf,
     /// Whether it is logged in; a profile not generated yet is not.
     pub ok: bool,
+    /// What its credentials file is.
+    pub credentials: Credentials,
 }
 
 impl LoginCheck {
-    /// `profile <name>: login ok`, or `login missing` with the fix as a worksheet line.
+    /// `profile <name>: login ok`, or `login missing`, then in brackets what its credentials
+    /// file is and the fix as a worksheet line, whichever apply.
     pub fn line(&self) -> String {
-        if self.ok {
-            return format!("profile {}: login ok", self.profile);
+        let state = if self.ok { "login ok" } else { "login missing" };
+        let details = match (self.credentials.words(), self.fix()) {
+            (None, None) => return format!("profile {}: {state}", self.profile),
+            (Some(words), None) => words.to_owned(),
+            (None, Some(fix)) => format!("fix: {fix}"),
+            (Some(words), Some(fix)) => format!("{words}; fix: {fix}"),
+        };
+        format!("profile {}: {state} ({details})", self.profile)
+    }
+
+    /// What the Engineer does about this login; `None` when nothing is wrong yet.
+    fn fix(&self) -> Option<String> {
+        let relink = || {
+            format!(
+                "remove {} and run `zaf profile init`",
+                self.path.join(CREDENTIALS_FILE).display()
+            )
+        };
+        match (self.ok, self.credentials) {
+            (true, Credentials::Absent | Credentials::Shared | Credentials::Copy) => None,
+            (_, Credentials::Foreign | Credentials::Stale) | (false, Credentials::Copy) => {
+                Some(relink())
+            }
+            (false, Credentials::Shared) => Some("log in to your Claude home".to_owned()),
+            (false, Credentials::Absent) => Some(format!(
+                "log in to your Claude home and run `zaf profile init`, which links its \
+                 {CREDENTIALS_FILE} into {}, \
+                 or set [auth] token_env = \"<VAR>\" in .zaf/local.toml and export that token",
+                self.path.display()
+            )),
         }
-        format!(
-            "profile {}: login missing (fix: copy .credentials.json from your Claude home into {}, \
-             or set [auth] token_env = \"<VAR>\" in .zaf/local.toml and export that token; \
-             run `zaf profile init` first if the folder is missing)",
-            self.profile,
-            self.path.display()
-        )
     }
 }
 
@@ -285,8 +344,14 @@ fn creatable(path: &Path) -> bool {
 ///
 /// A profile whose folder is not there yet is missing without asking; one that is
 /// there runs `env CLAUDE_CONFIG_DIR=<home> claude auth status`, which exits 0 only
-/// when logged in.
-pub fn logins(root: &Path, manifest: &Manifest, commands: &dyn Commands) -> Vec<LoginCheck> {
+/// when logged in. Each one's credentials file is judged against `claude_home` at `now`.
+pub fn logins(
+    root: &Path,
+    manifest: &Manifest,
+    commands: &dyn Commands,
+    claude_home: Option<&Path>,
+    now: SystemTime,
+) -> Vec<LoginCheck> {
     let state_dir = root.join(STATE_DIR);
     profile::generated(manifest)
         .into_iter()
@@ -298,13 +363,54 @@ pub fn logins(root: &Path, manifest: &Manifest, commands: &dyn Commands) -> Vec<
                     .run("env", &[&setting, "claude", "auth", "status"])
                     .is_ok_and(|output| output.success)
             };
+            let credentials = credentials(&path, claude_home, now);
             LoginCheck {
                 profile: name.to_string(),
                 path,
                 ok,
+                credentials,
             }
         })
         .collect()
+}
+
+/// What the `.credentials.json` of the profile at `home` is; it looks at the link itself,
+/// so a link is never mistaken for the file it leads to.
+fn credentials(home: &Path, claude_home: Option<&Path>, now: SystemTime) -> Credentials {
+    let file = home.join(CREDENTIALS_FILE);
+    let Ok(meta) = fs::symlink_metadata(&file) else {
+        return Credentials::Absent;
+    };
+    if meta.file_type().is_symlink() {
+        let shared = claude_home.is_some_and(|home| profile::links_to_claude_home(&file, home));
+        return if shared {
+            Credentials::Shared
+        } else {
+            Credentials::Foreign
+        };
+    }
+    if !meta.is_file() {
+        return Credentials::Absent;
+    }
+    if expiry(&file).is_some_and(|expires_at| is_past(expires_at, now)) {
+        Credentials::Stale
+    } else {
+        Credentials::Copy
+    }
+}
+
+/// The expiry a credentials file holds, in milliseconds since the epoch; `None` when it
+/// cannot be read. Nothing else of the file leaves this function.
+fn expiry(file: &Path) -> Option<u64> {
+    let text = fs::read_to_string(file).ok()?;
+    let credentials: serde_json::Value = serde_json::from_str(&text).ok()?;
+    credentials.pointer(EXPIRES_AT)?.as_u64()
+}
+
+/// Whether `now` is past `expires_at`, in milliseconds since the epoch.
+fn is_past(expires_at: u64, now: SystemTime) -> bool {
+    now.duration_since(UNIX_EPOCH)
+        .is_ok_and(|since| since.as_millis() > u128::from(expires_at))
 }
 
 /// Asks each generated profile that carries the pack whether `claude plugin list` shows it.
@@ -346,6 +452,23 @@ pub fn packs(root: &Path, manifest: &Manifest, commands: &dyn Commands) -> Vec<P
 /// Checks the required tools, the design folder, the workspaces folder and the profiles'
 /// logins and packs of a loaded manifest.
 pub fn doctor(root: &Path, manifest: &Manifest, commands: &dyn Commands) -> Report {
+    doctor_with(
+        root,
+        manifest,
+        commands,
+        profile::claude_home().as_deref(),
+        SystemTime::now(),
+    )
+}
+
+/// [`doctor`] against a given Claude home and clock.
+pub fn doctor_with(
+    root: &Path,
+    manifest: &Manifest,
+    commands: &dyn Commands,
+    claude_home: Option<&Path>,
+    now: SystemTime,
+) -> Report {
     let tools = manifest
         .requires
         .iter()
@@ -381,7 +504,7 @@ pub fn doctor(root: &Path, manifest: &Manifest, commands: &dyn Commands) -> Repo
         design,
         design_index,
         workspaces,
-        logins: logins(root, manifest, commands),
+        logins: logins(root, manifest, commands, claude_home, now),
         packs: packs(root, manifest, commands),
     }
 }

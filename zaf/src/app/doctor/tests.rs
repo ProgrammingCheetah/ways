@@ -1,5 +1,7 @@
 use std::fs;
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use super::fake::FakeCommands;
 use super::*;
@@ -324,6 +326,177 @@ fn a_profile_not_generated_yet_is_missing_without_asking() {
     assert_eq!(report.logins.len(), 2);
     assert!(report.logins.iter().all(|check| !check.ok));
     assert!(commands.calls().is_empty());
+}
+
+/// The moment the credentials tests run at, two seconds after the epoch.
+const NOW: Duration = Duration::from_secs(2);
+
+/// A credentials file with its secrets and its expiry, in milliseconds since the epoch.
+fn credentials_text(expires_at: u64) -> String {
+    format!(
+        r#"{{"claudeAiOauth":{{"accessToken":"sk-access-secret","refreshToken":"sk-refresh-secret","expiresAt":{expires_at}}}}}"#
+    )
+}
+
+/// A Claude home in `root`, logged in.
+fn a_claude_home(root: &Path) -> PathBuf {
+    let claude_home = root.join("claude-home");
+    fs::create_dir(&claude_home).expect("claude home");
+    fs::write(claude_home.join(CREDENTIALS_FILE), credentials_text(3_000)).expect("credentials");
+    claude_home
+}
+
+/// The build profile's doctor line, with `claude auth status` answered by `commands`.
+fn build_line(root: &Path, commands: &FakeCommands, claude_home: Option<&Path>) -> String {
+    let now = UNIX_EPOCH + NOW;
+    doctor_with(root, &manifest(""), commands, claude_home, now)
+        .lines()
+        .into_iter()
+        .find(|line| line.starts_with("profile build:"))
+        .expect("a build line")
+}
+
+fn logged_in() -> FakeCommands {
+    FakeCommands::new().with("env", "{\"loggedIn\": true}\n")
+}
+
+fn logged_out() -> FakeCommands {
+    FakeCommands::new().failing("env", "{\"loggedIn\": false}\n")
+}
+
+#[test]
+fn doctor_reports_a_stale_copy() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (_, build) = profile_homes(dir.path());
+    let copy = build.join(CREDENTIALS_FILE);
+    fs::write(&copy, credentials_text(1_000)).expect("a copy");
+
+    let line = build_line(dir.path(), &logged_in(), None);
+    assert!(
+        line.starts_with("profile build: login ok (copy, stale; fix: remove "),
+        "{line}"
+    );
+    assert!(line.contains(&copy.display().to_string()), "{line}");
+    assert!(line.contains("zaf profile init"), "{line}");
+
+    let line = build_line(dir.path(), &logged_out(), None);
+    assert!(
+        line.starts_with("profile build: login missing (copy, stale; fix: remove "),
+        "a failed login still says why: {line}"
+    );
+    assert!(
+        !line.contains("secret"),
+        "the token is never printed: {line}"
+    );
+
+    let report = doctor_with(
+        dir.path(),
+        &manifest(""),
+        &logged_out(),
+        None,
+        UNIX_EPOCH + NOW,
+    );
+    assert!(report.passed(), "a stale copy is reported, not failed");
+    let json = serde_json::to_string(&report).expect("serializes");
+    assert!(json.contains(r#""credentials":"stale""#), "{json}");
+    assert!(!json.contains("secret"), "{json}");
+    assert_eq!(
+        fs::read_to_string(&copy).expect("reads"),
+        credentials_text(1_000),
+        "doctor leaves the copy alone"
+    );
+}
+
+#[test]
+fn a_copy_not_past_its_expiry_is_only_a_copy() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (_, build) = profile_homes(dir.path());
+    fs::write(build.join(CREDENTIALS_FILE), credentials_text(3_000)).expect("a copy");
+    assert_eq!(
+        build_line(dir.path(), &logged_in(), None),
+        "profile build: login ok (copy)"
+    );
+}
+
+#[test]
+fn a_copy_whose_expiry_cannot_be_read_is_only_a_copy() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (_, build) = profile_homes(dir.path());
+    for text in [
+        "not json",
+        "{}",
+        r#"{"claudeAiOauth":{}}"#,
+        r#"{"claudeAiOauth":{"expiresAt":"soon"}}"#,
+    ] {
+        fs::write(build.join(CREDENTIALS_FILE), text).expect("a copy");
+        assert_eq!(
+            build_line(dir.path(), &logged_in(), None),
+            "profile build: login ok (copy)",
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn an_access_token_is_stale_only_past_its_expiry() {
+    let now = UNIX_EPOCH + NOW;
+    assert!(is_past(1_999, now));
+    assert!(!is_past(2_000, now));
+    assert!(!is_past(u64::MAX, now));
+}
+
+#[test]
+fn doctor_reports_a_shared_login() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (_, build) = profile_homes(dir.path());
+    let claude_home = a_claude_home(dir.path());
+    symlink(
+        claude_home.join(CREDENTIALS_FILE),
+        build.join(CREDENTIALS_FILE),
+    )
+    .expect("the link");
+    assert_eq!(
+        build_line(dir.path(), &logged_in(), Some(&claude_home)),
+        "profile build: login ok (shared)"
+    );
+    assert_eq!(
+        build_line(dir.path(), &logged_out(), Some(&claude_home)),
+        "profile build: login missing (shared; fix: log in to your Claude home)"
+    );
+}
+
+#[test]
+fn a_link_outside_the_claude_home_is_never_called_shared() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (_, build) = profile_homes(dir.path());
+    let claude_home = a_claude_home(dir.path());
+    let elsewhere = dir.path().join("elsewhere.json");
+    fs::write(&elsewhere, credentials_text(3_000)).expect("another file");
+    symlink(&elsewhere, build.join(CREDENTIALS_FILE)).expect("a foreign link");
+    for home in [Some(claude_home.as_path()), None] {
+        let line = build_line(dir.path(), &logged_in(), home);
+        assert!(
+            line.starts_with("profile build: login ok (links outside the Claude home; fix: "),
+            "{line}"
+        );
+        assert!(!line.contains("shared"), "{line}");
+    }
+}
+
+#[test]
+fn the_token_env_path_has_no_credentials_file_and_keeps_its_plain_line() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    profile_homes(dir.path());
+    let claude_home = a_claude_home(dir.path());
+    assert_eq!(
+        build_line(dir.path(), &logged_in(), Some(&claude_home)),
+        "profile build: login ok"
+    );
+    let line = build_line(dir.path(), &logged_out(), Some(&claude_home));
+    assert!(
+        line.contains("set [auth] token_env = \"<VAR>\" in .zaf/local.toml and export that token"),
+        "{line}"
+    );
 }
 
 const PACK: &str = "[pack]\npath = \"vendor/kit\"\n";
