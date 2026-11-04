@@ -15,6 +15,9 @@ pub const REPO: &str = "example/tracker";
 pub struct Project {
     pub temp: tempfile::TempDir,
     pub root: PathBuf,
+    /// The zaf home every run gets (`ZAF_HOME`), empty, so the machine's own
+    /// `~/.zaf/config.toml` never reaches a test.
+    pub home: PathBuf,
     scene: PathBuf,
     responses: usize,
     env: Vec<(String, String)>,
@@ -26,6 +29,8 @@ impl Project {
         let temp = tempfile::tempdir().expect("temp dir");
         let root = temp.path().join("repo");
         let scene = temp.path().join("gh-scene");
+        let home = temp.path().join("zaf-home");
+        fs::create_dir_all(&home).expect("home");
         fs::create_dir_all(&root).expect("root");
         fs::create_dir_all(&scene).expect("scene");
         fs::write(scene.join("rules"), "").expect("rules");
@@ -33,6 +38,7 @@ impl Project {
         Self {
             temp,
             root,
+            home,
             scene,
             responses: 0,
             env: Vec::new(),
@@ -86,6 +92,7 @@ impl Project {
             .current_dir(dir)
             .env("PATH", search_path)
             .env("FAKE_GH_DIR", &self.scene)
+            .env("ZAF_HOME", &self.home)
             .env_remove("ZAF_INSTANCE")
             .env_remove("ZAF_VERSION");
         for (key, value) in &self.env {
