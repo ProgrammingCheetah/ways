@@ -18,9 +18,16 @@ repo = "example/tracker"
 
 const MOVED: &str = "moved ZAF.toml to .zaf.toml";
 
-/// A project whose manifest is the legacy root `ZAF.toml`.
+/// A project whose manifest is the legacy root `ZAF.toml`: `Project::new` writes
+/// `.zaf.toml`, so this writes the legacy file itself.
 fn legacy_project() -> Project {
-    Project::new(MANIFEST)
+    let project = Project::new(MANIFEST);
+    fs::rename(
+        project.root.join(".zaf.toml"),
+        project.root.join("ZAF.toml"),
+    )
+    .expect("the legacy name");
+    project
 }
 
 #[test]
