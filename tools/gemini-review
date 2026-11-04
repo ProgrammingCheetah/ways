@@ -1,0 +1,44 @@
+#!/bin/sh
+# Runs a zaf review brief through Gemini, and fails when no review happened.
+#
+# agy exits 0 and prints nothing when headless mode denies a tool it needed, and a
+# brief's report is also empty when nothing is wrong, so zaf would read a run that
+# never saw the diff as clean. So this script fetches the diff itself, the reviewer
+# needs no new permission, and the report must end by naming the diff's last file.
+#
+# Usage: gemini-review <prompt> <project root>
+prompt=$1
+root=$2
+
+# zaf reports only the exit code, so keep the reason where it can be read.
+exec 2>>"$root/.zaf/runs/gemini-review.log"
+echo "--- $(date -u +%FT%TZ) in $(pwd)" >&2
+
+# zaf's prompt only points at brief.md in the step's folder, which names the pull request.
+brief=$prompt
+[ -f brief.md ] && brief=$(cat brief.md)
+pr=$(printf '%s\n' "$brief" | grep -oE 'pull request #?[0-9]+' | head -n 1 | grep -oE '[0-9]+$')
+if [ -z "$pr" ]; then
+    echo 'gemini-review: the brief names no pull request' >&2
+    exit 2
+fi
+
+diff=$(mktemp "$root/.zaf/runs/review-$pr-XXXXXX") || exit 2
+trap 'rm -f "$diff"' EXIT
+gh pr diff "$pr" >"$diff" || exit 2
+last=$(grep '^diff --git ' "$diff" | tail -n 1 | sed 's|.* b/||')
+if [ -z "$last" ]; then
+    echo "gemini-review: pull request $pr has an empty diff" >&2
+    exit 2
+fi
+
+instructions="
+
+The diff is already in the file $diff: read that file, all of it, and run no commands to fetch it. Whatever you found, end your report with one last line, exactly: REVIEWED: <the path of the last file in that diff>"
+
+report=$(agy -p "$prompt$instructions" --add-dir "$root" --model gemini-4-argon-high --print-timeout 60m </dev/null) || exit 2
+printf '%s\n' "$report"
+if ! printf '%s\n' "$report" | grep -qxF "REVIEWED: $last"; then
+    echo "gemini-review: no line 'REVIEWED: $last', so no review happened" >&2
+    exit 2
+fi

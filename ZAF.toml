@@ -49,6 +49,10 @@ path = "plugins/teams"
 command = "claude -p {prompt} --model {model} --add-dir {root}"
 timeout_minutes = 45
 
+[runners.gemini]
+command = "{root}/tools/gemini-review {prompt} {root}"
+timeout_minutes = 60
+
 [roles.programmer]
 model = "sonnet"
 effort = "high"
@@ -63,7 +67,7 @@ turns = 200
 batch = 4
 
 [check.pr]
-steps = ["ci"]
+steps = ["ci", "runner:gemini:security?flagged"]
 
 [ask]
 ladder = ["haiku", "sonnet"]
