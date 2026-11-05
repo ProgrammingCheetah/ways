@@ -111,8 +111,41 @@ impl NewQuestion {
     }
 }
 
+/// A sub-issue of an epic as the hub reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EpicTask {
+    /// Its issue.
+    pub number: IssueNumber,
+    /// Its state label, if it has one.
+    pub label: Option<TaskLabel>,
+    /// Whether the issue is closed.
+    pub closed: bool,
+    /// The name in its `group:<name>` label, if it has one.
+    pub group: Option<String>,
+}
+
+/// An open epic and its sub-issues, closed ones included.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EpicTree {
+    /// Its issue.
+    pub number: IssueNumber,
+    /// Its title.
+    pub title: String,
+    /// Its tasks, in issue order.
+    pub tasks: Vec<EpicTask>,
+}
+
 /// The board the spawner and every instance read and write.
 pub trait Board {
+    /// Every open epic with its sub-issues, open and closed, in issue order.
+    ///
+    /// A board that cannot list them answers [`PortError::Rejected`] unless it overrides this.
+    fn epic_trees(&self) -> Result<Vec<EpicTree>, PortError> {
+        Err(PortError::Rejected(
+            "this board cannot list its epics".to_owned(),
+        ))
+    }
+
     /// Tasks labelled `ready`, in issue order.
     fn ready(&self) -> Result<Vec<Ticket>, PortError>;
 
