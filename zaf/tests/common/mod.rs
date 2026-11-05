@@ -96,6 +96,17 @@ impl Project {
             .env("ZAF_HOME", &self.home)
             .env_remove("ZAF_INSTANCE")
             .env_remove("ZAF_VERSION");
+        // A suite run inside an action (the gate is one) must not hand its caller's
+        // action state to the runs it makes.
+        for var in [
+            "ZAF_ROOT",
+            "ZAF_ACTION",
+            "ZAF_DEPTH",
+            "ZAF_ACTION_CHAIN",
+            "ZAF_ACTION_LOG",
+        ] {
+            command.env_remove(var);
+        }
         for (key, value) in &self.env {
             command.env(key, value);
         }
