@@ -22,6 +22,7 @@ const MOVED: &str = "moved ZAF.toml to .zaf.toml";
 /// `.zaf.toml`, so this writes the legacy file itself.
 fn legacy_project() -> Project {
     let project = Project::new(MANIFEST);
+    project.provide_slice_actions();
     fs::rename(
         project.root.join(".zaf.toml"),
         project.root.join("ZAF.toml"),
