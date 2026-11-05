@@ -9,13 +9,17 @@
 //! A project file that shadows a machine file is listed with the file it shadows. That does not
 //! fail the report; a shadow whose declared run bits are wider than the shadowed file's gets a note
 //! that the extra bits have no effect. A shadow of a file whose mode has no owner `w`, or whose
-//! mode cannot be read, fails it, since a run would refuse it. Needed names and machine
-//! dependencies are not here.
+//! mode cannot be read, fails it, since a run would refuse it. Needed names are not here.
+//!
+//! An action that the project's steps resolve to in the machine tier carries those steps as its
+//! machine dependents (docs/zaf-actions.md §2, the zip test's named exception): the project depends
+//! on this machine for it. They are listed under the action and never fail the report.
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+use super::needed::machine_dependents;
 use crate::app::actions::{
     ActionMetadata, ActionMode, ResolveError, Resolved, Tier, can_shadow, list, parse, resolve_in,
     same_file,
@@ -47,6 +51,12 @@ pub struct ActionCheck {
     /// What is worth knowing and does not fail the report, such as a shadow's run bits that have no
     /// effect.
     pub notes: Vec<String>,
+    /// The project's steps that resolve to the machine's file of this name, one entry each, worded
+    /// as a needed name's callers are. The machine file is this entry's own when it is a machine
+    /// action, and the one in `shadows` when a project file shadows it and a step names
+    /// `--tier machine`. Each is a dependency of the project on this machine (§2, the zip test's
+    /// named exception); none fails the report.
+    pub machine_dependents: Vec<String>,
 }
 
 impl ActionCheck {
@@ -63,6 +73,11 @@ impl ActionCheck {
             self.shadows
                 .iter()
                 .map(|over| format!("  shadows the machine file {}", over.display())),
+        );
+        lines.extend(
+            self.machine_dependents
+                .iter()
+                .map(|step| format!("  the project depends on this machine: {step}")),
         );
         lines.extend(self.notes.iter().map(|note| format!("  {note}")));
         lines.extend(self.problems.iter().map(|problem| format!("  {problem}")));
@@ -83,11 +98,16 @@ pub(super) fn check_actions(
     // own state folder, whose `actions` the project tier already covers.
     let state_dir = root.join(STATE_DIR);
     let machine_home = zaf_home.unwrap_or(&state_dir);
+    let mut dependents = machine_dependents(root, zaf_home, manifest);
     match list(root, machine_home) {
         Ok(found) => (
             found
                 .iter()
-                .map(|found| check_action(found, manifest, root, machine_home))
+                .map(|found| {
+                    let mut check = check_action(found, manifest, root, machine_home);
+                    check.machine_dependents = dependents.remove(&found.name).unwrap_or_default();
+                    check
+                })
                 .collect(),
             None,
         ),
@@ -140,6 +160,7 @@ fn check_action(
         problems,
         shadows,
         notes,
+        machine_dependents: Vec::new(),
     }
 }
 
