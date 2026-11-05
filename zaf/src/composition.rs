@@ -324,6 +324,34 @@ impl Composition {
         Ok(Box::new(ShellGate::new(dir, section)))
     }
 
+    /// [`gate_in`](Self::gate_in) with `env` set on every run, on top of the inherited
+    /// environment (see [`project_env`](Self::project_env)).
+    pub fn gate_in_with_env(
+        &self,
+        dir: &Path,
+        env: &BTreeMap<String, String>,
+    ) -> Result<Box<dyn Gate>, CompositionError> {
+        let section = self
+            .manifest
+            .gate
+            .as_ref()
+            .ok_or(CompositionError::Absent {
+                port: "Gate",
+                section: "gate",
+            })?;
+        Ok(Box::new(ShellGate::new(dir, section).with_env(env.clone())))
+    }
+
+    /// The manifest's `[env]` table with `{root}` the absolute project root and `{version}`
+    /// the given version. A value that uses `{version}` with none given is a
+    /// [`ManifestError`] naming the variable.
+    pub fn project_env(
+        &self,
+        version: Option<&str>,
+    ) -> Result<BTreeMap<String, String>, ManifestError> {
+        self.manifest.env.resolve(&self.root, version)
+    }
+
     /// The runner `[runners.<name>]` declares.
     pub fn runner(&self, name: &RunnerName) -> Result<Box<dyn Runner>, CompositionError> {
         self.build_runner(name, None)
@@ -411,6 +439,12 @@ impl Composition {
     /// A shell that runs command lines at the project root.
     pub fn shell(&self) -> Box<dyn Shell> {
         Box::new(SystemShell::new(&self.root, SHELL_TIMEOUT))
+    }
+
+    /// A shell that runs command lines in `dir` with `env` set on every line, on top of the
+    /// inherited environment.
+    pub fn shell_in_with_env(&self, dir: &Path, env: &BTreeMap<String, String>) -> Box<dyn Shell> {
+        Box::new(SystemShell::new(dir, SHELL_TIMEOUT).with_env(env.clone()))
     }
 }
 

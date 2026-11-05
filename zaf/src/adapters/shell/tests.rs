@@ -76,3 +76,18 @@ fn a_missing_directory_is_unavailable() {
     let error = shell(&missing).run(&line("true")).expect_err("no dir");
     assert!(matches!(error, PortError::Unavailable(_)), "{error:?}");
 }
+
+#[test]
+fn env_is_set_beside_the_inherited_environment_and_wins_over_it() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let env = BTreeMap::from([
+        ("FROM_ENV_TABLE".to_owned(), "set".to_owned()),
+        ("HOME".to_owned(), "/overridden".to_owned()),
+    ]);
+    let ran = shell(dir.path())
+        .with_env(env)
+        .run(&line("echo \"$FROM_ENV_TABLE $HOME\"; test -n \"$PATH\""))
+        .expect("runs");
+    assert_eq!(ran.verdict, GateVerdict::Passed);
+    assert_eq!(ran.output, "set /overridden\n");
+}
