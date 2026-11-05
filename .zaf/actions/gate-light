@@ -1,0 +1,4 @@
+#!/bin/sh
+# zaf description: the light gate, format and tests, in the current directory
+# zaf 1: a gate step failed, or the zaf crate folder is missing
+cd zaf && cargo fmt --check && cargo test || exit 1
