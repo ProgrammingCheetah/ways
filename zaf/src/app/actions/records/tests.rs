@@ -358,3 +358,163 @@ fn records_that_do_not_hold_read_as_none() {
     fs::write(place.slices().join("140"), gone.display().to_string()).expect("write");
     assert_eq!(records.workspace(task()), None);
 }
+
+const SLICE_MERGE: &str = "slice-merge";
+const SLICE_DROP: &str = "slice-drop";
+
+impl Place {
+    fn runs(&self) -> PathBuf {
+        self.root.join(".zaf/runs")
+    }
+
+    /// The records of `task` and of its pull request `pr`, and a check record each.
+    fn leave_records(&self, task: u64, pr: u64) {
+        fs::create_dir_all(self.slices()).expect("mkdir");
+        fs::create_dir_all(self.runs()).expect("mkdir");
+        let workspace = self.workspace.display().to_string();
+        let files = [
+            (self.slices().join(task.to_string()), workspace),
+            (self.slices().join(format!("{task}.pr")), pr.to_string()),
+            (
+                self.runs().join(format!("check-task-{task}.json")),
+                "{}".to_owned(),
+            ),
+            (
+                self.runs().join(format!("check-pr-{pr}.json")),
+                "{}".to_owned(),
+            ),
+        ];
+        for (file, text) in files {
+            fs::write(file, text).expect("write");
+        }
+    }
+
+    /// The names in the slices and runs folders, sorted.
+    fn left(&self) -> Vec<String> {
+        let mut names = self.written();
+        if let Ok(entries) = fs::read_dir(self.runs()) {
+            names.extend(
+                entries.map(|entry| entry.expect("entry").file_name().to_string_lossy().into()),
+            );
+        }
+        names.sort();
+        names
+    }
+}
+
+#[test]
+fn forget_removes_the_check_records() {
+    let place = Place::new();
+    place.leave_records(140, 271);
+    place.leave_records(141, 272);
+
+    place.records().forget(task()).expect("forget");
+
+    assert_eq!(
+        place.left(),
+        ["141", "141.pr", "check-pr-272.json", "check-task-141.json"]
+    );
+    assert_eq!(place.records().workspace(task()), None);
+    assert_eq!(place.records().pr(task()), None);
+    // Forgetting what is not there is done.
+    place.records().forget(task()).expect("forget again");
+    SliceRecords::new(&place.root.join("nowhere"))
+        .forget(task())
+        .expect("no folders at all");
+}
+
+#[test]
+fn forget_without_a_pr_record_removes_the_task_check_record() {
+    let place = Place::new();
+    place.leave_records(140, 271);
+    fs::remove_file(place.slices().join("140.pr")).expect("remove");
+
+    place.records().forget(task()).expect("forget");
+
+    // The pull request is unknown, so only its record can be named by the task.
+    assert_eq!(place.left(), ["check-pr-271.json"]);
+}
+
+#[test]
+fn forget_replaces_a_link_rather_than_following_it() {
+    let place = Place::new();
+    place.leave_records(140, 271);
+    let elsewhere = place.root.join("elsewhere");
+    fs::write(&elsewhere, "untouched").expect("write");
+    let check = place.runs().join("check-task-140.json");
+    fs::remove_file(&check).expect("remove");
+    symlink(&elsewhere, &check).expect("link");
+
+    place.records().forget(task()).expect("forget");
+
+    assert_eq!(fs::read_to_string(&elsewhere).expect("read"), "untouched");
+    assert!(fs::symlink_metadata(&check).is_err());
+}
+
+#[test]
+fn merge_and_drop_forget_the_records() {
+    for name in [SLICE_MERGE, SLICE_DROP] {
+        let place = Place::new();
+        place.leave_records(140, 271);
+        place.leave_records(141, 272);
+        place.action(name, "echo done");
+
+        let outcome = place.run(name, &["140"]);
+
+        assert_eq!(outcome.result, RunResult::Ok, "{name}: {outcome:?}");
+        assert_eq!(
+            place.left(),
+            ["141", "141.pr", "check-pr-272.json", "check-task-141.json"],
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_task_written_with_its_hash_is_forgotten_too() {
+    let place = Place::new();
+    place.leave_records(140, 271);
+    place.action(SLICE_DROP, "true");
+    assert_eq!(place.run(SLICE_DROP, &["#140"]).exit, 0);
+    assert_eq!(place.left(), Vec::<String>::new());
+}
+
+#[test]
+fn failed_run_keeps_the_records() {
+    let place = Place::new();
+    place.leave_records(140, 271);
+    let all = place.left();
+    assert_eq!(all.len(), 4);
+
+    for name in [SLICE_MERGE, SLICE_DROP] {
+        // The body fails.
+        place.action(name, "exit 1");
+        let outcome = place.run(name, &["140"]);
+        assert_eq!(outcome.exit, 1, "{name}: {outcome:?}");
+        assert_eq!(place.left(), all, "{name}");
+
+        // The body is refused before it starts.
+        let file = place.root.join(".zaf/actions").join(name);
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).expect("chmod");
+        let outcome = place.run(name, &["140"]);
+        assert_eq!(outcome.result, RunResult::NotRun, "{name}: {outcome:?}");
+        assert_eq!(place.left(), all, "{name}");
+
+        // The body exits 0 but names no task: it is a failure and keeps everything.
+        place.action(name, "true");
+        for args in [&[][..], &["../../escaped"][..], &["140/.."][..]] {
+            assert_refused(&place.run(name, args));
+            assert_eq!(place.left(), all, "{name} {args:?}");
+        }
+    }
+}
+
+#[test]
+fn another_name_forgets_nothing() {
+    let place = Place::new();
+    place.leave_records(140, 271);
+    let all = place.left();
+    place.action("slice-merger", "true");
+    assert_eq!(place.run("slice-merger", &["140"]).exit, 0);
+    assert_eq!(place.left(), all);
+}
