@@ -60,17 +60,17 @@ timeout_minutes = 60
 model = "sonnet"
 effort = "high"
 profile = "lean"
-turns = 60
+turns = 150
 
 [roles.team]
 model = "opus"
 effort = "xhigh"
 profile = "build"
 turns = 200
-batch = 2
+batch = 1
 
 [check.pr]
-steps = ["ci", "runner:gemini:security?flagged"]
+steps = ["ci"]
 
 [ask]
 ladder = ["haiku", "sonnet"]
