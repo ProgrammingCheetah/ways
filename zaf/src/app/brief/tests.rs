@@ -466,3 +466,108 @@ fn owned_paths_drop_globs_prose_and_repeats() {
         ]
     );
 }
+
+/// A chain as `nodes chain <path>` prints it: the root's node down to the path's, split by blank lines.
+fn chain_of(path: &str) -> Result<String, String> {
+    let mut nodes = vec![".  (charted 2026-11-04)\nshort: the root".to_owned()];
+    let mut walked = String::new();
+    for segment in path.split('/') {
+        if !walked.is_empty() {
+            walked.push('/');
+        }
+        walked.push_str(segment);
+        nodes.push(format!("{walked}  (charted 2026-11-04)\nshort: {segment}"));
+    }
+    Ok(nodes.join("\n\n"))
+}
+
+fn pack_with_owned_paths(owned: &str) -> String {
+    let state = tempfile::tempdir().expect("temp dir");
+    let body = BODY.replace("src/export/**, src/cli/export.rs (new)", owned);
+    let board = board_with(&body);
+    let chain = chain_of;
+    let ports = BriefPorts {
+        board: &board,
+        design: None,
+        nodes: Some(&chain),
+    };
+    let brief = brief(&query(state.path(), None), &ports).expect("brief");
+    fs::read_to_string(&brief.path).expect("pack")
+}
+
+#[test]
+fn brief_maps_each_named_place() {
+    let text = pack_with_owned_paths("zaf/src/app/brief, docs/pages");
+    let owned = section(&text, "Owned paths");
+
+    assert!(owned.contains("### zaf/src/app/brief\n\n```\n"));
+    assert!(owned.contains("### docs/pages\n\n```\n"));
+    assert!(owned.contains("short: brief"));
+    assert!(owned.contains("short: pages"));
+    assert_eq!(owned.matches("### ").count(), 2);
+}
+
+#[test]
+fn brief_prints_each_node_once() {
+    let text = pack_with_owned_paths("zaf/src/app/brief, zaf/src/cli, docs/pages");
+    let owned = section(&text, "Owned paths");
+
+    for node in [
+        ".",
+        "zaf",
+        "zaf/src",
+        "zaf/src/app",
+        "zaf/src/app/brief",
+        "zaf/src/cli",
+        "docs",
+        "docs/pages",
+    ] {
+        let lines = owned
+            .lines()
+            .filter(|line| line.starts_with(&format!("{node}  (charted")))
+            .count();
+        assert_eq!(lines, 1, "{node} in:\n{owned}");
+    }
+    assert_eq!(
+        owned.matches("### ").count(),
+        3,
+        "every place keeps its heading"
+    );
+    let cli = &owned[owned.find("### zaf/src/cli").expect("cli map")..];
+    assert!(cli.contains("zaf/src/cli  (charted"));
+    assert!(
+        !cli.contains("zaf/src/app"),
+        "the shared nodes stay in the first map"
+    );
+}
+
+#[test]
+fn a_place_whose_nodes_are_all_printed_says_so() {
+    let text = pack_with_owned_paths("zaf/src/app, zaf/src");
+    let owned = section(&text, "Owned paths");
+
+    assert!(owned.contains(&format!("### zaf/src\n\n{ALL_PRINTED_NOTE}\n")));
+}
+
+#[test]
+fn brief_without_a_place_prints_no_map() {
+    let text = pack_with_owned_paths("none");
+    let owned = section(&text, "Owned paths");
+
+    assert_eq!(owned.trim_end(), "## Owned paths");
+    let headings: Vec<&str> = text
+        .lines()
+        .filter(|line| line.starts_with("## "))
+        .collect();
+    assert_eq!(
+        headings,
+        [
+            "## Ticket",
+            "## Rulings",
+            "## Design pages",
+            "## Owned paths",
+            "## Style",
+            "## Interface"
+        ]
+    );
+}
