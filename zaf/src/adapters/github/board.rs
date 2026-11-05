@@ -7,7 +7,9 @@ use super::command::number_from_url;
 use super::notes::{LeaseNote, RULING_MARKER, marked, release_line, report_marker, unmarked};
 use super::rows::{ISSUE_FIELDS, IssueRow, NumberRow};
 use crate::domain::{Instance, IssueNumber, TaskLabel};
-use crate::ports::{Board, ClaimOutcome, ClaimRecord, NewQuestion, PortError, Ticket};
+use crate::ports::{
+    Board, ClaimOutcome, ClaimRecord, EpicTask, EpicTree, NewQuestion, PortError, Ticket,
+};
 
 /// The label every task carries.
 const TASK_LABEL: &str = "task";
@@ -19,6 +21,8 @@ const DOOR_LABEL: &str = "door";
 const LIST_LIMIT: &str = "1000";
 /// The state gh prints for an open issue.
 const OPEN: &str = "OPEN";
+/// The prefix of the label that puts a task in a group.
+const GROUP_PREFIX: &str = "group:";
 
 /// A board kept as the issues of one GitHub repository.
 ///
@@ -107,6 +111,14 @@ impl IssueRow {
                 .any(|label| self.has_label(&label.to_string()))
     }
 
+    /// The name in the first `group:<name>` label.
+    fn group(&self) -> Option<String> {
+        self.labels
+            .iter()
+            .find_map(|label| label.name.strip_prefix(GROUP_PREFIX))
+            .map(str::to_owned)
+    }
+
     fn task_labels(&self) -> impl Iterator<Item = TaskLabel> + '_ {
         self.labels
             .iter()
@@ -171,6 +183,57 @@ impl IssueRow {
 }
 
 impl Board for GithubBoard {
+    /// Two list calls: the open epics, then every task, open and closed, filed under its parent.
+    fn epic_trees(&self) -> Result<Vec<EpicTree>, PortError> {
+        let mut epics: Vec<IssueRow> = self.gh.json(&[
+            "issue",
+            "list",
+            "--label",
+            EPIC_LABEL,
+            "--state",
+            "open",
+            "--limit",
+            LIST_LIMIT,
+            "--json",
+            "number,title,labels",
+        ])?;
+        epics.sort_by_key(|row| row.number);
+        let mut tasks: Vec<IssueRow> = self.gh.json(&[
+            "issue",
+            "list",
+            "--label",
+            TASK_LABEL,
+            "--state",
+            "all",
+            "--limit",
+            LIST_LIMIT,
+            "--json",
+            "number,title,labels,parent,state",
+        ])?;
+        tasks.sort_by_key(|row| row.number);
+        let trees = epics
+            .iter()
+            .map(|epic| EpicTree {
+                number: IssueNumber::from(epic.number),
+                title: epic.title.clone(),
+                tasks: tasks
+                    .iter()
+                    .filter(|task| {
+                        task.parent
+                            .is_some_and(|parent| parent.number == epic.number)
+                    })
+                    .map(|task| EpicTask {
+                        number: IssueNumber::from(task.number),
+                        label: task.task_labels().next(),
+                        closed: task.state != OPEN,
+                        group: task.group(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        Ok(trees)
+    }
+
     fn ready(&self) -> Result<Vec<Ticket>, PortError> {
         let ready = TaskLabel::Ready.to_string();
         let mut rows: Vec<IssueRow> = self.gh.json(&[

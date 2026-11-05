@@ -325,7 +325,8 @@ fn outside_of(runs: &[&LedgerRow], prices: &PriceTable) -> Option<Outside> {
     Some(outside)
 }
 
-fn cost_of(row: &LedgerRow, prices: &PriceTable) -> f64 {
+/// What one run cost at `prices`, in dollars.
+pub fn cost_of(row: &LedgerRow, prices: &PriceTable) -> f64 {
     prices
         .rates(&row.model)
         .cost(row.input, row.cache_write, row.cache_read, row.output)
