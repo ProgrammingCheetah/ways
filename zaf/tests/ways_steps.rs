@@ -1,8 +1,7 @@
-//! The ways repository's own actions (docs/zaf-actions.md §7): `gate`, `gate-light`,
-//! `nodes-check`, `commit`, `workspace-open`, `workspace-drop`, `pr-open`, `pr-merge`, `push`,
-//! `merge-base`, `sync`, `tag`, `land` and `release` sit in `.zaf/actions/` with valid metadata and the mode §7 gives them, `zaf doctor`
-//! reports none of them as a problem, and the gate actions' bodies run the lines the ticket
-//! names.
+//! The ways repository's own actions (docs/zaf-actions.md §7): every file in `.zaf/actions/` has
+//! valid metadata and the mode §7 gives it, `zaf doctor` reports none of them as a problem, and
+//! the gate actions' bodies run the lines the ticket names. The list of actions is the folder
+//! itself, read at run time, so a new action is covered with no edit here.
 
 mod common;
 
@@ -28,23 +27,12 @@ profile = "build"
 turns = 100
 "#;
 
-/// Every action here with the mode and group §7 gives it.
-const STEPS: [(&str, &str, &[&str]); 14] = [
-    ("gate", "755", &[]),
-    ("gate-light", "755", &[]),
-    ("nodes-check", "755", &[]),
-    ("commit", "750", &["team", "release"]),
-    ("workspace-open", "750", &["team", "release"]),
-    ("workspace-drop", "750", &["team", "release"]),
-    ("pr-open", "750", &["team", "release"]),
-    ("pr-merge", "750", &["team", "release"]),
-    ("push", "750", &["team", "release"]),
-    ("merge-base", "750", &["team", "release"]),
-    ("sync", "750", &["team", "release"]),
-    ("tag", "750", &["team", "release"]),
-    ("land", "750", &["team", "release"]),
-    ("release", "750", &["release"]),
-];
+/// The actions §7 gives mode 755: they run a check and name no group.
+const OPEN: [&str; 3] = ["gate", "gate-light", "nodes-check"];
+
+/// The one action only the release role runs; every other 750 action is the team's and the
+/// release's.
+const RELEASE_ONLY: &str = "release";
 
 /// The three actions that run one line, each with that line.
 const LINES: [(&str, &str); 3] = [
@@ -68,6 +56,17 @@ fn action_file(name: &str) -> PathBuf {
     ways_root().join(".zaf/actions").join(name)
 }
 
+/// The name of every file in `.zaf/actions/`, sorted.
+fn action_names() -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(ways_root().join(".zaf/actions"))
+        .expect("the actions folder")
+        .map(|entry| entry.expect("entry").file_name().to_string_lossy().into())
+        .filter(|name: &String| !name.starts_with('.'))
+        .collect();
+    names.sort();
+    names
+}
+
 /// The file's text and its parsed metadata.
 fn parsed(name: &str) -> (String, ParsedAction) {
     let file = action_file(name);
@@ -76,16 +75,33 @@ fn parsed(name: &str) -> (String, ParsedAction) {
     (text, parsed)
 }
 
+/// The mode and group §7 gives an action, by its name.
+fn row(name: &str) -> (&'static str, &'static [&'static str]) {
+    if OPEN.contains(&name) {
+        ("755", &[])
+    } else if name == RELEASE_ONLY {
+        ("750", &["release"])
+    } else {
+        ("750", &["team", "release"])
+    }
+}
+
 #[test]
-fn ways_steps_have_valid_metadata() {
-    for (name, mode, group) in STEPS {
+fn ways_steps_cover_every_action_file() {
+    let names = action_names();
+    // The folder is read, not listed by hand; `pr-merge` is among what it holds.
+    assert!(names.iter().any(|name| name == "pr-merge"), "{names:?}");
+
+    for name in &names {
+        let (mode, group) = row(name);
         let (_, action) = parsed(name);
         let metadata = action.metadata;
-        // §7: the mode and group of its row, no target, no phases.
         assert_eq!(metadata.mode, ActionMode::parse(mode).unwrap(), "{name}");
         assert_eq!(metadata.group, group, "{name}");
-        assert!(metadata.target.is_none(), "{name} names a target");
-        assert!(metadata.phases.is_empty(), "{name} names phases");
+        // Phases need a target (§3): an action that names no target names no phase.
+        if metadata.target.is_none() {
+            assert!(metadata.phases.is_empty(), "{name} names phases, no target");
+        }
         assert!(
             !metadata.description.is_empty(),
             "{name} has no description"
@@ -108,18 +124,20 @@ fn ways_steps_have_valid_metadata() {
     }
 
     // `zaf doctor` reports each of them ok: copy them into a temp project, which keeps the
-    // machine's own actions and tools out of the answer.
+    // machine's own actions and tools out of the answer. The stubs stand in for any `slice-*`
+    // name the folder does not hold; a real file overwrites its stub.
     let project = Project::new(MANIFEST);
     let actions = project.root.join(".zaf/actions");
     fs::create_dir_all(&actions).expect("actions folder");
     project.provide_slice_actions();
-    for (name, _, _) in STEPS {
+    for name in &names {
         fs::copy(action_file(name), actions.join(name)).expect("copy keeps the mode");
     }
     let (code, stdout, stderr) = outcome(&project.zaf(&["doctor"]));
     let text = format!("{stdout}{stderr}");
     assert_eq!(code, 0, "{text}");
-    for (name, mode, _) in STEPS {
+    for name in &names {
+        let (mode, _) = row(name);
         assert!(
             text.contains(&format!("action {name} (project): ok, mode {mode}")),
             "doctor does not report {name} ok: {text}"
