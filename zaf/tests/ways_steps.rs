@@ -1,5 +1,5 @@
 //! The ways repository's own actions (docs/zaf-actions.md §7): `gate`, `gate-light`,
-//! `nodes-check`, `workspace-open` and `workspace-drop` sit in `.zaf/actions/` with valid metadata and the mode §7
+//! `nodes-check`, `commit`, `workspace-open` and `workspace-drop` sit in `.zaf/actions/` with valid metadata and the mode §7
 //! gives them, `zaf doctor` reports none of them as a problem, and the gate actions' bodies run
 //! the lines the ticket names.
 
@@ -28,10 +28,11 @@ turns = 100
 "#;
 
 /// Every action here with the mode and group §7 gives it.
-const STEPS: [(&str, &str, &[&str]); 5] = [
+const STEPS: [(&str, &str, &[&str]); 6] = [
     ("gate", "755", &[]),
     ("gate-light", "755", &[]),
     ("nodes-check", "755", &[]),
+    ("commit", "750", &["team", "release"]),
     ("workspace-open", "750", &["team", "release"]),
     ("workspace-drop", "750", &["team", "release"]),
 ];
