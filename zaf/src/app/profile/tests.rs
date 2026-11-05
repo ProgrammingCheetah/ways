@@ -189,8 +189,52 @@ fn settings_carry_the_forbidden_commands_as_denies_and_the_gate_as_allows() {
         ] {
             assert!(allow.contains(&wanted), "{profile} allows {wanted}");
         }
-        assert!(settings.get("hooks").is_none());
         assert!(settings.get("mcpServers").is_none());
+    }
+}
+
+#[test]
+fn profiles_carry_the_hook() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    init_here(&state, &manifest("")).expect("generates");
+    for profile in ["lean", "build"] {
+        let settings = settings(&state, profile);
+        let hooks = settings["hooks"].as_object().expect("hooks");
+        assert_eq!(
+            hooks.keys().collect::<Vec<_>>(),
+            ["PostToolUse"],
+            "{profile}: the report hook is the only one"
+        );
+        let entries = hooks["PostToolUse"].as_array().expect("entries");
+        assert_eq!(entries.len(), 1, "{profile}");
+        assert_eq!(entries[0]["matcher"], "*", "{profile}: every tool");
+        assert_eq!(
+            entries[0]["hooks"],
+            json!([{ "type": "command", "command": "zaf hub report" }]),
+            "{profile}"
+        );
+    }
+}
+
+#[test]
+fn the_reports_file_is_git_ignored() {
+    use crate::app::setup::IGNORE_LINES;
+    assert_eq!(
+        IGNORE_LINES[0], "*",
+        "the state folder ignores what it does not list"
+    );
+    let reports = "hub/reports";
+    for line in &IGNORE_LINES[1..] {
+        let listed = line
+            .strip_prefix('!')
+            .expect("every line after the first lists a path")
+            .trim_end_matches('*')
+            .trim_end_matches('/');
+        assert!(
+            listed != reports && !reports.starts_with(&format!("{listed}/")),
+            "{line} would track .zaf/{reports}"
+        );
     }
 }
 
