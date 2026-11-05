@@ -73,6 +73,41 @@ fn malformed_and_unknown_steps_are_refused() {
     }
 }
 
+#[test]
+fn action_step_parses() {
+    let step: Step = "action:nodes-check".parse().expect("parses");
+    assert_eq!(step.kind, StepKind::Action("nodes-check".to_owned()));
+    assert!(!step.flagged_only);
+    assert_eq!(step.to_string(), "action:nodes-check");
+    assert_eq!(step.source(), FindingSource::from("action:nodes-check"));
+    let flagged: Step = "action: nodes-check ?flagged".parse().expect("parses");
+    assert_eq!(flagged.kind, StepKind::Action("nodes-check".to_owned()));
+    assert!(flagged.flagged_only);
+    let command: Step = "command:cargo test".parse().expect("parses");
+    assert_eq!(
+        command.kind,
+        StepKind::Command(CommandLine::from("cargo test"))
+    );
+}
+
+#[test]
+fn bare_action_step_is_an_error() {
+    for text in ["action:", "action: ", "action:a:b", "action:?flagged"] {
+        assert_eq!(
+            text.parse::<Step>(),
+            Err(StepError::MissingPart(text.to_owned())),
+            "{text}"
+        );
+    }
+    let message = StepError::MissingPart("action:".to_owned()).to_string();
+    assert!(message.contains("action:<name>"), "{message}");
+    let unknown = "scan:x"
+        .parse::<Step>()
+        .expect_err("unknown kind")
+        .to_string();
+    assert!(unknown.contains("action:<name>"), "{unknown}");
+}
+
 /// Lends a shared fake forge to a step's thread.
 pub(super) struct SharedForge(pub Arc<FakeForge>);
 

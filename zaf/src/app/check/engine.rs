@@ -8,6 +8,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use super::step::{self, Step, StepContext};
 use super::{CheckedFinding, Shell, Verdict, dedupe};
+use crate::app::actions::RunOutcome;
 use crate::domain::{Finding, FindingSource, Severity};
 use crate::manifest::RunnerName;
 use crate::ports::{Forge, PortError, PrNumber, Runner};
@@ -33,6 +34,12 @@ pub trait StepPorts: Shell + Send + Sync {
 
     /// The runner `[runners.<name>]` declares; an undeclared one is [`PortError::Unavailable`].
     fn runner(&self, name: &RunnerName) -> Result<Box<dyn Runner>, PortError>;
+
+    /// Runs the action `name` through the one action runner, with no arguments. Ports that
+    /// reach no actions never run it: the body did not run, and the step fails.
+    fn action(&self, name: &str) -> RunOutcome {
+        RunOutcome::not_run(name, None, "no action runner".to_owned())
+    }
 }
 
 /// Where the engine runs and how patient it is.
