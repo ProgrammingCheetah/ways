@@ -3,15 +3,16 @@
 //! An action is a runnable file whose opening comment block names it to zaf:
 //! [`metadata`] parses that block, [`resolve`] finds the file a name stands for
 //! in the project's `.zaf/actions/` or the machine's, and [`run`] runs it, logs
-//! it and bounds it in time. zaf ships no actions.
+//! it and bounds it in time. [`phase`] derives the Team Phase an action's
+//! `phases:` line is held against. zaf ships no actions.
 
 mod metadata;
+mod phase;
 mod resolve;
 mod run;
 
-pub use metadata::{
-    ActionMetadata, ActionMode, Bits, MetadataError, ParsedAction, Phase, Target, parse,
-};
+pub use metadata::{ActionMetadata, ActionMode, Bits, MetadataError, ParsedAction, Target, parse};
+pub use phase::{Phase, PhaseFacts, PrFacts, WorkspaceFacts, derive_phase};
 pub use resolve::{
     ACTIONS_DIR, ResolveError, Resolved, Tier, check_name, list, resolve, resolve_in,
 };
