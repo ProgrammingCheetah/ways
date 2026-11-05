@@ -207,6 +207,30 @@ fn a_ruled_question_is_in_the_brief_so_it_is_not_asked_again() {
 }
 
 #[test]
+fn brief_prints_the_whole_question() {
+    let board = board_with(BODY);
+    let long = NewQuestion {
+        on: task(),
+        text: "Which columns does the export carry? "
+            .repeat(30)
+            .trim()
+            .to_owned(),
+        door: false,
+    };
+    let opened = board.open_question(&long).expect("question");
+    let ticket = board.task(opened).expect("ticket");
+    assert!(ticket.title.chars().count() <= 200, "the title is cut");
+    assert!(ticket.title.len() < long.text.len());
+
+    let rulings = rulings_of(&board);
+
+    assert_eq!(
+        rulings,
+        format!("## Rulings\n\n{opened} {}\nopen", long.text)
+    );
+}
+
+#[test]
 fn the_rulings_come_after_the_ticket_and_before_the_design_pages() {
     let board = board_with(BODY);
     let ruled = raise(&board, 80, 12, "Which columns?");

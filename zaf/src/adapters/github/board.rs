@@ -354,13 +354,14 @@ impl Board for GithubBoard {
     }
 
     fn open_question(&self, question: &NewQuestion) -> Result<IssueNumber, PortError> {
+        let title = question.title();
         let body = question.body();
         let question_label = TaskLabel::Question.to_string();
         let mut args = vec![
             "issue",
             "create",
             "--title",
-            question.text.as_str(),
+            title.as_str(),
             "--body",
             body.as_str(),
             "--label",

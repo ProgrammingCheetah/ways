@@ -262,7 +262,7 @@ impl Board for FakeBoard {
         let ticket = Ticket {
             number,
             epic: None,
-            title: question.text.clone(),
+            title: question.title(),
             body: question.body(),
             label: Some(TaskLabel::Question),
         };
