@@ -583,3 +583,55 @@ fn a_caller_prints_on_one_line() {
     assert_eq!(role("programmer").to_string(), "programmer");
     assert_eq!(role("a\nNOT_RUN b").to_string(), "a\\nNOT_RUN b");
 }
+
+/// Runs the project action `name` as the Engineer from the project root.
+fn run_project_action(place: &Tiers, name: &str) -> RunOutcome {
+    run_action(&RunRequest {
+        name,
+        args: &[],
+        cwd: &place.root,
+        project_root: Some(&place.root),
+        home: &place.home,
+        timeout_minutes: 1,
+        minute: MINUTE,
+        nesting: Nesting::default(),
+        caller: Caller::Engineer,
+        only: None,
+        slice: None,
+        env: std::collections::BTreeMap::new(),
+    })
+}
+
+/// An executable project action with valid metadata that leaves `ran` in the root when it runs.
+fn executable_action(place: &Tiers, name: &str, shebang: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = place.root.join(".zaf").join("actions").join(name);
+    std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+    let text = format!("{shebang}# zaf description: d\n# zaf 1: failed\n: > \"$ZAF_ROOT/ran\"\n");
+    std::fs::write(&path, text).expect("write");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    path
+}
+
+#[test]
+fn no_shebang_is_refused_before_spawning() {
+    let place = Tiers::new();
+    executable_action(&place, "bare", "");
+
+    let outcome = run_project_action(&place, "bare");
+    assert_eq!(outcome.result, RunResult::NotRun);
+    assert_eq!(outcome.exit, NOT_RUN_EXIT);
+    assert_eq!(outcome.log, None, "no log is left");
+    let headline = outcome.headline().expect("a refusal prints");
+    assert!(headline.starts_with("NOT_RUN bare: "), "{headline}");
+    assert!(headline.contains("no shebang"), "{headline}");
+    assert!(!place.root.join("ran").exists(), "the body never ran");
+    let logs = place.root.join(".zaf").join("logs");
+    assert!(!logs.exists(), "no log folder was made");
+
+    // The same file with a shebang runs as before.
+    executable_action(&place, "bare", "#!/bin/sh\n");
+    let outcome = run_project_action(&place, "bare");
+    assert_eq!(outcome.result, RunResult::Ok, "{outcome:?}");
+    assert!(place.root.join("ran").exists(), "the body ran");
+}

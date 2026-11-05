@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
@@ -52,6 +52,9 @@ pub const LOG_VAR: &str = "ZAF_ACTION_LOG";
 
 /// The prefix of zaf's own variables, which no `[env]` name may start with.
 const RESERVED_PREFIX: &str = "ZAF_";
+
+/// What an executable action opens with: the kernel's marker for an interpreter line.
+const SHEBANG: &[u8] = b"#!";
 
 /// How [`CHAIN_VAR`] and a refusal join the names.
 const CHAIN_SEPARATOR: &str = " > ";
@@ -431,6 +434,16 @@ fn start(request: &RunRequest<'_>) -> Result<Started, Refused> {
             found.path.display()
         )));
     }
+    // On Linux the C library would run a file with no shebang under `/bin/sh`, on macOS
+    // `posix_spawnp` does: the refusal is zaf's, so every platform answers the same.
+    if !has_shebang(&found.path)
+        .map_err(|error| refused(format!("cannot read {}: {error}", found.path.display())))?
+    {
+        return Err(refused(format!(
+            "{} has no shebang (#!) on its first line",
+            found.path.display()
+        )));
+    }
     // Before a log exists: a board that cannot answer starts nothing and leaves nothing behind.
     let slice_env = SliceEnv::for_run(request, metadata.target.is_some()).map_err(refused)?;
     let (log, log_file) = open_log(&logs_dir(request), name)
@@ -447,6 +460,15 @@ fn start(request: &RunRequest<'_>) -> Result<Started, Refused> {
         metadata,
         log,
     })
+}
+
+/// Whether the file's first two bytes are `#!`.
+fn has_shebang(file: &Path) -> io::Result<bool> {
+    let mut start = Vec::with_capacity(SHEBANG.len());
+    File::open(file)?
+        .take(SHEBANG.len() as u64)
+        .read_to_end(&mut start)?;
+    Ok(start == SHEBANG)
 }
 
 /// The metadata of the file `found` shadows, none when it shadows nothing; an error when `found`
