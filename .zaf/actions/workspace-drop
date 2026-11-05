@@ -1,0 +1,46 @@
+#!/bin/sh
+# zaf description: forget a slice's jj workspace, remove its directory and any empty parents; one already gone is quiet
+# zaf 1: refused: the slice name leaves the workspaces directory
+# zaf 2: a backend failed (jj is missing or refused, or the directory could not be removed)
+# zaf mode: 750
+# zaf group: team, release
+slice=$1
+
+if [ -z "$ZAF_ROOT" ] || [ "$#" -ne 1 ]; then
+    echo "usage: workspace-drop <slice>, with ZAF_ROOT set" >&2
+    exit 1
+fi
+
+# A slice name is a relative path of plain parts, below the workspaces directory.
+case "/$slice/" in
+    *//* | */./* | */../*)
+        echo "slice name $slice is not a relative path inside the workspaces directory" >&2
+        exit 1
+        ;;
+esac
+case $slice in
+    "" | /* | -*)
+        echo "slice name $slice is not a relative path inside the workspaces directory" >&2
+        exit 1
+        ;;
+esac
+
+workspaces=$ZAF_ROOT/.zaf/workspaces
+dir=$workspaces/$slice
+
+# Forgetting a name jj does not hold is not an error, which is what makes a second drop quiet.
+# The root's own working copy is someone else's checkout, so it is never snapshotted.
+jj --no-pager --color=never --ignore-working-copy -R "$ZAF_ROOT" workspace forget "$slice" || exit 2
+
+if [ -e "$dir" ]; then
+    rm -rf "$dir" || exit 2
+fi
+
+# A nested slice name leaves directories behind. `rmdir` refuses a non-empty one: another slice
+# still lives there.
+parent=$(dirname "$slice")
+while [ "$parent" != "." ]; do
+    rmdir "$workspaces/$parent" 2>/dev/null || break
+    parent=$(dirname "$parent")
+done
+exit 0

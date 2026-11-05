@@ -13,9 +13,28 @@ fn manifest(extra: &str) -> Manifest {
     format!("{HEAD}{extra}").parse().expect("a valid manifest")
 }
 
-/// [`super::doctor`] with no zaf home, so no test reads the machine's own actions.
+/// [`super::doctor`] with no zaf home, so no test reads the machine's own actions, over a project
+/// that provides the four `slice-*` names every project needs.
 fn doctor(root: &Path, manifest: &Manifest, commands: &dyn Commands) -> Report {
+    provide_slice_actions(root);
     super::doctor(root, None, manifest, commands)
+}
+
+/// Writes the four `slice-*` actions into the project's tier.
+fn provide_slice_actions(root: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = root.join(".zaf/actions");
+    fs::create_dir_all(&dir).expect("actions dir");
+    for name in ["slice-open", "slice-pr", "slice-merge", "slice-drop"] {
+        let file = dir.join(name);
+        fs::write(
+            &file,
+            "#!/bin/sh\n# zaf description: a slice step\n# zaf 1: failed\ntrue\n",
+        )
+        .expect("action");
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).expect("mode");
+    }
 }
 
 fn status_of(report: &Report, tool: &str) -> ToolStatus {
@@ -394,6 +413,7 @@ fn doctor_reports_a_stale_copy() {
         "the token is never printed: {line}"
     );
 
+    provide_slice_actions(dir.path());
     let report = doctor_with(
         dir.path(),
         None,

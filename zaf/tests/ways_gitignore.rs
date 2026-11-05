@@ -27,6 +27,7 @@ fn ways_root() -> PathBuf {
 #[test]
 fn ways_gitignore_matches_setup() {
     let project = Project::new(MANIFEST);
+    project.provide_slice_actions();
     let (code, stdout, stderr) = outcome(&project.zaf(&["setup"]));
     assert_eq!(code, 0, "{stdout}{stderr}");
     let written = fs::read_to_string(project.root.join(".zaf/.gitignore")).expect("setup's file");

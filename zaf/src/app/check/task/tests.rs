@@ -32,11 +32,15 @@ impl Shell for ScriptedShell {
     }
 }
 
-fn template(tests: &str, architecture: &str) -> TaskTemplate {
+fn template(tests: &str, interfaces: &str) -> TaskTemplate {
+    template_with_architecture(tests, interfaces, "none")
+}
+
+fn template_with_architecture(tests: &str, interfaces: &str, architecture: &str) -> TaskTemplate {
     let body = format!(
         "Goal: export the list.\n\
          Owned paths: src/export/** (new), src/lib.rs\n\
-         Interfaces: none\n\
+         Interfaces: {interfaces}\n\
          Design pages: none\n\
          Architecture: {architecture}\n\
          Acceptance:\n\
@@ -131,32 +135,78 @@ fn a_named_test_that_passes_and_one_that_fails() {
     assert_eq!(check.verdict().code(), 1);
 }
 
-#[test]
-fn an_interface_id_present_passes_and_one_missing_fails() {
+/// Runs a task check over the sample project with no gate and no tests.
+fn interface_lines(template: &TaskTemplate) -> TaskCheck {
     let dir = project();
-    let gate = passing_gate();
     let shell = ScriptedShell::default();
     let inputs = TaskInputs {
-        gate: Some(&gate),
+        gate: None,
         tests: None,
         shell: &shell,
         root: dir.path(),
     };
-    let architecture =
-        "module `export`; interfaces `export::Exporter`, `write_all`, `Importer`, `Export`";
-    let check = check_task(&template("—", architecture), &inputs);
+    check_task(template, &inputs)
+}
+
+#[test]
+fn interface_symbol_found_anywhere_in_the_tree() {
+    let check = interface_lines(&template(
+        "—",
+        "module `export`; interfaces `export::Exporter`, `write_all`, `Importer`",
+    ));
     let found = statuses(&check);
     assert_eq!(
         found[&key("interface", "export::Exporter")],
         LineStatus::Pass
     );
     assert_eq!(found[&key("interface", "write_all")], LineStatus::Pass);
-    let missing = LineStatus::Fail("not found in the owned paths".to_owned());
-    // In the tree, but outside the owned paths.
-    assert_eq!(found[&key("interface", "Importer")], missing);
+    // Held only by README.md, outside the owned paths.
+    assert_eq!(found[&key("interface", "Importer")], LineStatus::Pass);
+    assert_eq!(check.verdict(), Verdict::Clean);
+}
+
+#[test]
+fn missing_interface_symbol_fails() {
+    let check = interface_lines(&template("—", "`Exporter`, `Nowhere`, `Export`"));
+    let found = statuses(&check);
+    let missing = LineStatus::Fail("not found in the tree".to_owned());
+    assert_eq!(found[&key("interface", "Exporter")], LineStatus::Pass);
+    // Named in no file.
+    assert_eq!(found[&key("interface", "Nowhere")], missing);
     // Only as part of a longer word.
     assert_eq!(found[&key("interface", "Export")], missing);
     assert_eq!(check.verdict(), Verdict::MustFix);
+}
+
+#[test]
+fn architecture_symbols_are_not_read() {
+    let check = interface_lines(&template_with_architecture(
+        "—",
+        "none",
+        "module `export`; interfaces `Nowhere`, `Missing`",
+    ));
+    assert!(
+        check
+            .lines
+            .iter()
+            .all(|line| line.kind != LineKind::Interface)
+    );
+    assert_eq!(check.verdict(), Verdict::Clean);
+}
+
+#[test]
+fn interfaces_none_checks_nothing() {
+    for field in ["none", "—", "-"] {
+        let check = interface_lines(&template("—", field));
+        assert!(
+            check
+                .lines
+                .iter()
+                .all(|line| line.kind != LineKind::Interface),
+            "{field}"
+        );
+        assert_eq!(check.verdict(), Verdict::Clean);
+    }
 }
 
 #[test]

@@ -85,6 +85,7 @@ impl Place {
             caller: Caller::Engineer,
             only: None,
             slice,
+            env: BTreeMap::new(),
         }
     }
 

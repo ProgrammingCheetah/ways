@@ -6,10 +6,10 @@
 //! says whether the body ran: [`RunResult::NotRun`] and exit 125 mean it never did, so a caller
 //! never reads a refusal as a declared code.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
@@ -21,7 +21,7 @@ use super::caller::Caller;
 use super::metadata::{ActionMetadata, parse};
 use super::records::{forget_records, keep_hand_back};
 use super::resolve::{
-    ResolveError, Resolved, Tier, can_shadow, check_name, list, resolve, resolve_in,
+    ResolveError, Resolved, Tier, can_shadow, check_name, list, resolve, resolve_in, same_file,
 };
 use super::slice_env::{SliceContext, SliceEnv};
 use crate::composition::{STATE_DIR, ZAF_HOME_VAR};
@@ -49,6 +49,12 @@ pub const CHAIN_VAR: &str = "ZAF_ACTION_CHAIN";
 
 /// The running action's log: where a nested call writes the path of its own.
 pub const LOG_VAR: &str = "ZAF_ACTION_LOG";
+
+/// The prefix of zaf's own variables, which no `[env]` name may start with.
+const RESERVED_PREFIX: &str = "ZAF_";
+
+/// What an executable action opens with: the kernel's marker for an interpreter line.
+const SHEBANG: &[u8] = b"#!";
 
 /// How [`CHAIN_VAR`] and a refusal join the names.
 const CHAIN_SEPARATOR: &str = " > ";
@@ -142,6 +148,9 @@ pub struct RunRequest<'a> {
     /// What names a task's slice and the integration branch; `None` outside a project, where
     /// `ZAF_BASE` is unset and a `target: task` action starts nothing.
     pub slice: Option<SliceContext<'a>>,
+    /// The manifest's `[env]` with its placeholders filled: set on the body on top of the
+    /// inherited environment, a name here replacing an inherited one. Empty outside a project.
+    pub env: BTreeMap<String, String>,
 }
 
 /// One minute of a time bound.
@@ -425,6 +434,16 @@ fn start(request: &RunRequest<'_>) -> Result<Started, Refused> {
             found.path.display()
         )));
     }
+    // On Linux the C library would run a file with no shebang under `/bin/sh`, on macOS
+    // `posix_spawnp` does: the refusal is zaf's, so every platform answers the same.
+    if !has_shebang(&found.path)
+        .map_err(|error| refused(format!("cannot read {}: {error}", found.path.display())))?
+    {
+        return Err(refused(format!(
+            "{} has no shebang (#!) on its first line",
+            found.path.display()
+        )));
+    }
     // Before a log exists: a board that cannot answer starts nothing and leaves nothing behind.
     let slice_env = SliceEnv::for_run(request, metadata.target.is_some()).map_err(refused)?;
     let (log, log_file) = open_log(&logs_dir(request), name)
@@ -441,6 +460,15 @@ fn start(request: &RunRequest<'_>) -> Result<Started, Refused> {
         metadata,
         log,
     })
+}
+
+/// Whether the file's first two bytes are `#!`.
+fn has_shebang(file: &Path) -> io::Result<bool> {
+    let mut start = Vec::with_capacity(SHEBANG.len());
+    File::open(file)?
+        .take(SHEBANG.len() as u64)
+        .read_to_end(&mut start)?;
+    Ok(start == SHEBANG)
 }
 
 /// The metadata of the file `found` shadows, none when it shadows nothing; an error when `found`
@@ -468,15 +496,6 @@ fn shadowed_metadata(
         ));
     }
     Ok(Some(metadata))
-}
-
-/// Whether two paths are one file, which then shadows nothing: a project at the parent of the zaf
-/// home has one folder for both tiers, and a link to the machine's file runs that very file.
-fn same_file(one: &Path, other: &Path) -> bool {
-    matches!(
-        (fs::canonicalize(one), fs::canonicalize(other)),
-        (Ok(one), Ok(other)) if one == other
-    )
 }
 
 /// Whether `caller` may run a file: by its own mode and group, and by those of the file it shadows.
@@ -566,9 +585,10 @@ fn spawn_body(
 ) -> io::Result<Child> {
     let RunRequest { name, nesting, .. } = request;
     let mut command = Command::new(file);
+    command.args(request.args).current_dir(request.cwd);
+    // Before every zaf variable, so nothing in the table can stand in for one.
+    apply_manifest_env(&mut command, &request.env);
     command
-        .args(request.args)
-        .current_dir(request.cwd)
         .env(ZAF_HOME_VAR, request.home)
         .env(ACTION_VAR, name)
         .env(DEPTH_VAR, nesting.above.to_string())
@@ -594,6 +614,18 @@ fn spawn_body(
                 thread::sleep(BUSY_WAIT);
             }
             other => return other,
+        }
+    }
+}
+
+/// Puts the manifest's `[env]` on `command`, on top of the inherited environment: a name in the
+/// table replaces an inherited one. A name starting with `ZAF_` (whatever its case) is skipped:
+/// the manifest refuses such a table when it loads, and this keeps a table that got here some
+/// other way from setting `ZAF_INSTANCE`, which would dodge the modes (docs/zaf-actions.md §3).
+fn apply_manifest_env(command: &mut Command, env: &BTreeMap<String, String>) {
+    for (name, value) in env {
+        if !name.to_ascii_uppercase().starts_with(RESERVED_PREFIX) {
+            command.env(name, value);
         }
     }
 }

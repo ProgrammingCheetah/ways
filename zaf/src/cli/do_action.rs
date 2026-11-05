@@ -4,6 +4,7 @@
 //! beyond what `--more` or `--json` asks for. `FAIL` and `NOT_RUN` go to stderr, the way every
 //! verb reports what went wrong, and what was asked for goes to stdout.
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -139,7 +140,7 @@ fn machine_timeout(home: &Path) -> Result<u64, String> {
 }
 
 /// The run of one name, with everything that stops it before the body as `NOT_RUN`.
-fn run_named(name: &str, args: &[OsString], only: Option<Tier>) -> RunOutcome {
+pub(super) fn run_named(name: &str, args: &[OsString], only: Option<Tier>) -> RunOutcome {
     let not_run = |reason| RunOutcome::not_run(name, None, reason);
     let place = match Place::here() {
         Ok(place) => place,
@@ -175,6 +176,15 @@ fn run_named(name: &str, args: &[OsString], only: Option<Tier>) -> RunOutcome {
             branches: &project.manifest().branches,
             version: version.as_deref(),
         });
+    // The table of the project the run is in; the machine's actions have none. A value that
+    // needs a version the caller has not set starts nothing, rather than run without it.
+    let env = match place.project.as_ref().zip(place.root.as_deref()) {
+        Some((project, root)) => match project.manifest().env.resolve(root, version.as_deref()) {
+            Ok(env) => env,
+            Err(error) => return not_run(error.to_string()),
+        },
+        None => BTreeMap::new(),
+    };
     run_action(&RunRequest {
         name,
         args,
@@ -187,6 +197,7 @@ fn run_named(name: &str, args: &[OsString], only: Option<Tier>) -> RunOutcome {
         caller,
         only,
         slice,
+        env,
     })
 }
 

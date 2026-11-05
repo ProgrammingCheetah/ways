@@ -37,9 +37,19 @@ const CALLER_VARS: [&str; 7] = [
 /// A project whose homes exist, so the first-run notice never reaches a test's output.
 fn project() -> Project {
     let project = Project::new(MANIFEST);
+    set_up(&project);
+    project
+}
+
+/// Runs `zaf setup`, which is ready only while the four `slice-*` actions exist: they are
+/// provided for the run and taken away after it, so a test sees only the actions it writes.
+fn set_up(project: &Project) {
+    project.provide_slice_actions();
     let (code, stdout, stderr) = outcome(&project.zaf(&["setup"]));
     assert_eq!(code, 0, "{stdout}{stderr}");
-    project
+    for name in ["slice-open", "slice-pr", "slice-merge", "slice-drop"] {
+        fs::remove_file(project.root.join(".zaf/actions").join(name)).expect("take it away");
+    }
 }
 
 /// The built `zaf` in `dir`, itself first on PATH so a body can say `zaf do`.
@@ -218,6 +228,104 @@ fn do_sets_the_environment() {
     let env = env_lines(&read(&project.root.join("env")));
     assert!(!env.contains_key("ZAF_INSTANCE"), "{env:?}");
     assert!(!env.contains_key("ZAF_VERSION"), "{env:?}");
+}
+
+/// A project whose manifest has an `[env]` table, set up like [`project`].
+fn project_with_env(table: &str) -> Project {
+    let project = Project::new(&format!("{MANIFEST}\n[env]\n{table}"));
+    set_up(&project);
+    project
+}
+
+#[test]
+fn do_runs_with_env() {
+    let project = project_with_env(
+        "EXTRA = \"from the table\"\nINHERITED = \"from the table\"\nWHERE = \"{root}/x\"\nBRACES = \"{keep}\"\n",
+    );
+    action(&project, "dump", "", "env > \"$ZAF_ROOT/env\"");
+
+    let run = zaf_in(
+        &project,
+        &project.root,
+        &["do", "dump"],
+        &[
+            ("INHERITED", "from the caller"),
+            ("UNTOUCHED", "from the caller"),
+            ("ZAF_INSTANCE", "team instance 1 on #9"),
+            ("ZAF_VERSION", "1.2.3"),
+        ],
+    );
+    assert_eq!(outcome(&run).0, 0, "{}", said(&run));
+
+    let env = env_lines(&read(&project.root.join("env")));
+    assert_eq!(env["EXTRA"], "from the table", "set in addition");
+    assert_eq!(env["INHERITED"], "from the table", "the table wins");
+    assert_eq!(env["UNTOUCHED"], "from the caller", "the rest is inherited");
+    assert_eq!(env["BRACES"], "{keep}");
+    assert_eq!(
+        real(Path::new(env["WHERE"].strip_suffix("/x").expect("suffix"))),
+        real(&project.root),
+        "{{root}} is the project root"
+    );
+    assert_eq!(env["ZAF_INSTANCE"], "team instance 1 on #9");
+    assert_eq!(env["ZAF_VERSION"], "1.2.3");
+}
+
+#[test]
+fn do_env_fills_the_version_or_starts_nothing() {
+    let project = project_with_env("RELEASE = \"v{version}\"\n");
+    action(
+        &project,
+        "dump",
+        "",
+        "env > \"$ZAF_ROOT/env\"\n: > \"$ZAF_ROOT/ran\"",
+    );
+
+    let run = zaf_in(
+        &project,
+        &project.root,
+        &["do", "dump"],
+        &[("ZAF_VERSION", "1.2.3")],
+    );
+    assert_eq!(outcome(&run).0, 0, "{}", said(&run));
+    assert_eq!(
+        env_lines(&read(&project.root.join("env")))["RELEASE"],
+        "v1.2.3"
+    );
+
+    fs::remove_file(project.root.join("ran")).expect("reset");
+    let run = zaf(&project, &["do", "dump"]);
+    assert_eq!(outcome(&run).0, 125, "{}", said(&run));
+    assert!(said(&run).contains("{version}"), "{}", said(&run));
+    assert!(!project.root.join("ran").exists(), "the body ran");
+}
+
+#[test]
+fn do_env_cannot_set_a_zaf_variable() {
+    // The manifest refuses such a table when it loads; this is the runner holding on its own,
+    // for a table that reached it some other way.
+    let project = project();
+    action(&project, "dump", "", "env > \"$ZAF_ROOT/env\"");
+    let mut request = request(&project, "dump", 1, MINUTE);
+    request.env = BTreeMap::from([
+        ("ZAF_INSTANCE".to_owned(), "engineer".to_owned()),
+        ("zaf_action".to_owned(), "other".to_owned()),
+        ("ZAF_ROOT".to_owned(), "/elsewhere".to_owned()),
+        ("FINE".to_owned(), "yes".to_owned()),
+    ]);
+    let outcome = run_action(&request);
+    assert_eq!(outcome.result, RunResult::Ok, "{outcome:?}");
+
+    let env = env_lines(&read(&project.root.join("env")));
+    assert_eq!(env["FINE"], "yes");
+    // This process may itself run under an instance: only the table's value must be missing.
+    assert_ne!(
+        env.get("ZAF_INSTANCE").map(String::as_str),
+        Some("engineer")
+    );
+    assert!(!env.contains_key("zaf_action"), "{env:?}");
+    assert_eq!(env["ZAF_ACTION"], "dump");
+    assert_eq!(real(Path::new(&env["ZAF_ROOT"])), real(&project.root));
 }
 
 #[test]
@@ -486,6 +594,7 @@ fn request<'a>(
         caller: Caller::Engineer,
         only: None,
         slice: None,
+        env: BTreeMap::new(),
     }
 }
 
@@ -2145,8 +2254,7 @@ fn slice_project(target: &str, board_fails: bool) -> Project {
         project.env(name, value);
     }
     project.env("ZAF_VERSION", "v1");
-    let (code, stdout, stderr) = outcome(&project.zaf(&["setup"]));
-    assert_eq!(code, 0, "{stdout}{stderr}");
+    set_up(&project);
     action(
         &project,
         "slice-thing",

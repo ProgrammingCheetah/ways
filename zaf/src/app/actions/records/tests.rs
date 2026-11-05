@@ -63,6 +63,7 @@ impl Place {
             caller: Caller::Engineer,
             only: None,
             slice: None,
+            env: Default::default(),
         })
     }
 

@@ -1,7 +1,8 @@
 //! The ways repository's own actions (docs/zaf-actions.md §7): `gate`, `gate-light`,
-//! `nodes-check` and `workspace-open` sit in `.zaf/actions/` with valid metadata and the mode §7
-//! gives them, `zaf doctor` reports none of them as a problem, and the gate actions' bodies run
-//! the lines the ticket names.
+//! `nodes-check`, `commit`, `workspace-open`, `workspace-drop`, `pr-open`, `pr-merge`, `push`,
+//! `merge-base`, `sync`, `tag`, `land` and `release` sit in `.zaf/actions/` with valid metadata and the mode §7 gives them, `zaf doctor`
+//! reports none of them as a problem, and the gate actions' bodies run the lines the ticket
+//! names.
 
 mod common;
 
@@ -28,11 +29,21 @@ turns = 100
 "#;
 
 /// Every action here with the mode and group §7 gives it.
-const STEPS: [(&str, &str, &[&str]); 4] = [
+const STEPS: [(&str, &str, &[&str]); 14] = [
     ("gate", "755", &[]),
     ("gate-light", "755", &[]),
     ("nodes-check", "755", &[]),
+    ("commit", "750", &["team", "release"]),
     ("workspace-open", "750", &["team", "release"]),
+    ("workspace-drop", "750", &["team", "release"]),
+    ("pr-open", "750", &["team", "release"]),
+    ("pr-merge", "750", &["team", "release"]),
+    ("push", "750", &["team", "release"]),
+    ("merge-base", "750", &["team", "release"]),
+    ("sync", "750", &["team", "release"]),
+    ("tag", "750", &["team", "release"]),
+    ("land", "750", &["team", "release"]),
+    ("release", "750", &["release"]),
 ];
 
 /// The three actions that run one line, each with that line.
@@ -101,6 +112,7 @@ fn ways_steps_have_valid_metadata() {
     let project = Project::new(MANIFEST);
     let actions = project.root.join(".zaf/actions");
     fs::create_dir_all(&actions).expect("actions folder");
+    project.provide_slice_actions();
     for (name, _, _) in STEPS {
         fs::copy(action_file(name), actions.join(name)).expect("copy keeps the mode");
     }

@@ -10,6 +10,8 @@
 //! Each profile that carries the pack is asked `claude plugin list` the same way and
 //! reports the pack's version, or that it is missing. Every action either tier provides is
 //! reported with its validity and its mode; an invalid file fails the report (see [`ActionCheck`]).
+//! Every action name the project needs is reported with the tier that provides it; a needed name
+//! with no provider fails the report (see [`NeededCheck`]).
 
 use std::fmt;
 use std::fs;
@@ -23,8 +25,10 @@ use crate::manifest::{DesignSection, Manifest, Requirement, ToolName};
 
 mod actions;
 pub mod fake;
+mod needed;
 
 pub use actions::ActionCheck;
+pub use needed::NeededCheck;
 
 /// The design index's name when `[design] index` names none; the design adapter's default,
 /// which a test keeps in step (the app layer does not import adapters).
@@ -238,6 +242,9 @@ pub struct Report {
     pub actions: Vec<ActionCheck>,
     /// Why the actions folders could not be read, when they could not; it fails the report.
     pub actions_error: Option<String>,
+    /// One entry per action name the project needs, in name order, with the tier that provides it;
+    /// a name with no provider fails the report.
+    pub needed: Vec<NeededCheck>,
 }
 
 impl Report {
@@ -246,6 +253,7 @@ impl Report {
         self.tools.iter().all(|check| check.status.is_ok())
             && self.actions.iter().all(|check| check.ok)
             && self.actions_error.is_none()
+            && self.needed.iter().all(|check| check.ok)
             && self.design.as_ref().is_none_or(|check| check.ok)
             && self.design_index.as_ref().is_none_or(|check| check.ok)
             && self.workspaces.ok
@@ -269,6 +277,7 @@ impl Report {
         lines.extend(self.packs.iter().map(PackCheck::line));
         lines.extend(self.actions.iter().flat_map(ActionCheck::lines));
         lines.extend(self.actions_error.clone());
+        lines.extend(self.needed.iter().flat_map(NeededCheck::lines));
         lines.push(self.workspaces.line());
         lines
     }
@@ -519,6 +528,7 @@ pub fn doctor_with(
         path: workspaces_path,
     };
     let (actions, actions_error) = actions::check_actions(root, zaf_home, manifest);
+    let needed = needed::check_needed(root, zaf_home, manifest);
     Report {
         tools,
         design,
@@ -528,6 +538,7 @@ pub fn doctor_with(
         packs: packs(root, manifest, commands),
         actions,
         actions_error,
+        needed,
     }
 }
 

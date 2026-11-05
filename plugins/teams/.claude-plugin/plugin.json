@@ -1,6 +1,6 @@
 {
   "name": "teams",
-  "version": "2.0.0",
+  "version": "2.0.2",
   "description": "Standing briefs for the instances the zaf spawner launches (team, programmer, keeper, planning, challenger, release), each opening with the zaf interface page; a session-start zaf doctor check; and routines for the Engineer's design session: objectives, queue, catch-up, docs, retrospectives.",
   "author": {
     "name": "ProgrammingCheetah"
