@@ -10,9 +10,10 @@ use std::path::{Path, PathBuf};
 
 use super::Cli;
 use super::exit::{BACKEND, OK};
+use super::slice::VERSION_VAR;
 use crate::app::actions::{
-    Caller, MINUTE, Nesting, Refused, RunOutcome, RunRequest, RunResult, Tier, last_lines,
-    list_actions, read_action, run_action,
+    Caller, MINUTE, Nesting, Refused, RunOutcome, RunRequest, RunResult, SliceContext, Tier,
+    last_lines, list_actions, read_action, run_action,
 };
 use crate::composition::{Composition, CompositionError, zaf_home};
 use crate::manifest::{ActionsSection, HOME_FILE};
@@ -82,6 +83,8 @@ pub fn run(cli: &Cli, args: &DoArgs) -> u8 {
 /// Where a run happens: the project when there is one, and the home.
 struct Place {
     root: Option<PathBuf>,
+    /// The project, for the board and branch patterns a `target: task` run names its slice from.
+    project: Option<Composition>,
     home: PathBuf,
     timeout_minutes: u64,
 }
@@ -98,10 +101,12 @@ impl Place {
             Ok(composition) => Ok(Self {
                 root: Some(composition.root().to_owned()),
                 timeout_minutes: composition.manifest().actions.timeout_minutes,
+                project: Some(composition),
                 home,
             }),
             Err(CompositionError::NoProject { .. }) => Ok(Self {
                 root: None,
+                project: None,
                 timeout_minutes: machine_timeout(&home)?,
                 home,
             }),
@@ -152,6 +157,24 @@ fn run_named(name: &str, args: &[OsString], only: Option<Tier>) -> RunOutcome {
         Ok(caller) => caller,
         Err(reason) => return not_run(reason),
     };
+    // Built here and not asked of the board: a run without a target never reads it, and a board
+    // that cannot be built stops only the runs that need it.
+    let board = place
+        .project
+        .as_ref()
+        .map(|project| project.board().map_err(|error| error.to_string()));
+    let version = std::env::var(VERSION_VAR)
+        .ok()
+        .filter(|version| !version.is_empty());
+    let slice = place
+        .project
+        .as_ref()
+        .zip(board.as_ref())
+        .map(|(project, board)| SliceContext {
+            board: board.as_ref().map(|board| &**board).map_err(Clone::clone),
+            branches: &project.manifest().branches,
+            version: version.as_deref(),
+        });
     run_action(&RunRequest {
         name,
         args,
@@ -163,6 +186,7 @@ fn run_named(name: &str, args: &[OsString], only: Option<Tier>) -> RunOutcome {
         nesting,
         caller,
         only,
+        slice,
     })
 }
 

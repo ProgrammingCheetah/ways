@@ -23,6 +23,7 @@ use super::records::{forget_records, keep_hand_back};
 use super::resolve::{
     ResolveError, Resolved, Tier, can_shadow, check_name, list, resolve, resolve_in,
 };
+use super::slice_env::{SliceContext, SliceEnv};
 use crate::composition::{STATE_DIR, ZAF_HOME_VAR};
 
 /// The exit code of a body that never ran; no action may declare it.
@@ -138,6 +139,9 @@ pub struct RunRequest<'a> {
     /// `zaf do --tier machine`: look in this tier alone, skipping the other. `None` takes the
     /// first tier that has the name. Only the tier is skipped: the mode check applies as ever.
     pub only: Option<Tier>,
+    /// What names a task's slice and the integration branch; `None` outside a project, where
+    /// `ZAF_BASE` is unset and a `target: task` action starts nothing.
+    pub slice: Option<SliceContext<'a>>,
 }
 
 /// One minute of a time bound.
@@ -421,9 +425,11 @@ fn start(request: &RunRequest<'_>) -> Result<Started, Refused> {
             found.path.display()
         )));
     }
+    // Before a log exists: a board that cannot answer starts nothing and leaves nothing behind.
+    let slice_env = SliceEnv::for_run(request, metadata.target.is_some()).map_err(refused)?;
     let (log, log_file) = open_log(&logs_dir(request), name)
         .map_err(|error| refused(format!("cannot open a log: {error}")))?;
-    let child = spawn_body(request, &found.path, &log, log_file).map_err(|error| {
+    let child = spawn_body(request, &found.path, &log, log_file, &slice_env).map_err(|error| {
         // Nothing ran, so nothing is left to read: no empty log beside the real ones.
         let _ = fs::remove_file(&log);
         refused(format!("cannot start {}: {error}", found.path.display()))
@@ -556,6 +562,7 @@ fn spawn_body(
     file: &Path,
     log: &Path,
     log_file: File,
+    slice_env: &SliceEnv,
 ) -> io::Result<Child> {
     let RunRequest { name, nesting, .. } = request;
     let mut command = Command::new(file);
@@ -575,6 +582,8 @@ fn spawn_body(
         Some(root) => command.env(ROOT_VAR, root),
         None => command.env_remove(ROOT_VAR),
     };
+    // Last, so nothing the caller or an earlier line set can stand in for these.
+    slice_env.apply(&mut command);
     let mut tries = 1;
     loop {
         match command.spawn() {

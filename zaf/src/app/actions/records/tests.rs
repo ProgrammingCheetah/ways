@@ -62,6 +62,7 @@ impl Place {
             nesting: Nesting::default(),
             caller: Caller::Engineer,
             only: None,
+            slice: None,
         })
     }
 

@@ -485,6 +485,7 @@ fn request<'a>(
         nesting: Nesting::default(),
         caller: Caller::Engineer,
         only: None,
+        slice: None,
     }
 }
 
@@ -2118,4 +2119,91 @@ fn tier_machine_obeys_the_mode() {
     assert!(take_machine_mark(&project, "team-only"));
     assert!(!project.root.join("hand-only.ran").exists());
     assert!(!project.root.join("team-only.ran").exists());
+}
+
+/// Task 2 of epic 1, as `gh issue view` prints it.
+const TASK_TWO: &str = r#"{"number":2,"title":"Export the list","body":"","labels":[{"name":"task"},{"name":"ready"}],"parent":{"number":1},"state":"OPEN","comments":[]}"#;
+
+/// What a caller could try to hand a slice action in place of zaf's own values.
+const FORGED: [(&str, &str); 4] = [
+    ("ZAF_SLICE", "feature/evil"),
+    ("ZAF_PR", "99"),
+    ("ZAF_TASK_TITLE", "forged title"),
+    ("ZAF_BASE", "feature/forged"),
+];
+
+/// A project whose fake `gh` knows task 2 (or fails on it), the caller's environment forged, and
+/// an action `slice-thing` of the given target that writes its environment.
+fn slice_project(target: &str, board_fails: bool) -> Project {
+    let mut project = Project::new(MANIFEST);
+    if board_fails {
+        project.fail_on("issue view 2 *", "HTTP 502");
+    } else {
+        project.on("issue view 2 *", TASK_TWO);
+    }
+    for (name, value) in FORGED {
+        project.env(name, value);
+    }
+    project.env("ZAF_VERSION", "v1");
+    let (code, stdout, stderr) = outcome(&project.zaf(&["setup"]));
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    action(
+        &project,
+        "slice-thing",
+        target,
+        "env > \"$ZAF_ROOT/env\"\n: > \"$ZAF_ROOT/ran\"",
+    );
+    project
+}
+
+#[test]
+fn do_target_task_replaces_the_callers_slice_env() {
+    let project = slice_project("# zaf target: task\n", false);
+
+    // No record: zaf's slice and title replace the forged ones, and the forged pull request goes.
+    let run = project.zaf(&["do", "slice-thing", "2"]);
+    assert_eq!(outcome(&run).0, 0, "{}", said(&run));
+    let env = env_lines(&read(&project.root.join("env")));
+    assert_eq!(env["ZAF_SLICE"], "feature/v1-1-2");
+    assert_eq!(env["ZAF_TASK_TITLE"], "Export the list");
+    assert_eq!(env["ZAF_BASE"], "feature/v1");
+    assert!(!env.contains_key("ZAF_PR"), "{env:?}");
+
+    // A record: its pull request replaces the forged one.
+    write(&project.root, ".zaf/slices/2.pr", "7");
+    let run = project.zaf(&["do", "slice-thing", "2"]);
+    assert_eq!(outcome(&run).0, 0, "{}", said(&run));
+    let env = env_lines(&read(&project.root.join("env")));
+    assert_eq!(env["ZAF_PR"], "7");
+    assert_eq!(env["ZAF_SLICE"], "feature/v1-1-2");
+}
+
+#[test]
+fn do_targetless_run_gets_only_the_base() {
+    let project = slice_project("", false);
+
+    let run = project.zaf(&["do", "slice-thing", "2"]);
+    assert_eq!(outcome(&run).0, 0, "{}", said(&run));
+    let env = env_lines(&read(&project.root.join("env")));
+    for name in ["ZAF_SLICE", "ZAF_PR", "ZAF_TASK_TITLE"] {
+        assert!(!env.contains_key(name), "{name} in {env:?}");
+    }
+    assert_eq!(env["ZAF_BASE"], "feature/v1");
+}
+
+#[test]
+fn do_board_failure_is_not_run() {
+    let project = slice_project("# zaf target: task\n", true);
+
+    let run = project.zaf(&["do", "slice-thing", "2"]);
+    let (code, stdout, stderr) = outcome(&run);
+    assert_eq!(code, 125, "{stdout}{stderr}");
+    assert!(stderr.contains("NOT_RUN"), "{stderr}");
+    assert!(!project.root.join("ran").exists());
+
+    // A run with no target does not read the board, so the failing board stops nothing.
+    let plain = slice_project("", true);
+    let run = plain.zaf(&["do", "slice-thing", "2"]);
+    assert_eq!(outcome(&run).0, 0, "{}", said(&run));
+    assert!(plain.root.join("ran").exists());
 }
