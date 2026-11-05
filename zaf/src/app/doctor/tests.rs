@@ -632,7 +632,7 @@ fn doctor_fails_on_a_stale_pack() {
 }
 
 #[test]
-fn a_profile_whose_installed_file_lacks_the_pack_is_missing_with_its_fix() {
+fn a_profile_whose_installed_file_lacks_the_pack_fails_with_its_fix() {
     let dir = tempfile::tempdir().expect("temp dir");
     let (_, build) = profile_homes(dir.path());
     write_marketplace(dir.path());
@@ -647,10 +647,14 @@ fn a_profile_whose_installed_file_lacks_the_pack_is_missing_with_its_fix() {
     let report = doctor(dir.path(), &manifest(PACK), &commands);
     let lines = report.lines();
     assert!(
-        lines.contains(&"profile build: pack missing (fix: zaf profile init)".to_owned()),
+        lines.contains(
+            &"profile build: pack missing (fix: zaf profile init installs it)".to_owned()
+        ),
         "{lines:?}"
     );
-    assert!(report.passed(), "a missing pack is reported, not failed");
+    assert!(!report.passed(), "a missing pack fails the report");
+    let json = serde_json::to_value(&report).expect("serializes");
+    assert_eq!(json["packs"][0]["ok"], false);
 }
 
 #[test]
@@ -660,10 +664,11 @@ fn a_profile_not_generated_yet_has_its_pack_missing_without_asking() {
     let commands = FakeCommands::new();
     let report = doctor(dir.path(), &manifest(PACK), &commands);
     assert!(
-        report
-            .lines()
-            .contains(&"profile build: pack missing (fix: zaf profile init)".to_owned())
+        report.lines().contains(
+            &"profile build: pack missing (fix: zaf profile init installs it)".to_owned()
+        )
     );
+    assert!(!report.passed(), "a missing pack fails the report");
     assert!(commands.calls().is_empty());
 }
 

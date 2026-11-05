@@ -8,8 +8,8 @@
 //! never fixed, and does not fail the doctor. Its line also says what its `.credentials.json`
 //! is: shared with the Claude home, or a copy that goes stale; the token is never printed.
 //! Each profile that carries the pack reports the version its `plugins/installed_plugins.json`
-//! records, or that the pack is missing; a version other than the source pack's `plugin.json`
-//! declares fails the report, and `zaf profile init` updates it. Every action either tier provides is
+//! records, or that the pack is missing; a missing pack, or a version other than the source
+//! pack's `plugin.json` declares, fails the report, and `zaf profile init` installs or updates it. Every action either tier provides is
 //! reported with its validity and its mode; an invalid file fails the report (see [`ActionCheck`]).
 //! Every action name the project needs is reported with the tier that provides it; a needed name
 //! with no provider fails the report (see [`NeededCheck`]).
@@ -229,7 +229,7 @@ impl PackCheck {
     }
 
     /// `profile <name>: pack <pack>@<marketplace> <version> ok`; a stale pack names both versions
-    /// and its fix; a missing one says `pack missing` with its fix.
+    /// and its fix; a missing one says `pack missing` and that `zaf profile init` installs it.
     pub fn line(&self) -> String {
         match (&self.pack, &self.version) {
             (Some(pack), Some(have)) if self.stale() => format!(
@@ -242,7 +242,7 @@ impl PackCheck {
                 format!("profile {}: pack {pack} {version} ok", self.profile)
             }
             _ => format!(
-                "profile {}: pack missing (fix: zaf profile init)",
+                "profile {}: pack missing (fix: zaf profile init installs it)",
                 self.profile
             ),
         }
@@ -263,7 +263,7 @@ pub struct Report {
     /// One entry per generated profile; informational, it never fails the report.
     pub logins: Vec<LoginCheck>,
     /// One entry per generated profile that carries the pack, when the manifest has a `[pack]`;
-    /// a stale pack fails the report, a missing one is reported only.
+    /// a stale or a missing pack fails the report.
     pub packs: Vec<PackCheck>,
     /// One entry per action either tier provides, in name order; an invalid one fails the report.
     pub actions: Vec<ActionCheck>,
@@ -278,7 +278,7 @@ impl Report {
     /// Whether every check passed.
     pub fn passed(&self) -> bool {
         self.tools.iter().all(|check| check.status.is_ok())
-            && self.packs.iter().all(|check| !check.stale())
+            && self.packs.iter().all(|check| check.ok)
             && self.actions.iter().all(|check| check.ok)
             && self.actions_error.is_none()
             && self.needed.iter().all(|check| check.ok)
@@ -466,7 +466,7 @@ fn is_past(expires_at: u64, now: SystemTime) -> bool {
 /// `plugins/installed_plugins.json` records, and compares it with the source pack's version.
 ///
 /// Reads only: a profile not generated yet, or a pack the project's marketplace file cannot
-/// name, is missing; the fix is `zaf profile init`, which doctor never runs. Only a `[pack] path`
+/// name, is missing and fails the report; the fix is `zaf profile init`, which doctor never runs. Only a `[pack] path`
 /// has a source version to compare with.
 pub fn packs(root: &Path, manifest: &Manifest) -> Vec<PackCheck> {
     let Some(pack) = &manifest.pack else {
