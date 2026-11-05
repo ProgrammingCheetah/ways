@@ -7,9 +7,11 @@
 //! the board. Dollars are computed here from the price table, never stored, so a changed
 //! price moves every row alike. Each row also holds the median dollars per done task by size
 //! (S, M): a run that names tasks splits evenly across them, any other run across the epic's
-//! done tasks, and a task with no readable size is in the epic's total but in no median. The
-//! spend outside any epic is not a row: it is one line after
-//! the rows, so that spend stays visible.
+//! done tasks, and a task with no readable size is in the epic's total but in no median. Each
+//! row also compares its median per size with the last earlier epic's: lower or not, on at
+//! least [`MIN_TASKS`] done tasks of that size on both sides, and `too few` otherwise, never a
+//! verdict. The spend outside any epic is not a row: it is one line after the rows, so that
+//! spend stays visible.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -20,6 +22,9 @@ use crate::ports::{Board, PortError};
 
 /// What the text and the JSON say about every dollar figure.
 pub const ESTIMATE_NOTE: &str = "estimates: dollars are API list prices applied to the ledger's tokens at reading, a proxy for weight against the weekly limit; compare rows, do not bill from them";
+
+/// The done tasks of one size that each side of a comparison needs before it gives a verdict.
+pub const MIN_TASKS: usize = 5;
 
 /// The role of a run whose prompt gave none.
 const NO_ROLE: &str = "unattributed";
@@ -73,6 +78,81 @@ pub struct EpicRow {
     pub roles: Vec<RoleShare>,
     /// Median estimated dollars per done task, by size.
     pub median_usd: SizeMedians,
+    /// How many done tasks each median is over.
+    pub done_by_size: SizeCounts,
+    /// The median per size against the last earlier epic's; none for the first epic.
+    pub versus_last: SizeVerdicts,
+}
+
+/// How many done tasks of each size an epic has.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct SizeCounts {
+    /// Done tasks of size S.
+    pub s: usize,
+    /// Done tasks of size M.
+    pub m: usize,
+}
+
+/// Whether an epic's median beat the last earlier epic's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Verdict {
+    /// Lower, on at least [`MIN_TASKS`] tasks of the size on both sides.
+    Lower,
+    /// Equal or higher, on at least [`MIN_TASKS`] tasks of the size on both sides.
+    NotLower,
+    /// Fewer than [`MIN_TASKS`] tasks of the size on either side: no verdict.
+    TooFew,
+}
+
+impl Verdict {
+    /// The word the text prints.
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Lower => "lower",
+            Self::NotLower => "not lower",
+            Self::TooFew => "too few",
+        }
+    }
+}
+
+/// The verdict for each size, against the last earlier epic.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct SizeVerdicts {
+    /// Size S; none when there is no earlier epic.
+    pub s: Option<Verdict>,
+    /// Size M; none when there is no earlier epic.
+    pub m: Option<Verdict>,
+}
+
+/// One size's task count and median, now against the last earlier epic's.
+fn verdict(now: (usize, Option<f64>), before: (usize, Option<f64>)) -> Verdict {
+    match (now, before) {
+        ((count, Some(now)), (earlier, Some(before)))
+            if count >= MIN_TASKS && earlier >= MIN_TASKS =>
+        {
+            if now < before {
+                Verdict::Lower
+            } else {
+                Verdict::NotLower
+            }
+        }
+        _ => Verdict::TooFew,
+    }
+}
+
+/// `row` against `last`, the nearest earlier epic's row.
+fn compare(row: &EpicRow, last: &EpicRow) -> SizeVerdicts {
+    SizeVerdicts {
+        s: Some(verdict(
+            (row.done_by_size.s, row.median_usd.s),
+            (last.done_by_size.s, last.median_usd.s),
+        )),
+        m: Some(verdict(
+            (row.done_by_size.m, row.median_usd.m),
+            (last.done_by_size.m, last.median_usd.m),
+        )),
+    }
 }
 
 /// The median estimated dollars per done task, for each size.
@@ -203,7 +283,7 @@ pub fn epic_view(
                 .push((task, found.size));
         }
     }
-    let rows = by_epic
+    let mut rows: Vec<EpicRow> = by_epic
         .into_iter()
         .map(|(epic, runs)| {
             row_of(
@@ -214,6 +294,10 @@ pub fn epic_view(
             )
         })
         .collect();
+    for index in 1..rows.len() {
+        let versus = compare(&rows[index], &rows[index - 1]);
+        rows[index].versus_last = versus;
+    }
     Ok(EpicView {
         rows,
         outside: outside_of(&loose, prices),
@@ -286,6 +370,12 @@ fn size_medians(runs: &[&LedgerRow], done: &DoneTasks, prices: &PriceTable) -> S
     }
 }
 
+fn count_of(done: &DoneTasks, wanted: TaskSize) -> usize {
+    done.iter()
+        .filter(|(_, size)| *size == Some(wanted))
+        .count()
+}
+
 fn row_of(epic: u64, runs: &[&LedgerRow], done: &DoneTasks, prices: &PriceTable) -> EpicRow {
     let tasks_done = done.len();
     let mut tokens = Tokens::default();
@@ -334,6 +424,11 @@ fn row_of(epic: u64, runs: &[&LedgerRow], done: &DoneTasks, prices: &PriceTable)
         context_last: median_of(|run| run.context_last),
         roles,
         median_usd: size_medians(runs, done, prices),
+        done_by_size: SizeCounts {
+            s: count_of(done, TaskSize::S),
+            m: count_of(done, TaskSize::M),
+        },
+        versus_last: SizeVerdicts::default(),
     }
 }
 
@@ -347,13 +442,15 @@ pub fn render_text(rows: &[EpicRow]) -> String {
     let none = || "-".to_owned();
     let thousands = |value: Option<f64>| value.map_or_else(none, |v| format!("{:.0}k", v / 1e3));
     out.push_str(&format!(
-        "{:<6} {:>5} {:>8} {:>7} {:>7} {:>7} {:>10} {:>6} {:>6} {:>8} {:>8} {:>9} {:>8}  roles\n",
+        "{:<6} {:>5} {:>8} {:>7} {:>7} {:>7} {:>9} {:>9} {:>10} {:>6} {:>6} {:>8} {:>8} {:>9} {:>8}  roles\n",
         "epic",
         "done",
         "est $",
         "$/task",
         "med S $",
         "med M $",
+        "S vs last",
+        "M vs last",
         "turns/task",
         "ctx1",
         "ctxN",
@@ -369,13 +466,15 @@ pub fn render_text(rows: &[EpicRow]) -> String {
             .map(|role| format!("{} {:.0}%", role.role, role.share_percent))
             .collect();
         out.push_str(&format!(
-            "{:<6} {:>5} {:>8.2} {:>7} {:>7} {:>7} {:>10} {:>6} {:>6} {:>7.2}M {:>7.1}M {:>8.1}M {:>7.2}M  {}\n",
+            "{:<6} {:>5} {:>8.2} {:>7} {:>7} {:>7} {:>9} {:>9} {:>10} {:>6} {:>6} {:>7.2}M {:>7.1}M {:>8.1}M {:>7.2}M  {}\n",
             format!("#{}", row.epic),
             row.tasks_done,
             row.est_usd,
             row.usd_per_task.map_or_else(none, |v| format!("{v:.2}")),
             row.median_usd.s.map_or_else(none, |v| format!("{v:.2}")),
             row.median_usd.m.map_or_else(none, |v| format!("{v:.2}")),
+            row.versus_last.s.map_or_else(none, |v| v.word().to_owned()),
+            row.versus_last.m.map_or_else(none, |v| v.word().to_owned()),
             row.turns_per_task.map_or_else(none, |v| format!("{v:.0}")),
             thousands(row.context_first),
             thousands(row.context_last),
