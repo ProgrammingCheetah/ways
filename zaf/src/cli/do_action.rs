@@ -140,7 +140,7 @@ fn machine_timeout(home: &Path) -> Result<u64, String> {
 }
 
 /// The run of one name, with everything that stops it before the body as `NOT_RUN`.
-fn run_named(name: &str, args: &[OsString], only: Option<Tier>) -> RunOutcome {
+pub(super) fn run_named(name: &str, args: &[OsString], only: Option<Tier>) -> RunOutcome {
     let not_run = |reason| RunOutcome::not_run(name, None, reason);
     let place = match Place::here() {
         Ok(place) => place,
