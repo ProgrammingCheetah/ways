@@ -120,6 +120,22 @@ fn bookmark_at(root: &Path, name: &str) -> String {
     commit(root, &format!("bookmarks(exact:\"{name}\")"))
 }
 
+/// The repository's operation ids only. The default `op log` text carries a relative age
+/// ("1 second ago" or "now") that changes across a second boundary, so it cannot be compared.
+fn operation_ids(root: &Path) -> String {
+    jj(
+        root,
+        &[
+            "--ignore-working-copy",
+            "op",
+            "log",
+            "--no-graph",
+            "-T",
+            "id.short() ++ \"\\n\"",
+        ],
+    )
+}
+
 fn workspaces(root: &Path) -> String {
     jj(root, &["--ignore-working-copy", "workspace", "list"])
 }
@@ -159,12 +175,12 @@ fn workspace_open_hands_back_the_path() {
     assert_eq!(parent, bookmark_at(root, BASE));
 
     // On the same base again it changes nothing and exits 0, handing the path back as before.
-    let operations = jj(root, &["--ignore-working-copy", "op", "log", "--no-graph"]);
+    let operations = operation_ids(root);
     let (code, text) = open(&project, SLICE, BASE);
     assert_eq!(code, 0, "{text}");
     assert_eq!(handed_back(&text), dir.to_string_lossy(), "{text}");
     assert_eq!(
-        jj(root, &["--ignore-working-copy", "op", "log", "--no-graph"]),
+        operation_ids(root),
         operations,
         "a second open changed the repository"
     );
@@ -198,14 +214,14 @@ fn workspace_open_on_another_base_refuses() {
     let root = &project.root;
     let (code, text) = open(&project, SLICE, BASE);
     assert_eq!(code, 0, "{text}");
-    let operations = jj(root, &["--ignore-working-copy", "op", "log", "--no-graph"]);
+    let operations = operation_ids(root);
 
     let (code, text) = open(&project, SLICE, OTHER_BASE);
 
     assert_eq!(code, 1, "{text}");
     assert!(text.contains(BASE), "{text}");
     assert_eq!(
-        jj(root, &["--ignore-working-copy", "op", "log", "--no-graph"]),
+        operation_ids(root),
         operations,
         "a refused open changed the repository"
     );
