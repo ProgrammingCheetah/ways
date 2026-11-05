@@ -19,8 +19,8 @@ use super::{Cli, HubAction, Verb};
 use crate::app::check::Target;
 use crate::app::guard;
 use crate::app::hub::{
-    HubError, HubInputs, Mark, PROGRAMMER, Report, TEAM, ToolCall, Watch, draw, gather, record,
-    task_in_workspace,
+    HubError, HubInputs, Mark, PROGRAMMER, Report, TEAM, ToolCall, Watch, draw, gather,
+    lan_address, record, task_in_workspace,
 };
 use crate::app::report::PriceTable;
 use crate::app::report::ledger::{LEDGER_FILE, Ledger, LedgerRow};
@@ -39,11 +39,13 @@ const POLL: Duration = Duration::from_millis(250);
 /// The width of a frame when the terminal does not say.
 const DEFAULT_WIDTH: usize = 100;
 
-/// Runs `zaf hub` or `zaf hub report`.
-pub fn run(cli: &Cli, action: Option<&HubAction>) -> u8 {
+mod dashboard;
+
+/// Runs `zaf hub`, `zaf hub --port <n>` or `zaf hub report`.
+pub fn run(cli: &Cli, action: Option<&HubAction>, port: Option<u16>) -> u8 {
     match action {
         Some(HubAction::Report) => hook(),
-        None => show(cli),
+        None => show(cli, port),
     }
 }
 
@@ -280,9 +282,14 @@ fn paint(out: &mut impl Write, frame: &str) -> std::io::Result<()> {
     out.flush()
 }
 
-/// `zaf hub`.
-fn show(cli: &Cli) -> u8 {
+/// `zaf hub`, or `zaf hub --port <n>` to serve the frame as a page.
+fn show(cli: &Cli, port: Option<u16>) -> u8 {
     let path = cli.verb.path();
+    // The port is taken first: one in use is refused before anything is read.
+    let dashboard = match port.map(|port| dashboard::bind(port, &path)).transpose() {
+        Ok(dashboard) => dashboard,
+        Err(code) => return code,
+    };
     let composition = match Composition::discover_here() {
         Ok(composition) => composition,
         Err(error) => return exit::fail_composition(&path, &error),
@@ -334,7 +341,16 @@ fn show(cli: &Cli) -> u8 {
     };
     let mut out = std::io::stdout().lock();
     let live = out.is_terminal();
-    let outcome = if live {
+    let outcome = if let Some(dashboard) = dashboard {
+        dashboard::serve(
+            &mut out,
+            dashboard,
+            lan_address(),
+            gatherer,
+            &state_dir,
+            &mut dashboard::Forever,
+        )
+    } else if live {
         let mut terminal = Terminal::enter();
         let width = terminal.width();
         let outcome = serve(&mut out, gatherer, &state_dir, width, Some(&mut terminal));

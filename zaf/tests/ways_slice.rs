@@ -426,10 +426,11 @@ fn slice_merge_conflict_exits_1() {
 }
 
 #[test]
-fn slice_merge_not_run_step_is_not_a_conflict() {
+fn slice_merge_maps_a_nested_not_run_to_two() {
     let (project, dir, head) = landing();
     advance_base_elsewhere(&project, "merged.txt", "merged\n");
-    // `merge-base` has no description: zaf does not run it, which is exit 125 and not 1.
+    // `merge-base` has no description: zaf does not run it, which is exit 125 and not a conflict.
+    // `slice-merge` declares 1 and 2, never 125, so it ends with 2.
     let actions = project.root.join(".zaf/actions");
     write(&actions, "merge-base", "#!/bin/sh\nexit 1\n");
     fs::set_permissions(
@@ -440,7 +441,7 @@ fn slice_merge_not_run_step_is_not_a_conflict() {
 
     let (code, text) = action(&project, &["slice-merge", "2"]);
 
-    assert_eq!(code, 125, "{text}");
+    assert_eq!(code, 2, "{text}");
     assert!(text.contains("NOT_RUN merge-base"), "{text}");
     // Nothing was pushed or merged, and the slice is as it was.
     assert!(!text.contains("zaf do push"), "{text}");
