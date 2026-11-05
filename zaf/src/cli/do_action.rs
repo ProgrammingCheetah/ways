@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use super::Cli;
 use super::exit::{BACKEND, OK};
 use crate::app::actions::{
-    Caller, MINUTE, Nesting, Refused, RunOutcome, RunRequest, RunResult, last_lines, list_actions,
-    read_action, run_action,
+    Caller, MINUTE, Nesting, Refused, RunOutcome, RunRequest, RunResult, Tier, last_lines,
+    list_actions, read_action, run_action,
 };
 use crate::composition::{Composition, CompositionError, zaf_home};
 use crate::manifest::{ActionsSection, HOME_FILE};
@@ -27,6 +27,10 @@ pub struct DoArgs {
     /// Print the file the name resolves to instead of running it.
     #[arg(long)]
     pub show: bool,
+    /// Skip the project tier: run the machine's action of that name, as when the project's file
+    /// shadows it. Only `machine` is a tier to name; the mode and phase checks apply as ever.
+    #[arg(long, value_enum, value_name = "TIER")]
+    pub tier: Option<TierFlag>,
     /// The action's name and its arguments; no name lists every action the caller may read.
     #[arg(
         value_name = "NAME [ARGS]",
@@ -36,19 +40,40 @@ pub struct DoArgs {
     pub words: Vec<OsString>,
 }
 
+/// The tiers `--tier` names: the machine's alone, since the project's is what a name resolves to
+/// first anyway. A clap usage error, exit 2, for any other value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum TierFlag {
+    /// The machine's `~/.zaf/actions/`.
+    Machine,
+}
+
+impl From<TierFlag> for Tier {
+    fn from(flag: TierFlag) -> Self {
+        match flag {
+            TierFlag::Machine => Self::Machine,
+        }
+    }
+}
+
 /// Runs the verb.
 pub fn run(cli: &Cli, args: &DoArgs) -> u8 {
     let path = cli.verb.path();
+    let only = args.tier.map(Tier::from);
     match (args.words.split_first(), args.show) {
+        (None, _) if only.is_some() => {
+            eprintln!("zaf {path}: --tier takes an action name");
+            BACKEND
+        }
         (None, false) => list(cli, &path),
-        (Some((name, [])), true) => show(cli, &name.to_string_lossy()),
+        (Some((name, [])), true) => show(cli, &name.to_string_lossy(), only),
         (_, true) => {
             eprintln!("zaf {path}: --show takes one name");
             BACKEND
         }
         (Some((name, rest)), false) => {
             let name = name.to_string_lossy();
-            let outcome = run_named(&name, rest);
+            let outcome = run_named(&name, rest, only);
             print_outcome(cli, &outcome)
         }
     }
@@ -109,7 +134,7 @@ fn machine_timeout(home: &Path) -> Result<u64, String> {
 }
 
 /// The run of one name, with everything that stops it before the body as `NOT_RUN`.
-fn run_named(name: &str, args: &[OsString]) -> RunOutcome {
+fn run_named(name: &str, args: &[OsString], only: Option<Tier>) -> RunOutcome {
     let not_run = |reason| RunOutcome::not_run(name, None, reason);
     let place = match Place::here() {
         Ok(place) => place,
@@ -137,6 +162,7 @@ fn run_named(name: &str, args: &[OsString]) -> RunOutcome {
         minute: MINUTE,
         nesting,
         caller,
+        only,
     })
 }
 
@@ -236,11 +262,13 @@ fn list(cli: &Cli, path: &str) -> u8 {
 }
 
 /// `zaf do --show <name>`: the file, byte for byte, when the caller may read it.
-fn show(cli: &Cli, name: &str) -> u8 {
+fn show(cli: &Cli, name: &str, only: Option<Tier>) -> u8 {
     let bytes = Place::here()
         .and_then(|place| Ok((place, Caller::from_env()?)))
         .map_err(Refused::before_the_file)
-        .and_then(|(place, caller)| read_action(place.root.as_deref(), &place.home, name, &caller));
+        .and_then(|(place, caller)| {
+            read_action(place.root.as_deref(), &place.home, name, only, &caller)
+        });
     match bytes {
         Ok(bytes) => {
             let _ = std::io::stdout().write_all(&bytes);

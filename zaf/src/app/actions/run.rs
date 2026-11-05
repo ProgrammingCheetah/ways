@@ -19,7 +19,9 @@ use std::time::{Duration, Instant, SystemTime};
 
 use super::caller::Caller;
 use super::metadata::{ActionMetadata, parse};
-use super::resolve::{ResolveError, Resolved, Tier, can_shadow, list, resolve, resolve_in};
+use super::resolve::{
+    ResolveError, Resolved, Tier, can_shadow, check_name, list, resolve, resolve_in,
+};
 use crate::composition::{STATE_DIR, ZAF_HOME_VAR};
 
 /// The exit code of a body that never ran; no action may declare it.
@@ -132,6 +134,9 @@ pub struct RunRequest<'a> {
     pub nesting: Nesting,
     /// Who asks: the file's mode decides for them before anything starts.
     pub caller: Caller,
+    /// `zaf do --tier machine`: look in this tier alone, skipping the other. `None` takes the
+    /// first tier that has the name. Only the tier is skipped: the mode check applies as ever.
+    pub only: Option<Tier>,
 }
 
 /// One minute of a time bound.
@@ -210,15 +215,23 @@ pub struct ListedAction {
     pub description: String,
 }
 
-/// The file a name resolves to; outside a project only the machine's tier exists.
+/// The file a name resolves to; outside a project only the machine's tier exists. With `only`,
+/// that tier alone is looked in: the other is skipped, and a name it alone has resolves to
+/// nothing. A file found this way shadows nothing, since the tier above it was never read.
 fn find_action(
     project_root: Option<&Path>,
     home: &Path,
     name: &str,
+    only: Option<Tier>,
 ) -> Result<Option<Resolved>, ResolveError> {
-    match project_root {
-        Some(root) => resolve(root, home, name),
-        None => resolve_in(Tier::Machine, home, home, name),
+    match (only, project_root) {
+        (Some(Tier::Project), None) => {
+            check_name(name)?;
+            Ok(None)
+        }
+        (Some(tier), root) => resolve_in(tier, root.unwrap_or(home), home, name),
+        (None, Some(root)) => resolve(root, home, name),
+        (None, None) => resolve_in(Tier::Machine, home, home, name),
     }
 }
 
@@ -264,9 +277,10 @@ pub fn read_action(
     project_root: Option<&Path>,
     home: &Path,
     name: &str,
+    only: Option<Tier>,
     caller: &Caller,
 ) -> Result<Vec<u8>, Refused> {
-    let found = find_action(project_root, home, name)
+    let found = find_action(project_root, home, name, only)
         .map_err(|error| Refused::before_the_file(error.to_string()))?
         .ok_or_else(|| Refused::before_the_file("no such action".to_owned()))?;
     let refused = |reason: String| Refused {
@@ -378,7 +392,7 @@ fn start(request: &RunRequest<'_>) -> Result<Started, Refused> {
             chain_with(nesting, name)
         )));
     }
-    let found = find_action(request.project_root, request.home, name)
+    let found = find_action(request.project_root, request.home, name, request.only)
         .map_err(|error| Refused::before_the_file(error.to_string()))?
         .ok_or_else(|| Refused::before_the_file("no such action".to_owned()))?;
     let refused = |reason: String| Refused {

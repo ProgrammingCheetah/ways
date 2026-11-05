@@ -484,6 +484,7 @@ fn request<'a>(
         minute,
         nesting: Nesting::default(),
         caller: Caller::Engineer,
+        only: None,
     }
 }
 
@@ -1762,4 +1763,359 @@ fn shadowing_never_widens() {
     assert_refused(&project, "narrowed", &run, "programmer");
     let run = run_as(&project, "narrowed", None);
     assert_ran(&project, "narrowed", &run);
+}
+
+/// The run of `zaf do --tier machine <name>` by `instance`, or by hand with none.
+fn run_machine_as(project: &Project, name: &str, instance: Option<&str>) -> Output {
+    let env: Vec<(&str, &str)> = instance.map(|i| ("ZAF_INSTANCE", i)).into_iter().collect();
+    zaf_in(
+        project,
+        &project.root,
+        &["do", "--tier", "machine", name],
+        &env,
+    )
+}
+
+/// The machine's body of `name` left its mark; clears it.
+fn take_machine_mark(project: &Project, name: &str) -> bool {
+    let mark = project.root.join(format!("{name}.machine-ran"));
+    let ran = mark.exists();
+    if ran {
+        fs::remove_file(mark).expect("clear the mark");
+    }
+    ran
+}
+
+#[test]
+fn override_reaches_the_machine_file() {
+    let project = project();
+    // The project's `x` does more than the machine's, and reaches it by name: `zaf do x` inside
+    // it would resolve to itself.
+    machine_gated_exiting(&project, "x", 1);
+    action(
+        &project,
+        "x",
+        "",
+        "touch x.project-ran\nzaf do --tier machine x\nexit $?",
+    );
+
+    let run = zaf(&project, &["do", "x"]);
+    let (code, stdout, stderr) = outcome(&run);
+    assert_eq!(
+        code, 1,
+        "the machine file's code passes through: {stdout}{stderr}"
+    );
+    assert!(project.root.join("x.project-ran").exists());
+    assert!(take_machine_mark(&project, "x"), "the machine's body ran");
+
+    // The nested run logs as any run does, and its path is in the outer log.
+    let logs = logs_of(&project, "x");
+    assert_eq!(logs.len(), 2, "{logs:?}");
+    let outer = logs
+        .iter()
+        .find(|log| read(log).contains("zaf do x: log"))
+        .expect("the outer log names the inner");
+    let inner = logs
+        .iter()
+        .find(|log| *log != outer)
+        .expect("the inner log");
+    assert!(
+        read(outer).contains(&inner.display().to_string()),
+        "{}",
+        read(outer)
+    );
+
+    // Straight from the command line too: the machine's file, not the project's, and its code.
+    fs::remove_file(project.root.join("x.project-ran")).expect("clear");
+    let run = zaf(&project, &["do", "--tier", "machine", "x"]);
+    let (code, stdout, stderr) = outcome(&run);
+    assert_eq!(code, 1, "{stdout}{stderr}");
+    assert!(
+        stderr.starts_with("FAIL x: exit 1, it failed, log "),
+        "{stderr}"
+    );
+    assert!(take_machine_mark(&project, "x"));
+    assert!(!project.root.join("x.project-ran").exists());
+
+    // `--json` names the machine's tier; an exit 0 prints nothing.
+    machine_gated_exiting(&project, "y", 0);
+    action(&project, "y", "", "touch y.project-ran");
+    let run = zaf(&project, &["do", "--tier", "machine", "y"]);
+    let (code, stdout, stderr) = outcome(&run);
+    assert_eq!((code, stdout.as_str(), stderr.as_str()), (0, "", ""));
+    assert!(take_machine_mark(&project, "y"));
+    let run = zaf(&project, &["do", "--json", "--tier", "machine", "y"]);
+    let (code, stdout, stderr) = outcome(&run);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    let report: serde_json::Value = serde_json::from_str(&stdout).expect("one JSON line");
+    assert_eq!(report["tier"], "machine");
+    assert!(take_machine_mark(&project, "y"));
+    assert!(!project.root.join("y.project-ran").exists());
+
+    // `--tier=machine` is the same flag, and it comes before the name like every flag.
+    let run = zaf(&project, &["do", "--tier=machine", "y"]);
+    assert_eq!(outcome(&run).0, 0, "{}", said(&run));
+    assert!(take_machine_mark(&project, "y"));
+    let run = zaf(&project, &["do", "y", "--tier", "machine"]);
+    assert_eq!(
+        outcome(&run).0,
+        0,
+        "after the name it is the body's: {}",
+        said(&run)
+    );
+    assert!(!take_machine_mark(&project, "y"));
+}
+
+/// A machine-tier action that leaves `name.machine-ran` and exits `code`.
+fn machine_gated_exiting(project: &Project, name: &str, code: u8) -> PathBuf {
+    executable(
+        &project.home.join("actions"),
+        name,
+        &action_text(name, "", &format!("touch {name}.machine-ran\nexit {code}")),
+    )
+}
+
+#[test]
+fn tier_machine_without_a_machine_file_is_missing() {
+    let project = project();
+    action(&project, "only-here", "", "touch only-here.ran");
+
+    // As a name no tier provides, though the project has it.
+    let run = zaf(&project, &["do", "--tier", "machine", "only-here"]);
+    let (code, stdout, stderr) = outcome(&run);
+    assert_eq!(code, 125, "{stdout}{stderr}");
+    assert_eq!(stdout, "");
+    assert_eq!(stderr, "NOT_RUN only-here: no such action\n");
+    let ghost = zaf(&project, &["do", "ghost"]);
+    assert_eq!(outcome(&ghost).0, 125);
+    assert_eq!(said(&ghost), "NOT_RUN ghost: no such action\n");
+    assert_nothing_started(&project, "only-here");
+
+    // The same through `--json`: no tier, no log.
+    let run = zaf(
+        &project,
+        &["do", "--json", "--tier", "machine", "only-here"],
+    );
+    let (code, stdout, stderr) = outcome(&run);
+    assert_eq!(code, 125, "{stdout}{stderr}");
+    let report: serde_json::Value = serde_json::from_str(&stdout).expect("one JSON line");
+    assert_eq!(report["result"], "NOT_RUN");
+    assert_eq!(report["tier"], serde_json::Value::Null);
+    assert_eq!(report["log"], serde_json::Value::Null);
+
+    // A bad name is as bad as it is without the flag.
+    let run = zaf(&project, &["do", "--tier", "machine", "../ZAF.toml"]);
+    assert_eq!(outcome(&run).0, 125);
+    assert!(
+        said(&run).starts_with("NOT_RUN ../ZAF.toml: bad action name"),
+        "{}",
+        said(&run)
+    );
+
+    // Called from a body, the refusal is a nested run that did not run.
+    action(
+        &project,
+        "caller",
+        "",
+        "zaf do --tier machine only-here\nexit $?",
+    );
+    let run = zaf(&project, &["do", "caller"]);
+    assert_eq!(outcome(&run).0, 125, "{}", said(&run));
+    assert!(
+        said(&run).contains("NOT_RUN only-here: no such action"),
+        "{}",
+        said(&run)
+    );
+    assert_nothing_started(&project, "only-here");
+}
+
+#[test]
+fn other_tier_value_is_malformed() {
+    let project = project();
+    action(&project, "x", "", "touch x.ran");
+    machine_gated_exiting(&project, "x", 0);
+
+    for args in [
+        &["do", "--tier", "project", "x"][..],
+        &["do", "--tier", "Machine", "x"],
+        &["do", "--tier", "machines", "x"],
+        &["do", "--tier", "", "x"],
+        &["do", "--tier=all", "x"],
+        &["do", "--tier"],
+        &["do", "--tier", "x"],
+        &["do", "--tier", "machine"],
+        &["do", "--tier", "machine", "--show"],
+    ] {
+        let run = zaf(&project, args);
+        let (code, stdout, stderr) = outcome(&run);
+        assert_eq!(code, 2, "{args:?}: {stdout}{stderr}");
+        assert_eq!(stdout, "", "{args:?}");
+        assert_nothing_started(&project, "x");
+        assert!(!take_machine_mark(&project, "x"), "{args:?}");
+    }
+    assert!(files_in(&real(&project.root).join(".zaf/logs")).is_empty());
+}
+
+#[test]
+fn tier_flag_counts_depth() {
+    let project = project();
+    executable(
+        &project.home.join("actions"),
+        "deep",
+        &action_text(
+            "deep",
+            "",
+            "echo \"$ZAF_DEPTH\" >> \"$ZAF_ROOT/depths\"\nzaf do --tier machine deep\nexit $?",
+        ),
+    );
+    // The project's file is the way in; every later call goes past it.
+    action(&project, "deep", "", "zaf do --tier machine deep\nexit $?");
+
+    let run = zaf(&project, &["do", "deep"]);
+    assert_eq!(outcome(&run).0, 125, "{}", said(&run));
+    assert_eq!(
+        read(&project.root.join("depths")),
+        "1\n2\n3\n4\n5\n6\n7\n",
+        "the project's call is depth 0, and the flag's calls count on from it"
+    );
+    let chain = ["deep"; 9].join(" > ");
+    let refused = format!("NOT_RUN deep: depth 8 reached: {chain}");
+    assert!(
+        logs_of(&project, "deep")
+            .iter()
+            .any(|log| read(log).contains(&refused)),
+        "the innermost log names the chain"
+    );
+    assert_eq!(
+        logs_of(&project, "deep").len(),
+        8,
+        "every run that started logged"
+    );
+
+    // Called directly from such a depth, nothing starts and nothing is logged.
+    machine_gated_exiting(&project, "plain", 0);
+    let run = zaf_in(
+        &project,
+        &project.root,
+        &["do", "--tier", "machine", "plain"],
+        &[("ZAF_DEPTH", "8"), ("ZAF_ACTION_CHAIN", "first > second")],
+    );
+    assert_eq!(outcome(&run).0, 125, "{}", said(&run));
+    assert_eq!(
+        said(&run),
+        "NOT_RUN plain: depth 8 reached: first > second > plain\n"
+    );
+    assert!(!take_machine_mark(&project, "plain"));
+    assert!(logs_of(&project, "plain").is_empty());
+}
+
+#[test]
+fn tier_flag_keeps_the_mode_check() {
+    let project = project();
+    machine_gated(&project, "gated", "# zaf mode: 750\n# zaf group: team\n");
+    gated(&project, "gated", "# zaf mode: 755\n");
+    let env = [("ZAF_INSTANCE", PROGRAMMER)];
+
+    // No way of writing the flag, or the other flags around it, gets past the mode.
+    for args in [
+        &["do", "--tier", "machine", "gated"][..],
+        &["do", "--tier=machine", "gated"],
+        &["do", "--more", "--tier", "machine", "gated"],
+        &["--more", "do", "--tier", "machine", "gated"],
+        &["do", "--tier", "machine", "--", "gated"],
+        &["do", "--tier", "machine", "gated", "--json"],
+        &["do", "--tier", "machine", "gated", "--show"],
+    ] {
+        let run = zaf_in(&project, &project.root, args, &env);
+        assert_refused(&project, "gated", &run, "programmer");
+        assert!(!take_machine_mark(&project, "gated"), "{args:?}");
+    }
+
+    let run = zaf_in(
+        &project,
+        &project.root,
+        &["do", "--json", "--tier", "machine", "gated"],
+        &env,
+    );
+    let (code, stdout, stderr) = outcome(&run);
+    assert_eq!(code, 125, "{stdout}{stderr}");
+    let report: serde_json::Value = serde_json::from_str(&stdout).expect("one JSON line");
+    assert_eq!(report["result"], "NOT_RUN");
+    assert_eq!(report["meaning"], "not permitted for programmer");
+    assert_eq!(report["tier"], "machine");
+    assert_eq!(report["log"], serde_json::Value::Null);
+
+    // `--show` reads the machine's file under its read bit, as it reads any.
+    let run = zaf_in(
+        &project,
+        &project.root,
+        &["do", "--show", "--tier", "machine", "gated"],
+        &env,
+    );
+    assert_refused(&project, "gated", &run, "programmer");
+    let run = zaf(&project, &["do", "--show", "--tier", "machine", "gated"]);
+    let (code, stdout, stderr) = outcome(&run);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert!(stdout.contains("touch gated.machine-ran"), "{stdout}");
+
+    // The role is the same through a nested call, and the mode still decides there.
+    action(
+        &project,
+        "relay",
+        "",
+        "zaf do --tier machine gated\nexit $?",
+    );
+    let run = zaf_in(&project, &project.root, &["do", "relay"], &env);
+    assert_eq!(outcome(&run).0, 125, "{}", said(&run));
+    assert!(
+        said(&run).contains("NOT_RUN gated: not permitted for programmer"),
+        "{}",
+        said(&run)
+    );
+    assert!(!take_machine_mark(&project, "gated"));
+
+    // The same calls open for a caller the mode permits, so the mode is what closed them.
+    for instance in [Some(TEAM), None] {
+        let run = run_machine_as(&project, "gated", instance);
+        assert_eq!(outcome(&run).0, 0, "{instance:?}: {}", said(&run));
+        assert!(take_machine_mark(&project, "gated"), "{instance:?}");
+    }
+}
+
+#[test]
+fn tier_machine_obeys_the_mode() {
+    let project = project();
+    // The project's file is open to all and the machine's is not: the flag reaches past the
+    // project's file, and what it reaches is held to its own mode.
+    for (name, mode, role, instance) in [
+        ("hand-only", "700", "programmer", PROGRAMMER),
+        ("hand-only", "700", "team", TEAM),
+        ("team-only", "710", "programmer", PROGRAMMER),
+        ("closed", "000", "the Engineer", ""),
+    ] {
+        machine_gated(
+            &project,
+            name,
+            &format!("# zaf mode: {mode}\n# zaf group: team\n"),
+        );
+        gated(&project, name, "# zaf mode: 777\n");
+        let instance = (!instance.is_empty()).then_some(instance);
+        let run = run_machine_as(&project, name, instance);
+        assert_refused(&project, name, &run, role);
+        assert!(!take_machine_mark(&project, name), "{name} for {role}");
+        assert!(
+            !project.root.join(format!("{name}.ran")).exists(),
+            "{name}: the project's file did not run in its place"
+        );
+    }
+
+    // The one that is permitted runs the machine's file and nothing else.
+    let run = run_machine_as(&project, "hand-only", None);
+    assert_eq!(outcome(&run).0, 0, "{}", said(&run));
+    assert!(take_machine_mark(&project, "hand-only"));
+    let run = run_machine_as(&project, "team-only", Some(TEAM));
+    assert_eq!(outcome(&run).0, 0, "{}", said(&run));
+    assert!(take_machine_mark(&project, "team-only"));
+    assert!(!project.root.join("hand-only.ran").exists());
+    assert!(!project.root.join("team-only.ran").exists());
 }
