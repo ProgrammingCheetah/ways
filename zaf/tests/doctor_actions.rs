@@ -560,3 +560,78 @@ fn doctor_finds_names_in_action_bodies() {
     assert_eq!(code, 0, "{text}");
     assert!(text.contains("needed push (project): ok"), "{text}");
 }
+
+#[test]
+fn doctor_lists_machine_dependencies() {
+    let manifest = format!(
+        "{MANIFEST}\n[check.pr]\nsteps = [\"ci\", \"action:lint\"]\n\
+         [gate]\nfull = \"zaf do gate-full\"\n"
+    );
+    let project = Project::new(&manifest);
+    let (project_dir, machine_dir) = (project_actions(&project), project.home.join("actions"));
+    // Two slice names come from the machine, two from the project.
+    for name in &SLICE[..2] {
+        put_body(&machine_dir, name, "true");
+    }
+    for name in &SLICE[2..] {
+        put_body(&project_dir, name, "true");
+    }
+    put_body(&machine_dir, "lint", "true");
+    put_body(&project_dir, "gate-full", "true");
+    put_body(
+        &project_dir,
+        "land",
+        "zaf do build && zaf do gate-full && zaf do --tier machine push",
+    );
+    put_body(&machine_dir, "build", "true");
+    // The project's own `push` shadows the machine's; only the named machine call depends on it.
+    put_body(&project_dir, "push", "true");
+    put_body(&machine_dir, "push", "true");
+    // The machine's own steps are the machine's, not the project's dependencies.
+    put_body(&machine_dir, "hello", "zaf do greet");
+    put_body(&machine_dir, "greet", "true");
+
+    let (code, text) = doctor(&project);
+
+    assert_eq!(code, 0, "{text}");
+    for (action, step) in [
+        ("lint", "[check.pr] step `action:lint`"),
+        ("slice-open", "the slice verbs"),
+        ("slice-pr", "the slice verbs"),
+        ("build", "action land (project): `zaf do build`"),
+        (
+            "push",
+            "action land (project): `zaf do --tier machine push`",
+        ),
+    ] {
+        let at = text
+            .find(&format!("action {action} ("))
+            .unwrap_or_else(|| panic!("no action {action}: {text}"));
+        let section: Vec<&str> = text[at..].lines().take(3).collect();
+        assert!(
+            section
+                .iter()
+                .any(|line| *line == format!("  the project depends on this machine: {step}")),
+            "{action} lists {step}: {text}"
+        );
+    }
+    assert_eq!(
+        text.matches("the project depends on this machine").count(),
+        5,
+        "a project file, a shadowed name no step reaches and a machine's own steps are no dependency: {text}"
+    );
+
+    let output = project.zaf(&["--json", "doctor"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json");
+    let rows = report["actions"].as_array().expect("actions");
+    let row = |name: &str| rows.iter().find(|row| row["name"] == name).expect("a row");
+    assert_eq!(
+        row("lint")["machine_dependents"],
+        serde_json::json!(["[check.pr] step `action:lint`"])
+    );
+    assert_eq!(row("greet")["machine_dependents"], serde_json::json!([]));
+    assert_eq!(
+        row("gate-full")["machine_dependents"],
+        serde_json::json!([])
+    );
+}

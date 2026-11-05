@@ -13,7 +13,8 @@
 //! The scan is textual and reads every line of a body, a comment line too (the design: "doctor
 //! finds needed names by scanning bodies for a literal `zaf do`"). A name made at run time
 //! (`zaf do "$name"`) is not literal and is not found. Invalid files stay
-//! with [`super::ActionCheck`], shadowing and machine dependencies with their own tasks.
+//! with [`super::ActionCheck`], shadowing with its own task. The project's steps that resolve to a machine action are the
+//! machine dependents of [`super::ActionCheck`].
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -75,6 +76,9 @@ struct Demand {
     needed_by: Vec<String>,
     /// Some caller named `--tier machine`.
     machine_call: bool,
+    /// The callers that are the project's own steps (the manifest, the slice verbs, the body of a
+    /// project action), each with whether it named `--tier machine`.
+    project_calls: Vec<(String, bool)>,
 }
 
 /// The needed names in name order.
@@ -82,8 +86,11 @@ struct Demand {
 struct Wanted(BTreeMap<String, Demand>);
 
 impl Wanted {
-    fn add(&mut self, name: &str, by: String, machine_call: bool) {
+    fn add(&mut self, name: &str, by: String, machine_call: bool, project: bool) {
         let demand = self.0.entry(name.to_owned()).or_default();
+        if project && !demand.project_calls.contains(&(by.clone(), machine_call)) {
+            demand.project_calls.push((by.clone(), machine_call));
+        }
         if !demand.needed_by.contains(&by) {
             demand.needed_by.push(by);
         }
@@ -101,17 +108,57 @@ pub(super) fn check_needed(
     zaf_home: Option<&Path>,
     manifest: &Manifest,
 ) -> Vec<NeededCheck> {
-    let mut wanted = Wanted::default();
-    for name in SLICE_NAMES {
-        wanted.add(name, SLICE_NEEDER.to_owned(), false);
-    }
-    manifest_names(manifest, &mut wanted);
-    body_names(root, zaf_home, &mut wanted);
-    wanted
+    wanted_names(root, zaf_home, manifest)
         .0
         .into_iter()
         .map(|(name, demand)| check_name(root, zaf_home, name, demand))
         .collect()
+}
+
+/// Every needed name, with its callers.
+fn wanted_names(root: &Path, zaf_home: Option<&Path>, manifest: &Manifest) -> Wanted {
+    let mut wanted = Wanted::default();
+    for name in SLICE_NAMES {
+        wanted.add(name, SLICE_NEEDER.to_owned(), false, true);
+    }
+    manifest_names(manifest, &mut wanted);
+    body_names(root, zaf_home, &mut wanted);
+    wanted
+}
+
+/// The project's own steps that resolve to a machine action, by action name: each entry is one
+/// step, as [`NeededCheck::needed_by`] words it.
+///
+/// A step resolves to the machine's file when the project has none of that name, and always for a
+/// `zaf do --tier machine` call; either way the machine must have the file. The steps of the
+/// machine's own actions are not the project's and are left out. Without a zaf home there is no
+/// machine tier and no dependency.
+pub(super) fn machine_dependents(
+    root: &Path,
+    zaf_home: Option<&Path>,
+    manifest: &Manifest,
+) -> BTreeMap<String, Vec<String>> {
+    let mut found = BTreeMap::new();
+    let Some(home) = zaf_home else {
+        return found;
+    };
+    for (name, demand) in wanted_names(root, zaf_home, manifest).0 {
+        let has = |tier: Tier| matches!(resolve_in(tier, root, home, &name), Ok(Some(_)));
+        if !has(Tier::Machine) {
+            continue;
+        }
+        let project_has = has(Tier::Project);
+        let steps: Vec<String> = demand
+            .project_calls
+            .into_iter()
+            .filter(|(_, machine_call)| *machine_call || !project_has)
+            .map(|(by, _)| by)
+            .collect();
+        if !steps.is_empty() {
+            found.insert(name, steps);
+        }
+    }
+    found
 }
 
 /// The names the manifest's check steps and gate lines call.
@@ -125,6 +172,7 @@ fn manifest_names(manifest: &Manifest, wanted: &mut Wanted) {
                     name.trim(),
                     format!("[check.{target}] step `{ACTION_STEP}{}`", name.trim()),
                     false,
+                    true,
                 );
             }
         }
@@ -144,6 +192,7 @@ fn manifest_names(manifest: &Manifest, wanted: &mut Wanted) {
                 &call.name,
                 format!("[gate] {key} `{}`", call.shown()),
                 call.machine,
+                true,
             );
         }
     }
@@ -171,6 +220,7 @@ fn body_names(root: &Path, zaf_home: Option<&Path>, wanted: &mut Wanted) {
                     &call.name,
                     format!("{by}: `{}`", call.shown()),
                     call.machine,
+                    action.tier == Tier::Project,
                 );
             }
         }
