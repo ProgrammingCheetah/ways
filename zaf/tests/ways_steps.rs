@@ -1,6 +1,7 @@
-//! The ways repository's own gate actions (docs/zaf-actions.md §7): `gate`, `gate-light` and
-//! `nodes-check` sit in `.zaf/actions/` with valid metadata and the mode §7 gives them, `zaf
-//! doctor` reports none of them as a problem, and their bodies run the lines the ticket names.
+//! The ways repository's own actions (docs/zaf-actions.md §7): `gate`, `gate-light`,
+//! `nodes-check` and `workspace-open` sit in `.zaf/actions/` with valid metadata and the mode §7
+//! gives them, `zaf doctor` reports none of them as a problem, and the gate actions' bodies run
+//! the lines the ticket names.
 
 mod common;
 
@@ -17,10 +18,25 @@ name = "example"
 [board]
 kind = "github-issues"
 repo = "example/tracker"
+
+# §7 names the release role in a group; the pack's own roles are only programmer and team.
+[roles.release]
+model = "opus"
+effort = "high"
+profile = "build"
+turns = 100
 "#;
 
-/// The three actions, each with the one line its body runs.
-const STEPS: [(&str, &str); 3] = [
+/// Every action here with the mode and group §7 gives it.
+const STEPS: [(&str, &str, &[&str]); 4] = [
+    ("gate", "755", &[]),
+    ("gate-light", "755", &[]),
+    ("nodes-check", "755", &[]),
+    ("workspace-open", "750", &["team", "release"]),
+];
+
+/// The three actions that run one line, each with that line.
+const LINES: [(&str, &str); 3] = [
     (
         "gate",
         "cd zaf && cargo fmt --check && cargo build && cargo clippy --all-targets -- -D warnings && cargo test",
@@ -51,12 +67,12 @@ fn parsed(name: &str) -> (String, ParsedAction) {
 
 #[test]
 fn ways_steps_have_valid_metadata() {
-    for (name, _) in STEPS {
+    for (name, mode, group) in STEPS {
         let (_, action) = parsed(name);
         let metadata = action.metadata;
-        // §7: mode 755, no group, no target, no phases.
-        assert_eq!(metadata.mode, ActionMode::parse("755").unwrap(), "{name}");
-        assert!(metadata.group.is_empty(), "{name} names a group");
+        // §7: the mode and group of its row, no target, no phases.
+        assert_eq!(metadata.mode, ActionMode::parse(mode).unwrap(), "{name}");
+        assert_eq!(metadata.group, group, "{name}");
         assert!(metadata.target.is_none(), "{name} names a target");
         assert!(metadata.phases.is_empty(), "{name} names phases");
         assert!(
@@ -66,29 +82,34 @@ fn ways_steps_have_valid_metadata() {
         assert!(!metadata.codes.is_empty(), "{name} declares no exit code");
         assert!(!metadata.codes.contains_key(&125), "{name} declares 125");
 
-        // The file itself carries the mode §7 gives, not only the metadata line.
+        // The file itself is runnable, not only its metadata line. Git keeps one bit, so a
+        // checkout is 755 whatever the metadata says: the owner digit of 750 is metadata, and
+        // the file needs only the owner's execute bit for the Engineer's run.
         let bits = fs::metadata(action_file(name))
             .expect("the action file")
             .permissions()
             .mode()
             & 0o777;
-        assert_eq!(bits, 0o755, "{name} is mode {bits:o}, not 755");
+        assert_eq!(bits & 0o100, 0o100, "{name} is mode {bits:o}, not runnable");
+        if mode == "755" {
+            assert_eq!(bits, 0o755, "{name} is mode {bits:o}, not 755");
+        }
     }
 
-    // `zaf doctor` reports each of them ok: copy the three into a temp project, which keeps the
+    // `zaf doctor` reports each of them ok: copy them into a temp project, which keeps the
     // machine's own actions and tools out of the answer.
     let project = Project::new(MANIFEST);
     let actions = project.root.join(".zaf/actions");
     fs::create_dir_all(&actions).expect("actions folder");
-    for (name, _) in STEPS {
+    for (name, _, _) in STEPS {
         fs::copy(action_file(name), actions.join(name)).expect("copy keeps the mode");
     }
     let (code, stdout, stderr) = outcome(&project.zaf(&["doctor"]));
     let text = format!("{stdout}{stderr}");
     assert_eq!(code, 0, "{text}");
-    for (name, _) in STEPS {
+    for (name, mode, _) in STEPS {
         assert!(
-            text.contains(&format!("action {name} (project): ok, mode 755")),
+            text.contains(&format!("action {name} (project): ok, mode {mode}")),
             "doctor does not report {name} ok: {text}"
         );
     }
@@ -96,7 +117,7 @@ fn ways_steps_have_valid_metadata() {
 
 #[test]
 fn ways_steps_run_the_gate_and_nodes_lines() {
-    for (name, line) in STEPS {
+    for (name, line) in LINES {
         let (text, action) = parsed(name);
         let body: Vec<&str> = text.lines().skip(action.body_line - 1).collect();
         assert!(

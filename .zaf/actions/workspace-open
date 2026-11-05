@@ -1,0 +1,79 @@
+#!/bin/sh
+# zaf description: open a slice's jj workspace and same-named bookmark at the base, handing back the workspace path
+# zaf 1: refused: the slice is open on another base, its directory is not a slice workspace, the base bookmark is unknown, or the slice name leaves the workspaces directory
+# zaf 2: a backend failed (jj is missing or refused)
+# zaf mode: 750
+# zaf group: team, release
+slice=$1
+base=$2
+
+if [ -z "$ZAF_ROOT" ] || [ "$#" -ne 2 ]; then
+    echo "usage: workspace-open <slice> <base>, with ZAF_ROOT set" >&2
+    exit 1
+fi
+
+# A slice name is a relative path of plain parts, below the workspaces directory, and fit to
+# sit inside a revset string.
+case "/$slice/" in
+    *//* | */./* | */../*)
+        echo "slice name $slice is not a relative path inside the workspaces directory" >&2
+        exit 1
+        ;;
+esac
+case $slice in
+    "" | /* | -* | *\"* | *\\*)
+        echo "slice name $slice is not a relative path inside the workspaces directory" >&2
+        exit 1
+        ;;
+esac
+case $base in
+    "" | -* | *\"* | *\\*)
+        echo "base $base is not a usable bookmark name" >&2
+        exit 1
+        ;;
+esac
+
+dir=$ZAF_ROOT/.zaf/workspaces/$slice
+
+# Root commands never snapshot the root's own working copy: it is someone else's checkout.
+root_jj() {
+    jj --no-pager --color=never --ignore-working-copy -R "$ZAF_ROOT" "$@"
+}
+
+if [ -e "$dir" ]; then
+    # Open already: the base the workspace recorded decides, and nothing changes.
+    if [ -d "$dir/.jj" ] && recorded=$(cd "$dir" && jj --no-pager --color=never config get zaf.slice-base 2>/dev/null); then
+        if [ "$recorded" = "$base" ]; then
+            echo "$dir"
+            exit 0
+        fi
+        echo "slice $slice is open on $recorded, not $base" >&2
+        exit 1
+    fi
+    echo "$dir exists and is not a slice workspace" >&2
+    exit 1
+fi
+
+base_revset="bookmarks(exact:\"$base\")"
+slice_revset="bookmarks(exact:\"$slice\")"
+
+found=$(root_jj log --no-graph -r "$base_revset" -T 'commit_id ++ "\n"') || exit 2
+if [ -z "$found" ]; then
+    echo "unknown base bookmark $base" >&2
+    exit 1
+fi
+
+found=$(root_jj log --no-graph -r "$slice_revset" -T 'commit_id ++ "\n"') || exit 2
+if [ -z "$found" ]; then
+    root_jj bookmark create "$slice" -r "$base_revset" || exit 2
+fi
+
+# A workspace whose directory was removed by hand still holds the name.
+root_jj workspace forget "$slice" || exit 2
+
+mkdir -p "$(dirname "$dir")" || exit 2
+# `workspace add` refuses to run without the root's working copy, so this one snapshots it.
+jj --no-pager --color=never -R "$ZAF_ROOT" workspace add --name "$slice" -r "$slice_revset" "$dir" || exit 2
+(cd "$dir" && jj --no-pager --color=never config set --workspace zaf.slice-base "$base") || exit 2
+
+echo "$dir"

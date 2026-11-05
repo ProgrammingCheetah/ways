@@ -69,6 +69,12 @@ profile = "build"
 turns = 200
 batch = 2
 
+[roles.release]
+model = "opus"
+effort = "xhigh"
+profile = "build"
+turns = 200
+
 [check.pr]
 steps = ["ci", "runner:gemini:security?flagged"]
 
