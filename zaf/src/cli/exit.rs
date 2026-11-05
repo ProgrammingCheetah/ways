@@ -20,7 +20,7 @@ pub const NOT_IMPLEMENTED: u8 = 64;
 pub fn code_for(error: &PortError) -> u8 {
     match error {
         PortError::NotFound(_) | PortError::Conflict(_) | PortError::Rejected(_) => REFUSED,
-        PortError::Unavailable(_) | PortError::Backend(_) => BACKEND,
+        PortError::Unavailable(_) | PortError::TimedOut { .. } | PortError::Backend(_) => BACKEND,
     }
 }
 

@@ -283,26 +283,33 @@ pub fn manifest_env(
 pub enum LaunchExit {
     /// It ran and exited with this code.
     Code(i32),
-    /// The runner could not run it, or the run passed its time bound.
+    /// The runner could not run it.
     Error(String),
+    /// The run passed its time bound and was stopped; the runner's message.
+    TimedOut(String),
 }
-
-/// What the runner's error says when a run passed its time bound.
-const TIMEOUT_REASON: &str = "run timed out";
 
 impl LaunchExit {
     /// The status word in the exit comment: the exit code, `timeout` or `error`.
     pub fn status(&self) -> String {
         match self {
             Self::Code(code) => code.to_string(),
-            Self::Error(_) if self.timed_out() => "timeout".to_owned(),
+            Self::TimedOut(_) => "timeout".to_owned(),
             Self::Error(_) => "error".to_owned(),
         }
     }
 
     /// Whether the run passed its time bound and was stopped.
     pub fn timed_out(&self) -> bool {
-        matches!(self, Self::Error(reason) if reason.contains(TIMEOUT_REASON))
+        matches!(self, Self::TimedOut(_))
+    }
+
+    /// What went wrong, for a run that did not exit on its own.
+    pub fn problem(&self) -> Option<&str> {
+        match self {
+            Self::Code(_) => None,
+            Self::Error(reason) | Self::TimedOut(reason) => Some(reason),
+        }
     }
 }
 
@@ -362,6 +369,7 @@ pub fn launch(
             })?;
             LaunchExit::Code(output.exit_code)
         }
+        Err(error @ PortError::TimedOut { .. }) => LaunchExit::TimedOut(error.to_string()),
         Err(error) => LaunchExit::Error(error.to_string()),
     };
     board.comment(
@@ -615,10 +623,7 @@ impl Plan {
         let launched: Vec<serde_json::Value> = launched
             .iter()
             .map(|launch| {
-                let error = match &launch.exit {
-                    LaunchExit::Error(error) => Some(error.clone()),
-                    LaunchExit::Code(_) => None,
-                };
+                let error = launch.exit.problem();
                 serde_json::json!({
                     "instance": launch.instance.to_string(),
                     "epic": launch.instance.epic.get(),
