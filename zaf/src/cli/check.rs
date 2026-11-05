@@ -342,7 +342,7 @@ mod tests {
     #[test]
     fn the_live_shell_runs_a_line_at_the_project_root() {
         let dir = project(MANIFEST);
-        let composition = Composition::load(dir.path()).expect("loads");
+        let composition = Composition::load_with_home(dir.path(), None).expect("loads");
         let shell = LivePorts { composition };
         let passed = shell.run(&CommandLine::from("echo hello")).expect("runs");
         assert_eq!(passed.output, "hello\n");
@@ -359,7 +359,7 @@ mod tests {
     #[test]
     fn an_absent_forge_or_runner_is_unavailable() {
         let dir = project(MANIFEST);
-        let composition = Composition::load(dir.path()).expect("loads");
+        let composition = Composition::load_with_home(dir.path(), None).expect("loads");
         let ports = LivePorts { composition };
         assert!(matches!(ports.forge(), Err(PortError::Unavailable(_))));
         let missing = ports.runner(&RunnerName::from("local"));
@@ -456,7 +456,7 @@ mod tests {
     #[test]
     fn check_runs_in_the_recorded_workspace() {
         let dir = project(MANIFEST);
-        let composition = Composition::load(dir.path()).expect("loads");
+        let composition = Composition::load_with_home(dir.path(), None).expect("loads");
         // The workspace is where the record says, not where the branch patterns would put it.
         let elsewhere = tempfile::tempdir().expect("workspace dir");
         let workspace = elsewhere.path().canonicalize().expect("absolute");
@@ -471,7 +471,7 @@ mod tests {
     #[test]
     fn check_without_a_record_refuses() {
         let dir = project(MANIFEST);
-        let composition = Composition::load(dir.path()).expect("loads");
+        let composition = Composition::load_with_home(dir.path(), None).expect("loads");
         // A workspace that predates the records sits where the patterns would put it: no record,
         // so it is refused rather than guessed at.
         std::fs::create_dir_all(dir.path().join(".zaf/workspaces").join(SLICE)).expect("old");
@@ -654,7 +654,7 @@ mod tests {
     #[test]
     fn a_stored_record_reads_back_with_its_exit_code() {
         let dir = project(MANIFEST);
-        let composition = Composition::load(dir.path()).expect("loads");
+        let composition = Composition::load_with_home(dir.path(), None).expect("loads");
         let target = Target::Pr {
             pr: PrNumber::from(5),
             task: None,

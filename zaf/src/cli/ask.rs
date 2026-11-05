@@ -150,7 +150,7 @@ command = \"echo local-model\"
         let root = tempfile::tempdir().expect("temp dir");
         let manifest = format!("{MANIFEST}{extra}");
         std::fs::write(root.path().join("ZAF.toml"), manifest).expect("manifest");
-        let composition = Composition::load(root.path()).expect("composition");
+        let composition = Composition::load_with_home(root.path(), None).expect("composition");
         (root, composition)
     }
 
