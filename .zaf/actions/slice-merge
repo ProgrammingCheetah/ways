@@ -1,7 +1,7 @@
 #!/bin/sh
 # zaf description: land a task's slice with CI as the only gate: `merge-base`; when the base moved the head, `push` it and stop so the team runs `check pr` again; otherwise `pr-merge`, `zaf board done` and `workspace-drop`, stopping at the first that fails
 # zaf 1: refused: the arguments are not <task>, the base conflicts (the paths are in the log, the slice is unchanged), the base merge was pushed and needs a new `zaf check pr`, or a step refused
-# zaf 2: a backend failed (jj, gh or the board failed, or a step ended with a code `slice-merge` does not know); after `pr-merge` the merge may already have happened
+# zaf 2: a backend failed (jj, gh or the board failed, or a step did not run (it exited 125), or a step ended with a code `slice-merge` does not know); after `pr-merge` the merge may already have happened
 # zaf mode: 750
 # zaf group: team, release
 # zaf target: task
@@ -17,11 +17,12 @@ fi
 # The workspace goes at the end, so nothing here may stand inside it.
 cd "$ZAF_ROOT" || exit 2
 
-# The codes a step may hand back are 0, 1 and 2, and 125: a step that never ran. A caller must
-# not read that as a refusal or a conflict, so it passes through; any other code is a failure.
+# A step ends slice-merge with its own code when it is 1, a refusal, or 2. 125 is zaf's alone, a
+# step that never ran, so it is never passed on as slice-merge's own: a step that did not run is a
+# backend that failed, exit 2, as in `land`. Any other code is a failure too.
 stop() {
     case $1 in
-        1 | 2 | 125) exit "$1" ;;
+        1 | 2) exit "$1" ;;
         *) exit 2 ;;
     esac
 }
@@ -34,7 +35,8 @@ head_of() {
 before=$(head_of) || exit 2
 
 # `--more` brings the step's whole log back, so a conflict's paths reach this log. Exit 1 is a
-# conflict only when the step ran: a step that never ran is 125, and nothing is pushed for it.
+# conflict only when the step ran: a step that never ran is 125, which ends this action with 2,
+# and nothing is pushed for it.
 status=0
 log=$(zaf do --more merge-base "$ZAF_SLICE" "$ZAF_BASE" 2>&1) || status=$?
 printf '%s\n' "$log"
