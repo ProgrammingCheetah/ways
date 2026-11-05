@@ -27,6 +27,12 @@ pub enum TaskField {
     /// `Owned paths`: what the task may change.
     #[strum(to_string = "Owned paths")]
     OwnedPaths,
+    /// `Scope`: the capability the task changes, in words; replaces `Owned paths`.
+    #[strum(to_string = "Scope")]
+    Scope,
+    /// `Out of scope`: what the task leaves alone and the ticket that has it.
+    #[strum(to_string = "Out of scope")]
+    OutOfScope,
     /// `Interfaces`: ports, types and routes defined or consumed.
     #[strum(to_string = "Interfaces")]
     Interfaces,
@@ -152,6 +158,9 @@ pub enum TaskTemplateError {
     /// A required field left out.
     #[error("`{0}` is missing")]
     MissingField(TaskField),
+    /// Neither `Scope` nor `Owned paths` is given.
+    #[error("`Scope` (with `Out of scope`) or `Owned paths` is missing: give one of them")]
+    MissingScope,
     /// A field that must carry something left empty.
     #[error("`{0}` is empty")]
     EmptyField(TaskField),
@@ -173,13 +182,18 @@ pub enum TaskTemplateError {
 pub struct TaskTemplate {
     /// One sentence, the user-visible or system-visible outcome.
     pub goal: String,
-    /// The files or folders this task may change; nothing else.
+    /// Where the task works: `Scope` when the ticket gives it, else `Owned paths`.
     pub owned_paths: String,
+    /// Whether the ticket states its scope under `Scope` (with `Out of scope`), not `Owned paths`.
+    pub scoped: bool,
+    /// What the task leaves alone and which ticket has it; read from `Out of scope`.
+    pub out_of_scope: Option<String>,
     /// New or changed ports, types and routes; who defines, who consumes.
     pub interfaces: String,
     /// The design pages the task builds from.
     pub design_pages: String,
-    /// The module id and the interface ids this task defines or consumes.
+    /// The module id and the interface ids this task defines or consumes; empty when the
+    /// ticket has no `Architecture`.
     pub architecture: String,
     /// Checkable statements, one per line; at least one.
     pub acceptance: Vec<String>,
@@ -272,10 +286,23 @@ impl FromStr for TaskTemplate {
         if goal.is_empty() {
             return Err(TaskTemplateError::EmptyField(TaskField::Goal));
         }
-        let owned_paths = take_required(&mut values, TaskField::OwnedPaths)?;
+        let scope = values.remove(&TaskField::Scope);
+        let listed_paths = values.remove(&TaskField::OwnedPaths);
+        let out_of_scope = values.remove(&TaskField::OutOfScope);
+        let scoped = scope.is_some();
+        let owned_paths = match (scope, listed_paths) {
+            (Some(scope), _) => {
+                if out_of_scope.is_none() {
+                    return Err(TaskTemplateError::MissingField(TaskField::OutOfScope));
+                }
+                scope
+            }
+            (None, Some(listed)) => listed,
+            (None, None) => return Err(TaskTemplateError::MissingScope),
+        };
         let interfaces = take_required(&mut values, TaskField::Interfaces)?;
         let design_pages = take_required(&mut values, TaskField::DesignPages)?;
-        let architecture = take_required(&mut values, TaskField::Architecture)?;
+        let architecture = values.remove(&TaskField::Architecture).unwrap_or_default();
         let tests = take_required(&mut values, TaskField::Tests)?;
         let security_trigger =
             take_required(&mut values, TaskField::SecurityTrigger)?.parse::<SecurityTrigger>()?;
@@ -287,6 +314,8 @@ impl FromStr for TaskTemplate {
         let template = Self {
             goal,
             owned_paths,
+            scoped,
+            out_of_scope,
             interfaces,
             design_pages,
             architecture,
@@ -305,10 +334,20 @@ impl FromStr for TaskTemplate {
 impl fmt::Display for TaskTemplate {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write_field(formatter, TaskField::Goal, &self.goal)?;
-        write_field(formatter, TaskField::OwnedPaths, &self.owned_paths)?;
+        let paths_field = if self.scoped {
+            TaskField::Scope
+        } else {
+            TaskField::OwnedPaths
+        };
+        write_field(formatter, paths_field, &self.owned_paths)?;
+        if let Some(out_of_scope) = &self.out_of_scope {
+            write_field(formatter, TaskField::OutOfScope, out_of_scope)?;
+        }
         write_field(formatter, TaskField::Interfaces, &self.interfaces)?;
         write_field(formatter, TaskField::DesignPages, &self.design_pages)?;
-        write_field(formatter, TaskField::Architecture, &self.architecture)?;
+        if !self.architecture.is_empty() {
+            write_field(formatter, TaskField::Architecture, &self.architecture)?;
+        }
         writeln!(formatter, "{}:", TaskField::Acceptance)?;
         for statement in &self.acceptance {
             writeln!(formatter, "  - {statement}")?;
