@@ -17,8 +17,7 @@ use super::board::INSTANCE_VAR;
 use super::exit::{self, BACKEND, OK, REFUSED};
 use super::slice::VERSION_VAR;
 use crate::app::spawn::{
-    self, DryLaunch, LaunchContext, LaunchExit, LaunchPorts, Launched, Prepared, SpawnError,
-    TEAM_ROLE,
+    self, DryLaunch, LaunchContext, LaunchPorts, Launched, Prepared, SpawnError, TEAM_ROLE,
 };
 use crate::composition::Composition;
 use crate::domain::{Instance, RoleName};
@@ -96,7 +95,7 @@ pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool) -> u8 {
     for result in spawn::launch_all(&jobs, &ports) {
         match result {
             Ok(done) => {
-                if let LaunchExit::Error(error) = &done.exit {
+                if let Some(error) = done.exit.problem() {
                     eprintln!("zaf {path}: {}: {error}", done.instance);
                     code = BACKEND;
                 }

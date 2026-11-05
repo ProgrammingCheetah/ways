@@ -15,6 +15,14 @@ pub enum PortError {
     /// The backend or a declared piece of it is not there (a runner offline, a gate not declared).
     #[error("unavailable: {0}")]
     Unavailable(String),
+    /// A run passed its time bound and was stopped: the bound and the command line.
+    #[error("run timed out after {}s: {command}", .bound.as_secs_f64())]
+    TimedOut {
+        /// The time bound.
+        bound: std::time::Duration,
+        /// The command line that was run.
+        command: String,
+    },
     /// The backend failed in a way the caller cannot act on.
     #[error("backend failed: {0}")]
     Backend(String),
