@@ -19,12 +19,14 @@ use std::time::{Duration, Instant, SystemTime};
 
 use super::caller::Caller;
 use super::metadata::{ActionMetadata, parse};
-use super::records::{forget_records, keep_hand_back};
+use super::phase::{derive_phase, gather_phase_facts};
+use super::records::{SliceRecords, forget_records, keep_hand_back};
 use super::resolve::{
     ResolveError, Resolved, Tier, can_shadow, check_name, list, resolve, resolve_in, same_file,
 };
 use super::slice_env::{SliceContext, SliceEnv};
 use crate::composition::{STATE_DIR, ZAF_HOME_VAR};
+use crate::domain::IssueNumber;
 
 /// The exit code of a body that never ran; no action may declare it.
 pub const NOT_RUN_EXIT: u8 = 125;
@@ -444,6 +446,9 @@ fn start(request: &RunRequest<'_>) -> Result<Started, Refused> {
             found.path.display()
         )));
     }
+    // Before a log exists, like the next: a task in the wrong phase, or one whose phase cannot be
+    // read, starts nothing and leaves nothing behind.
+    check_phase(request, &metadata).map_err(refused)?;
     // Before a log exists: a board that cannot answer starts nothing and leaves nothing behind.
     let slice_env = SliceEnv::for_run(request, metadata.target.is_some()).map_err(refused)?;
     let (log, log_file) = open_log(&logs_dir(request), name)
@@ -460,6 +465,52 @@ fn start(request: &RunRequest<'_>) -> Result<Started, Refused> {
         metadata,
         log,
     })
+}
+
+/// The phase guard (docs/zaf-actions.md §3): an action with `target: task` and `phases:` runs only
+/// while its task is in one of them. An action naming no phase may run in any, and so reads none.
+/// Every way the phase cannot be told is a refusal too, the guard failing closed: a first argument
+/// that is no task, no project, and a board, a forge or a version control that cannot be built or
+/// read. The error is the words of the `NOT_RUN` line.
+fn check_phase(request: &RunRequest<'_>, metadata: &ActionMetadata) -> Result<(), String> {
+    if metadata.target.is_none() || metadata.phases.is_empty() {
+        return Ok(());
+    }
+    let task = request
+        .args
+        .first()
+        .and_then(|task| task.to_str())
+        .and_then(|task| task.parse::<IssueNumber>().ok())
+        .ok_or("a `target: task` action needs the task number as its first argument")?;
+    let unavailable = |what: &str, reason: &String| {
+        format!("cannot read the phase of {task}: no {what}: {reason}")
+    };
+    let (Some(root), Some(context)) = (request.project_root, request.slice.as_ref()) else {
+        return Err(format!(
+            "cannot read the phase of {task}: no project to read it in"
+        ));
+    };
+    let board = context
+        .board
+        .as_ref()
+        .map_err(|reason| unavailable("board", reason))?;
+    let forge = context
+        .forge
+        .as_ref()
+        .map_err(|reason| unavailable("forge", reason))?;
+    let vcs = context
+        .vcs
+        .as_ref()
+        .map_err(|reason| unavailable("version control", reason))?;
+    let records = SliceRecords::new(root);
+    let facts = gather_phase_facts(*board, *forge, *vcs, &records, task)
+        .map_err(|unreadable| unreadable.to_string())?;
+    let phase = derive_phase(&facts);
+    if metadata.phases.contains(&phase) {
+        return Ok(());
+    }
+    let allowed: Vec<String> = metadata.phases.iter().map(ToString::to_string).collect();
+    Err(format!("{task} is in {phase}, not {}", allowed.join(", ")))
 }
 
 /// Whether the file's first two bytes are `#!`.

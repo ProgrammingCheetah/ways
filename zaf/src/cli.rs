@@ -177,6 +177,11 @@ pub enum BoardAction {
         /// The ruling.
         text: String,
     },
+    /// Mark a task done once its work has landed: in land, or when its recorded pull request has merged.
+    Done {
+        /// The task.
+        task: IssueNumber,
+    },
 }
 
 /// `zaf slice …`.

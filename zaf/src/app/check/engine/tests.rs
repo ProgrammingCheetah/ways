@@ -30,6 +30,10 @@ impl Forge for SharedForge {
         self.0.head(pr)
     }
 
+    fn merged(&self, pr: PrNumber) -> Result<bool, PortError> {
+        self.0.merged(pr)
+    }
+
     fn last_changed_file(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
         self.0.last_changed_file(pr)
     }

@@ -22,6 +22,7 @@ struct PullRequest {
 struct State {
     pulls: BTreeMap<PrNumber, PullRequest>,
     next_number: u64,
+    merged_fails: bool,
 }
 
 /// A forge held in memory. Arrange reviews with [`FakeForge::set_checks`]
@@ -73,6 +74,11 @@ impl FakeForge {
         let mut state = self.state();
         state.pull_mut(pr)?.files = files.iter().map(|file| (*file).to_owned()).collect();
         Ok(())
+    }
+
+    /// Makes every [`Forge::merged`] read fail with a backend error, as a forge that is down does.
+    pub fn fail_merged_reads(&self) {
+        self.state().merged_fails = true;
     }
 
     /// The request a pull request was opened with.
@@ -132,6 +138,14 @@ impl Forge for FakeForge {
     fn head(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
         let mut state = self.state();
         Ok(state.pull_mut(pr)?.head.clone())
+    }
+
+    fn merged(&self, pr: PrNumber) -> Result<bool, PortError> {
+        let mut state = self.state();
+        if state.merged_fails {
+            return Err(PortError::Backend("the forge is down".to_owned()));
+        }
+        Ok(state.pull_mut(pr)?.merged)
     }
 
     fn last_changed_file(&self, pr: PrNumber) -> Result<Option<String>, PortError> {

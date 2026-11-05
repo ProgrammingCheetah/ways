@@ -1331,6 +1331,31 @@ fn merge_merges_once_and_a_merged_pr_is_quiet() {
 }
 
 #[test]
+fn merged_is_true_only_for_a_merged_pr_and_changes_nothing() {
+    let fake = FakeGh::new();
+    fake.on("pr view 7 *", r#"{"state":"OPEN"}"#)
+        .on("pr view 8 *", r#"{"state":"MERGED"}"#)
+        .on("pr view 9 *", r#"{"state":"CLOSED"}"#);
+    let forge = fake.forge();
+    assert_eq!(forge.merged(PrNumber::from(7)), Ok(false));
+    assert_eq!(forge.merged(PrNumber::from(8)), Ok(true));
+    assert_eq!(forge.merged(PrNumber::from(9)), Ok(false));
+    let expected_calls = vec![
+        argv(&["pr", "view", "7", "--json", "state", "--repo", REPO]),
+        argv(&["pr", "view", "8", "--json", "state", "--repo", REPO]),
+        argv(&["pr", "view", "9", "--json", "state", "--repo", REPO]),
+    ];
+    assert_eq!(fake.calls(), expected_calls);
+
+    let broken = FakeGh::new();
+    broken.fail_on("pr view *", "HTTP 502");
+    assert!(matches!(
+        broken.forge().merged(PrNumber::from(7)),
+        Err(PortError::Backend(_))
+    ));
+}
+
+#[test]
 fn head_reads_the_pull_requests_head_commit() {
     let fake = FakeGh::new();
     fake.on("pr view 7 *", r#"{"headRefOid":"abc123"}"#)

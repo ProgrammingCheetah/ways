@@ -124,6 +124,10 @@ pub trait Forge {
     /// The commit id the pull request's head is at now, when the forge reports one.
     fn head(&self, pr: PrNumber) -> Result<Option<String>, PortError>;
 
+    /// Whether the pull request has merged; a read, it changes nothing. A pull request that is
+    /// open or closed unmerged is not merged.
+    fn merged(&self, pr: PrNumber) -> Result<bool, PortError>;
+
     /// The last file of the pull request's diff, in the order the forge lists the
     /// changed files; none when the pull request changes no file.
     fn last_changed_file(&self, pr: PrNumber) -> Result<Option<String>, PortError>;
