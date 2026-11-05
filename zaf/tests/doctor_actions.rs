@@ -38,6 +38,13 @@ fn project_actions(project: &Project) -> std::path::PathBuf {
     project.root.join(".zaf/actions")
 }
 
+/// A project that provides the four `slice-*` actions, so a test sees only the failure it makes.
+fn project() -> Project {
+    let project = Project::new(MANIFEST);
+    project.provide_slice_actions();
+    project
+}
+
 /// The doctor's exit code and what it printed.
 fn doctor(project: &Project) -> (i32, String) {
     let (code, stdout, stderr) = outcome(&project.zaf(&["doctor"]));
@@ -46,7 +53,7 @@ fn doctor(project: &Project) -> (i32, String) {
 
 #[test]
 fn doctor_reports_every_action_with_its_validity_and_mode() {
-    let project = Project::new(MANIFEST);
+    let project = project();
     put(
         &project_actions(&project),
         "land",
@@ -75,7 +82,7 @@ fn doctor_reports_every_action_with_its_validity_and_mode() {
 
 #[test]
 fn doctor_fails_on_bad_metadata() {
-    let project = Project::new(MANIFEST);
+    let project = project();
     let actions = project_actions(&project);
     write(&actions, "nothing", "#!/bin/sh\necho no metadata\n");
     fs::set_permissions(actions.join("nothing"), fs::Permissions::from_mode(0o755)).expect("mode");
@@ -119,7 +126,7 @@ fn doctor_fails_on_bad_metadata() {
 
 #[test]
 fn doctor_fails_on_a_declared_125() {
-    let project = Project::new(MANIFEST);
+    let project = project();
     let actions = project_actions(&project);
     put(
         &actions,
@@ -142,7 +149,7 @@ fn doctor_fails_on_a_declared_125() {
 
 #[test]
 fn doctor_fails_on_a_bad_phase() {
-    let project = Project::new(MANIFEST);
+    let project = project();
     let actions = project_actions(&project);
     put(
         &actions,
@@ -196,7 +203,7 @@ fn doctor_fails_on_a_bad_phase() {
 
 #[test]
 fn doctor_fails_on_a_bad_mode() {
-    let project = Project::new(MANIFEST);
+    let project = project();
     let actions = project_actions(&project);
     put(
         &actions,
@@ -256,7 +263,7 @@ fn doctor_fails_on_a_bad_mode() {
 
 #[test]
 fn doctor_json_carries_each_action_and_exits_1_on_an_invalid_one() {
-    let project = Project::new(MANIFEST);
+    let project = project();
     let actions = project_actions(&project);
     put(&actions, "fine", &["description: fine", "1: failed"], true);
     put(&actions, "broken", &["description: broken"], true);
@@ -272,4 +279,199 @@ fn doctor_json_carries_each_action_and_exits_1_on_an_invalid_one() {
     assert_eq!(by_name("fine")["tier"], "project");
     assert_eq!(by_name("broken")["ok"], false);
     assert!(by_name("broken")["mode"].is_null());
+}
+
+/// Writes an executable action to `dir/<name>` with a valid header and the given body.
+fn put_body(dir: &Path, name: &str, body: &str) {
+    write(
+        dir,
+        name,
+        &format!("#!/bin/sh\n# zaf description: {name}\n# zaf 1: failed\n{body}\n"),
+    );
+    fs::set_permissions(dir.join(name), fs::Permissions::from_mode(0o755)).expect("mode");
+}
+
+/// The four `slice-*` names.
+const SLICE: [&str; 4] = ["slice-open", "slice-pr", "slice-merge", "slice-drop"];
+
+#[test]
+fn doctor_lists_needed_names_with_their_tier() {
+    let manifest = format!("{MANIFEST}\n[check.pr]\nsteps = [\"ci\", \"action:lint?flagged\"]\n");
+    let project = Project::new(&manifest);
+    let (project_dir, machine_dir) = (project_actions(&project), project.home.join("actions"));
+    for name in &SLICE[..2] {
+        put_body(&project_dir, name, "true");
+    }
+    // `slice-drop` is in both tiers: the project's file is the one that runs.
+    for name in &SLICE[2..] {
+        put_body(&machine_dir, name, "true");
+    }
+    put_body(&project_dir, "slice-drop", "true");
+    put_body(&machine_dir, "lint", "true");
+
+    let (code, text) = doctor(&project);
+
+    assert_eq!(code, 0, "{text}");
+    for (name, tier) in [
+        ("slice-open", "project"),
+        ("slice-pr", "project"),
+        ("slice-merge", "machine"),
+        ("slice-drop", "project"),
+    ] {
+        assert!(
+            text.contains(&format!(
+                "needed {name} ({tier}): ok, needed by the slice verbs"
+            )),
+            "{text}"
+        );
+    }
+    assert!(
+        text.contains("needed lint (machine): ok, needed by [check.pr] step `action:lint`"),
+        "an action step names its target and step: {text}"
+    );
+
+    let output = project.zaf(&["--json", "doctor"]);
+    assert_eq!(output.status.code(), Some(0));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json");
+    let rows = report["needed"].as_array().expect("needed");
+    let by_name = |name: &str| rows.iter().find(|row| row["name"] == name).expect("a row");
+    assert_eq!(by_name("slice-merge")["tier"], "machine");
+    assert_eq!(by_name("slice-drop")["tier"], "project");
+    assert_eq!(by_name("lint")["ok"], true);
+}
+
+#[test]
+fn doctor_fails_on_a_missing_needed_name() {
+    let manifest = format!("{MANIFEST}\n[check.pr]\nsteps = [\"action:ghost\"]\n");
+    let project = Project::new(&manifest);
+    let actions = project_actions(&project);
+    for name in &SLICE[..3] {
+        put_body(&actions, name, "true");
+    }
+
+    let (code, text) = doctor(&project);
+
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        text.contains("needed slice-drop: no provider, needed by the slice verbs"),
+        "{text}"
+    );
+    assert!(
+        text.contains("needed ghost: no provider, needed by [check.pr] step `action:ghost`"),
+        "{text}"
+    );
+    assert!(
+        text.contains("needed slice-open (project): ok"),
+        "a name that is provided still prints: {text}"
+    );
+
+    let output = project.zaf(&["--json", "doctor"]);
+    assert_eq!(output.status.code(), Some(1));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json");
+    let rows = report["needed"].as_array().expect("needed");
+    let ghost = rows
+        .iter()
+        .find(|row| row["name"] == "ghost")
+        .expect("ghost");
+    assert_eq!(ghost["ok"], false);
+    assert!(ghost["tier"].is_null());
+}
+
+#[test]
+fn doctor_finds_names_in_gate_lines() {
+    let manifest = format!(
+        "{MANIFEST}\n[gate]\nfull = \"zaf do gate-full && zaf do gate-more\"\n\
+         light = \"cd zaf && zaf do gate-light\"\ntests = \"zaf do gate-tests {{name}}\"\n"
+    );
+    let project = Project::new(&manifest);
+    let (project_dir, machine_dir) = (project_actions(&project), project.home.join("actions"));
+    for name in SLICE {
+        put_body(&project_dir, name, "true");
+    }
+    put_body(&project_dir, "gate-full", "true");
+    put_body(&machine_dir, "gate-tests", "true");
+
+    let (code, text) = doctor(&project);
+
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        text.contains("needed gate-full (project): ok, needed by [gate] full `zaf do gate-full`"),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "needed gate-tests (machine): ok, needed by [gate] tests `zaf do gate-tests`"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("needed gate-light: no provider, needed by [gate] light `zaf do gate-light`"),
+        "{text}"
+    );
+    assert!(
+        text.contains("needed gate-more: no provider, needed by [gate] full `zaf do gate-more`"),
+        "a second call on one line is found: {text}"
+    );
+
+    put_body(&project_dir, "gate-light", "true");
+    put_body(&project_dir, "gate-more", "true");
+    let (code, text) = doctor(&project);
+    assert_eq!(code, 0, "{text}");
+}
+
+#[test]
+fn doctor_finds_names_in_action_bodies() {
+    let project = project();
+    let (project_dir, machine_dir) = (project_actions(&project), project.home.join("actions"));
+    put_body(
+        &project_dir,
+        "land",
+        "echo start\nzaf do build && zaf do --tier machine push origin\n\
+         # later: zaf do commented\nzaf do \"$name\"",
+    );
+    put_body(&machine_dir, "hello", "zaf do greet");
+    put_body(&project_dir, "build", "true");
+    put_body(&project_dir, "push", "true");
+
+    let (code, text) = doctor(&project);
+
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        text.contains(
+            "needed build (project): ok, needed by action land (project): `zaf do build`"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "needed push (project): missing, needed by action land (project): \
+             `zaf do --tier machine push`"
+        ),
+        "a machine call needs the machine's file, whatever the project has: {text}"
+    );
+    assert!(
+        text.contains("needs the machine's file, and the machine has none"),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "needed commented: no provider, needed by action land (project): `zaf do commented`"
+        ),
+        "a commented call is found too: {text}"
+    );
+    assert!(
+        text.contains(
+            "needed greet: no provider, needed by action hello (machine): `zaf do greet`"
+        ),
+        "a machine action's body is scanned too: {text}"
+    );
+    assert!(!text.contains("needed $"), "a variable is no name: {text}");
+    assert!(!text.contains("needed \""), "a variable is no name: {text}");
+
+    put_body(&machine_dir, "push", "true");
+    put_body(&project_dir, "commented", "true");
+    put_body(&project_dir, "greet", "true");
+    let (code, text) = doctor(&project);
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("needed push (project): ok"), "{text}");
 }

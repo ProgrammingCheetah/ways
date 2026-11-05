@@ -109,6 +109,7 @@ fn ways_steps_have_valid_metadata() {
     let project = Project::new(MANIFEST);
     let actions = project.root.join(".zaf/actions");
     fs::create_dir_all(&actions).expect("actions folder");
+    project.provide_slice_actions();
     for (name, _, _) in STEPS {
         fs::copy(action_file(name), actions.join(name)).expect("copy keeps the mode");
     }

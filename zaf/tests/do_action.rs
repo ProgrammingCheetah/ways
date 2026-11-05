@@ -37,9 +37,19 @@ const CALLER_VARS: [&str; 7] = [
 /// A project whose homes exist, so the first-run notice never reaches a test's output.
 fn project() -> Project {
     let project = Project::new(MANIFEST);
+    set_up(&project);
+    project
+}
+
+/// Runs `zaf setup`, which is ready only while the four `slice-*` actions exist: they are
+/// provided for the run and taken away after it, so a test sees only the actions it writes.
+fn set_up(project: &Project) {
+    project.provide_slice_actions();
     let (code, stdout, stderr) = outcome(&project.zaf(&["setup"]));
     assert_eq!(code, 0, "{stdout}{stderr}");
-    project
+    for name in ["slice-open", "slice-pr", "slice-merge", "slice-drop"] {
+        fs::remove_file(project.root.join(".zaf/actions").join(name)).expect("take it away");
+    }
 }
 
 /// The built `zaf` in `dir`, itself first on PATH so a body can say `zaf do`.
@@ -223,8 +233,7 @@ fn do_sets_the_environment() {
 /// A project whose manifest has an `[env]` table, set up like [`project`].
 fn project_with_env(table: &str) -> Project {
     let project = Project::new(&format!("{MANIFEST}\n[env]\n{table}"));
-    let (code, stdout, stderr) = outcome(&project.zaf(&["setup"]));
-    assert_eq!(code, 0, "{stdout}{stderr}");
+    set_up(&project);
     project
 }
 
@@ -2245,8 +2254,7 @@ fn slice_project(target: &str, board_fails: bool) -> Project {
         project.env(name, value);
     }
     project.env("ZAF_VERSION", "v1");
-    let (code, stdout, stderr) = outcome(&project.zaf(&["setup"]));
-    assert_eq!(code, 0, "{stdout}{stderr}");
+    set_up(&project);
     action(
         &project,
         "slice-thing",
