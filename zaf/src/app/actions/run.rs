@@ -19,6 +19,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use super::caller::Caller;
 use super::metadata::{ActionMetadata, parse};
+use super::records::keep_hand_back;
 use super::resolve::{
     ResolveError, Resolved, Tier, can_shadow, check_name, list, resolve, resolve_in,
 };
@@ -295,8 +296,14 @@ pub fn read_action(
     Ok(bytes)
 }
 
-/// Runs the action, under the contract of §3. Every way a run can end is in the outcome.
+/// Runs the action, under the contract of §3, and keeps what a slice name hands back. Every way a
+/// run can end is in the outcome.
 pub fn run_action(request: &RunRequest<'_>) -> RunOutcome {
+    keep_hand_back(request, run_body(request))
+}
+
+/// The run itself: the body from start to end, nothing kept of it.
+fn run_body(request: &RunRequest<'_>) -> RunOutcome {
     let started_at = Instant::now();
     let started = match start(request) {
         Ok(started) => started,
