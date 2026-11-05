@@ -52,6 +52,7 @@ fn epic_lines(epic: &EpicRow, width: usize, lines: &mut Vec<String>) {
     ));
     for ticket in &epic.tickets {
         lines.push(ticket_line(ticket, width));
+        model_lines(ticket, width, lines);
     }
     for group in &epic.groups {
         group_lines(group, width, lines);
@@ -68,6 +69,7 @@ fn group_lines(group: &GroupRow, width: usize, lines: &mut Vec<String>) {
     ));
     for ticket in &group.tickets {
         lines.push(ticket_line(ticket, width));
+        model_lines(ticket, width, lines);
     }
 }
 
@@ -86,6 +88,32 @@ fn ticket_line(ticket: &TicketRow, width: usize) -> String {
         &tail,
         width,
     )
+}
+
+/// The rows under a ticket, one per model that declared phases: its role, a bar over the phases
+/// it declared and the phase it is in, `write ×2` from the second time it enters it.
+fn model_lines(ticket: &TicketRow, width: usize, lines: &mut Vec<String>) {
+    for model in &ticket.models {
+        let step = model
+            .current
+            .as_ref()
+            .and_then(|current| model.phases.iter().position(|phase| phase == current))
+            .map_or(0, |index| index + 1);
+        let tail = match (&model.current, model.iteration) {
+            (None, _) => "-".to_owned(),
+            (Some(current), 0 | 1) => current.clone(),
+            (Some(current), times) => format!("{current} ×{times}"),
+        };
+        lines.push(row(
+            &format!("    {}", model.role),
+            (
+                u32::try_from(step).unwrap_or(0),
+                u32::try_from(model.phases.len()).unwrap_or(u32::MAX),
+            ),
+            &tail,
+            width,
+        ));
+    }
 }
 
 /// The ticket's step among the seven phases; `Unclaimed` is before the first.

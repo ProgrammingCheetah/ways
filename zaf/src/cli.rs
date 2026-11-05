@@ -25,6 +25,7 @@ pub mod guard;
 pub mod hub;
 pub mod init;
 pub mod profile;
+pub mod progress;
 pub mod report;
 pub mod setup;
 pub mod slice;
@@ -147,6 +148,39 @@ pub enum Verb {
         #[command(subcommand)]
         action: Option<HubAction>,
     },
+    /// A model's phases on a task: declare them, then report each change.
+    Progress {
+        /// What to do with the phases.
+        #[command(subcommand)]
+        action: ProgressAction,
+    },
+}
+
+/// `zaf progress …`.
+#[derive(Debug, clap::Subcommand, strum::IntoStaticStr)]
+#[strum(serialize_all = "kebab-case")]
+pub enum ProgressAction {
+    /// Declare the phases this model goes through on a task, in order.
+    Plan {
+        /// The task.
+        task: IssueNumber,
+        /// The phases, one word each.
+        #[arg(required = true, num_args = 1..)]
+        phases: Vec<String>,
+        /// The role the phases are for; the role `ZAF_INSTANCE` names when not given.
+        #[arg(long)]
+        role: Option<String>,
+    },
+    /// Report that this model is now in one of its declared phases.
+    At {
+        /// The task.
+        task: IssueNumber,
+        /// The phase, as declared.
+        phase: String,
+        /// The role the phase is for; the role `ZAF_INSTANCE` names when not given.
+        #[arg(long)]
+        role: Option<String>,
+    },
 }
 
 /// `zaf hub …`.
@@ -243,6 +277,7 @@ impl Verb {
             Self::Slice { action } => Some(action.into()),
             Self::Profile { action } => Some(action.into()),
             Self::Hub { action } => action.as_ref().map(Into::into),
+            Self::Progress { action } => Some(action.into()),
             _ => None,
         };
         action.map_or_else(|| verb.to_owned(), |action| format!("{verb} {action}"))
@@ -348,6 +383,7 @@ fn run_verb(cli: &Cli) -> u8 {
         Verb::Profile { action } => profile::run(cli, action),
         Verb::Do(args) => do_action::run(cli, args),
         Verb::Hub { action } => hub::run(cli, action.as_ref()),
+        Verb::Progress { action } => progress::run(cli, action),
     }
 }
 

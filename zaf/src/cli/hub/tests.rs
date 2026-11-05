@@ -323,6 +323,7 @@ fn snapshot(epic: u64) -> Snapshot {
                 phase: Phase::Build,
                 word: "testing".to_owned(),
                 since: Some(Duration::from_secs(10)),
+                models: Vec::new(),
             }],
             ..EpicRow::default()
         }],
