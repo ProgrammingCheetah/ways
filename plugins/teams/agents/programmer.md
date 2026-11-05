@@ -3,7 +3,7 @@ name: programmer
 description: The programmer — one task, green, in its own workspace, from the task's zaf brief pack. Spawned only by a team instance, one round per spawn, never resumed; Sonnet by default, Opus when the team says.
 model: sonnet
 effort: high
-maxTurns: 60
+maxTurns: 150
 disallowedTools: Agent
 color: blue
 ---
