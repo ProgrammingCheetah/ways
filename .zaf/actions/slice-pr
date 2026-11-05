@@ -1,0 +1,46 @@
+#!/bin/sh
+# zaf description: publish a task's slice: `commit` what is left (skipped when nothing is), `push`, then `pr-open` titled `<title> (#<task>)`, handing back the pull request number
+# zaf 1: refused: the arguments are not <task>, or a step refused (the slice is not open, the remote has work the slice lacks, or the forge refused)
+# zaf 2: a backend failed (jj or gh is missing or refused)
+# zaf mode: 750
+# zaf group: team, release
+# zaf target: task
+# zaf phases: build, check, review
+
+# The task as a bare number; zaf has already read it as one.
+task=${1#\#}
+# zaf sets ZAF_SLICE, ZAF_BASE and ZAF_TASK_TITLE on a `target: task` run; a hand-written call has none.
+if [ "$#" -ne 1 ] || [ -z "$ZAF_ROOT" ] || [ -z "$ZAF_SLICE" ] || [ -z "$ZAF_BASE" ] || [ -z "$ZAF_TASK_TITLE" ]; then
+    echo "usage: slice-pr <task>, run by zaf with ZAF_SLICE, ZAF_BASE and ZAF_TASK_TITLE set" >&2
+    exit 1
+fi
+case $task in
+    "" | *[!0-9]*)
+        echo "task $1 is not an issue number" >&2
+        exit 1
+        ;;
+esac
+
+title="$ZAF_TASK_TITLE (#$task)"
+dir=$ZAF_ROOT/.zaf/workspaces/$ZAF_SLICE
+
+# What is left is the working copy's own change: jj snapshots the files on disk first. `commit`
+# refuses an empty one, so an empty one is skipped here rather than told from a real refusal.
+empty=$(cd "$dir" && jj --no-pager --color=never log --no-graph -r @ -T empty) || exit 2
+if [ "$empty" != "true" ]; then
+    zaf do commit "$ZAF_SLICE" "$title" || exit $?
+fi
+
+zaf do push "$ZAF_SLICE" || exit $?
+
+# A successful `zaf do` prints nothing, so `--more` brings the step's whole log back; its last
+# non-empty line is the pull request number.
+log=$(zaf do --more pr-open "$ZAF_SLICE" "$ZAF_BASE" "$title" "Refs #$task.") || exit $?
+number=$(printf '%s\n' "$log" | awk 'NF { line = $0 } END { print line }')
+if [ -z "$number" ]; then
+    echo "pr-open handed back no pull request number" >&2
+    exit 2
+fi
+
+# The hand-back: zaf keeps this line as the task's pull request record.
+echo "$number"
