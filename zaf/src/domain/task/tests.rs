@@ -210,6 +210,99 @@ fn a_tab_indented_line_continues_and_a_stray_item_stays_refused() {
     );
 }
 
+/// The filled template written with `Scope` and `Out of scope` in place of `Owned paths`.
+fn scoped_text() -> String {
+    FILLED_TEMPLATE.replace(
+        "Owned paths: src/export/**, tests/export.rs\n",
+        "Scope: the CSV export of a reading list; start in src/export\n\
+         Out of scope: the import path stays with #7\n",
+    )
+}
+
+#[test]
+fn scope_field_parses() {
+    let template: TaskTemplate = scoped_text()
+        .parse()
+        .unwrap_or_else(|error| panic!("a scoped ticket parses: {error}"));
+    assert!(template.scoped);
+    assert_eq!(
+        template.owned_paths,
+        "the CSV export of a reading list; start in src/export"
+    );
+    assert_eq!(
+        template.out_of_scope.as_deref(),
+        Some("the import path stays with #7")
+    );
+    let rendered = template.to_string();
+    assert!(rendered.contains("Scope: the CSV export"));
+    assert!(rendered.contains("Out of scope: the import path"));
+    assert!(!rendered.contains("Owned paths"));
+    let second: TaskTemplate = rendered
+        .parse()
+        .unwrap_or_else(|error| panic!("the rendering parses: {error}"));
+    assert_eq!(second, template);
+}
+
+#[test]
+fn owned_paths_still_parses() {
+    let template = filled();
+    assert!(!template.scoped);
+    assert_eq!(template.owned_paths, "src/export/**, tests/export.rs");
+    assert_eq!(template.out_of_scope, None);
+    assert!(template.to_string().contains("Owned paths: src/export/**"));
+}
+
+#[test]
+fn ticket_without_scope_or_owned_paths_is_an_error() {
+    let neither = FILLED_TEMPLATE.replace("Owned paths: src/export/**, tests/export.rs\n", "");
+    let error = neither
+        .parse::<TaskTemplate>()
+        .expect_err("a ticket with neither field is refused");
+    assert_eq!(error, TaskTemplateError::MissingScope);
+    let message = error.to_string();
+    assert!(message.contains("Scope"));
+    assert!(message.contains("Owned paths"));
+}
+
+#[test]
+fn scope_without_out_of_scope_is_an_error() {
+    let unbounded = scoped_text().replace("Out of scope: the import path stays with #7\n", "");
+    assert_eq!(
+        unbounded.parse::<TaskTemplate>(),
+        Err(TaskTemplateError::MissingField(TaskField::OutOfScope))
+    );
+    let message = TaskTemplateError::MissingField(TaskField::OutOfScope).to_string();
+    assert!(message.contains("Out of scope"));
+}
+
+#[test]
+fn scope_wins_over_owned_paths() {
+    let both = scoped_text().replace("Interfaces:", "Owned paths: src/export/**\nInterfaces:");
+    let template: TaskTemplate = both
+        .parse()
+        .unwrap_or_else(|error| panic!("a ticket with both parses: {error}"));
+    assert!(template.scoped);
+    assert_eq!(
+        template.owned_paths,
+        "the CSV export of a reading list; start in src/export"
+    );
+}
+
+#[test]
+fn architecture_is_optional() {
+    let without = FILLED_TEMPLATE.replace("Architecture: export, ExportSink\n", "");
+    let template: TaskTemplate = without
+        .parse()
+        .unwrap_or_else(|error| panic!("a ticket without Architecture parses: {error}"));
+    assert_eq!(template.architecture, "");
+    assert!(!template.to_string().contains("Architecture"));
+    let second: TaskTemplate = template
+        .to_string()
+        .parse()
+        .unwrap_or_else(|error| panic!("the rendering parses: {error}"));
+    assert_eq!(second, template);
+}
+
 #[test]
 fn field_labels_are_pinned() {
     let labels: Vec<String> = TaskField::VARIANTS
@@ -221,6 +314,8 @@ fn field_labels_are_pinned() {
         [
             "Goal",
             "Owned paths",
+            "Scope",
+            "Out of scope",
             "Interfaces",
             "Design pages",
             "Architecture",
