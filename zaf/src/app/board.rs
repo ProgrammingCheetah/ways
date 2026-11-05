@@ -1,7 +1,8 @@
-//! `zaf board ready|claim|report|question|ruling`: reading and writing the board.
+//! `zaf board ready|claim|report|question|ruling|done`: reading and writing the board.
 
+use crate::app::actions::{Phase, PhaseUnreadable, SliceRecords, derive_phase, gather_phase_facts};
 use crate::domain::{Instance, IssueNumber, TaskLabel};
-use crate::ports::{Board, ClaimOutcome, NewQuestion, PortError, Ticket};
+use crate::ports::{Board, ClaimOutcome, Forge, NewQuestion, PortError, Ticket, Vcs};
 
 /// Why a board verb stopped.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -16,6 +17,17 @@ pub enum BoardError {
         /// The tasks it holds.
         held: Vec<IssueNumber>,
     },
+    /// `board done` found the task outside `land` with no merged pull request to show for it.
+    #[error("{task} is in {phase}, not land")]
+    NotInLand {
+        /// The task.
+        task: IssueNumber,
+        /// The phase it is in.
+        phase: Phase,
+    },
+    /// The task's phase could not be read, so nothing was changed.
+    #[error(transparent)]
+    Unreadable(#[from] PhaseUnreadable),
     /// The board refused or failed.
     #[error(transparent)]
     Port(#[from] PortError),
@@ -133,6 +145,49 @@ pub fn ruling(
     command: &RulingCommand,
 ) -> Result<Option<IssueNumber>, BoardError> {
     Ok(board.record_ruling(command.question, &command.ruling)?)
+}
+
+/// What `zaf board done` did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DoneOutcome {
+    /// The task is now labelled `done`.
+    Marked,
+    /// The task was `done` already; nothing changed.
+    AlreadyDone,
+}
+
+/// `zaf board done`: marks a task `done` once its work has landed.
+///
+/// In `land` the label is set, which takes `ready` and `claimed` off. Outside `land` it is set
+/// only when the pull request recorded for the task has merged: `slice-merge` merges the base in
+/// first, which moves the head and so takes the task out of `land` before it merges. A task
+/// already `done` is left alone. Every other case, an open pull request and a task with no
+/// recorded one included, is [`BoardError::NotInLand`], and a read that fails is an error:
+/// either way nothing is changed.
+pub fn done(
+    board: &dyn Board,
+    forge: &dyn Forge,
+    vcs: &dyn Vcs,
+    records: &SliceRecords,
+    task: IssueNumber,
+) -> Result<DoneOutcome, BoardError> {
+    let facts = gather_phase_facts(board, forge, vcs, records, task)?;
+    let phase = derive_phase(&facts);
+    match phase {
+        Phase::Done => return Ok(DoneOutcome::AlreadyDone),
+        Phase::Land => {}
+        _ => {
+            let merged = match records.pr(task) {
+                Some(pr) => forge.merged(pr)?,
+                None => false,
+            };
+            if !merged {
+                return Err(BoardError::NotInLand { task, phase });
+            }
+        }
+    }
+    board.label(task, TaskLabel::Done)?;
+    Ok(DoneOutcome::Marked)
 }
 
 #[cfg(test)]
