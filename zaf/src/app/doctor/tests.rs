@@ -526,7 +526,6 @@ fn the_token_env_path_has_no_credentials_file_and_keeps_its_plain_line() {
 }
 
 const PACK: &str = "[pack]\npath = \"vendor/kit\"\n";
-const KIT_LISTED: &str = "Installed plugins:\n\n  \u{276f} kit@shelf\n    Version: 1.2.3\n    Scope: user\n    Status: enabled\n";
 
 /// The project's marketplace file: marketplace `shelf` listing plugin `kit` at `./vendor/kit`.
 fn write_marketplace(root: &Path) {
@@ -538,12 +537,36 @@ fn write_marketplace(root: &Path) {
     .expect("writes");
 }
 
+/// The source pack's own manifest, declaring `version` (or none).
+fn write_source_pack(root: &Path, version: Option<&str>) {
+    let dir = root.join("vendor/kit/.claude-plugin");
+    fs::create_dir_all(&dir).expect("plugin dir");
+    let plugin = match version {
+        Some(version) => format!(r#"{{"name":"kit","version":"{version}"}}"#),
+        None => r#"{"name":"kit"}"#.to_owned(),
+    };
+    fs::write(dir.join("plugin.json"), plugin).expect("writes");
+}
+
+/// A profile's `plugins/installed_plugins.json` recording `entry` for `kit@shelf`.
+fn write_installed(home: &Path, entry: &str) {
+    let dir = home.join("plugins");
+    fs::create_dir_all(&dir).expect("plugins dir");
+    fs::write(
+        dir.join("installed_plugins.json"),
+        format!(r#"{{"version":2,"plugins":{{"kit@shelf":[{entry}]}}}}"#),
+    )
+    .expect("writes");
+}
+
 #[test]
-fn a_profile_listing_the_pack_says_its_version_and_ok() {
+fn doctor_prints_the_installed_pack_version() {
     let dir = tempfile::tempdir().expect("temp dir");
     let (_, build) = profile_homes(dir.path());
     write_marketplace(dir.path());
-    let commands = FakeCommands::new().with("env", KIT_LISTED);
+    write_source_pack(dir.path(), Some("1.2.3"));
+    write_installed(&build, r#"{"scope":"user","version":"1.2.3"}"#);
+    let commands = FakeCommands::new();
     let report = doctor(dir.path(), &manifest(PACK), &commands);
     let lines = report.lines();
     assert!(
@@ -556,46 +579,96 @@ fn a_profile_listing_the_pack_says_its_version_and_ok() {
             .all(|line| !line.starts_with("profile lean: pack")),
         "lean runs plugin-free: {lines:?}"
     );
-    assert!(commands.calls().contains(&vec![
-        "env".to_owned(),
-        format!("CLAUDE_CONFIG_DIR={}", build.display()),
-        "claude".to_owned(),
-        "plugin".to_owned(),
-        "list".to_owned(),
-    ]));
+    assert!(
+        commands
+            .calls()
+            .iter()
+            .all(|call| !call.contains(&"plugin".to_owned())),
+        "no `claude plugin` command is run"
+    );
     assert!(report.passed());
     let json = serde_json::to_value(&report).expect("serializes");
     assert_eq!(json["packs"][0]["profile"], "build");
     assert_eq!(json["packs"][0]["version"], "1.2.3");
+    assert_eq!(json["packs"][0]["source_version"], "1.2.3");
     assert_eq!(json["packs"][0]["ok"], true);
 }
 
 #[test]
-fn a_profile_whose_listing_lacks_the_pack_is_missing_with_its_fix() {
+fn an_unversioned_source_pack_has_nothing_to_compare() {
     let dir = tempfile::tempdir().expect("temp dir");
-    profile_homes(dir.path());
+    let (_, build) = profile_homes(dir.path());
     write_marketplace(dir.path());
-    let commands = FakeCommands::new().with("env", "No plugins installed\n");
+    write_source_pack(dir.path(), None);
+    write_installed(&build, r#"{"scope":"user","version":"0.9.0"}"#);
+    let report = doctor(dir.path(), &manifest(PACK), &FakeCommands::new());
+    assert!(
+        report
+            .lines()
+            .contains(&"profile build: pack kit@shelf 0.9.0 ok".to_owned())
+    );
+    assert!(report.passed());
+}
+
+#[test]
+fn doctor_fails_on_a_stale_pack() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (_, build) = profile_homes(dir.path());
+    write_marketplace(dir.path());
+    write_source_pack(dir.path(), Some("1.3.0"));
+    write_installed(&build, r#"{"scope":"user","version":"1.2.3"}"#);
+    let report = doctor(dir.path(), &manifest(PACK), &FakeCommands::new());
+    let lines = report.lines();
+    let line = lines
+        .iter()
+        .find(|line| line.starts_with("profile build: pack"))
+        .expect("a pack line");
+    assert!(line.contains("1.2.3") && line.contains("1.3.0"), "{line}");
+    assert!(line.contains("zaf profile init updates it"), "{line}");
+    assert!(!line.ends_with(" ok"), "{line}");
+    assert!(!report.passed());
+    let json = serde_json::to_value(&report).expect("serializes");
+    assert_eq!(json["packs"][0]["ok"], false);
+}
+
+#[test]
+fn a_profile_whose_installed_file_lacks_the_pack_fails_with_its_fix() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (_, build) = profile_homes(dir.path());
+    write_marketplace(dir.path());
+    write_source_pack(dir.path(), Some("1.2.3"));
+    fs::create_dir_all(build.join("plugins")).expect("plugins dir");
+    fs::write(
+        build.join("plugins/installed_plugins.json"),
+        r#"{"version":2,"plugins":{"other@shelf":[{"version":"1.2.3"}]}}"#,
+    )
+    .expect("writes");
+    let commands = FakeCommands::new();
     let report = doctor(dir.path(), &manifest(PACK), &commands);
     let lines = report.lines();
     assert!(
-        lines.contains(&"profile build: pack missing (fix: zaf profile init)".to_owned()),
+        lines.contains(
+            &"profile build: pack missing (fix: zaf profile init installs it)".to_owned()
+        ),
         "{lines:?}"
     );
-    assert!(report.passed(), "a missing pack is reported, not failed");
+    assert!(!report.passed(), "a missing pack fails the report");
+    let json = serde_json::to_value(&report).expect("serializes");
+    assert_eq!(json["packs"][0]["ok"], false);
 }
 
 #[test]
 fn a_profile_not_generated_yet_has_its_pack_missing_without_asking() {
     let dir = tempfile::tempdir().expect("temp dir");
     write_marketplace(dir.path());
-    let commands = FakeCommands::new().with("env", KIT_LISTED);
+    let commands = FakeCommands::new();
     let report = doctor(dir.path(), &manifest(PACK), &commands);
     assert!(
-        report
-            .lines()
-            .contains(&"profile build: pack missing (fix: zaf profile init)".to_owned())
+        report.lines().contains(
+            &"profile build: pack missing (fix: zaf profile init installs it)".to_owned()
+        )
     );
+    assert!(!report.passed(), "a missing pack fails the report");
     assert!(commands.calls().is_empty());
 }
 
@@ -603,7 +676,7 @@ fn a_profile_not_generated_yet_has_its_pack_missing_without_asking() {
 fn a_project_without_a_pack_has_no_pack_lines() {
     let dir = tempfile::tempdir().expect("temp dir");
     profile_homes(dir.path());
-    let commands = FakeCommands::new().with("env", KIT_LISTED);
+    let commands = FakeCommands::new();
     let report = doctor(dir.path(), &manifest(""), &commands);
     assert!(report.packs.is_empty());
     assert!(report.lines().iter().all(|line| !line.contains("pack")));
