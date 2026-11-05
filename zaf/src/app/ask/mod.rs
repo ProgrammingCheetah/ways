@@ -243,6 +243,11 @@ pub enum AskFailure {
     /// The design source failed while reading a named page.
     #[error("design: {0}")]
     Design(PortError),
+    /// The project declares no design source, so no answer could be checked against one.
+    #[error(
+        "this project declares no design source: set `[design]` in ZAF.toml (`kind` is \"none\"), and ask again"
+    )]
+    NoDesignSource,
     /// The log or a run folder could not be read or written.
     #[error("cannot use {path}: {source}")]
     State {
@@ -255,7 +260,13 @@ pub enum AskFailure {
 }
 
 /// Asks the questions and returns the verified answer; the log has the new lines on return.
+///
+/// A project with no design source is refused first, before the log is read or a keeper runs:
+/// nothing could be quoted against it, and nothing is logged.
 pub fn ask(query: &AskQuery<'_>, ports: &AskPorts<'_>) -> Result<AskOutcome, AskFailure> {
+    if ports.design.is_none() {
+        return Err(AskFailure::NoDesignSource);
+    }
     let mut parsed = parse_ask(query)?;
     let questions = parsed.questions.clone();
     let log_path = query.state_dir.join(ASK_LOG);

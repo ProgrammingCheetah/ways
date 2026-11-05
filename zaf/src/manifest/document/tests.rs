@@ -722,6 +722,27 @@ fn env_table_merges_across_layers() {
 }
 
 #[test]
+fn env_refuses_claude_config_dir() {
+    for name in ["CLAUDE_CONFIG_DIR", "claude_config_dir"] {
+        let error = load(&with(&format!("[env]\n{name} = \"/elsewhere\"\n")))
+            .expect_err("the profile home is zaf's to set");
+        let message = error.to_string();
+        assert!(message.contains(name), "names the variable: {message}");
+        assert!(message.contains("zaf sets"), "says zaf sets it: {message}");
+        assert!(message.contains("each profile"), "{message}");
+    }
+    // Through the layers too.
+    let folder = "[project]\nname = \"p\"\n[env]\nCLAUDE_CONFIG_DIR = \"/x\"\n";
+    assert!(load_layers(&[(".zaf/config.toml", folder)], Some(BOARD)).is_err());
+    // Other names, and names that merely hold it, are read as before.
+    let manifest = load(&with(
+        "[env]\nCLAUDE_CONFIG_DIR_BACKUP = \"x\"\nCLAUDE_CODE_X = \"y\"\n",
+    ))
+    .expect("loads");
+    assert_eq!(manifest.env.vars().len(), 2);
+}
+
+#[test]
 fn env_table_cannot_set_any_zaf_name() {
     for name in [
         "ZAF_INSTANCE",

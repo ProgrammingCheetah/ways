@@ -450,7 +450,7 @@ fn a_run_cut_off_before_it_answered_leaves_a_failed_line() {
 }
 
 #[test]
-fn a_missing_runner_or_design_source_fails_only_its_rung() {
+fn a_missing_runner_fails_only_its_rung() {
     let scene = Scene::new();
     Scene::record(&scene.haiku, GOOD);
     let mut ports = scene.ports();
@@ -469,17 +469,36 @@ fn a_missing_runner_or_design_source_fails_only_its_rung() {
 
     let outcome = ask(&query, &ports).expect("ask");
     assert_eq!(outcome.lines[0].rung.as_deref(), Some("haiku"));
+}
 
-    Scene::record(&scene.haiku, GOOD);
+#[test]
+fn ask_refuses_without_a_design_source() {
+    let scene = Scene::new();
+    Scene::record(&scene.local, GOOD);
+    let mut ports = scene.ports();
     ports.design = None;
-    let later = AskQuery {
-        now: noon() + Duration::from_secs(7200),
-        ..query
+    let questions = vec![ONE_QUESTION[0].to_owned()];
+    let query = AskQuery {
+        task: task(),
+        from: "programmer-3",
+        questions: &questions,
+        max: 5,
+        root: Path::new("/project"),
+        state_dir: scene.state.path(),
+        cache_window: Duration::from_secs(3600),
+        now: noon(),
     };
-    let Err(AskFailure::Exhausted(reasons)) = ask(&later, &ports) else {
-        panic!("a quote cannot be checked without a design source");
+
+    let Err(error @ AskFailure::NoDesignSource) = ask(&query, &ports) else {
+        panic!("an ask with no design source is refused");
     };
-    assert!(reasons[1].contains("no design source"), "{reasons:?}");
+
+    assert!(error.to_string().contains("[design]"), "{error}");
+    assert!(scene.log().is_empty(), "no answer is logged");
+    assert!(
+        scene.local.requests().is_empty() && scene.haiku.requests().is_empty(),
+        "no keeper runs"
+    );
 }
 
 #[test]
