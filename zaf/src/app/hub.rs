@@ -3,7 +3,8 @@
 //! The hub only reads: it starts nothing, changes nothing and costs no model turns.
 //! [`Snapshot`] is what the hub shows, [`draw`] turns one into a frame and reads no state,
 //! and [`gather`] reads the board, the ledger, the spawner's state, the phases and the last
-//! reports into a snapshot. Redrawing when a report arrives is another unit's work.
+//! reports into a snapshot. [`Watch`] redraws it when a report arrives, [`Report`] is what verbs
+//! and the profiles' hook leave in `.zaf/hub/reports`, and [`ToolCall`] is the hook's payload.
 
 use std::time::Duration;
 
@@ -11,11 +12,15 @@ use super::actions::Phase;
 
 mod draw;
 mod gather;
+mod hook;
 mod reports;
+mod watch;
 
 pub use draw::draw;
 pub use gather::{HubError, HubInputs, gather};
-pub use reports::{WORKING, last_report, reports_dir};
+pub use hook::{PROGRAMMER, TEAM, TESTING, ToolCall, WAITING_ON_REVIEW, task_in_workspace};
+pub use reports::{MAX_LINES, Report, WORKING, append, last_report, record, reports_file};
+pub use watch::{Mark, Watch};
 
 /// Everything one frame shows.
 #[derive(Debug, Clone, Default, PartialEq)]
