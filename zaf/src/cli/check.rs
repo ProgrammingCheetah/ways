@@ -508,6 +508,10 @@ mod tests {
             self.0.head(pr)
         }
 
+        fn last_changed_file(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
+            self.0.last_changed_file(pr)
+        }
+
         fn scanning_alerts(
             &self,
             pr: PrNumber,

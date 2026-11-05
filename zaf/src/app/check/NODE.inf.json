@@ -10,7 +10,7 @@
   ],
   "conventions": [
     "One module per step kind under step/: ci, command:<cmd>, runner:<name>:<role>, bot:<login>, codeql; a ?flagged suffix runs a step only for security-flagged tasks",
-    "Step reports speak `MUST: <path>:<line> <title>` and `NOTE: ...`; a runner step's report must end with `REVIEWED: <the path of the last file in the diff>` or the step fails; any other line is ignored",
+    "Step reports speak `MUST: <path>:<line> <title>` and `NOTE: ...`; a runner step's report must end with `REVIEWED: <the path of the last file in the diff>` or the step fails, and the path must equal Forge::last_changed_file or the step fails too; any other line is ignored",
     "A task check uses no model: light gate, Tests: via [gate] tests, Architecture: ids as whole-word symbols in owned paths, Acceptance: lines listed as manual"
   ],
   "entry_points": [

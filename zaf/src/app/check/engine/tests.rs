@@ -30,6 +30,10 @@ impl Forge for SharedForge {
         self.0.head(pr)
     }
 
+    fn last_changed_file(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
+        self.0.last_changed_file(pr)
+    }
+
     fn scanning_alerts(&self, pr: PrNumber) -> Result<Vec<ScanningAlert>, PortError> {
         self.0.scanning_alerts(pr)
     }
@@ -185,6 +189,10 @@ fn a_step_past_the_timeout_fails_the_check_with_exit_two() {
 fn a_runner_report_becomes_must_and_note_findings() {
     let ports = Arc::new(FakePorts::new(sleeping_shell(Duration::ZERO)));
     let pr = open_pr(&ports.forge);
+    ports
+        .forge
+        .set_changed_files(pr, &["README.md", "src/export.rs"])
+        .expect("files");
     record_report(
         &ports.runner,
         "critique",
@@ -241,8 +249,14 @@ fn a_runner_report_becomes_must_and_note_findings() {
 
 /// One critique step whose runner exits 0 and prints `transcript`.
 fn review(transcript: &str) -> CheckReport {
+    review_of(transcript, &["README.md", "src/export.rs"])
+}
+
+/// The same step over a pull request whose diff lists `files`.
+fn review_of(transcript: &str, files: &[&str]) -> CheckReport {
     let ports = Arc::new(FakePorts::new(sleeping_shell(Duration::ZERO)));
     let pr = open_pr(&ports.forge);
+    ports.forge.set_changed_files(pr, files).expect("files");
     record_report(&ports.runner, "critique", transcript);
     let dir = temp_dir();
     engine(&ports, &dir, Duration::from_secs(10)).run(&steps(&["runner:local:critique"]), pr, false)
@@ -283,8 +297,33 @@ fn reviewed_alone_is_clean() {
 }
 
 #[test]
+fn wrong_reviewed_path_is_a_failed_step() {
+    let transcript = "MUST: src/export.rs:12 the empty list is dropped\nREVIEWED: src/made_up.rs\n";
+    for files in [
+        &["README.md", "src/export.rs"][..],
+        &["src/made_up.rs", "src/export.rs"][..],
+        &[][..],
+    ] {
+        let report = review_of(transcript, files);
+        let StepStatus::Failed(why) = &report.steps[0].status else {
+            panic!("not failed for {files:?}: {:?}", report.steps[0].status);
+        };
+        assert!(why.contains("src/made_up.rs"), "{why}");
+        assert!(report.findings.is_empty());
+        assert_eq!(report.verdict(), Verdict::StepFailed);
+        assert_eq!(report.verdict().code(), 2);
+    }
+    let clean = review_of("REVIEWED: src/z.rs\n", &["src/a.rs", "src/z.rs"]);
+    assert_eq!(clean.steps[0].status, StepStatus::Ran);
+    assert_eq!(clean.verdict(), Verdict::Clean);
+}
+
+#[test]
 fn reviewed_with_must_is_must_fix() {
-    let report = review("MUST: src/export.rs:12 the empty list is dropped\nREVIEWED: src/z.rs\n");
+    let report = review_of(
+        "MUST: src/export.rs:12 the empty list is dropped\nREVIEWED: src/z.rs\n",
+        &["src/export.rs", "src/z.rs"],
+    );
     assert_eq!(report.steps[0].status, StepStatus::Ran);
     assert_eq!(report.findings.len(), 1);
     assert_eq!(report.findings[0].finding.severity, Severity::MustFix);
@@ -311,6 +350,10 @@ fn the_same_finding_from_two_sources_is_reported_once() {
         Ok(gate_run)
     })));
     let pr = open_pr(&ports.forge);
+    ports
+        .forge
+        .set_changed_files(pr, &["src/parse.rs"])
+        .expect("files");
     record_report(
         &ports.runner,
         "critique",
@@ -344,6 +387,10 @@ fn a_flagged_step_is_skipped_for_an_unflagged_task_and_run_for_a_flagged_one() {
     assert!(ports.runner.requests().is_empty());
     assert_eq!(unflagged.verdict(), Verdict::Clean);
 
+    ports
+        .forge
+        .set_changed_files(pr, &["src/net.rs"])
+        .expect("files");
     record_report(
         &ports.runner,
         "security",
