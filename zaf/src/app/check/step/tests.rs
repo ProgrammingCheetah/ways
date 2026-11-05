@@ -172,6 +172,17 @@ pub(super) fn located_on(
 }
 
 #[test]
+fn briefs_ask_for_reviewed() {
+    for brief in [CRITIQUE_BRIEF, SECURITY_BRIEF] {
+        assert!(brief.contains("REVIEWED: <the path of the last file in the diff>"));
+        assert!(brief.contains("MUST: <path>:<line> <title>"));
+        assert!(brief.contains("NOTE: <path>:<line> <title>"));
+        assert!(brief.contains("not even a code fence"));
+        assert!(!brief.to_lowercase().contains("print nothing"));
+    }
+}
+
+#[test]
 fn a_bot_finding_and_a_scanner_alert_on_the_same_lines_are_one() {
     let (forge, pr) = forge_with_pr();
     let comment = located(

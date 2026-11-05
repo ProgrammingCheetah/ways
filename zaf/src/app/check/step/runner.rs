@@ -1,7 +1,8 @@
 //! `runner:<name>:<role>`: write the review brief, run the role on the runner,
-//! and parse its report into findings.
+//! and parse its report into findings. A report that does not end with its
+//! `REVIEWED:` line fails the step, so a silent runner never reads as clean.
 
-use crate::app::check::{StepPorts, parse_report};
+use crate::app::check::{StepPorts, parse_report, reviewed_path};
 use crate::domain::{Finding, FindingSource, Profile};
 use crate::ports::{PortError, RunRequest};
 
@@ -53,6 +54,11 @@ pub(super) fn run(
         return Err(PortError::Backend(format!(
             "{source} exited {}",
             output.exit_code
+        )));
+    }
+    if reviewed_path(&output.transcript).is_none() {
+        return Err(PortError::Backend(format!(
+            "{source} ended without a REVIEWED line"
         )));
     }
     Ok(parse_report(source, &output.transcript))

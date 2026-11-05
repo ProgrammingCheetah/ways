@@ -52,6 +52,24 @@ fn a_line_without_a_location_keeps_its_whole_text() {
 }
 
 #[test]
+fn the_reviewed_line_counts_only_as_the_last_line_with_a_path() {
+    for report in [
+        "",
+        "\n\n",
+        "REVIEWED:\n",
+        "REVIEWED: \n",
+        "REVIEWED: src/z.rs\nMUST: src/a.rs:1 written after the line\n",
+        "REVIEWED: src/z.rs\nand then some prose\n",
+        "```\nREVIEWED: src/z.rs\n```\n",
+        "NOT REVIEWED: src/z.rs\n",
+    ] {
+        assert_eq!(reviewed_path(report), None, "{report:?}");
+    }
+    let finished = "Done.\nNOTE: src/a.rs:1 name it\n\n  REVIEWED: src/z.rs  \n\n";
+    assert_eq!(reviewed_path(finished), Some("src/z.rs"));
+}
+
+#[test]
 fn duplicates_within_the_window_merge_and_keep_the_gravest_severity() {
     let findings = vec![
         finding(
