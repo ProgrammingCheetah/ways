@@ -1,6 +1,6 @@
 # zaf actions
 
-Draft v14, 2026-11-05, with the Engineer's rulings and the answers to the planning questions (§8). An **action** is a runnable file that `zaf` names, lists and runs through `zaf do <name>`. Actions are how a project or a machine makes zaf its own, and zaf is the abstraction layer over them: it owns the names, the listing, the environment, the log, the modes, the phases and one exit contract; what a name *does* is the action behind it. zaf ships none: whoever sets zaf up writes them, and every place a verb shells out is a name the project or the machine must provide. What Claude assumed beyond the rulings is listed in §9, open to veto.
+Draft v15, 2026-11-05, with the Engineer's rulings and the answers to the planning questions (§8). An **action** is a runnable file that `zaf` names, lists and runs through `zaf do <name>`. Actions are how a project or a machine makes zaf its own, and zaf is the abstraction layer over them: it owns the names, the listing, the environment, the log, the modes, the phases and one exit contract; what a name *does* is the action behind it. zaf ships none: whoever sets zaf up writes them, and every place a verb shells out is a name the project or the machine must provide. What Claude assumed beyond the rulings is listed in §9, open to veto.
 
 ## 1. Principles
 
@@ -145,7 +145,11 @@ group: ways-steps             [##########--------------------]  3 of 9
 
 An epic and a group count their tasks done. A ticket's bar is its Team Phase, one of seven, because a model has no honest percent. A group is a task's `group:<name>` label. A ticket's word is general, from its last tool call: reading, writing, testing, waiting on CI. The time is since its last report and keeps ticking, so silence shows.
 
-It redraws when a report arrives, not on a timer. zaf verbs report that state changed and a hook in the profiles reports each tool call, so no model spends a turn reporting. Between reports only the clocks move and nothing reads the network. Outside a terminal it draws one frame and exits, so a model cannot hang on it.
+It redraws when a report arrives, not on a timer. zaf verbs report that state changed and a hook in the profiles reports each tool call, so no model spends a turn reporting its tool calls. Between reports only the clocks move and nothing reads the network. Outside a terminal it draws one frame and exits, so a model cannot hang on it.
+
+**Model phases.** Each model declares its own phases when it starts, `zaf progress plan <task> <phase>…`, and reports each change, `zaf progress at <task> <phase>`. Phases may repeat: a model that goes back from `test` to `write` reports `write` again, and its row shows the iteration, `write ×2`. The ticket row keeps its Team Phase bar, and each model reporting on the ticket gets a row under it with a bar over its declared phases. Each phase report is a hub report, so the frame redraws. It costs the model one turn per phase change, which ruling 44 accepts.
+
+**Dashboard mode.** `zaf hub --port <n>` serves the same frame as an HTML page on every interface at that port, for anyone on the LAN. It answers GET only, asks for no login and changes nothing, and it prints the page's LAN URL when it starts. The page holds a server-sent events stream and redraws when a report arrives, so it is never staler than the terminal. It runs until it is stopped.
 
 ## 6. The manifest
 
@@ -223,6 +227,8 @@ Rulings 1 to 19 are of 2026-11-03; 20 to 30 of 2026-11-04.
 40. **Units of work (the Engineer, 2026-11-05):** the rest of 0.2.0 is grouped into units of 2 or 3 tickets. Each unit has one programmer, one workspace and one pull request. Units are chosen so they depend little on each other, and so the work within one is similar. zaf has no unit yet, so each unit is one ticket that folds the others, and the folded tickets are closed pointing at it. `[roles.team] batch = 1` replaces ruling 33's batch, and `[roles.programmer] turns = 150` gives a unit room, so an instance carries one unit and stays inside 45 minutes. The four lanes (`[spawn] slots = 4`) run four units at once. #132 and #195 to #198 move to 0.2.1, and #230 is dropped along with the team's task check. This supersedes ruling 32 for units and brings #232 forward.
 41. **Phase facts (#285 to #287):** a board or forge read that fails while deriving a phase refuses the action, `NOT_RUN`. A fact that is absent, such as a pull request with no head or a missing workspace, falls to the earlier phase. A claim has no expiry, because the spawner hands back a timed-out instance's claims (#95), and §3 says `claimed` where it said `live lease`.
 42. **Two rulings from the build (#214, #309):** a failed `gh pr merge` exits 1, since the other actions also put forge refusals under 1. #110's CLI wiring is within its scope. A malformed `ZAF_INSTANCE` fails `zaf brief`, and with no machine home the brief lists the project's actions only.
+43. **Dashboard mode (the Engineer, 2026-11-05):** `zaf hub --port <n>` serves the hub on every interface for anyone on the LAN, GET only and with no login. The ways board is public on GitHub, so the page adds only the costs and what each model is doing. It redraws on each report through server-sent events (§5). It ships in 0.2.0 as unit U13, after U7.
+44. **Models report their phases (the Engineer, 2026-11-05):** each model defines its phases when it starts and reports when its phase changes, and phases may be iterative. A phase report is what redraws the hub and the dashboard. Unlike the tool-call hook, it costs one turn per change. It ships in 0.2.0 as unit U12, and the role briefs (U10) tell each role to declare and report.
 
 ## 9. Assumed by Claude, open to veto
 
@@ -244,6 +250,7 @@ Rulings 1 to 19 are of 2026-11-03; 20 to 30 of 2026-11-04.
 16. With no file lists, tickets that touch the same area are ordered with `Blocked by`. A collision that still happens is met at merge: the base is merged, the gate runs again, and a conflict goes back as a round. No source publishes a conflict rate for this, so ours is read from the rounds per task after the re-plan.
 17. `zaf brief` prints a map for each place a ticket names to start and each node once. Today it repeats the chain per path, and 74 to 83% of that section's lines are repeats.
 18. The hub's reports go to `.zaf/hub/reports`, git-ignored. That a `PostToolUse` hook fires for a subagent's tools, and its payload's field names, come from Claude Code's documentation and are untested here; the Engineer's session checks a real payload when 0.2.0 is installed.
+19. The phase verb is `zaf progress plan <task> <phase>… [--role <role>]` and `zaf progress at <task> <phase> [--role <role>]`. The role defaults to the one `ZAF_INSTANCE` names, and a programmer passes `--role programmer`, because it runs under its team's `ZAF_INSTANCE`. A phase the plan did not declare is refused. The dashboard serves with the standard library's `TcpListener`, so zaf gains no dependency.
 
 ## 10. Is it saving tokens
 
