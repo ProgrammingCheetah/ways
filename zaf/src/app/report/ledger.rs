@@ -12,7 +12,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, UNIX_EPOCH};
 
-use rusqlite::{Connection, Row, TransactionBehavior, params};
+use rusqlite::{Connection, OpenFlags, Row, TransactionBehavior, params};
 
 use super::prices::PriceTable;
 use super::transcript::parse_run;
@@ -229,6 +229,36 @@ impl Ledger {
             .map_err(|error| failed(error.to_string()))?;
         match ledger.schema_version() {
             Ok(SCHEMA_VERSION) => Ok(ledger),
+            Ok(found) => Err(LedgerError::Schema {
+                path: path.to_owned(),
+                found,
+            }),
+            Err(error) => Err(failed(error.to_string())),
+        }
+    }
+
+    /// The rows of the ledger at `path` without making it: a ledger that is not there, or
+    /// holds no schema yet, has no rows. Nothing is written, not the folder, not the file.
+    pub fn rows_if_present(path: &Path) -> Result<Vec<LedgerRow>, LedgerError> {
+        let failed = |reason: String| LedgerError::Open {
+            path: path.to_owned(),
+            reason,
+        };
+        if !path.is_file() {
+            return Ok(Vec::new());
+        }
+        let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|error| failed(error.to_string()))?;
+        connection
+            .busy_timeout(BUSY_WAIT)
+            .map_err(|error| failed(error.to_string()))?;
+        let ledger = Self {
+            path: path.to_owned(),
+            connection,
+        };
+        match ledger.schema_version() {
+            Ok(0) => Ok(Vec::new()),
+            Ok(SCHEMA_VERSION) => ledger.rows(),
             Ok(found) => Err(LedgerError::Schema {
                 path: path.to_owned(),
                 found,
