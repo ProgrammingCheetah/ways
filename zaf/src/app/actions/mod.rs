@@ -5,8 +5,8 @@
 //! in the project's `.zaf/actions/` or the machine's, [`caller`] decides whether
 //! its mode lets the caller run it, and [`run`] runs it, logs it and bounds it in
 //! time. [`phase`] derives the Team Phase an action's `phases:` line is held
-//! against, and [`records`] keeps what `slice-open` and `slice-pr` hand back.
-//! zaf ships no actions.
+//! against, [`records`] keeps what `slice-open` and `slice-pr` hand back, and [`slice_env`]
+//! sets the slice's variables on a run, last. zaf ships no actions.
 
 mod caller;
 mod metadata;
@@ -14,6 +14,7 @@ mod phase;
 mod records;
 mod resolve;
 mod run;
+mod slice_env;
 
 pub use caller::{Caller, INSTANCE_VAR};
 pub use metadata::{ActionMetadata, ActionMode, Bits, MetadataError, ParsedAction, Target, parse};
@@ -27,6 +28,7 @@ pub use run::{
     Nesting, ROOT_VAR, Refused, RunOutcome, RunRequest, RunResult, TIMEOUT_EXIT, last_lines,
     list_actions, read_action, run_action,
 };
+pub use slice_env::{BASE_VAR, PR_VAR, SLICE_VAR, SliceContext, TASK_TITLE_VAR};
 
 #[cfg(test)]
 mod tests;
