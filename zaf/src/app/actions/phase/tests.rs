@@ -40,11 +40,11 @@ fn workspace(commit: &str) -> Option<WorkspaceFacts> {
     })
 }
 
-/// A claimed task under a live lease, and nothing else.
+/// A task with the `claimed` label and a claim comment, and nothing else.
 fn claimed() -> PhaseFacts {
     PhaseFacts {
         claimed: true,
-        live_lease: true,
+        claim_comment: true,
         ..PhaseFacts::default()
     }
 }
@@ -166,17 +166,17 @@ fn phase_table_covers_every_rule() {
             },
             Phase::Build,
         ),
-        ("claimed, live lease", claimed(), Phase::Claim),
+        ("claimed, claim comment", claimed(), Phase::Claim),
         (
-            "claimed, lease lapsed",
+            "claimed, no claim comment",
             PhaseFacts {
-                live_lease: false,
+                claim_comment: false,
                 ..claimed()
             },
             Phase::Unclaimed,
         ),
         (
-            "lease, no label",
+            "claim comment, no label",
             PhaseFacts {
                 claimed: false,
                 ..claimed()

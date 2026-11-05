@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::*;
+use crate::app::actions::RunResult;
 use crate::app::actions::phase::{Phase, derive_phase};
 use crate::app::actions::{
     ACTION_VAR, BASE_VAR, CHAIN_VAR, DEPTH_VAR, INSTANCE_VAR, LOG_VAR, PR_VAR, ROOT_VAR, SLICE_VAR,
@@ -12,7 +13,10 @@ use crate::app::actions::{
 use crate::app::check::{CheckRecord, Verdict};
 use crate::domain::Instance;
 use crate::fakes::{FakeBoard, FakeForge, FakeVcs};
-use crate::ports::{BaseName, PrNumber, PrRequest, SliceName, Ticket};
+use crate::ports::{
+    BaseName, Check, ClaimOutcome, ClaimRecord, NewQuestion, PrMerge, PrNumber, PrRequest,
+    ReviewComment, ScanningAlert, SliceName, Ticket,
+};
 
 const TASK: u64 = 203;
 const SLICE: &str = "feature/0.2.0-103-203";
@@ -65,7 +69,7 @@ impl Scene {
         SliceRecords::new(&self.root)
     }
 
-    fn gather(&self) -> Result<PhaseFacts, PortError> {
+    fn gather(&self) -> Result<PhaseFacts, PhaseUnreadable> {
         gather_phase_facts(&self.board, &self.forge, &self.vcs, &self.records(), task())
     }
 
@@ -329,16 +333,16 @@ fn the_done_label_is_done_whatever_the_records_say() {
 }
 
 #[test]
-fn a_claimed_label_needs_the_lease() {
+fn a_claimed_label_needs_the_claim_comment() {
     let without = Scene::new(TaskLabel::Claimed);
     let facts = without.gather().expect("facts");
     assert!(facts.claimed);
-    assert!(!facts.live_lease);
+    assert!(!facts.claim_comment);
     assert_eq!(without.phase(), Phase::Unclaimed);
 
     let with = Scene::new(TaskLabel::Ready);
     with.claim();
-    assert!(with.gather().expect("facts").live_lease);
+    assert!(with.gather().expect("facts").claim_comment);
     assert_eq!(with.phase(), Phase::Claim);
 }
 
@@ -355,7 +359,7 @@ fn another_tasks_lease_is_not_this_ones() {
     });
     let instance: Instance = "team instance 33 on #103".parse().expect("instance");
     scene.board.claim(other, &instance).expect("claim");
-    assert!(!scene.gather().expect("facts").live_lease);
+    assert!(!scene.gather().expect("facts").claim_comment);
 }
 
 #[test]
@@ -368,7 +372,7 @@ fn a_lease_without_the_claimed_label_does_not_count() {
         .expect("label");
     let facts = scene.gather().expect("facts");
     assert!(!facts.claimed);
-    assert!(!facts.live_lease);
+    assert!(!facts.claim_comment);
     assert_eq!(derive_phase(&facts), Phase::Unclaimed);
 }
 
@@ -388,17 +392,6 @@ fn uncommitted_work_leaves_the_latest_commit_where_it_was() {
         .edit(&SliceName::from(SLICE), "b.rs", 1, 0, "+b")
         .expect("edit");
     assert_eq!(scene.phase(), Phase::Land);
-}
-
-#[test]
-fn a_latest_commit_that_cannot_be_read_is_not_land() {
-    let scene = Scene::new(TaskLabel::Claimed);
-    scene.record_workspace();
-    let pr = scene.open_pr(Some("abc"));
-    scene.pr_check(pr, Verdict::Clean, "abc", LONG_AGO);
-    let facts = scene.gather().expect("facts");
-    assert_eq!(facts.workspace.expect("the record").latest_commit, None);
-    assert_eq!(scene.phase(), Phase::Build);
 }
 
 #[test]
@@ -455,24 +448,239 @@ fn the_pr_records_time_is_held_against_the_task_check() {
     assert_eq!(scene.phase(), Phase::Build);
 }
 
+/// What a failed read answers, for the tests below.
+fn broken() -> PortError {
+    PortError::Backend("the backend is down".to_owned())
+}
+
+/// The board of a scene, but for the reads it is told to fail.
+struct BrokenBoard<'a> {
+    inner: &'a FakeBoard,
+    task: bool,
+    claims: bool,
+}
+
+impl Board for BrokenBoard<'_> {
+    fn ready(&self) -> Result<Vec<Ticket>, PortError> {
+        self.inner.ready()
+    }
+
+    fn task(&self, number: IssueNumber) -> Result<Ticket, PortError> {
+        if self.task {
+            return Err(broken());
+        }
+        self.inner.task(number)
+    }
+
+    fn claim(&self, task: IssueNumber, instance: &Instance) -> Result<ClaimOutcome, PortError> {
+        self.inner.claim(task, instance)
+    }
+
+    fn heartbeat(&self, task: IssueNumber, instance: &Instance) -> Result<(), PortError> {
+        self.inner.heartbeat(task, instance)
+    }
+
+    fn claims(&self) -> Result<Vec<ClaimRecord>, PortError> {
+        if self.claims {
+            return Err(broken());
+        }
+        self.inner.claims()
+    }
+
+    fn release(&self, task: IssueNumber, instance: &Instance) -> Result<(), PortError> {
+        self.inner.release(task, instance)
+    }
+
+    fn label(&self, task: IssueNumber, label: TaskLabel) -> Result<(), PortError> {
+        self.inner.label(task, label)
+    }
+
+    fn comment(&self, issue: IssueNumber, body: &str) -> Result<(), PortError> {
+        self.inner.comment(issue, body)
+    }
+
+    fn report(&self, task: IssueNumber, instance: &Instance, body: &str) -> Result<(), PortError> {
+        self.inner.report(task, instance, body)
+    }
+
+    fn questions(&self) -> Result<Vec<Ticket>, PortError> {
+        self.inner.questions()
+    }
+
+    fn open_question(&self, question: &NewQuestion) -> Result<IssueNumber, PortError> {
+        self.inner.open_question(question)
+    }
+
+    fn record_ruling(
+        &self,
+        question: IssueNumber,
+        ruling: &str,
+    ) -> Result<Option<IssueNumber>, PortError> {
+        self.inner.record_ruling(question, ruling)
+    }
+}
+
+/// The forge of a scene, but for a head read that fails.
+struct BrokenForge<'a>(&'a FakeForge);
+
+impl Forge for BrokenForge<'_> {
+    fn open_pr(&self, request: &PrRequest) -> Result<PrNumber, PortError> {
+        self.0.open_pr(request)
+    }
+
+    fn checks(&self, pr: PrNumber) -> Result<Vec<Check>, PortError> {
+        self.0.checks(pr)
+    }
+
+    fn review_comments(&self, pr: PrNumber) -> Result<Vec<ReviewComment>, PortError> {
+        self.0.review_comments(pr)
+    }
+
+    fn head(&self, _pr: PrNumber) -> Result<Option<String>, PortError> {
+        Err(broken())
+    }
+
+    fn scanning_alerts(&self, pr: PrNumber) -> Result<Vec<ScanningAlert>, PortError> {
+        self.0.scanning_alerts(pr)
+    }
+
+    fn merge(&self, pr: PrNumber) -> Result<PrMerge, PortError> {
+        self.0.merge(pr)
+    }
+}
+
+/// A scene that would be `land`, so that a failed read has a phase to fall back from.
+fn landable() -> Scene {
+    let scene = Scene::new(TaskLabel::Ready);
+    scene.claim();
+    scene.open_slice();
+    let head = scene.commit();
+    let pr = scene.open_pr(Some(&head));
+    scene.pr_check(pr, Verdict::Clean, &head, LONG_AGO);
+    assert_eq!(scene.phase(), Phase::Land);
+    scene
+}
+
+/// The refusal a failed read comes to: `NOT_RUN`, exit 125, naming the task and the cause.
+fn assert_refused(refusal: &PhaseUnreadable) {
+    assert_eq!(refusal.task, task());
+    let outcome = refusal.not_run("slice-merge", None);
+    assert_eq!(outcome.result, RunResult::NotRun);
+    assert_eq!(outcome.exit, 125);
+    assert_eq!(outcome.log, None);
+    let headline = outcome.headline().expect("a refusal prints");
+    assert!(headline.starts_with("NOT_RUN slice-merge: "), "{headline}");
+    assert!(headline.contains("#203"), "{headline}");
+}
+
 #[test]
-fn a_board_that_cannot_answer_is_an_error() {
+fn a_board_that_cannot_answer_refuses() {
+    let scene = landable();
+    let board = BrokenBoard {
+        inner: &scene.board,
+        task: true,
+        claims: false,
+    };
+    let refusal = gather_phase_facts(&board, &scene.forge, &scene.vcs, &scene.records(), task())
+        .expect_err("a refusal");
+    assert_eq!(refusal.source, broken());
+    assert_refused(&refusal);
+}
+
+#[test]
+fn a_task_the_board_does_not_know_refuses() {
     let scene = Scene::new(TaskLabel::Ready);
     let unknown = IssueNumber::from(TASK + 1);
-    let gathered = gather_phase_facts(
+    let refusal = gather_phase_facts(
         &scene.board,
         &scene.forge,
         &scene.vcs,
         &scene.records(),
         unknown,
-    );
-    assert!(matches!(gathered, Err(PortError::NotFound(_))));
+    )
+    .expect_err("a refusal");
+    assert!(matches!(refusal.source, PortError::NotFound(_)));
+    assert_eq!(refusal.task, unknown);
 }
 
 #[test]
-fn a_forge_that_cannot_answer_is_an_error() {
+fn claims_the_board_cannot_list_refuse() {
+    let scene = landable();
+    let board = BrokenBoard {
+        inner: &scene.board,
+        task: false,
+        claims: true,
+    };
+    let refusal = gather_phase_facts(&board, &scene.forge, &scene.vcs, &scene.records(), task())
+        .expect_err("a refusal");
+    assert_eq!(refusal.source, broken());
+    assert_refused(&refusal);
+}
+
+#[test]
+fn claims_are_not_read_for_a_task_that_is_not_claimed() {
+    let scene = Scene::new(TaskLabel::Ready);
+    let board = BrokenBoard {
+        inner: &scene.board,
+        task: false,
+        claims: true,
+    };
+    let facts = gather_phase_facts(&board, &scene.forge, &scene.vcs, &scene.records(), task())
+        .expect("facts");
+    assert!(!facts.claim_comment);
+}
+
+#[test]
+fn a_forge_that_cannot_answer_refuses() {
+    let scene = landable();
+    let forge = BrokenForge(&scene.forge);
+    let refusal = gather_phase_facts(&scene.board, &forge, &scene.vcs, &scene.records(), task())
+        .expect_err("a refusal");
+    assert_eq!(refusal.source, broken());
+    assert_refused(&refusal);
+}
+
+#[test]
+fn a_pull_request_the_forge_does_not_know_refuses() {
     let scene = Scene::new(TaskLabel::Claimed);
     scene.open_slice();
     scene.record_pr(PrNumber::from(404));
-    assert!(matches!(scene.gather(), Err(PortError::NotFound(_))));
+    let refusal = scene.gather().expect_err("a refusal");
+    assert!(matches!(refusal.source, PortError::NotFound(_)));
+    assert_refused(&refusal);
+}
+
+#[test]
+fn a_latest_commit_that_cannot_be_read_refuses() {
+    // The workspace record holds and the pull request is clean at "abc", but the VCS knows
+    // no slice there: this is a failed read, so it is never a phase.
+    let scene = Scene::new(TaskLabel::Claimed);
+    scene.record_workspace();
+    let pr = scene.open_pr(Some("abc"));
+    scene.pr_check(pr, Verdict::Clean, "abc", LONG_AGO);
+    let refusal = scene.gather().expect_err("a refusal");
+    assert!(matches!(refusal.source, PortError::NotFound(_)));
+    assert_refused(&refusal);
+}
+
+#[test]
+fn a_refusal_names_the_read_that_failed() {
+    let scene = landable();
+    let forge = BrokenForge(&scene.forge);
+    let refusal = gather_phase_facts(&scene.board, &forge, &scene.vcs, &scene.records(), task())
+        .expect_err("a refusal");
+    assert_eq!(
+        refusal.to_string(),
+        "#203's phase cannot be read: backend failed: the backend is down"
+    );
+}
+
+#[test]
+fn a_missing_workspace_is_an_absent_fact_not_a_refusal() {
+    let scene = landable();
+    fs::remove_dir_all(&scene.workspace).expect("remove");
+    let facts = scene.gather().expect("facts");
+    assert_eq!(facts.workspace, None);
+    // The workspace is not at the head, so the task is not `land`.
+    assert_eq!(derive_phase(&facts), Phase::Build);
 }

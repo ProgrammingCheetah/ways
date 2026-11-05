@@ -18,7 +18,9 @@ mod slice_env;
 
 pub use caller::{Caller, INSTANCE_VAR};
 pub use metadata::{ActionMetadata, ActionMode, Bits, MetadataError, ParsedAction, Target, parse};
-pub use phase::{Phase, PhaseFacts, PrFacts, WorkspaceFacts, derive_phase, gather_phase_facts};
+pub use phase::{
+    Phase, PhaseFacts, PhaseUnreadable, PrFacts, WorkspaceFacts, derive_phase, gather_phase_facts,
+};
 pub use records::{SliceRecords, hand_back};
 pub use resolve::{
     ACTIONS_DIR, ResolveError, Resolved, Tier, can_shadow, check_name, list, resolve, resolve_in,
