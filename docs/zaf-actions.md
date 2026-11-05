@@ -1,6 +1,6 @@
 # zaf actions
 
-Draft v9, 2026-11-04, with the Engineer's rulings and the answers to the planning questions (§8). An **action** is a runnable file that `zaf` names, lists and runs through `zaf do <name>`. Actions are how a project or a machine makes zaf its own, and zaf is the abstraction layer over them: it owns the names, the listing, the environment, the log, the modes, the phases and one exit contract; what a name *does* is the action behind it. zaf ships none: whoever sets zaf up writes them, and every place a verb shells out is a name the project or the machine must provide. What Claude assumed beyond the rulings is listed in §9, open to veto.
+Draft v10, 2026-11-04, with the Engineer's rulings and the answers to the planning questions (§8). An **action** is a runnable file that `zaf` names, lists and runs through `zaf do <name>`. Actions are how a project or a machine makes zaf its own, and zaf is the abstraction layer over them: it owns the names, the listing, the environment, the log, the modes, the phases and one exit contract; what a name *does* is the action behind it. zaf ships none: whoever sets zaf up writes them, and every place a verb shells out is a name the project or the machine must provide. What Claude assumed beyond the rulings is listed in §9, open to veto.
 
 ## 1. Principles
 
@@ -130,6 +130,21 @@ The release brief's "merge and tag" is the project's `release` action; the Engin
 
 `zaf do <name>` exits `0` when it is done (`OK`). It exits `125` when the body never ran (`NOT_RUN`): no such action, a file without metadata or not runnable, a mode or phase that refuses, or a file that could not start. Otherwise the body ran (`FAIL`): the action's own declared code, or `2` for a timeout. No action may declare `125`, and `zaf doctor` rejects a file that does, so a caller never reads a refusal as a declared code such as `merge-base`'s `1`, conflicted. Every other verb keeps `0`, `1` and `2`, and a verb's step with no action stays exit 2, `missing action <name>` (ruling 17).
 
+**`zaf hub`.** The Engineer's live view of what is happening. It only reads: it starts nothing, changes nothing and costs no model turns.
+
+```
+epic #103                     [######------------------------]  17 of 82       $39.83
+  1 of 2 slots free · 63 ready · no questions
+
+group: ways-steps             [##########--------------------]  3 of 9
+  #143  sonnet programmer     [#################-------------]  build    testing        40s
+  #156  opus team             [##########################----]  review   waiting on CI   2m
+```
+
+An epic and a group count their tasks done. A ticket's bar is its Team Phase, one of seven, because a model has no honest percent. A group is a task's `group:<name>` label. A ticket's word is general, from its last tool call: reading, writing, testing, waiting on CI. The time is since its last report and keeps ticking, so silence shows.
+
+It redraws when a report arrives, not on a timer. zaf verbs report that state changed and a hook in the profiles reports each tool call, so no model spends a turn reporting. Between reports only the clocks move and nothing reads the network. Outside a terminal it draws one frame and exits, so a model cannot hang on it.
+
 ## 6. The manifest
 
 ```toml
@@ -198,6 +213,7 @@ Rulings 1 to 19 are of 2026-11-03; 20 to 30 of 2026-11-04.
 32. **One behaviour per ticket:** the Goal is one sentence with no "and". Size S expects a pull request under 200 lines and M under 400; anything larger splits. These are planning targets read against the merged pull request, not gates. The numbers come from review research on people and are unproven for agents.
 33. **Batch two, limit 45:** `[roles.team] batch = 2`, which matches the two programmers an instance runs at once. The runner limit stays 45 minutes: instances are short-lived by design, so one that reaches the limit is carrying too much work.
 34. **Phases and modes, from the build (#234 to #238):** a failed task check with a `.pr` record and no result for the current head is `build`. A mode refusing the owner prints `the Engineer`. A blank `ZAF_INSTANCE` does not parse, so it is refused; `zaf setup` keeps treating blank as none. There is no fixed list of roles: the role a well-formed `ZAF_INSTANCE` names is the caller's and `group` decides its digit, so a project's own role works without a zaf release.
+35. **`zaf hub` (the Engineer, 2026-11-04):** the live view of §5 is in 0.2.0, so it is there for the first real dogfood. No tail: it redraws when a report arrives. A bar for each epic, each group and each model's ticket, and a general word for what the model is doing. Groups are `group:<name>` labels, set from the re-plan's map; the planning instance labels what it files, and Unit of Work (#232) can build on them later.
 
 ## 9. Assumed by Claude, open to veto
 
@@ -218,6 +234,7 @@ Rulings 1 to 19 are of 2026-11-03; 20 to 30 of 2026-11-04.
 15. Until 0.2.0 is installed, tickets keep the labels installed 0.1.2 requires, because its parser needs them and refuses an unknown field: scope in words under `Owned paths`, `Architecture: none`, and out of scope as the first acceptance line. 0.2.0 reads both forms.
 16. With no file lists, tickets that touch the same area are ordered with `Blocked by`. A collision that still happens is met at merge: the base is merged, the gate runs again, and a conflict goes back as a round. No source publishes a conflict rate for this, so ours is read from the rounds per task after the re-plan.
 17. `zaf brief` prints a map for each place a ticket names to start and each node once. Today it repeats the chain per path, and 74 to 83% of that section's lines are repeats.
+18. The hub's reports go to `.zaf/hub/reports`, git-ignored. That a `PostToolUse` hook fires for a subagent's tools, and its payload's field names, come from Claude Code's documentation and are untested here; the Engineer's session checks a real payload when 0.2.0 is installed.
 
 ## 10. Is it saving tokens
 
