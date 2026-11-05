@@ -1,0 +1,58 @@
+#!/bin/sh
+# zaf description: fetch from the remote the base tracks and start a new change on the base as it stands there; a failed fetch leaves the working copy where it was
+# zaf 1: refused: the arguments are not <base>, the base is not a usable bookmark name, or the base is unknown after the fetch
+# zaf 2: a backend failed (jj is missing or refused, or the fetch failed); the working copy is where it was
+# zaf mode: 750
+# zaf group: team, release
+base=$1
+
+if [ -z "$ZAF_ROOT" ] || [ "$#" -ne 1 ]; then
+    echo "usage: sync <base>, with ZAF_ROOT set" >&2
+    exit 1
+fi
+
+# A base is a bookmark name, fit to sit inside a revset string.
+case $base in
+    "" | -* | *\"* | *\\*)
+        echo "base $base is not a usable bookmark name" >&2
+        exit 1
+        ;;
+esac
+
+jj_run() {
+    jj --no-pager --color=never -R "$ZAF_ROOT" "$@"
+}
+
+# The remote the base bookmark tracks; origin when it tracks none.
+remote=origin
+if ! tracked=$(jj_run --ignore-working-copy bookmark list --tracked -T 'remote ++ "\n"' "exact:\"$base\""); then
+    exit 2
+fi
+for name in $tracked; do
+    if [ "$name" != "git" ]; then
+        remote=$name
+        break
+    fi
+done
+
+# The fetch comes first: when it fails nothing has moved.
+jj_run git fetch --remote "$remote" || exit 2
+
+# The fetch moves a tracked local bookmark up to the remote's; a base known only on the remote
+# is started from there.
+revset="bookmarks(exact:\"$base\")"
+if ! ids=$(jj_run --ignore-working-copy log --no-graph -r "$revset" -T 'commit_id ++ "\n"'); then
+    exit 2
+fi
+if [ -z "$ids" ]; then
+    revset="remote_bookmarks(exact:\"$base\", exact:\"$remote\")"
+    if ! ids=$(jj_run --ignore-working-copy log --no-graph -r "$revset" -T 'commit_id ++ "\n"'); then
+        exit 2
+    fi
+    if [ -z "$ids" ]; then
+        echo "unknown base bookmark $base" >&2
+        exit 1
+    fi
+fi
+
+jj_run new "$revset" || exit 2
