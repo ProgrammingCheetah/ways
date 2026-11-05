@@ -1,0 +1,4 @@
+#!/bin/sh
+# zaf description: check the node tree under the project root with nodes
+# zaf 1: nodes check found a problem, or nodes is not installed
+nodes check --root "$ZAF_ROOT" || exit 1
