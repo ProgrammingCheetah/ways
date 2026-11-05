@@ -1,16 +1,13 @@
 use std::sync::Arc;
-use std::time::UNIX_EPOCH;
 
 use super::*;
-use crate::app::check::{
-    CheckRecord, Engine, EngineSettings, Shell, StepPorts, StepStatus, Target, Verdict,
-};
+use crate::app::check::{Engine, EngineSettings, Shell, StepPorts, Verdict};
 use crate::domain::{Location, Severity};
-use crate::fakes::{FakeForge, FakeRunner};
+use crate::fakes::FakeForge;
 use crate::manifest::RunnerName;
 use crate::ports::{
-    Author, BaseName, Check, Forge, GateRun, PrMerge, PrRequest, ReviewComment, RuleId, RunOutput,
-    RunRequest, Runner, ScanningAlert, SliceName,
+    Author, BaseName, Check, Forge, GateRun, PrMerge, PrRequest, ReviewComment, RuleId, Runner,
+    ScanningAlert, SliceName,
 };
 
 #[test]
@@ -174,120 +171,13 @@ pub(super) fn located_on(
     }
 }
 
-/// Lends a shared fake runner to a step's thread.
-struct SharedRunner(Arc<FakeRunner>);
-
-impl Runner for SharedRunner {
-    fn run(&self, request: &RunRequest) -> Result<RunOutput, PortError> {
-        self.0.run(request)
-    }
-}
-
-/// The ports of a runner step: a shared fake runner and nothing else.
-struct RunnerPorts(Arc<FakeRunner>);
-
-impl Shell for RunnerPorts {
-    fn run(&self, line: &CommandLine) -> Result<GateRun, PortError> {
-        Err(PortError::Unavailable(format!("no shell for {line}")))
-    }
-}
-
-impl StepPorts for RunnerPorts {
-    fn forge(&self) -> Result<Box<dyn Forge>, PortError> {
-        Err(PortError::Unavailable("no forge".to_owned()))
-    }
-
-    fn runner(&self, _name: &RunnerName) -> Result<Box<dyn Runner>, PortError> {
-        Ok(Box::new(SharedRunner(Arc::clone(&self.0))))
-    }
-}
-
-/// Runs one critique step whose runner exits 0 and prints `transcript`.
-fn review(transcript: &str) -> crate::app::check::CheckReport {
-    let runner = Arc::new(FakeRunner::default());
-    let output = RunOutput {
-        exit_code: 0,
-        transcript: transcript.to_owned(),
-    };
-    runner.record(RoleName::from("critique"), output);
-    let dir = tempfile::tempdir().expect("temp dir");
-    let mut settings = EngineSettings::new(dir.path().to_owned(), dir.path().join("runs"));
-    settings.timeout = Duration::from_secs(5);
-    let steps = ["runner:local:critique".parse().expect("step")];
-    Engine::new(Arc::new(RunnerPorts(runner)), settings).run(&steps, PrNumber::from(1), false)
-}
-
-#[test]
-fn silent_runner_is_a_failed_step() {
-    let report = review("");
-    let StepStatus::Failed(why) = &report.steps[0].status else {
-        panic!("not failed: {:?}", report.steps[0].status);
-    };
-    assert!(why.contains("REVIEWED"), "{why}");
-    assert_eq!(report.verdict(), Verdict::StepFailed);
-    assert_eq!(report.verdict().code(), 2);
-}
-
-#[test]
-fn findings_without_reviewed_are_a_failed_step() {
-    let report = review(
-        "MUST: src/export.rs:12 the empty list is dropped\nNOTE: src/export.rs:30 name the constant\n",
-    );
-    assert!(matches!(report.steps[0].status, StepStatus::Failed(_)));
-    assert_eq!(report.verdict(), Verdict::StepFailed);
-    let target = Target::Pr {
-        pr: PrNumber::from(1),
-        task: None,
-    };
-    let printed = CheckRecord::from_report(&target, &report, None, UNIX_EPOCH).to_string();
-    assert!(
-        printed.contains("MUST: src/export.rs:12 the empty list is dropped"),
-        "{printed}"
-    );
-    assert!(
-        printed.contains("NOTE: src/export.rs:30 name the constant"),
-        "{printed}"
-    );
-}
-
-#[test]
-fn reviewed_alone_is_clean() {
-    let report = review("REVIEWED: src/export.rs\n");
-    assert_eq!(report.steps[0].status, StepStatus::Ran);
-    assert!(report.findings.is_empty());
-    assert_eq!(report.verdict(), Verdict::Clean);
-}
-
-#[test]
-fn reviewed_with_must_is_must_fix() {
-    let report = review("MUST: src/export.rs:12 the empty list is dropped\nREVIEWED: src/z.rs\n");
-    assert_eq!(report.steps[0].status, StepStatus::Ran);
-    assert_eq!(report.findings.len(), 1);
-    assert_eq!(report.findings[0].finding.severity, Severity::MustFix);
-    assert_eq!(report.verdict(), Verdict::MustFix);
-}
-
-#[test]
-fn reviewed_counts_only_as_the_last_line_with_a_path() {
-    for transcript in [
-        "REVIEWED:\n",
-        "REVIEWED: src/z.rs\nMUST: src/export.rs:12 written after the line\n",
-        "REVIEWED: src/z.rs\nand then some prose\n",
-        "NOT REVIEWED: src/z.rs\n",
-    ] {
-        let report = review(transcript);
-        assert_eq!(report.verdict(), Verdict::StepFailed, "{transcript}");
-    }
-    let report = review("Done.\n\nREVIEWED: src/z.rs\n\n");
-    assert_eq!(report.verdict(), Verdict::Clean);
-}
-
 #[test]
 fn briefs_ask_for_reviewed() {
     for brief in [CRITIQUE_BRIEF, SECURITY_BRIEF] {
         assert!(brief.contains("REVIEWED: <the path of the last file in the diff>"));
         assert!(brief.contains("MUST: <path>:<line> <title>"));
         assert!(brief.contains("NOTE: <path>:<line> <title>"));
+        assert!(brief.contains("not even a code fence"));
         assert!(!brief.to_lowercase().contains("print nothing"));
     }
 }

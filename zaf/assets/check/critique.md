@@ -20,6 +20,6 @@ REVIEWED: <the path of the last file in the diff>
 - `<path>` is relative to the project root; `<line>` is the line in the new version.
 - `<title>` is one short sentence naming what is wrong.
 
-Whatever you found, the `REVIEWED:` line is the report's last line, with nothing after it. A report without it counts as a review that never happened, and fails the check. If nothing is wrong, that line is the whole report.
+Whatever you found, the `REVIEWED:` line is the report's last line, with nothing after it, not even a code fence. A report without it counts as a review that never happened, and fails the check. If nothing is wrong, that line is the whole report.
 
 Other lines are ignored.

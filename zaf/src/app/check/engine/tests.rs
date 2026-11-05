@@ -1,6 +1,7 @@
 use std::sync::Mutex;
 
 use super::*;
+use crate::app::check::{CheckRecord, Target};
 use crate::domain::{Location, Profile, RoleName};
 use crate::fakes::{FakeForge, FakeRunner};
 use crate::manifest::CommandLine;
@@ -187,7 +188,7 @@ fn a_runner_report_becomes_must_and_note_findings() {
     record_report(
         &ports.runner,
         "critique",
-        "Looked at the diff.\nMUST: src/export.rs:12 the empty list is dropped\nNOTE: src/export.rs:30 name the constant\n",
+        "Looked at the diff.\nMUST: src/export.rs:12 the empty list is dropped\nNOTE: src/export.rs:30 name the constant\nREVIEWED: src/export.rs\n",
     );
     let dir = temp_dir();
     let report = engine(&ports, &dir, Duration::from_secs(10)).run(
@@ -238,6 +239,68 @@ fn a_runner_report_becomes_must_and_note_findings() {
     assert!(requests[0].dir.starts_with(dir.path().join(".zaf/runs")));
 }
 
+/// One critique step whose runner exits 0 and prints `transcript`.
+fn review(transcript: &str) -> CheckReport {
+    let ports = Arc::new(FakePorts::new(sleeping_shell(Duration::ZERO)));
+    let pr = open_pr(&ports.forge);
+    record_report(&ports.runner, "critique", transcript);
+    let dir = temp_dir();
+    engine(&ports, &dir, Duration::from_secs(10)).run(&steps(&["runner:local:critique"]), pr, false)
+}
+
+#[test]
+fn silent_runner_is_a_failed_step() {
+    let report = review("");
+    let StepStatus::Failed(why) = &report.steps[0].status else {
+        panic!("not failed: {:?}", report.steps[0].status);
+    };
+    assert!(why.contains("REVIEWED"), "{why}");
+    assert_eq!(report.verdict(), Verdict::StepFailed);
+    assert_eq!(report.verdict().code(), 2);
+}
+
+#[test]
+fn findings_without_reviewed_are_a_failed_step() {
+    let report = review(
+        "MUST: src/export.rs:12 the empty list is dropped\nNOTE: src/export.rs:30 name the constant\n",
+    );
+    let StepStatus::Failed(why) = &report.steps[0].status else {
+        panic!("not failed: {:?}", report.steps[0].status);
+    };
+    assert!(
+        !why.contains("the empty list") && !why.contains("name the constant"),
+        "the reason stays short: {why}"
+    );
+    assert_eq!(report.verdict(), Verdict::StepFailed);
+}
+
+#[test]
+fn reviewed_alone_is_clean() {
+    let report = review("REVIEWED: src/export.rs\n");
+    assert_eq!(report.steps[0].status, StepStatus::Ran);
+    assert!(report.findings.is_empty());
+    assert_eq!(report.verdict(), Verdict::Clean);
+}
+
+#[test]
+fn reviewed_with_must_is_must_fix() {
+    let report = review("MUST: src/export.rs:12 the empty list is dropped\nREVIEWED: src/z.rs\n");
+    assert_eq!(report.steps[0].status, StepStatus::Ran);
+    assert_eq!(report.findings.len(), 1);
+    assert_eq!(report.findings[0].finding.severity, Severity::MustFix);
+    assert_eq!(report.verdict(), Verdict::MustFix);
+    let target = Target::Pr {
+        pr: PrNumber::from(1),
+        task: None,
+    };
+    let printed = CheckRecord::from_report(&target, &report, None, UNIX_EPOCH).to_string();
+    assert!(
+        printed
+            .contains("must      runner:local:critique src/export.rs:12 the empty list is dropped"),
+        "{printed}"
+    );
+}
+
 #[test]
 fn the_same_finding_from_two_sources_is_reported_once() {
     let ports = Arc::new(FakePorts::new(Box::new(|_| {
@@ -251,7 +314,7 @@ fn the_same_finding_from_two_sources_is_reported_once() {
     record_report(
         &ports.runner,
         "critique",
-        "MUST: src/parse.rs:40 unchecked input reaches the shell\n",
+        "MUST: src/parse.rs:40 unchecked input reaches the shell\nREVIEWED: src/parse.rs\n",
     );
     let dir = temp_dir();
     let report = engine(&ports, &dir, Duration::from_secs(10)).run(
@@ -284,7 +347,7 @@ fn a_flagged_step_is_skipped_for_an_unflagged_task_and_run_for_a_flagged_one() {
     record_report(
         &ports.runner,
         "security",
-        "NOTE: src/net.rs:3 pin the version\n",
+        "NOTE: src/net.rs:3 pin the version\nREVIEWED: src/net.rs\n",
     );
     let flagged = engine.run(&configured, pr, true);
     assert_eq!(flagged.steps[0].status, StepStatus::Ran);
