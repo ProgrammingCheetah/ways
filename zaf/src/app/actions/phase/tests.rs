@@ -126,6 +126,14 @@ fn phase_table_covers_every_rule() {
         ),
         ("pr, no result", open_pr(), Phase::Publish),
         (
+            "pr, failed check",
+            PhaseFacts {
+                task_check: task_check(Verdict::MustFix, PR_RECORDED + 1),
+                ..open_pr()
+            },
+            Phase::Build,
+        ),
+        (
             "pr, older clean check",
             PhaseFacts {
                 task_check: task_check(Verdict::Clean, PR_RECORDED - 1),
@@ -300,6 +308,54 @@ fn failed_task_check_stays_in_build() {
         ..ahead_of_clean_review()
     };
     assert_eq!(derive_phase(&after_clean_review), Phase::Build);
+}
+
+#[test]
+fn failed_check_with_a_pr_record_is_build() {
+    for verdict in [Verdict::MustFix, Verdict::StepFailed] {
+        let newer = PhaseFacts {
+            task_check: task_check(verdict, PR_RECORDED + 1),
+            ..open_pr()
+        };
+        assert_eq!(derive_phase(&newer), Phase::Build, "{verdict}, newer");
+
+        // The last task check failed, whenever it ran relative to the `.pr` record.
+        let older = PhaseFacts {
+            task_check: task_check(verdict, PR_RECORDED - 1),
+            ..open_pr()
+        };
+        assert_eq!(derive_phase(&older), Phase::Build, "{verdict}, older");
+
+        let mut no_time = task_check(verdict, PR_RECORDED + 1);
+        if let Some(check) = &mut no_time {
+            check.at = None;
+        }
+        let undated = PhaseFacts {
+            task_check: no_time,
+            ..open_pr()
+        };
+        assert_eq!(derive_phase(&undated), Phase::Build, "{verdict}, undated");
+
+        // A record for an older head is no result.
+        let older_head = PhaseFacts {
+            pr_check: Some(record(Verdict::Clean, Some(OLD_HEAD), REVIEWED)),
+            task_check: task_check(verdict, REVIEWED + 1),
+            ..open_pr()
+        };
+        assert_eq!(
+            derive_phase(&older_head),
+            Phase::Build,
+            "{verdict}, older head"
+        );
+
+        // A record with no head is no result.
+        let no_head = PhaseFacts {
+            pr_check: Some(record(Verdict::Clean, None, REVIEWED)),
+            task_check: task_check(verdict, REVIEWED + 1),
+            ..open_pr()
+        };
+        assert_eq!(derive_phase(&no_head), Phase::Build, "{verdict}, no head");
+    }
 }
 
 #[test]

@@ -118,6 +118,13 @@ impl PhaseFacts {
             .filter(|record| record.verdict == Verdict::Clean)
     }
 
+    /// The last task check is not clean, whenever it ran: it is the last one.
+    fn failed_task_check(&self) -> bool {
+        self.task_check
+            .as_ref()
+            .is_some_and(|record| record.verdict != Verdict::Clean)
+    }
+
     /// A clean task check began strictly after `time`.
     fn clean_task_check_newer_than(&self, time: Option<SystemTime>) -> bool {
         let check = self.clean_task_check().and_then(began);
@@ -149,7 +156,9 @@ pub fn derive_phase(facts: &PhaseFacts) -> Phase {
         };
     }
     if let Some(pr) = &facts.pr {
-        return if facts.clean_task_check_newer_than(pr.recorded_at) {
+        return if facts.failed_task_check() {
+            Phase::Build
+        } else if facts.clean_task_check_newer_than(pr.recorded_at) {
             Phase::Check
         } else {
             Phase::Publish
