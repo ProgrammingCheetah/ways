@@ -243,21 +243,45 @@ fn a_launch_marks_its_start_in_the_state() {
     assert_eq!(state.instances(), ["team instance 1 on #2"]);
 }
 
-/// A runner whose every run is unavailable for the given reason.
-struct FailingRunner(&'static str);
+/// A runner whose every run fails with the given error.
+struct FailingRunner(PortError);
 
 impl Runner for FailingRunner {
     fn run(&self, _request: &RunRequest) -> Result<RunOutput, PortError> {
-        Err(PortError::Unavailable(self.0.to_owned()))
+        Err(self.0.clone())
     }
 }
 
 fn timeout() -> FailingRunner {
-    FailingRunner("run timed out after 60s: claude -p")
+    FailingRunner(PortError::TimedOut {
+        bound: std::time::Duration::from_secs(60),
+        command: "claude -p".to_owned(),
+    })
 }
 
 #[test]
-fn a_timed_out_instances_tasks_are_released() {
+fn timeout_text_in_another_error_is_not_a_timeout() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let board = board();
+    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, OWN_PID).expect("prepares");
+    let first = &prepared.plan.launches[0];
+    let task = IssueNumber::from(3);
+    board.claim(task, &first.instance).expect("claims #3");
+
+    let lookalike = FailingRunner(PortError::Unavailable(
+        "run timed out after 60s: claude -p".to_owned(),
+    ));
+    let done = launch(&board, &lookalike, &context(&state_dir), first).expect("records the run");
+
+    assert!(!done.exit.timed_out());
+    assert_eq!(done.exit.status(), "error");
+    assert!(matches!(done.exit, LaunchExit::Error(_)));
+    assert_eq!(board.claims().expect("claims").len(), 1, "claims are kept");
+}
+
+#[test]
+fn timed_out_launch_releases_its_claims() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state_dir = dir.path().join(".zaf");
     let board = board();
@@ -331,7 +355,7 @@ fn a_launch_that_did_not_time_out_keeps_its_claims() {
     assert!(!done.exit.timed_out());
 
     // A runner that could not run is an `error`, not a timeout.
-    let missing = FailingRunner("no claude");
+    let missing = FailingRunner(PortError::Unavailable("no claude".to_owned()));
     let done = launch(&board, &missing, &context(&state_dir), first).expect("records the run");
     assert_eq!(done.exit.status(), "error");
 

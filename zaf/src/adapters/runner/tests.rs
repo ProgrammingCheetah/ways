@@ -76,13 +76,41 @@ fn a_failing_command_reports_its_exit_code() {
 }
 
 #[test]
-fn a_command_that_outlives_the_timeout_is_killed_and_unavailable() {
+fn run_past_its_bound_is_timed_out() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let slow = ProcessRunner::new(CommandLine::from("sleep 5"), Duration::from_secs(1));
     let started = Instant::now();
-    let result = slow.execute("unused", dir.path());
-    assert!(matches!(result, Err(PortError::Unavailable(_))));
+    let error = slow
+        .execute("unused", dir.path())
+        .expect_err("the run is stopped");
+    assert_eq!(
+        error,
+        PortError::TimedOut {
+            bound: Duration::from_secs(1),
+            command: "sleep 5".to_owned(),
+        }
+    );
+    // The message still names the seconds and the command line.
+    assert_eq!(error.to_string(), "run timed out after 1s: sleep 5");
     assert!(started.elapsed() < Duration::from_secs(4));
+}
+
+#[test]
+fn the_port_returns_a_timeout_as_timed_out() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let request = RunRequest {
+        role: RoleName::from("keeper"),
+        profile: Profile::Lean,
+        prompt: "unused".to_owned(),
+        dir: dir.path().to_path_buf(),
+        env: std::collections::BTreeMap::new(),
+    };
+    let slow = ProcessRunner::new(CommandLine::from("sleep 5"), Duration::from_millis(200));
+    let port: &dyn Runner = &slow;
+    assert!(matches!(
+        port.run(&request),
+        Err(PortError::TimedOut { .. })
+    ));
 }
 
 #[test]
