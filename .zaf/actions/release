@@ -1,0 +1,91 @@
+#!/bin/sh
+# zaf description: release a finished version: check zaf/Cargo.toml is at it, squash-merge the integration branch's pull request, sync main, and tag zaf-v<version>
+# zaf 1: refused, nothing changed by this action: the argument is not <version>, zaf/Cargo.toml is not at it, or ZAF_BASE is unset or has no open pull request; or a step it ran refused (the merge, the sync or the tag)
+# zaf 2: a backend failed (gh refused, or a step it ran failed)
+# zaf mode: 750
+# zaf group: release
+version=$1
+
+if [ -z "$ZAF_ROOT" ] || [ "$#" -ne 1 ]; then
+    echo "usage: release <version>, with ZAF_ROOT set" >&2
+    exit 1
+fi
+
+# A version is fit to sit inside a tag name and never reads as an option.
+case $version in
+    "" | -* | *[!0-9A-Za-z.+-]*)
+        echo "version $version is not a usable version" >&2
+        exit 1
+        ;;
+esac
+
+# The crate's version: the first `version` key of the manifest's [package] table.
+crate=$(awk '
+    /^[ \t]*\[/ { in_package = ($0 ~ /^[ \t]*\[package\][ \t]*(#.*)?$/); next }
+    in_package && /^[ \t]*version[ \t]*=/ {
+        line = $0
+        sub(/^[^=]*=[ \t]*"/, "", line)
+        sub(/".*$/, "", line)
+        print line
+        exit
+    }
+' "$ZAF_ROOT/zaf/Cargo.toml" 2>/dev/null)
+if [ "$crate" != "$version" ]; then
+    echo "zaf/Cargo.toml is at ${crate:-no version}, not $version" >&2
+    exit 1
+fi
+
+if [ -z "$ZAF_BASE" ]; then
+    echo "ZAF_BASE is unset: there is no integration branch to release" >&2
+    exit 1
+fi
+
+# The forge repository the manifest names, the first manifest that names one, in the order zaf
+# reads them. With none, gh works the repository out from the root's remotes, as it does by hand.
+forge_repo() {
+    for manifest in "$ZAF_ROOT/.zaf.toml" "$ZAF_ROOT/.zaf/config.toml" "$ZAF_ROOT/ZAF.toml"; do
+        [ -f "$manifest" ] || continue
+        found=$(awk '
+            /^[ \t]*\[/ { in_forge = ($0 ~ /^[ \t]*\[forge\][ \t]*(#.*)?$/); next }
+            in_forge && /^[ \t]*repo[ \t]*=/ {
+                line = $0
+                sub(/^[^=]*=[ \t]*"/, "", line)
+                sub(/".*$/, "", line)
+                print line
+                exit
+            }
+        ' "$manifest")
+        if [ -n "$found" ]; then
+            echo "$found"
+            return
+        fi
+    done
+}
+
+# gh runs at the project root, the repository itself, as the other pull request actions do.
+cd "$ZAF_ROOT" || exit 2
+
+repo=$(forge_repo)
+if [ -n "$repo" ]; then
+    set -- --repo "$repo"
+else
+    set --
+fi
+
+open=$(gh pr list --head "$ZAF_BASE" --state open --json number --jq '.[].number' "$@") || exit 2
+pr=$(printf '%s\n' "$open" | awk 'NF { print $1; exit }')
+if [ -z "$pr" ]; then
+    echo "$ZAF_BASE has no open pull request" >&2
+    exit 1
+fi
+case $pr in
+    *[!0-9]*)
+        echo "gh listed $pr, not a pull request number" >&2
+        exit 2
+        ;;
+esac
+
+# Each step stops the release at its first failure, and its code passes through.
+zaf do pr-merge "$pr" --squash || exit $?
+zaf do sync main || exit $?
+zaf do tag "zaf-v$version" || exit $?
