@@ -4,19 +4,20 @@
 //! Exit codes: 0 clean, 1 must-fix present (or a task line failed), 2 a step
 //! failed or timed out, or a backend is missing.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use super::Cli;
 use super::exit::{self, BACKEND, REFUSED};
+use super::slice::VERSION_VAR;
 use crate::adapters::gate::RUNS_DIR;
-use crate::adapters::shell::SystemShell;
 use crate::app::actions::{RunOutcome, SliceRecords};
 use crate::app::check::{
     CheckRecord, Engine, EngineSettings, Shell, Step, StepPorts, Target, TaskInputs, check_task,
 };
-use crate::composition::{Composition, CompositionError, SHELL_TIMEOUT};
+use crate::composition::{Composition, CompositionError};
 use crate::domain::{IssueNumber, SecurityTrigger, TaskTemplate};
 use crate::manifest::{CheckTarget, CommandLine, RunnerName};
 use crate::ports::{Board, Forge, Gate, GateRun, PortError, PrNumber, Runner, Shell as ShellPort};
@@ -47,15 +48,29 @@ fn check(cli: &Cli, target: Target, status: bool) -> u8 {
     if status {
         return show_stored(cli, &path, &stored);
     }
+    // The manifest's `[env]` for every command the check runs. A value that needs a version the
+    // caller has not set runs nothing, rather than run without it.
+    let version = std::env::var(VERSION_VAR)
+        .ok()
+        .filter(|version| !version.is_empty());
+    let env = match composition.project_env(version.as_deref()) {
+        Ok(env) => env,
+        Err(error) => {
+            eprintln!("zaf {path}: {error}; set {VERSION_VAR}");
+            return BACKEND;
+        }
+    };
     let (record, slice_line) = match target {
-        Target::Task(task) => match check_task_target(&path, &composition, &target, task) {
+        Target::Task(task) => match check_task_target(&path, &composition, &target, task, &env) {
             Ok((record, line)) => (record, Some(line)),
             Err(code) => return code,
         },
-        Target::Pr { pr, task } => match check_pr_target(&path, &composition, &target, pr, task) {
-            Ok(record) => (record, None),
-            Err(code) => return code,
-        },
+        Target::Pr { pr, task } => {
+            match check_pr_target(&path, &composition, &target, pr, task, &env) {
+                Ok(record) => (record, None),
+                Err(code) => return code,
+            }
+        }
     };
     if let Err(error) = store(&stored, &record) {
         eprintln!("zaf {path}: the result was not stored for --status: {error}");
@@ -94,14 +109,27 @@ fn check_task_target(
     composition: &Composition,
     target: &Target,
     task: IssueNumber,
+    env: &BTreeMap<String, String>,
 ) -> Result<(CheckRecord, String), u8> {
     let board = composition
         .board()
         .map_err(|error| exit::fail_composition(path, &error))?;
+    check_task_with_board(path, composition, board.as_ref(), target, task, env)
+}
+
+/// [`check_task_in_slice`] with the live gate and shell: both run with `env` set.
+fn check_task_with_board(
+    path: &str,
+    composition: &Composition,
+    board: &dyn Board,
+    target: &Target,
+    task: IssueNumber,
+    env: &BTreeMap<String, String>,
+) -> Result<(CheckRecord, String), u8> {
     let ports = TaskPorts {
-        board: board.as_ref(),
-        gate_in: &|dir| composition.gate_in(dir),
-        shell_in: &|dir| Box::new(DirShell(Box::new(SystemShell::new(dir, SHELL_TIMEOUT)))),
+        board,
+        gate_in: &|dir| composition.gate_in_with_env(dir, env),
+        shell_in: &|dir| Box::new(DirShell(composition.shell_in_with_env(dir, env))),
     };
     check_task_in_slice(path, composition, &ports, target, task)
 }
@@ -165,6 +193,7 @@ fn check_pr_target(
     target: &Target,
     pr: PrNumber,
     task: Option<IssueNumber>,
+    env: &BTreeMap<String, String>,
 ) -> Result<CheckRecord, u8> {
     let configured = composition
         .manifest()
@@ -190,6 +219,7 @@ fn check_pr_target(
     };
     let ports: Arc<dyn StepPorts> = Arc::new(LivePorts {
         composition: composition.clone(),
+        env: env.clone(),
     });
     let mut settings = EngineSettings::new(composition.root().to_owned(), runs_dir(composition));
     settings.ci_grace = Duration::from_secs(composition.manifest().check.ci_grace_seconds);
@@ -237,12 +267,16 @@ fn task_template(
 /// The live ports a check reaches, built from the composition inside each step's thread.
 struct LivePorts {
     composition: Composition,
+    /// The manifest's `[env]`, resolved, set on every line the shell runs.
+    env: BTreeMap<String, String>,
 }
 
 impl Shell for LivePorts {
-    /// Runs the line through the composition's shell, at the project root.
+    /// Runs the line through the composition's shell, at the project root, with `[env]` set.
     fn run(&self, line: &CommandLine) -> Result<GateRun, PortError> {
-        self.composition.shell().run(line)
+        self.composition
+            .shell_in_with_env(self.composition.root(), &self.env)
+            .run(line)
     }
 }
 
@@ -342,8 +376,11 @@ mod tests {
     #[test]
     fn the_live_shell_runs_a_line_at_the_project_root() {
         let dir = project(MANIFEST);
-        let composition = Composition::load(dir.path()).expect("loads");
-        let shell = LivePorts { composition };
+        let composition = Composition::load_with_home(dir.path(), None).expect("loads");
+        let shell = LivePorts {
+            composition,
+            env: BTreeMap::new(),
+        };
         let passed = shell.run(&CommandLine::from("echo hello")).expect("runs");
         assert_eq!(passed.output, "hello\n");
         let failed = shell.run(&CommandLine::from("exit 4")).expect("runs");
@@ -359,8 +396,11 @@ mod tests {
     #[test]
     fn an_absent_forge_or_runner_is_unavailable() {
         let dir = project(MANIFEST);
-        let composition = Composition::load(dir.path()).expect("loads");
-        let ports = LivePorts { composition };
+        let composition = Composition::load_with_home(dir.path(), None).expect("loads");
+        let ports = LivePorts {
+            composition,
+            env: BTreeMap::new(),
+        };
         assert!(matches!(ports.forge(), Err(PortError::Unavailable(_))));
         let missing = ports.runner(&RunnerName::from("local"));
         assert!(matches!(missing, Err(PortError::Unavailable(_))));
@@ -456,7 +496,7 @@ mod tests {
     #[test]
     fn check_runs_in_the_recorded_workspace() {
         let dir = project(MANIFEST);
-        let composition = Composition::load(dir.path()).expect("loads");
+        let composition = Composition::load_with_home(dir.path(), None).expect("loads");
         // The workspace is where the record says, not where the branch patterns would put it.
         let elsewhere = tempfile::tempdir().expect("workspace dir");
         let workspace = elsewhere.path().canonicalize().expect("absolute");
@@ -468,10 +508,84 @@ mod tests {
         assert_eq!(record.verdict, crate::app::check::Verdict::Clean);
     }
 
+    const ENV_MANIFEST: &str = r#"[project]
+name = "example"
+
+[board]
+kind = "github-issues"
+repo = "owner/example"
+
+[gate]
+full = "true"
+light = "printf '%s|%s' \"$CARGO_TARGET_DIR\" \"$HOME\" > seen && test -n \"$PATH\""
+
+[env]
+CARGO_TARGET_DIR = "{root}/.zaf/target"
+HOME = "/overridden"
+"#;
+
+    #[test]
+    fn check_runs_the_gate_with_env() {
+        let dir = project(ENV_MANIFEST);
+        let composition = Composition::load_with_home(dir.path(), None).expect("loads");
+        let elsewhere = tempfile::tempdir().expect("workspace dir");
+        let workspace = elsewhere.path().canonicalize().expect("absolute");
+        record_workspace(dir.path(), 46, &workspace);
+        let board = crate::fakes::FakeBoard::default();
+        board.add_ticket(ticket());
+        let env = composition.project_env(None).expect("resolves");
+        let target = Target::Task(IssueNumber::from(46));
+        let (record, _) = check_task_with_board(
+            "check",
+            &composition,
+            &board,
+            &target,
+            IssueNumber::from(46),
+            &env,
+        )
+        .expect("checked");
+        // The gate saw the variable at the absolute root, an `[env]` key over an inherited one,
+        // and the rest of the inherited environment (PATH) still in place.
+        assert_eq!(record.verdict, crate::app::check::Verdict::Clean);
+        let seen = std::fs::read_to_string(workspace.join("seen")).expect("the gate ran");
+        let expected = format!("{}/.zaf/target|/overridden", composition.root().display());
+        assert_eq!(seen, expected);
+        assert!(Path::new(seen.split('|').next().expect("value")).is_absolute());
+    }
+
+    #[test]
+    fn a_command_line_runs_with_env_over_the_inherited_environment() {
+        let dir = project(ENV_MANIFEST);
+        let composition = Composition::load_with_home(dir.path(), None).expect("loads");
+        let env = composition.project_env(None).expect("resolves");
+        let shell = LivePorts { composition, env };
+        let line = CommandLine::from("echo \"$CARGO_TARGET_DIR $HOME\"; test -n \"$PATH\"");
+        let ran = shell.run(&line).expect("runs");
+        assert_eq!(ran.verdict, crate::ports::GateVerdict::Passed);
+        assert!(
+            ran.output.ends_with("/.zaf/target /overridden\n"),
+            "{}",
+            ran.output
+        );
+    }
+
+    #[test]
+    fn a_version_placeholder_without_a_version_names_the_key_and_the_placeholder() {
+        let manifest = ENV_MANIFEST.replace("{root}/.zaf/target", "{root}/target-{version}");
+        let dir = project(&manifest);
+        let composition = Composition::load_with_home(dir.path(), None).expect("loads");
+        let error = composition.project_env(None).expect_err("needs a version");
+        let text = error.to_string();
+        assert!(text.contains("CARGO_TARGET_DIR"), "{text}");
+        assert!(text.contains("{version}"), "{text}");
+        let env = composition.project_env(Some("0.2.0")).expect("resolves");
+        assert!(env["CARGO_TARGET_DIR"].ends_with("/target-0.2.0"));
+    }
+
     #[test]
     fn check_without_a_record_refuses() {
         let dir = project(MANIFEST);
-        let composition = Composition::load(dir.path()).expect("loads");
+        let composition = Composition::load_with_home(dir.path(), None).expect("loads");
         // A workspace that predates the records sits where the patterns would put it: no record,
         // so it is refused rather than guessed at.
         std::fs::create_dir_all(dir.path().join(".zaf/workspaces").join(SLICE)).expect("old");
@@ -654,7 +768,7 @@ mod tests {
     #[test]
     fn a_stored_record_reads_back_with_its_exit_code() {
         let dir = project(MANIFEST);
-        let composition = Composition::load(dir.path()).expect("loads");
+        let composition = Composition::load_with_home(dir.path(), None).expect("loads");
         let target = Target::Pr {
             pr: PrNumber::from(5),
             task: None,

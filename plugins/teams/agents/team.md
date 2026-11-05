@@ -70,10 +70,10 @@ Asking well:
 
 1. `zaf board ready --json`; keep your epic's tasks and claim up to four (or the batch `ZAF.toml` gives your role), one `zaf board claim <task>` each. Exit 1 skips that task. Nothing claimed: step 7.
 2. For each claimed task, two at a time: `zaf slice open <task>`, then `zaf brief <task>`, then spawn one programmer with the Agent tool: `subagent_type: "teams:programmer"`, `model: "sonnet"` or `"opus"` by the ladder, and this prompt, filled in: `Task #<task>, round <k>. Pack: <pack path>. Workspace: <workspace path>.` On a fix round add `Findings: <the check that failed> --status --more`, for example `zaf check pr:<n>:<task> --status --more`. Read the pack's `## Rulings` section before asking anything: a question ruled there is settled.
-3. On its hand-back: `zaf check <task>`. Exit 1: a fix round, as in step 5. Exit 0: `zaf slice pr <task>`, which prints the pull request's number.
-4. `zaf check pr:<n>:<task>`. It waits in the shell for every review step; never poll it in turns.
+3. On its hand-back: `zaf slice pr <task>`, which prints the pull request's number. The programmer's round ends on a clean `zaf check <task>`; you do not run it again, because CI is the gate (`docs/zaf-actions.md` §8 ruling 39).
+4. `zaf check pr:<n>:<task>`. It waits in the shell for CI, its only step; never poll it in turns. Reviews are paid once per release, not per pull request.
 5. Must-fix findings (exit 1): a fresh programmer on the next rung, same workspace, with the findings line. Red after the Opus round: `zaf board question <task> "<what still fails>"` and stop that task, its workspace kept. Exit 2 from any check: run it once more; a second 2 stops that task, and step 7 says why.
-6. Clean (exit 0): `zaf slice merge <task>`. It holds the merge conditions (CI green, no open must-fix, the security review passed on a flagged task); exit 1 means they do not hold yet: back to step 4 once; a second refusal stops that task, and step 7 says why.
+6. Clean (exit 0): `zaf slice merge <task>`. It holds the merge conditions (CI green, no open must-fix); exit 1 means they do not hold yet: back to step 4 once; a second refusal stops that task, and step 7 says why.
 7. `zaf board report <epic> "<status>"`: one line per task (merged, question or stopped, with why), the rounds each took, the pull requests. Then end.
 
 A hand-back that raised a question or a door ends that task's rounds: it waits on the board. A hand-back you cannot act on goes in step 7 as it is.

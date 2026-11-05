@@ -6,7 +6,8 @@
 //! in full, `nodes chain <path>` for each owned path (or, when the cli passes no
 //! chain, a note and the plain list of owned paths), the project's style file,
 //! the actions the reader may read (`## Actions`: name, tier and description, left out when
-//! there are none) and the interface help page.
+//! there are none) and the interface help page. Each place gets one map, and a node that two
+//! maps share is printed once, under the first place that reaches it.
 //! It is written to `.zaf/runs/<instance slug>/brief-<task>.md`, the slug being
 //! [`Instance::slug_of`] of the instance's name.
 
@@ -40,6 +41,9 @@ pub const NODES_ABSENT_NOTE: &str = "No `nodes` binary on PATH; the node chains 
 /// The cli passes no chain in that case, so a missing `nodes` binary reads the same.
 pub const NO_NODE_TREE_NOTE: &str =
     "No node tree at the project root; the node chains are skipped.";
+
+/// The note written under a place whose map holds only nodes an earlier map printed.
+pub const ALL_PRINTED_NOTE: &str = "Every node of this place's map is printed above.";
 
 /// Runs `nodes chain <path>` and returns its output, or why it failed.
 pub type NodesChain<'a> = &'a dyn Fn(&str) -> Result<String, String>;
@@ -270,6 +274,28 @@ fn tokens(field: &str) -> impl Iterator<Item = &str> {
         .filter(|token| !token.is_empty())
 }
 
+/// The nodes of one place's map that no earlier map printed, as one text, and records them in `printed`.
+///
+/// A map is the `nodes chain` output: node blocks split by blank lines, each
+/// opening with a line that starts with the node's path. A node is the same
+/// node when its path is, so two places under one folder share the folder's
+/// nodes and the pack prints them once, under the first place.
+fn unprinted_nodes(map: &str, printed: &mut Vec<String>) -> String {
+    let mut kept: Vec<&str> = Vec::new();
+    for block in map.trim().split("\n\n") {
+        let block = block.trim_end();
+        let Some(key) = block.split_whitespace().next() else {
+            continue;
+        };
+        if printed.iter().any(|known| known == key) {
+            continue;
+        }
+        printed.push(key.to_owned());
+        kept.push(block);
+    }
+    kept.join("\n\n")
+}
+
 fn is_path_segment(name: &str) -> bool {
     !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\'])
 }
@@ -343,9 +369,21 @@ fn render(
             writeln!(text)?;
         }
         (Some(chain), Some(paths)) => {
+            let mut printed: Vec<String> = Vec::new();
             for path in paths {
-                let output = chain(&path).unwrap_or_else(|why| format!("nodes failed: {why}"));
-                writeln!(text, "### {path}\n\n```\n{}\n```\n", output.trim_end())?;
+                match chain(&path) {
+                    Ok(output) => {
+                        let nodes = unprinted_nodes(&output, &mut printed);
+                        if nodes.is_empty() {
+                            writeln!(text, "### {path}\n\n{ALL_PRINTED_NOTE}\n")?;
+                        } else {
+                            writeln!(text, "### {path}\n\n```\n{nodes}\n```\n")?;
+                        }
+                    }
+                    Err(why) => {
+                        writeln!(text, "### {path}\n\n```\nnodes failed: {why}\n```\n")?;
+                    }
+                }
             }
         }
     }
