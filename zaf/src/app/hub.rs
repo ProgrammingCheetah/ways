@@ -5,17 +5,20 @@
 //! and [`gather`] reads the board, the ledger, the spawner's state, the phases and the last
 //! reports into a snapshot. [`Watch`] redraws it when a report arrives, [`Report`] is what verbs
 //! and the profiles' hook leave in `.zaf/hub/reports`, and [`ToolCall`] is the hook's payload.
+//! [`Dashboard`] serves the frame as an HTML page on the LAN (`zaf hub --port <n>`).
 
 use std::time::Duration;
 
 use super::actions::Phase;
 
+mod dashboard;
 mod draw;
 mod gather;
 mod hook;
 mod reports;
 mod watch;
 
+pub use dashboard::{BindError, Dashboard, Page, lan_address, lan_url};
 pub use draw::draw;
 pub use gather::{HubError, HubInputs, gather};
 pub use hook::{PROGRAMMER, TEAM, TESTING, ToolCall, WAITING_ON_REVIEW, task_in_workspace};

@@ -142,10 +142,15 @@ pub enum Verb {
     /// List the actions, run one, or print the file a name resolves to.
     Do(do_action::DoArgs),
     /// The live view of what is happening; `zaf hub report` is the tool-call hook.
+    #[command(args_conflicts_with_subcommands = true)]
     Hub {
         /// What to do; none draws the hub.
         #[command(subcommand)]
         action: Option<HubAction>,
+        /// Serve the frame as a web page on every interface at this port, for anyone on the
+        /// LAN, and redraw it when a report arrives; 0 takes a free port. GET only, no login.
+        #[arg(long, value_name = "PORT")]
+        port: Option<u16>,
     },
 }
 
@@ -242,7 +247,7 @@ impl Verb {
             Self::Board { action } => Some(action.into()),
             Self::Slice { action } => Some(action.into()),
             Self::Profile { action } => Some(action.into()),
-            Self::Hub { action } => action.as_ref().map(Into::into),
+            Self::Hub { action, .. } => action.as_ref().map(Into::into),
             _ => None,
         };
         action.map_or_else(|| verb.to_owned(), |action| format!("{verb} {action}"))
@@ -268,7 +273,8 @@ where
             let hook = matches!(
                 cli.verb,
                 Verb::Hub {
-                    action: Some(HubAction::Report)
+                    action: Some(HubAction::Report),
+                    ..
                 }
             );
             if !cfg!(test) && !hook && !matches!(cli.verb, Verb::Setup) {
@@ -347,7 +353,7 @@ fn run_verb(cli: &Cli) -> u8 {
         } => spawn::run(cli, *once, version.as_deref(), *dry_run),
         Verb::Profile { action } => profile::run(cli, action),
         Verb::Do(args) => do_action::run(cli, args),
-        Verb::Hub { action } => hub::run(cli, action.as_ref()),
+        Verb::Hub { action, port } => hub::run(cli, action.as_ref(), *port),
     }
 }
 
