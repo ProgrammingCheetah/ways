@@ -374,6 +374,20 @@ fn price_change_moves_every_row_alike() {
             old.est_usd,
             new.est_usd
         );
+        let (old_each, new_each) = (
+            old.usd_per_task.expect("a task"),
+            new.usd_per_task.expect("a task"),
+        );
+        assert!(
+            (new_each - 2.0 * old_each).abs() < 1e-9,
+            "#{}: per task {old_each} -> {new_each}",
+            old.epic
+        );
+        assert!(
+            (new.roles[0].est_usd - 2.0 * old.roles[0].est_usd).abs() < 1e-9,
+            "#{}: the role's dollars move alike",
+            old.epic
+        );
         assert_eq!(new.tokens, old.tokens, "tokens do not move with a price");
         assert_eq!(new.roles[0].share_percent, old.roles[0].share_percent);
     }
