@@ -158,3 +158,138 @@ fn nothing_running_still_shows_slots() {
 fn a_frame_with_no_epic_says_so() {
     assert_eq!(draw(&Snapshot::default(), 80), "no open epics\n");
 }
+
+fn word_of(tool: &str, command: Option<&str>) -> &'static str {
+    let payload = serde_json::json!({
+        "tool_name": tool,
+        "tool_input": { "command": command },
+        "cwd": "/somewhere",
+    });
+    ToolCall::parse(&payload.to_string()).word()
+}
+
+#[test]
+fn tool_maps_to_a_word() {
+    for tool in ["Read", "Grep", "Glob"] {
+        assert_eq!(word_of(tool, None), "reading", "{tool}");
+    }
+    for tool in ["Edit", "Write"] {
+        assert_eq!(word_of(tool, None), "writing", "{tool}");
+    }
+    for command in [
+        "cargo test",
+        "cd zaf && cargo test --lib hub",
+        "cargo nextest run",
+        "pytest -q tests/",
+        "npm test",
+        "cargo clippy --all-targets -- -D warnings",
+        "cd zaf && cargo fmt --check && cargo build && cargo clippy && cargo test",
+        "zaf check 322",
+        "zaf check #322",
+        "zaf verify 322",
+        "cd /work && zaf check 322",
+    ] {
+        assert_eq!(word_of("Bash", Some(command)), "testing", "{command}");
+    }
+    for command in ["zaf check pr:5:322", "zaf check pr:5", "zaf check pr"] {
+        assert_eq!(
+            word_of("Bash", Some(command)),
+            "waiting on review",
+            "{command}"
+        );
+    }
+    for command in [
+        "ls -la",
+        "jj commit -m \"fix the test\"",
+        "rg latest src",
+        "zaf ask -t 322 \"fact: what is a test?\"",
+        "",
+    ] {
+        assert_eq!(word_of("Bash", Some(command)), "working", "{command}");
+    }
+    assert_eq!(word_of("Bash", None), "working");
+    for tool in ["WebFetch", "Task", "TodoWrite", "mcp__x__y", ""] {
+        assert_eq!(word_of(tool, None), "working", "{tool}");
+    }
+}
+
+#[test]
+fn a_slice_workspace_names_its_task() {
+    let workspaces = std::path::Path::new("/p/.zaf/workspaces");
+    let pattern = "feature/{version}-{epic}-{task}";
+    let task = |cwd: &str| {
+        task_in_workspace(std::path::Path::new(cwd), workspaces, pattern).map(|task| task.get())
+    };
+    assert_eq!(task("/p/.zaf/workspaces/feature/0.2.0-103-322"), Some(322));
+    assert_eq!(
+        task("/p/.zaf/workspaces/feature/0.2.0-103-322/zaf/src"),
+        Some(322)
+    );
+    assert_eq!(task("/p/.zaf/workspaces/feature/0.2.0"), None);
+    assert_eq!(task("/p/.zaf/workspaces/feature"), None);
+    assert_eq!(task("/p/.zaf/workspaces"), None);
+    assert_eq!(task("/p/zaf/src"), None);
+    assert_eq!(task("/elsewhere/feature/0.2.0-103-322"), None);
+}
+
+fn report_at(seconds: u64, what: &str) -> Report {
+    Report {
+        at: std::time::UNIX_EPOCH + Duration::from_secs(seconds),
+        task: None,
+        worker: "team".to_owned(),
+        what: what.to_owned(),
+    }
+}
+
+#[test]
+fn reports_stay_under_the_cap() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let over = 25;
+    for seconds in 0..(MAX_LINES + over) as u64 {
+        append(dir.path(), &report_at(seconds, "working")).expect("appends");
+        let lines = std::fs::read_to_string(reports_file(dir.path()))
+            .expect("file")
+            .lines()
+            .count();
+        assert!(lines <= MAX_LINES, "{lines} lines after report {seconds}");
+    }
+    let text = std::fs::read_to_string(reports_file(dir.path())).expect("file");
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), MAX_LINES);
+    assert_eq!(MAX_LINES, 1000);
+    assert!(
+        lines[0].starts_with(&format!("{over} ")),
+        "oldest dropped: {}",
+        lines[0]
+    );
+    assert!(
+        lines
+            .last()
+            .expect("a line")
+            .starts_with(&format!("{} ", MAX_LINES + over - 1)),
+        "newest kept"
+    );
+}
+
+#[test]
+fn a_report_reads_back_as_written() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut one = report_at(90, "testing");
+    one.task = Some(crate::domain::IssueNumber::from(322));
+    append(dir.path(), &one).expect("appends");
+    append(
+        dir.path(),
+        &report_at(95, "reading\nwith\ttabs  and\nlines"),
+    )
+    .expect("appends");
+    assert_eq!(
+        last_report(dir.path(), crate::domain::IssueNumber::from(322)),
+        Some(("testing".to_owned(), one.at))
+    );
+    let text = std::fs::read_to_string(reports_file(dir.path())).expect("file");
+    assert_eq!(text.lines().count(), 2, "a report is one line: {text:?}");
+    assert!(
+        text.contains("95 - team reading with tabs and lines"),
+        "{text:?}"
+    );
+}

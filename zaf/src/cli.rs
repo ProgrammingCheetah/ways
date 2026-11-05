@@ -22,6 +22,7 @@ pub mod do_action;
 pub mod doctor;
 pub mod exit;
 pub mod guard;
+pub mod hub;
 pub mod init;
 pub mod profile;
 pub mod report;
@@ -140,6 +141,21 @@ pub enum Verb {
     },
     /// List the actions, run one, or print the file a name resolves to.
     Do(do_action::DoArgs),
+    /// The live view of what is happening; `zaf hub report` is the tool-call hook.
+    Hub {
+        /// What to do; none draws the hub.
+        #[command(subcommand)]
+        action: Option<HubAction>,
+    },
+}
+
+/// `zaf hub …`.
+#[derive(Debug, clap::Subcommand, strum::IntoStaticStr)]
+#[strum(serialize_all = "kebab-case")]
+pub enum HubAction {
+    /// Leave a report of the tool call on stdin: the profiles' `PostToolUse` hook. Prints
+    /// nothing and exits 0 whatever it is given.
+    Report,
 }
 
 /// `zaf board …`.
@@ -226,6 +242,7 @@ impl Verb {
             Self::Board { action } => Some(action.into()),
             Self::Slice { action } => Some(action.into()),
             Self::Profile { action } => Some(action.into()),
+            Self::Hub { action } => action.as_ref().map(Into::into),
             _ => None,
         };
         action.map_or_else(|| verb.to_owned(), |action| format!("{verb} {action}"))
@@ -247,7 +264,14 @@ where
         |cli| {
             // The unit tests call `run` in-process from the crate's own folder: they must
             // never make the real zaf home or this repository's `.zaf/`.
-            if !cfg!(test) && !matches!(cli.verb, Verb::Setup) {
+            // The hook runs after every tool call and prints nothing: it makes nothing either.
+            let hook = matches!(
+                cli.verb,
+                Verb::Hub {
+                    action: Some(HubAction::Report)
+                }
+            );
+            if !cfg!(test) && !hook && !matches!(cli.verb, Verb::Setup) {
                 first_run();
             }
             dispatch(&cli)
@@ -290,7 +314,17 @@ pub fn project_root(here: &Path, home: Option<&Path>) -> Option<PathBuf> {
 }
 
 /// Runs a parsed command line: each verb goes to its module; an unbuilt one says so and exits 64.
+/// A verb that changed something then leaves its report for the hub. The unit tests run verbs
+/// in-process from the crate's own folder and must not write this repository's reports.
 pub fn dispatch(cli: &Cli) -> u8 {
+    let code = run_verb(cli);
+    if !cfg!(test) {
+        hub::leave_report(&cli.verb, code);
+    }
+    code
+}
+
+fn run_verb(cli: &Cli) -> u8 {
     match &cli.verb {
         Verb::Board { action } => board::run(cli, action),
         Verb::Ask { task, questions } => ask::run(cli, *task, questions),
@@ -313,6 +347,7 @@ pub fn dispatch(cli: &Cli) -> u8 {
         } => spawn::run(cli, *once, version.as_deref(), *dry_run),
         Verb::Profile { action } => profile::run(cli, action),
         Verb::Do(args) => do_action::run(cli, args),
+        Verb::Hub { action } => hub::run(cli, action.as_ref()),
     }
 }
 
