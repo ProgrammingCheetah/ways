@@ -22,6 +22,7 @@ pub use phase::{Phase, PhaseFacts, PrFacts, WorkspaceFacts, derive_phase};
 pub use records::{SliceRecords, hand_back};
 pub use resolve::{
     ACTIONS_DIR, ResolveError, Resolved, Tier, can_shadow, check_name, list, resolve, resolve_in,
+    same_file,
 };
 pub use run::{
     ACTION_VAR, CHAIN_VAR, DEPTH_VAR, LOG_VAR, ListedAction, MAX_DEPTH, MINUTE, NOT_RUN_EXIT,

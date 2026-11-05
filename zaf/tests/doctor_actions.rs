@@ -281,6 +281,91 @@ fn doctor_json_carries_each_action_and_exits_1_on_an_invalid_one() {
     assert!(by_name("broken")["mode"].is_null());
 }
 
+#[test]
+fn doctor_lists_shadowing() {
+    let project = project();
+    let machine = project.home.join("actions");
+    let metadata = ["description: land it", "1: refused", "mode: 750"];
+    put(&machine, "land", &metadata, true);
+    put(&project_actions(&project), "land", &metadata, true);
+
+    let (code, text) = doctor(&project);
+
+    assert_eq!(code, 0, "a shadow does not fail the report: {text}");
+    assert!(
+        text.contains("action land (project): ok, mode 750"),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "shadows the machine file {}",
+            machine.join("land").display()
+        )),
+        "{text}"
+    );
+    assert!(
+        !text.contains("no effect"),
+        "same bits widen nothing: {text}"
+    );
+}
+
+#[test]
+fn doctor_says_a_shadow_does_not_widen() {
+    let project = project();
+    put(
+        &project.home.join("actions"),
+        "land",
+        &["description: land it", "1: refused", "mode: 750"],
+        true,
+    );
+    put(
+        &project_actions(&project),
+        "land",
+        &["description: land it", "1: refused", "mode: 755"],
+        true,
+    );
+
+    let (code, text) = doctor(&project);
+
+    assert_eq!(code, 0, "{text}");
+    assert!(
+        text.contains("mode 755 has run bits wider than mode 750"),
+        "{text}"
+    );
+    assert!(text.contains("the extra bits have no effect"), "{text}");
+}
+
+#[test]
+fn doctor_fails_on_an_unshadowable_name() {
+    let project = project();
+    let machine = project.home.join("actions");
+    put(
+        &machine,
+        "fixed",
+        &["description: fixed", "1: failed", "mode: 555"],
+        true,
+    );
+    put(
+        &project_actions(&project),
+        "fixed",
+        &["description: mine", "1: failed", "mode: 555"],
+        true,
+    );
+
+    let (code, text) = doctor(&project);
+
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        text.contains(&format!(
+            "{} may not shadow {}: its mode 555 has no owner w",
+            project_actions(&project).join("fixed").display(),
+            machine.join("fixed").display()
+        )),
+        "{text}"
+    );
+    assert!(text.contains("action fixed (project): invalid"), "{text}");
+}
+
 /// Writes an executable action to `dir/<name>` with a valid header and the given body.
 fn put_body(dir: &Path, name: &str, body: &str) {
     write(
