@@ -1,0 +1,7 @@
+*
+!.gitignore
+!config.toml
+!actions/
+!actions/**
+!roles/
+!roles/**
