@@ -68,6 +68,7 @@ Asking well:
 ## Steps
 
 1. Read the pack. Code commands start `cd <workspace> &&`; `zaf` verbs run from the project root, where your shell starts.
+   Keep each Bash call to plain commands, because these shapes are denied and cost you the turn: `git` (use `jj log`, `jj diff`, `jj file annotate`, `jj file chmod`), heredocs (use Write or Edit), `$?` and `${pipestatus[1]}` (run the command without a pipe; a failed command reports its own exit code), `for` and `while`, `$(...)` and `<(...)`.
 2. Fix round: run the findings command first. Fix every must-fix; a note is yours to take or leave, and you say which.
 3. Read the pack's `## Rulings` section before asking anything: a question ruled there is settled. Questions the pack does not answer, all at once: `zaf ask -t <task> "rule: Is an empty name refused, and with which status?" "where: Which page defines the retry window?"`. Kinds: `fact` (what the design says), `rule` (allowed, required, forbidden), `term` (an entity or word), `exists` (is there a decision), `where` (which page); up to five, one sentence each, no code, under thirty words. Each answer comes back as
    ```
