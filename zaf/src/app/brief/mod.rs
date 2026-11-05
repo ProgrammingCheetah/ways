@@ -16,6 +16,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use super::actions::{Caller, ListedAction, ResolveError, list_actions};
+use crate::composition::STATE_DIR;
 use crate::domain::{Instance, IssueNumber, PageId, TaskTemplate};
 use crate::ports::{Board, Design, NewQuestion, Page, PortError, Ticket};
 
@@ -48,8 +49,9 @@ pub type NodesChain<'a> = &'a dyn Fn(&str) -> Result<String, String>;
 pub struct ActionsView<'a> {
     /// The project root, whose `.zaf/actions/` is the project tier.
     pub project_root: &'a Path,
-    /// The machine's zaf home, whose `actions/` is the machine tier.
-    pub home: &'a Path,
+    /// The machine's zaf home, whose `actions/` is the machine tier; `None` when the machine has
+    /// none, and then only the project's actions are listed.
+    pub home: Option<&'a Path>,
     /// Who reads the pack: an action their mode hides from them is not listed.
     pub caller: &'a Caller,
 }
@@ -137,7 +139,12 @@ pub fn brief_with_actions(
     ports: &BriefPorts<'_>,
     view: ActionsView<'_>,
 ) -> Result<Brief, BriefActionsError> {
-    let actions = list_actions(Some(view.project_root), view.home, view.caller)
+    // No machine home: the machine tier is pointed at the project's own state folder, whose
+    // `actions/` is the project tier. Every name then resolves to the project, so none is listed
+    // from the machine.
+    let project_state = view.project_root.join(STATE_DIR);
+    let home = view.home.unwrap_or(&project_state);
+    let actions = list_actions(Some(view.project_root), home, view.caller)
         .map_err(BriefActionsError::Actions)?;
     Ok(build(query, ports, &actions)?)
 }

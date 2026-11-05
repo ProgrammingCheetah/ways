@@ -490,7 +490,7 @@ impl Tiers {
     fn view<'a>(&'a self, caller: &'a Caller) -> ActionsView<'a> {
         ActionsView {
             project_root: self.root.path(),
-            home: self.home.path(),
+            home: Some(self.home.path()),
             caller,
         }
     }
@@ -592,6 +592,36 @@ fn brief_hides_an_unreadable_action() {
         "# zaf mode: 750\n# zaf group: team\n",
     );
     let text = pack(state.path(), Some(only_hidden.view(&caller)));
+    assert!(!text.contains("## Actions"), "{text}");
+}
+
+#[test]
+fn brief_without_a_machine_home_lists_the_project_actions_only() {
+    let tiers = Tiers::new();
+    tiers.project("slice-pr", "open the task's pull request", "");
+    tiers.machine("notify", "tell the Engineer a task is done", "");
+    let state = tempfile::tempdir().expect("temp dir");
+    let caller = programmer();
+    let view = ActionsView {
+        home: None,
+        ..tiers.view(&caller)
+    };
+
+    let text = pack(state.path(), Some(view));
+
+    assert_eq!(
+        section(&text, "Actions").trim_end(),
+        "## Actions\n\n- slice-pr (project): open the task's pull request"
+    );
+    assert!(!text.contains("notify"), "{text}");
+
+    let machine_only = Tiers::new();
+    machine_only.machine("notify", "tell the Engineer a task is done", "");
+    let view = ActionsView {
+        home: None,
+        ..machine_only.view(&caller)
+    };
+    let text = pack(state.path(), Some(view));
     assert!(!text.contains("## Actions"), "{text}");
 }
 
