@@ -152,7 +152,7 @@ fn check_task_in_slice(
 }
 
 /// Why a task with no slice record is refused.
-fn not_open(task: IssueNumber) -> String {
+pub(super) fn not_open(task: IssueNumber) -> String {
     format!(
         "slice for {task} is not open; run zaf do slice-open {}",
         task.get()

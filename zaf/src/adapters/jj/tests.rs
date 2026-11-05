@@ -471,22 +471,49 @@ fn merging_over_uncommitted_work_is_rejected() {
 #[test]
 fn diffs_come_as_stat_first_and_hunks_on_request() {
     let fixture = Fixture::new(false);
-    let (slice, _base) = fixture.slice();
+    let (slice, base) = fixture.slice();
     let dir = fixture.slice_dir(&slice);
     write(&dir, "notes.txt", "one\nTWO\nthree\n");
     fixture.vcs.commit(&slice, "Shout").expect("commit");
     write(&dir, "src/a b.rs", "fn a() {}\nfn b() {}\n");
     fixture.advance_base("base-1.txt", "1\n");
-    let stat = fixture.vcs.diff_stat(&slice).expect("stat");
+    let stat = fixture.vcs.diff_stat(&dir, &base).expect("stat");
     assert_eq!(
         stat.to_string(),
         "notes.txt +1 -1\nsrc/a b.rs +2 -0\n2 files +3 -1\n"
     );
-    let hunks = fixture.vcs.diff_hunks(&slice, "src/a b.rs").expect("hunks");
+    let hunks = fixture
+        .vcs
+        .diff_hunks(&dir, &base, "src/a b.rs")
+        .expect("hunks");
     assert!(hunks.contains("+fn a() {}\n+fn b() {}"), "{hunks}");
     assert!(!hunks.contains("notes.txt"), "{hunks}");
     assert!(matches!(
-        fixture.vcs.diff_hunks(&slice, "src/c.rs"),
+        fixture.vcs.diff_hunks(&dir, &base, "src/c.rs"),
+        Err(PortError::NotFound(_))
+    ));
+}
+
+#[test]
+fn diffs_read_no_jj_config_key() {
+    let fixture = Fixture::new(false);
+    let (slice, base) = fixture.slice();
+    let dir = fixture.slice_dir(&slice);
+    write(&dir, "a.txt", "a\n");
+    jj(&dir, &["config", "unset", "--workspace", BASE_KEY]);
+    let stat = fixture.vcs.diff_stat(&dir, &base).expect("stat");
+    assert_eq!(stat.to_string(), "a.txt +1 -0\n1 files +1 -0\n");
+    let hunks = fixture.vcs.diff_hunks(&dir, &base, "a.txt").expect("hunks");
+    assert!(hunks.contains("+a"), "{hunks}");
+}
+
+#[test]
+fn a_directory_that_is_no_workspace_is_not_found() {
+    let fixture = Fixture::new(false);
+    let (_slice, base) = fixture.slice();
+    let nowhere = fixture.root.join("not-a-workspace");
+    assert!(matches!(
+        fixture.vcs.diff_stat(&nowhere, &base),
         Err(PortError::NotFound(_))
     ));
 }
