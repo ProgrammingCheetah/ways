@@ -211,7 +211,7 @@ pub struct ListedAction {
 }
 
 /// The file a name resolves to; outside a project only the machine's tier exists.
-pub fn find_action(
+fn find_action(
     project_root: Option<&Path>,
     home: &Path,
     name: &str,
@@ -222,10 +222,21 @@ pub fn find_action(
     }
 }
 
-/// Every name the tiers provide, with its tier and description.
+/// Whether `caller` may read a file whose metadata came out as `metadata`. Without metadata there
+/// is no mode to grant anything, so a role is closed out; the Engineer, who repairs the file, is
+/// not, and sees it to do so.
+fn may_read(caller: &Caller, metadata: &Result<ActionMetadata, String>) -> bool {
+    match metadata {
+        Ok(metadata) => caller.permits_read(metadata.mode, &metadata.group),
+        Err(_) => *caller == Caller::Engineer,
+    }
+}
+
+/// Every name the tiers provide that `caller` may read, with its tier and description.
 pub fn list_actions(
     project_root: Option<&Path>,
     home: &Path,
+    caller: &Caller,
 ) -> Result<Vec<ListedAction>, ResolveError> {
     // `list` always reads a project tier. Outside a project it is pointed at a folder that
     // cannot be a project, so a `.zaf/actions` lying about is never taken for one.
@@ -233,15 +244,41 @@ pub fn list_actions(
     let found = list(project_root.unwrap_or(&no_project), home)?;
     Ok(found
         .into_iter()
-        .map(|found| ListedAction {
-            description: read_metadata(&found.path).map_or_else(
-                |reason| format!("invalid metadata: {reason}"),
-                |metadata| metadata.description,
-            ),
-            name: found.name,
-            tier: found.tier,
+        .filter_map(|found| {
+            let metadata = read_metadata(&found.path);
+            may_read(caller, &metadata).then(|| ListedAction {
+                description: metadata.map_or_else(
+                    |reason| format!("invalid metadata: {reason}"),
+                    |metadata| metadata.description,
+                ),
+                name: found.name,
+                tier: found.tier,
+            })
         })
         .collect())
+}
+
+/// The bytes of the file `name` resolves to, when `caller` may read it. The decision is made on
+/// the bytes returned, so an edit between the two cannot slip a file past its mode.
+pub fn read_action(
+    project_root: Option<&Path>,
+    home: &Path,
+    name: &str,
+    caller: &Caller,
+) -> Result<Vec<u8>, Refused> {
+    let found = find_action(project_root, home, name)
+        .map_err(|error| Refused::before_the_file(error.to_string()))?
+        .ok_or_else(|| Refused::before_the_file("no such action".to_owned()))?;
+    let refused = |reason: String| Refused {
+        tier: Some(found.tier),
+        reason,
+    };
+    let bytes = fs::read(&found.path)
+        .map_err(|error| refused(format!("cannot read {}: {error}", found.path.display())))?;
+    if !may_read(caller, &metadata_in(&found.path, &bytes)) {
+        return Err(refused(format!("not permitted for {caller}")));
+    }
+    Ok(bytes)
 }
 
 /// Runs the action, under the contract of §3. Every way a run can end is in the outcome.
@@ -315,14 +352,18 @@ struct Started {
     limit_minutes: u64,
 }
 
-/// Why a body never ran.
-struct Refused {
-    tier: Option<Tier>,
-    reason: String,
+/// Why a body never ran, or a file was not shown.
+#[derive(Debug)]
+pub struct Refused {
+    /// The tier of the file, once a name has resolved to one.
+    pub tier: Option<Tier>,
+    /// What stopped it.
+    pub reason: String,
 }
 
 impl Refused {
-    fn before_the_file(reason: String) -> Self {
+    /// A refusal that came before any file: the caller, the place, the name.
+    pub fn before_the_file(reason: String) -> Self {
         Self { tier: None, reason }
     }
 }
@@ -376,9 +417,16 @@ fn start(request: &RunRequest<'_>) -> Result<Started, Refused> {
 
 /// The file's metadata, or why it has none that holds.
 fn read_metadata(file: &Path) -> Result<ActionMetadata, String> {
-    let text = fs::read_to_string(file)
+    let bytes =
+        fs::read(file).map_err(|error| format!("cannot read {}: {error}", file.display()))?;
+    metadata_in(file, &bytes)
+}
+
+/// The metadata `bytes` of `file` hold, or why they hold none. Bytes that are not text are none.
+fn metadata_in(file: &Path, bytes: &[u8]) -> Result<ActionMetadata, String> {
+    let text = std::str::from_utf8(bytes)
         .map_err(|error| format!("cannot read {}: {error}", file.display()))?;
-    parse(file, &text)
+    parse(file, text)
         .map(|parsed| parsed.metadata)
         .map_err(|error| error.to_string())
 }

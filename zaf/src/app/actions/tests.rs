@@ -517,6 +517,32 @@ fn permits_reads_only_the_callers_digit() {
 }
 
 #[test]
+fn permits_read_takes_the_read_bit_of_the_callers_digit() {
+    let reads = |caller: &Caller, digits: &str, group: &[String]| {
+        caller.permits_read(ActionMode::parse(digits).expect("a mode"), group)
+    };
+    let team = vec!["team".to_owned()];
+    for digit in 0..8_u8 {
+        let open = digit & 4 == 4;
+        let cases = [
+            (Caller::Engineer, format!("{digit}00")),
+            (role("team"), format!("0{digit}0")),
+            (role("programmer"), format!("00{digit}")),
+        ];
+        for (caller, mode) in cases {
+            assert_eq!(reads(&caller, &mode, &team), open, "{caller:?} {mode}");
+        }
+    }
+    // Only the caller's own digit counts: the group is not read in by the others digit.
+    assert!(!reads(&role("team"), "707", &team));
+    // Neither bit stands in for the other.
+    assert!(!reads(&role("programmer"), "711", &team));
+    assert!(permits(&role("programmer"), "711", &["team"]));
+    assert!(reads(&role("programmer"), "744", &team));
+    assert!(!permits(&role("programmer"), "744", &["team"]));
+}
+
+#[test]
 fn only_an_absent_instance_is_the_engineer() {
     use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt;
