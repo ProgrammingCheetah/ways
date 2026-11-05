@@ -13,6 +13,11 @@ fn manifest(extra: &str) -> Manifest {
     format!("{HEAD}{extra}").parse().expect("a valid manifest")
 }
 
+/// [`super::doctor`] with no zaf home, so no test reads the machine's own actions.
+fn doctor(root: &Path, manifest: &Manifest, commands: &dyn Commands) -> Report {
+    super::doctor(root, None, manifest, commands)
+}
+
 fn status_of(report: &Report, tool: &str) -> ToolStatus {
     report
         .tools
@@ -349,7 +354,7 @@ fn a_claude_home(root: &Path) -> PathBuf {
 /// The build profile's doctor line, with `claude auth status` answered by `commands`.
 fn build_line(root: &Path, commands: &FakeCommands, claude_home: Option<&Path>) -> String {
     let now = UNIX_EPOCH + NOW;
-    doctor_with(root, &manifest(""), commands, claude_home, now)
+    doctor_with(root, None, &manifest(""), commands, claude_home, now)
         .lines()
         .into_iter()
         .find(|line| line.starts_with("profile build:"))
@@ -391,6 +396,7 @@ fn doctor_reports_a_stale_copy() {
 
     let report = doctor_with(
         dir.path(),
+        None,
         &manifest(""),
         &logged_out(),
         None,

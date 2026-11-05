@@ -8,7 +8,8 @@
 //! never fixed, and does not fail the doctor. Its line also says what its `.credentials.json`
 //! is: shared with the Claude home, or a copy that goes stale; the token is never printed.
 //! Each profile that carries the pack is asked `claude plugin list` the same way and
-//! reports the pack's version, or that it is missing.
+//! reports the pack's version, or that it is missing. Every action either tier provides is
+//! reported with its validity and its mode; an invalid file fails the report (see [`ActionCheck`]).
 
 use std::fmt;
 use std::fs;
@@ -20,7 +21,10 @@ use crate::app::profile::{self, CONFIG_DIR_VAR, CREDENTIALS_FILE};
 use crate::composition::STATE_DIR;
 use crate::manifest::{DesignSection, Manifest, Requirement, ToolName};
 
+mod actions;
 pub mod fake;
+
+pub use actions::ActionCheck;
 
 /// The design index's name when `[design] index` names none; the design adapter's default,
 /// which a test keeps in step (the app layer does not import adapters).
@@ -230,12 +234,18 @@ pub struct Report {
     /// One entry per generated profile that carries the pack, when the manifest has a `[pack]`;
     /// informational, it never fails the report.
     pub packs: Vec<PackCheck>,
+    /// One entry per action either tier provides, in name order; an invalid one fails the report.
+    pub actions: Vec<ActionCheck>,
+    /// Why the actions folders could not be read, when they could not; it fails the report.
+    pub actions_error: Option<String>,
 }
 
 impl Report {
     /// Whether every check passed.
     pub fn passed(&self) -> bool {
         self.tools.iter().all(|check| check.status.is_ok())
+            && self.actions.iter().all(|check| check.ok)
+            && self.actions_error.is_none()
             && self.design.as_ref().is_none_or(|check| check.ok)
             && self.design_index.as_ref().is_none_or(|check| check.ok)
             && self.workspaces.ok
@@ -257,6 +267,8 @@ impl Report {
         lines.extend(self.design_index.iter().map(PathCheck::line));
         lines.extend(self.logins.iter().map(LoginCheck::line));
         lines.extend(self.packs.iter().map(PackCheck::line));
+        lines.extend(self.actions.iter().flat_map(ActionCheck::lines));
+        lines.extend(self.actions_error.clone());
         lines.push(self.workspaces.line());
         lines
     }
@@ -449,11 +461,17 @@ pub fn packs(root: &Path, manifest: &Manifest, commands: &dyn Commands) -> Vec<P
         .collect()
 }
 
-/// Checks the required tools, the design folder, the workspaces folder and the profiles'
-/// logins and packs of a loaded manifest.
-pub fn doctor(root: &Path, manifest: &Manifest, commands: &dyn Commands) -> Report {
+/// Checks the required tools, the design folder, the workspaces folder, the profiles' logins and
+/// packs and every action of a loaded manifest; `zaf_home` is the machine's tier of actions.
+pub fn doctor(
+    root: &Path,
+    zaf_home: Option<&Path>,
+    manifest: &Manifest,
+    commands: &dyn Commands,
+) -> Report {
     doctor_with(
         root,
+        zaf_home,
         manifest,
         commands,
         profile::claude_home().as_deref(),
@@ -464,6 +482,7 @@ pub fn doctor(root: &Path, manifest: &Manifest, commands: &dyn Commands) -> Repo
 /// [`doctor`] against a given Claude home and clock.
 pub fn doctor_with(
     root: &Path,
+    zaf_home: Option<&Path>,
     manifest: &Manifest,
     commands: &dyn Commands,
     claude_home: Option<&Path>,
@@ -499,6 +518,7 @@ pub fn doctor_with(
         ok: creatable(&workspaces_path),
         path: workspaces_path,
     };
+    let (actions, actions_error) = actions::check_actions(root, zaf_home, manifest);
     Report {
         tools,
         design,
@@ -506,6 +526,8 @@ pub fn doctor_with(
         workspaces,
         logins: logins(root, manifest, commands, claude_home, now),
         packs: packs(root, manifest, commands),
+        actions,
+        actions_error,
     }
 }
 
