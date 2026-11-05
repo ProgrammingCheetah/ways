@@ -78,7 +78,7 @@ max = 5
 cache_hours = 24
 
 [spawn]
-slots = 2
+slots = 4
 guard = [70, 85, 95]
 
 [isolation]
