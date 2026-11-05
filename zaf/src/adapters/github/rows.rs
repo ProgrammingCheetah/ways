@@ -96,6 +96,12 @@ pub(super) struct ReviewRow {
     pub commit_id: Option<String>,
 }
 
+/// A changed file from `repos/{repo}/pulls/{n}/files`, read only by its path.
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct FileRow {
+    pub filename: String,
+}
+
 /// A pull request read only by its head commit.
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct PrHeadRow {

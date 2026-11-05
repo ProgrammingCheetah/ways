@@ -1277,6 +1277,43 @@ fn scanning_alerts_read_the_open_alerts_of_the_head_ref() {
 }
 
 #[test]
+fn last_changed_file_reads_the_diff() {
+    let fake = FakeGh::new();
+    let files = r#"[[
+        {"filename":"README.md","status":"modified"},
+        {"filename":"src/export.rs","status":"added"}
+    ],[
+        {"filename":"src/z/last.rs","status":"renamed","previous_filename":"src/a.rs"}
+    ]]"#;
+    let endpoint = format!("repos/{REPO}/pulls/7/files");
+    fake.on(&format!("api {endpoint} *"), files)
+        .on(&format!("api repos/{REPO}/pulls/8/files *"), "[[]]");
+    let forge = fake.forge();
+    assert_eq!(
+        forge.last_changed_file(PrNumber::from(7)),
+        Ok(Some("src/z/last.rs".to_owned()))
+    );
+    assert_eq!(forge.last_changed_file(PrNumber::from(8)), Ok(None));
+    let expected_calls = vec![
+        argv(&["api", &endpoint, "--paginate", "--slurp"]),
+        argv(&[
+            "api",
+            &format!("repos/{REPO}/pulls/8/files"),
+            "--paginate",
+            "--slurp",
+        ]),
+    ];
+    assert_eq!(fake.calls(), expected_calls);
+
+    let broken = FakeGh::new();
+    broken.fail_on("api *", "HTTP 404: Not Found");
+    assert!(matches!(
+        broken.forge().last_changed_file(PrNumber::from(7)),
+        Err(PortError::Backend(_))
+    ));
+}
+
+#[test]
 fn merge_merges_once_and_a_merged_pr_is_quiet() {
     let fake = FakeGh::new();
     fake.on("pr view 7 *", r#"{"state":"OPEN"}"#)

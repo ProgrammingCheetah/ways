@@ -124,6 +124,10 @@ pub trait Forge {
     /// The commit id the pull request's head is at now, when the forge reports one.
     fn head(&self, pr: PrNumber) -> Result<Option<String>, PortError>;
 
+    /// The last file of the pull request's diff, in the order the forge lists the
+    /// changed files; none when the pull request changes no file.
+    fn last_changed_file(&self, pr: PrNumber) -> Result<Option<String>, PortError>;
+
     /// The open code scanning alerts for the pull request's head ref.
     fn scanning_alerts(&self, pr: PrNumber) -> Result<Vec<ScanningAlert>, PortError>;
 
