@@ -10,19 +10,16 @@ use std::time::{Duration, SystemTime};
 
 use super::Cli;
 use super::exit::{self, BACKEND, REFUSED};
-use super::slice::{VERSION_VAR, fail_slice};
 use crate::adapters::gate::RUNS_DIR;
 use crate::adapters::shell::SystemShell;
+use crate::app::actions::SliceRecords;
 use crate::app::check::{
     CheckRecord, Engine, EngineSettings, Shell, Step, StepPorts, Target, TaskInputs, check_task,
 };
-use crate::app::slice::{self, SliceQuery};
 use crate::composition::{Composition, CompositionError, SHELL_TIMEOUT};
 use crate::domain::{IssueNumber, SecurityTrigger, TaskTemplate};
 use crate::manifest::{CheckTarget, CommandLine, RunnerName};
-use crate::ports::{
-    Board, Forge, Gate, GateRun, PortError, PrNumber, Runner, Shell as ShellPort, SliceName,
-};
+use crate::ports::{Board, Forge, Gate, GateRun, PortError, PrNumber, Runner, Shell as ShellPort};
 
 /// Runs the configured check steps for a target, or reads the last result.
 pub fn run(cli: &Cli, target: &str, status: bool) -> u8 {
@@ -51,7 +48,7 @@ fn check(cli: &Cli, target: Target, status: bool) -> u8 {
         return show_stored(cli, &path, &stored);
     }
     let (record, slice_line) = match target {
-        Target::Task(task) => match check_task_target(cli, &path, &composition, &target, task) {
+        Target::Task(task) => match check_task_target(&path, &composition, &target, task) {
             Ok((record, line)) => (record, Some(line)),
             Err(code) => return code,
         },
@@ -77,8 +74,6 @@ type GateIn<'a> = dyn Fn(&Path) -> Result<Box<dyn Gate>, CompositionError> + 'a;
 struct TaskPorts<'a> {
     /// The board, to read the ticket.
     board: &'a dyn Board,
-    /// The release version for the branch patterns, if the environment gave one.
-    version: Option<String>,
     /// Builds the gate to run inside a directory.
     gate_in: &'a GateIn<'a>,
     /// Builds the shell that runs each named test inside a directory.
@@ -95,7 +90,6 @@ impl Shell for DirShell {
 }
 
 fn check_task_target(
-    cli: &Cli,
     path: &str,
     composition: &Composition,
     target: &Target,
@@ -106,45 +100,34 @@ fn check_task_target(
         .map_err(|error| exit::fail_composition(path, &error))?;
     let ports = TaskPorts {
         board: board.as_ref(),
-        version: std::env::var(VERSION_VAR)
-            .ok()
-            .filter(|version| !version.is_empty()),
         gate_in: &|dir| composition.gate_in(dir),
         shell_in: &|dir| Box::new(DirShell(Box::new(SystemShell::new(dir, SHELL_TIMEOUT)))),
     };
-    check_task_in_slice(cli, path, composition, &ports, target, task)
+    check_task_in_slice(path, composition, &ports, target, task)
 }
 
-/// Checks a task inside its slice's workspace: the gate and the named tests run there.
-/// A slice that is not open is refused, and nothing runs at the project root.
+/// Checks a task inside its slice's workspace, the one the slice record names: the gate and the
+/// named tests run there. A task with no record is refused and nothing runs, at the project root
+/// or anywhere else: the workspace is never guessed from the branch patterns or the folder.
 fn check_task_in_slice(
-    cli: &Cli,
     path: &str,
     composition: &Composition,
     ports: &TaskPorts<'_>,
     target: &Target,
     task: IssueNumber,
 ) -> Result<(CheckRecord, String), u8> {
-    let query = SliceQuery {
-        task,
-        version: ports.version.clone(),
-    };
-    let branches = &composition.manifest().branches;
-    let resolved = slice::resolve(ports.board, branches, &query)
-        .map_err(|error| fail_slice(path, cli, &error))?;
-    let dir = composition.slice_dir(&resolved.slice);
-    if !dir.is_dir() {
-        eprintln!("zaf {path}: {}", not_open(&resolved.slice, task));
+    let Some(dir) = SliceRecords::new(composition.root()).workspace(task) else {
+        eprintln!("zaf {path}: {}", not_open(task));
         return Err(REFUSED);
-    }
-    let template = resolved
-        .ticket
-        .body
-        .parse::<TaskTemplate>()
-        .map_err(|error| {
-            eprintln!("zaf {path}: {task} is not a task ticket: {error}");
-            REFUSED
-        })?;
+    };
+    let ticket = ports
+        .board
+        .task(task)
+        .map_err(|error| exit::fail(path, &error))?;
+    let template = ticket.body.parse::<TaskTemplate>().map_err(|error| {
+        eprintln!("zaf {path}: {task} is not a task ticket: {error}");
+        REFUSED
+    })?;
     let gate = match (ports.gate_in)(&dir) {
         Ok(gate) => Some(gate),
         Err(CompositionError::Absent { .. }) => None,
@@ -164,14 +147,14 @@ fn check_task_in_slice(
     };
     let began = SystemTime::now();
     let check = check_task(&template, &inputs);
-    let line = format!("slice {} at {}", resolved.slice, dir.display());
+    let line = format!("workspace {}", dir.display());
     Ok((CheckRecord::from_task(target, &check, began), line))
 }
 
-/// Why a task whose slice has no workspace is refused.
-fn not_open(slice: &SliceName, task: IssueNumber) -> String {
+/// Why a task with no slice record is refused.
+fn not_open(task: IssueNumber) -> String {
     format!(
-        "slice {slice} is not open; run zaf slice open {}",
+        "slice for {task} is not open; run zaf do slice-open {}",
         task.get()
     )
 }
@@ -444,47 +427,61 @@ mod tests {
         };
         let ports = TaskPorts {
             board: &board,
-            version: Some("0.1.1".to_owned()),
             gate_in: &gate_in,
             shell_in: &|_| Box::new(NoShell),
         };
-        let cli = <Cli as clap::Parser>::try_parse_from(["zaf", "check", "46"]).expect("parses");
         let target = Target::Task(IssueNumber::from(46));
-        let outcome = check_task_in_slice(
-            &cli,
-            "check",
-            composition,
-            &ports,
-            &target,
-            IssueNumber::from(46),
-        );
+        let outcome =
+            check_task_in_slice("check", composition, &ports, &target, IssueNumber::from(46));
         let runs = ran.lock().expect("lock").clone();
         (outcome, runs)
     }
 
+    /// Writes the slice record the way `slice-open` leaves it: the workspace path, alone.
+    fn record_workspace(root: &Path, task: u64, workspace: &Path) {
+        let slices = root.join(".zaf/slices");
+        std::fs::create_dir_all(&slices).expect("slices dir");
+        std::fs::write(
+            slices.join(task.to_string()),
+            workspace.to_string_lossy().as_bytes(),
+        )
+        .expect("record");
+    }
+
     #[test]
-    fn a_task_whose_slice_is_open_gates_inside_the_slice_and_says_where() {
+    fn check_runs_in_the_recorded_workspace() {
         let dir = project(MANIFEST);
         let composition = Composition::load(dir.path()).expect("loads");
-        let slice_dir = dir.path().join(".zaf/workspaces").join(SLICE);
-        std::fs::create_dir_all(&slice_dir).expect("slice dir");
+        // The workspace is where the record says, not where the branch patterns would put it.
+        let elsewhere = tempfile::tempdir().expect("workspace dir");
+        let workspace = elsewhere.path().canonicalize().expect("absolute");
+        record_workspace(dir.path(), 46, &workspace);
         let (outcome, runs) = check_with_fakes(&composition);
         let (record, line) = outcome.expect("checked");
-        assert_eq!(runs, vec![slice_dir.clone()]);
-        assert_eq!(line, format!("slice {SLICE} at {}", slice_dir.display()));
+        assert_eq!(runs, vec![workspace.clone()]);
+        assert_eq!(line, format!("workspace {}", workspace.display()));
         assert_eq!(record.verdict, crate::app::check::Verdict::Clean);
     }
 
     #[test]
-    fn a_task_without_a_slice_directory_is_refused_and_nothing_runs() {
+    fn check_without_a_record_refuses() {
         let dir = project(MANIFEST);
         let composition = Composition::load(dir.path()).expect("loads");
+        // A workspace that predates the records sits where the patterns would put it: no record,
+        // so it is refused rather than guessed at.
+        std::fs::create_dir_all(dir.path().join(".zaf/workspaces").join(SLICE)).expect("old");
         let (outcome, runs) = check_with_fakes(&composition);
         assert_eq!(outcome.err(), Some(REFUSED));
         assert_eq!(
-            not_open(&SliceName::from(SLICE), IssueNumber::from(46)),
-            "slice feature/0.1.1-37-46 is not open; run zaf slice open 46"
+            not_open(IssueNumber::from(46)),
+            "slice for #46 is not open; run zaf do slice-open 46"
         );
+        assert!(runs.is_empty(), "the gate ran at {runs:?}");
+        // A record whose workspace has gone is no record either.
+        let gone = dir.path().join("gone");
+        record_workspace(dir.path(), 46, &gone);
+        let (outcome, runs) = check_with_fakes(&composition);
+        assert_eq!(outcome.err(), Some(REFUSED));
         assert!(runs.is_empty(), "the gate ran at {runs:?}");
     }
 
@@ -558,7 +555,7 @@ mod tests {
         let forge = Arc::new(crate::fakes::FakeForge::default());
         let pr = forge
             .open_pr(&crate::ports::PrRequest {
-                slice: SliceName::from("feature/one-task"),
+                slice: crate::ports::SliceName::from("feature/one-task"),
                 base: crate::ports::BaseName::from("feature/one"),
                 title: "#7 one task".to_owned(),
                 body: String::new(),
