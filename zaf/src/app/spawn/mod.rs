@@ -32,7 +32,7 @@ pub use tick::{
 
 use super::guard::{GUARD_FILE, Level};
 use crate::domain::{Instance, IssueNumber, Profile, RoleName, TaskLabel};
-use crate::manifest::Manifest;
+use crate::manifest::{Manifest, ManifestError};
 use crate::ports::{Board, ClaimRecord, PortError, RunRequest, Runner};
 
 /// The one-line launch prompt of a team instance, with `{instance}`, `{epic}`,
@@ -265,6 +265,17 @@ pub struct LaunchContext {
     pub profile: Profile,
     /// The environment the launch's process runs with, on its [`RunRequest`].
     pub env: BTreeMap<String, String>,
+}
+
+/// The manifest's `[env]` table for a launch: `{root}` is the absolute project root and
+/// `{version}` the release the instances build. The runner sets these on top of the
+/// inherited environment, and a name set here wins over an inherited one.
+pub fn manifest_env(
+    manifest: &Manifest,
+    root: &Path,
+    version: &str,
+) -> Result<BTreeMap<String, String>, ManifestError> {
+    manifest.env.resolve(root, Some(version))
 }
 
 /// How a launched instance ended.

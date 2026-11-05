@@ -191,6 +191,24 @@ fn single_quote_escapes_embedded_quotes() {
 }
 
 #[test]
+fn the_requests_environment_adds_to_the_inherited_one_and_wins_on_a_shared_name() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let process = runner("printf '%s|%s' \"$HOME\" \"$EXTRA\"");
+    let mut request = request("keeper", Profile::Lean, dir.path());
+    request
+        .env
+        .insert("HOME".to_owned(), "/from/manifest".to_owned());
+    request.env.insert("EXTRA".to_owned(), "added".to_owned());
+    let output = process.run(&request).expect("a run");
+    assert_eq!(output.transcript, "/from/manifest|added");
+    // The inherited environment still reaches the process: PATH was not replaced.
+    let kept = runner("command -v sh >/dev/null && printf kept")
+        .run(&request)
+        .expect("a run");
+    assert_eq!(kept.transcript, "kept");
+}
+
+#[test]
 fn the_requests_environment_wins_over_every_layer() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let role = RoleRun::new(CommandLine::from(
