@@ -1,0 +1,91 @@
+#!/bin/sh
+# zaf description: open a pull request for a slice's branch against the base, handing back its number; a slice with an open one hands back that number
+# zaf 1: refused: the arguments are not <slice> <base> <title> <body>, or the slice or base is not a usable branch name
+# zaf 2: a backend failed (gh is missing or refused, or printed no pull request number)
+# zaf mode: 750
+# zaf group: team, release
+slice=$1
+base=$2
+title=$3
+body=$4
+
+if [ -z "$ZAF_ROOT" ] || [ "$#" -ne 4 ]; then
+    echo "usage: pr-open <slice> <base> <title> <body>, with ZAF_ROOT set" >&2
+    exit 1
+fi
+case $slice in
+    "" | -*)
+        echo "slice $slice is not a usable branch name" >&2
+        exit 1
+        ;;
+esac
+case $base in
+    "" | -*)
+        echo "base $base is not a usable branch name" >&2
+        exit 1
+        ;;
+esac
+if [ -z "$title" ]; then
+    echo "a pull request needs a title" >&2
+    exit 1
+fi
+
+# The forge repository the manifest names, the first manifest that names one, in the order zaf
+# reads them. With none, gh works the repository out from the root's remotes, as it does by hand.
+forge_repo() {
+    for manifest in "$ZAF_ROOT/.zaf.toml" "$ZAF_ROOT/.zaf/config.toml" "$ZAF_ROOT/ZAF.toml"; do
+        [ -f "$manifest" ] || continue
+        found=$(awk '
+            /^[ \t]*\[/ { in_forge = ($0 ~ /^[ \t]*\[forge\][ \t]*(#.*)?$/); next }
+            in_forge && /^[ \t]*repo[ \t]*=/ {
+                line = $0
+                sub(/^[^=]*=[ \t]*"/, "", line)
+                sub(/".*$/, "", line)
+                print line
+                exit
+            }
+        ' "$manifest")
+        if [ -n "$found" ]; then
+            echo "$found"
+            return
+        fi
+    done
+}
+
+# The slice's workspace is a jj workspace gh cannot read a repository from, so gh runs at the
+# project root, the repository itself.
+cd "$ZAF_ROOT" || exit 2
+
+repo=$(forge_repo)
+if [ -n "$repo" ]; then
+    set -- --repo "$repo"
+else
+    set --
+fi
+
+# A slice with an open pull request hands that one back, and opens nothing.
+open=$(gh pr list --head "$slice" --state open --json number --jq '.[].number' "$@") || exit 2
+number=$(printf '%s\n' "$open" | awk 'NF { print $1; exit }')
+if [ -n "$number" ]; then
+    case $number in
+        *[!0-9]*)
+            echo "gh listed $number, not a pull request number" >&2
+            exit 2
+            ;;
+    esac
+    echo "pull request #$number is already open for $slice" >&2
+    echo "$number"
+    exit 0
+fi
+
+created=$(gh pr create --head "$slice" --base "$base" --title "$title" --body "$body" "$@") || exit 2
+# gh prints the new pull request's URL as its last line.
+url=$(printf '%s\n' "$created" | awk 'NF { line = $0 } END { print line }')
+number=${url##*/}
+case $number in
+    "" | *[!0-9]*)
+        echo "gh printed no pull request number: $created" >&2
+        exit 2
+        ;;
+esac
+echo "$number"
