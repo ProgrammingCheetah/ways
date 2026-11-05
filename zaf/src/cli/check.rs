@@ -376,7 +376,7 @@ mod tests {
     #[test]
     fn the_live_shell_runs_a_line_at_the_project_root() {
         let dir = project(MANIFEST);
-        let composition = Composition::load(dir.path()).expect("loads");
+        let composition = Composition::load_with_home(dir.path(), None).expect("loads");
         let shell = LivePorts {
             composition,
             env: BTreeMap::new(),
@@ -396,7 +396,7 @@ mod tests {
     #[test]
     fn an_absent_forge_or_runner_is_unavailable() {
         let dir = project(MANIFEST);
-        let composition = Composition::load(dir.path()).expect("loads");
+        let composition = Composition::load_with_home(dir.path(), None).expect("loads");
         let ports = LivePorts {
             composition,
             env: BTreeMap::new(),
@@ -496,7 +496,7 @@ mod tests {
     #[test]
     fn check_runs_in_the_recorded_workspace() {
         let dir = project(MANIFEST);
-        let composition = Composition::load(dir.path()).expect("loads");
+        let composition = Composition::load_with_home(dir.path(), None).expect("loads");
         // The workspace is where the record says, not where the branch patterns would put it.
         let elsewhere = tempfile::tempdir().expect("workspace dir");
         let workspace = elsewhere.path().canonicalize().expect("absolute");
@@ -527,7 +527,7 @@ HOME = "/overridden"
     #[test]
     fn check_runs_the_gate_with_env() {
         let dir = project(ENV_MANIFEST);
-        let composition = Composition::load(dir.path()).expect("loads");
+        let composition = Composition::load_with_home(dir.path(), None).expect("loads");
         let elsewhere = tempfile::tempdir().expect("workspace dir");
         let workspace = elsewhere.path().canonicalize().expect("absolute");
         record_workspace(dir.path(), 46, &workspace);
@@ -556,7 +556,7 @@ HOME = "/overridden"
     #[test]
     fn a_command_line_runs_with_env_over_the_inherited_environment() {
         let dir = project(ENV_MANIFEST);
-        let composition = Composition::load(dir.path()).expect("loads");
+        let composition = Composition::load_with_home(dir.path(), None).expect("loads");
         let env = composition.project_env(None).expect("resolves");
         let shell = LivePorts { composition, env };
         let line = CommandLine::from("echo \"$CARGO_TARGET_DIR $HOME\"; test -n \"$PATH\"");
@@ -573,7 +573,7 @@ HOME = "/overridden"
     fn a_version_placeholder_without_a_version_names_the_key_and_the_placeholder() {
         let manifest = ENV_MANIFEST.replace("{root}/.zaf/target", "{root}/target-{version}");
         let dir = project(&manifest);
-        let composition = Composition::load(dir.path()).expect("loads");
+        let composition = Composition::load_with_home(dir.path(), None).expect("loads");
         let error = composition.project_env(None).expect_err("needs a version");
         let text = error.to_string();
         assert!(text.contains("CARGO_TARGET_DIR"), "{text}");
@@ -585,7 +585,7 @@ HOME = "/overridden"
     #[test]
     fn check_without_a_record_refuses() {
         let dir = project(MANIFEST);
-        let composition = Composition::load(dir.path()).expect("loads");
+        let composition = Composition::load_with_home(dir.path(), None).expect("loads");
         // A workspace that predates the records sits where the patterns would put it: no record,
         // so it is refused rather than guessed at.
         std::fs::create_dir_all(dir.path().join(".zaf/workspaces").join(SLICE)).expect("old");
@@ -768,7 +768,7 @@ HOME = "/overridden"
     #[test]
     fn a_stored_record_reads_back_with_its_exit_code() {
         let dir = project(MANIFEST);
-        let composition = Composition::load(dir.path()).expect("loads");
+        let composition = Composition::load_with_home(dir.path(), None).expect("loads");
         let target = Target::Pr {
             pr: PrNumber::from(5),
             task: None,

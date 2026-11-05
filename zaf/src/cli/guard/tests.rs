@@ -12,7 +12,7 @@ fn cli() -> Cli {
 fn project() -> (tempfile::TempDir, Composition) {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("ZAF.toml"), MANIFEST).expect("manifest");
-    let composition = Composition::load(dir.path()).expect("loads");
+    let composition = Composition::load_with_home(dir.path(), None).expect("loads");
     (dir, composition)
 }
 
@@ -46,7 +46,7 @@ fn the_manifest_thresholds_are_the_ones_used() {
         format!("{MANIFEST}[spawn]\nguard = [1, 2, 3]\n"),
     )
     .expect("manifest");
-    let composition = Composition::load(dir.path()).expect("loads");
+    let composition = Composition::load_with_home(dir.path(), None).expect("loads");
     std::fs::create_dir_all(dir.path().join(".zaf/profiles/p/projects")).expect("profile");
     let transcript = r#"{"type":"assistant","message":{"id":"a","model":"claude-opus-5-5","usage":{"output_tokens":1000000}}}"#;
     std::fs::write(

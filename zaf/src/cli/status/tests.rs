@@ -10,7 +10,7 @@ const MANIFEST: &str = "[project]\nname = \"demo\"\n[board]\nkind = \"github-iss
 fn project() -> (tempfile::TempDir, Composition) {
     let dir = tempfile::tempdir().expect("tempdir");
     std::fs::write(dir.path().join("ZAF.toml"), MANIFEST).expect("manifest");
-    let composition = Composition::load(dir.path()).expect("loads");
+    let composition = Composition::load_with_home(dir.path(), None).expect("loads");
     (dir, composition)
 }
 

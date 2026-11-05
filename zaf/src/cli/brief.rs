@@ -136,7 +136,7 @@ mod tests {
             "[project]\nname = \"example\"\n[board]\nkind = \"github-issues\"\nrepo = \"owner/example\"\n{extra}"
         );
         std::fs::write(root.path().join("ZAF.toml"), manifest).expect("manifest");
-        let composition = Composition::load(root.path()).expect("composition");
+        let composition = Composition::load_with_home(root.path(), None).expect("composition");
         (root, composition)
     }
 
