@@ -19,7 +19,9 @@ use std::time::{Duration, Instant, SystemTime};
 
 use super::caller::Caller;
 use super::metadata::{ActionMetadata, parse};
-use super::resolve::{ResolveError, Resolved, Tier, list, resolve, resolve_in};
+use super::resolve::{
+    ResolveError, Resolved, Tier, can_shadow, check_name, list, resolve, resolve_in,
+};
 use crate::composition::{STATE_DIR, ZAF_HOME_VAR};
 
 /// The exit code of a body that never ran; no action may declare it.
@@ -132,6 +134,9 @@ pub struct RunRequest<'a> {
     pub nesting: Nesting,
     /// Who asks: the file's mode decides for them before anything starts.
     pub caller: Caller,
+    /// `zaf do --tier machine`: look in this tier alone, skipping the other. `None` takes the
+    /// first tier that has the name. Only the tier is skipped: the mode check applies as ever.
+    pub only: Option<Tier>,
 }
 
 /// One minute of a time bound.
@@ -210,15 +215,23 @@ pub struct ListedAction {
     pub description: String,
 }
 
-/// The file a name resolves to; outside a project only the machine's tier exists.
+/// The file a name resolves to; outside a project only the machine's tier exists. With `only`,
+/// that tier alone is looked in: the other is skipped, and a name it alone has resolves to
+/// nothing. A file found this way shadows nothing, since the tier above it was never read.
 fn find_action(
     project_root: Option<&Path>,
     home: &Path,
     name: &str,
+    only: Option<Tier>,
 ) -> Result<Option<Resolved>, ResolveError> {
-    match project_root {
-        Some(root) => resolve(root, home, name),
-        None => resolve_in(Tier::Machine, home, home, name),
+    match (only, project_root) {
+        (Some(Tier::Project), None) => {
+            check_name(name)?;
+            Ok(None)
+        }
+        (Some(tier), root) => resolve_in(tier, root.unwrap_or(home), home, name),
+        (None, Some(root)) => resolve(root, home, name),
+        (None, None) => resolve_in(Tier::Machine, home, home, name),
     }
 }
 
@@ -264,9 +277,10 @@ pub fn read_action(
     project_root: Option<&Path>,
     home: &Path,
     name: &str,
+    only: Option<Tier>,
     caller: &Caller,
 ) -> Result<Vec<u8>, Refused> {
-    let found = find_action(project_root, home, name)
+    let found = find_action(project_root, home, name, only)
         .map_err(|error| Refused::before_the_file(error.to_string()))?
         .ok_or_else(|| Refused::before_the_file("no such action".to_owned()))?;
     let refused = |reason: String| Refused {
@@ -368,8 +382,8 @@ impl Refused {
     }
 }
 
-/// Everything up to a running body: the guard, the file, its metadata, its mode, the log, the
-/// start.
+/// Everything up to a running body: the guard, the file, what it shadows, its metadata, its mode,
+/// the log, the start.
 fn start(request: &RunRequest<'_>) -> Result<Started, Refused> {
     let RunRequest { name, nesting, .. } = request;
     if nesting.above >= MAX_DEPTH {
@@ -378,15 +392,16 @@ fn start(request: &RunRequest<'_>) -> Result<Started, Refused> {
             chain_with(nesting, name)
         )));
     }
-    let found = find_action(request.project_root, request.home, name)
+    let found = find_action(request.project_root, request.home, name, request.only)
         .map_err(|error| Refused::before_the_file(error.to_string()))?
         .ok_or_else(|| Refused::before_the_file("no such action".to_owned()))?;
     let refused = |reason: String| Refused {
         tier: Some(found.tier),
         reason,
     };
+    let shadowed = shadowed_metadata(request, &found).map_err(refused)?;
     let metadata = read_metadata(&found.path).map_err(refused)?;
-    if !request.caller.permits(metadata.mode, &metadata.group) {
+    if !may_run(&request.caller, &metadata, shadowed.as_ref()) {
         return Err(refused(format!("not permitted for {}", request.caller)));
     }
     let mode = fs::metadata(&found.path)
@@ -413,6 +428,52 @@ fn start(request: &RunRequest<'_>) -> Result<Started, Refused> {
         metadata,
         log,
     })
+}
+
+/// The metadata of the file `found` shadows, none when it shadows nothing; an error when `found`
+/// may not stand in for it. A shadowed file whose mode cannot be read refuses like one whose mode
+/// says no: the guard fails closed.
+fn shadowed_metadata(
+    request: &RunRequest<'_>,
+    found: &Resolved,
+) -> Result<Option<ActionMetadata>, String> {
+    let (Some(tier), Some(root)) = (found.shadows, request.project_root) else {
+        return Ok(None);
+    };
+    let shadowed =
+        resolve_in(tier, root, request.home, &found.name).map_err(|error| error.to_string())?;
+    let Some(shadowed) = shadowed.filter(|shadowed| !same_file(&found.path, &shadowed.path)) else {
+        return Ok(None);
+    };
+    let (file, over) = (found.path.display(), shadowed.path.display());
+    let metadata = read_metadata(&shadowed.path)
+        .map_err(|reason| format!("{file} may not shadow {over}: it has no mode: {reason}"))?;
+    if !can_shadow(metadata.mode) {
+        let mode = metadata.mode;
+        return Err(format!(
+            "{file} may not shadow {over}: its mode {mode} has no owner w"
+        ));
+    }
+    Ok(Some(metadata))
+}
+
+/// Whether two paths are one file, which then shadows nothing: a project at the parent of the zaf
+/// home has one folder for both tiers, and a link to the machine's file runs that very file.
+fn same_file(one: &Path, other: &Path) -> bool {
+    matches!(
+        (fs::canonicalize(one), fs::canonicalize(other)),
+        (Ok(one), Ok(other)) if one == other
+    )
+}
+
+/// Whether `caller` may run a file: by its own mode and group, and by those of the file it shadows.
+/// Each file is asked about the caller, rather than the two modes masked digit by digit, because a
+/// role a shadow adds to its `group` reads the group digit there and the others digit here: only
+/// asking both keeps that from widening.
+fn may_run(caller: &Caller, metadata: &ActionMetadata, shadowed: Option<&ActionMetadata>) -> bool {
+    std::iter::once(metadata)
+        .chain(shadowed)
+        .all(|file| caller.permits(file.mode, &file.group))
 }
 
 /// The file's metadata, or why it has none that holds.
