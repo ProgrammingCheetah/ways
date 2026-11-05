@@ -1,7 +1,7 @@
 #!/bin/sh
 # zaf description: merge a pull request by hand, then sync: `pr-merge <pr>` then `sync main`, each with its own log; a refused merge stops before the sync
 # zaf 1: refused: the arguments are not <pr>, or the merge was refused (no sync was run), or the sync was refused
-# zaf 2: a backend failed (gh or jj is missing or refused, or the fetch failed); after a merge it may already have happened
+# zaf 2: a backend failed (gh or jj is missing or refused, or the fetch failed), or a step did not run (it exited 125); after a merge it may already have happened
 # zaf mode: 750
 # zaf group: team, release
 if [ "$#" -ne 1 ]; then
@@ -9,6 +9,16 @@ if [ "$#" -ne 1 ]; then
     exit 1
 fi
 
-# The merge comes first and its code passes through, so a refused merge never reaches the sync.
-zaf do pr-merge "$1" || exit $?
-zaf do sync main || exit $?
+# A step ends land with its own code when it is 1, a refusal. 125 is zaf's alone, a step that never
+# ran, so it is never passed on as land's own: land declares 1 and 2, and a step that did not run
+# is a backend that failed, exit 2.
+stop() {
+    case $1 in
+        1) exit 1 ;;
+        *) exit 2 ;;
+    esac
+}
+
+# The merge comes first, so a refused merge never reaches the sync.
+zaf do pr-merge "$1" || stop $?
+zaf do sync main || stop $?
