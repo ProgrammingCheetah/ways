@@ -56,6 +56,32 @@ impl Project {
         self.rule(pattern, 1, stderr)
     }
 
+    /// Answers `gh` calls matching `pattern` with `stdout` before any rule given earlier, so a
+    /// scene can change between two runs of the binary.
+    pub fn on_first(&mut self, pattern: &str, stdout: &str) -> &mut Self {
+        self.rule_first(pattern, 0, stdout)
+    }
+
+    /// Fails `gh` calls matching `pattern` with exit code 1 and `stderr`, before any rule given
+    /// earlier.
+    pub fn fail_first(&mut self, pattern: &str, stderr: &str) -> &mut Self {
+        self.rule_first(pattern, 1, stderr)
+    }
+
+    fn rule_first(&mut self, pattern: &str, status: u8, text: &str) -> &mut Self {
+        let response = format!("response-{}", self.responses);
+        self.responses += 1;
+        fs::write(self.scene.join(&response), text).expect("response");
+        let rules = self.scene.join("rules");
+        let earlier = fs::read_to_string(&rules).expect("rules");
+        fs::write(
+            &rules,
+            format!("{pattern}\t{status}\t{response}\n{earlier}"),
+        )
+        .expect("rules");
+        self
+    }
+
     fn rule(&mut self, pattern: &str, status: u8, text: &str) -> &mut Self {
         let response = format!("response-{}", self.responses);
         self.responses += 1;

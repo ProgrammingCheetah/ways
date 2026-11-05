@@ -31,14 +31,17 @@ kind = "jj"
 "#;
 
 /// The actions the three are built from, and the three.
-const ACTIONS: [&str; 8] = [
+const ACTIONS: [&str; 11] = [
     "workspace-open",
     "workspace-drop",
     "commit",
     "push",
     "pr-open",
+    "merge-base",
+    "pr-merge",
     "slice-open",
     "slice-pr",
+    "slice-merge",
     "slice-drop",
 ];
 
@@ -206,9 +209,126 @@ fn record_check(project: &Project, verdict: &str) {
     );
 }
 
+/// Task 2 of epic 1, merged and marked done.
+const DONE: &str = r#"{"number":2,"title":"Export the list","body":"","labels":[{"name":"task"},{"name":"done"}],"parent":{"number":1},"state":"CLOSED","comments":[{"body":"claimed by team instance 1 on #1 at 2027-01-15T08:00:00Z"}]}"#;
+
+/// The forge's view of pull request 7 at `head`: open until `gh pr merge` is called, which the
+/// fake accepts. Rules go in front of the earlier ones, so a later call moves the head.
+fn forge_at(project: &mut Project, head: &str) {
+    project
+        .on_first("pr view 7 --json state *", r#"{"state":"MERGED"}"#)
+        .on_first("pr view 7 --json state --jq *", "OPEN\n")
+        .on_first(
+            "pr view 7 --json headRefOid*",
+            &format!(r#"{{"headRefOid":"{head}"}}"#),
+        )
+        .on_first("pr merge *", "")
+        .on_first("issue edit *", "");
+}
+
+/// Stores a `check pr` record for pull request 7: `verdict` for the commit `head`, begun long ago.
+fn pr_check(project: &Project, verdict: &str, head: &str) {
+    write(
+        &project.root,
+        ".zaf/runs/check-pr-7.json",
+        &format!(
+            r#"{{"target":"pr #7","verdict":"{verdict}","lines":[],"head":"{head}","at":"2020-01-01T00:00:00Z"}}"#
+        ),
+    );
+}
+
+/// A slice with `content` in `path`, published as pull request 7 whose `check pr` is clean: the
+/// task is in `land`. The project, the workspace and the head.
+fn landing_with(path: &str, content: &str) -> (Project, PathBuf, String) {
+    let mut project = project();
+    let dir = open(&project);
+    write(&dir, path, content);
+    let (code, text) = action(&project, &["slice-pr", "2"]);
+    assert_eq!(code, 0, "{text}");
+    let head = commit_field(&dir, "@-", "commit_id");
+    forge_at(&mut project, &head);
+    pr_check(&project, "clean", &head);
+    (project, dir, head)
+}
+
+fn landing() -> (Project, PathBuf, String) {
+    landing_with("writer.csv", "a,b\n")
+}
+
+/// Pushes a commit that sets `path` to `content` onto the base from a second clone, as another
+/// merged pull request would.
+fn advance_base_elsewhere(project: &Project, path: &str, content: &str) {
+    let temp = project.temp.path();
+    let remote = temp.join("remote.git");
+    run(
+        temp,
+        "git",
+        &["clone", "-q", &remote.to_string_lossy(), "other"],
+    );
+    let other = temp.join("other");
+    run(&other, "git", &["checkout", "-q", BASE]);
+    write(&other, path, content);
+    run(&other, "git", &["add", path]);
+    run(
+        &other,
+        "git",
+        &[
+            "-c",
+            "user.name=Other",
+            "-c",
+            "user.email=other@example.com",
+            "commit",
+            "-qm",
+            "Another pull request",
+        ],
+    );
+    run(&other, "git", &["push", "-q", "origin", BASE]);
+}
+
+/// What the remote holds under the slice's branch.
+fn remote_slice(project: &Project) -> String {
+    run(
+        &project.temp.path().join("remote.git"),
+        "git",
+        &["rev-parse", SLICE],
+    )
+    .trim()
+    .to_owned()
+}
+
+/// Whether any `gh` call so far began with `prefix`.
+fn called(project: &Project, prefix: &str) -> bool {
+    project
+        .gh_calls()
+        .iter()
+        .any(|call| call.starts_with(prefix))
+}
+
+/// Asserts `slice-merge` is refused in `phase`: not run, with the §3 message, and so no step.
+fn assert_not_run_in(project: &Project, phase: &str) -> String {
+    let merges = |project: &Project| {
+        project
+            .gh_calls()
+            .iter()
+            .filter(|call| call.starts_with("pr merge"))
+            .count()
+    };
+    let merged = merges(project);
+    let (code, text) = action(project, &["slice-merge", "2"]);
+    assert_eq!(merges(project), merged, "{text}");
+    assert_eq!(code, 125, "{text}");
+    assert!(text.contains("NOT_RUN slice-merge: "), "{text}");
+    assert!(
+        text.contains(&format!("2 is in {phase}, not land")),
+        "{text}"
+    );
+    assert!(!text.contains("zaf do "), "a step ran: {text}");
+    text
+}
+
 #[test]
 fn slices_have_valid_metadata() {
-    for name in ["slice-open", "slice-pr", "slice-drop"] {
+    for name in ["slice-open", "slice-pr", "slice-merge", "slice-drop"] {
         let text = action_text(name);
         // The header zaf reads: a description, a team and release group, a task target.
         for line in [
@@ -229,11 +349,305 @@ fn slices_have_valid_metadata() {
     for (name, phases) in [
         ("slice-open", "# zaf phases: claim"),
         ("slice-pr", "# zaf phases: build, check, review"),
+        ("slice-merge", "# zaf phases: land"),
         ("slice-drop", "# zaf phases: build, check, done"),
     ] {
         let text = action_text(name);
         assert!(text.lines().any(|line| line == phases), "{name}: {phases}");
     }
+    // 125 is zaf's alone: no action declares it.
+    for name in ACTIONS {
+        assert!(
+            !action_text(name)
+                .lines()
+                .any(|line| line.starts_with("# zaf 125")),
+            "{name} declares 125"
+        );
+    }
+}
+
+#[test]
+fn slice_merge_runs_the_steps_in_order() {
+    let (project, dir, head) = landing();
+
+    let (code, text) = action(&project, &["slice-merge", "2"]);
+
+    assert_eq!(code, 0, "{text}");
+    // The base is merged in first, then the pull request, then the board, then the workspace goes;
+    // CI is the gate, so no light gate runs.
+    let steps: Vec<usize> = [
+        "zaf do merge-base",
+        "zaf do pr-merge",
+        "zaf do workspace-drop",
+    ]
+    .iter()
+    .map(|step| text.find(step).unwrap_or_else(|| panic!("{step}: {text}")))
+    .collect();
+    assert!(steps.is_sorted(), "{text}");
+    assert!(!text.contains("gate-light"), "{text}");
+    assert!(!text.contains("zaf do push"), "nothing moved: {text}");
+    let calls = project.gh_calls();
+    let merge = calls
+        .iter()
+        .position(|call| call == &format!("pr merge 7 --merge --repo {REPO}"))
+        .unwrap_or_else(|| panic!("{calls:?}"));
+    let done = calls
+        .iter()
+        .position(|call| call.starts_with("issue edit 2 ") && call.contains("done"))
+        .unwrap_or_else(|| panic!("{calls:?}"));
+    assert!(merge < done, "{calls:?}");
+    // The workspace is gone and zaf forgot the task's records.
+    assert!(!dir.exists(), "the workspace is still there");
+    assert_eq!(record(&project, "2"), None);
+    assert_eq!(record(&project, "2.pr"), None);
+    // The branch with the merged work stays.
+    assert_eq!(bookmark_at(&project.root, SLICE), head);
+}
+
+#[test]
+fn slice_merge_conflict_exits_1() {
+    let (project, dir, head) = landing_with("notes.txt", "one\nslice\n");
+    advance_base_elsewhere(&project, "notes.txt", "one\nbase\n");
+
+    let (code, text) = action(&project, &["slice-merge", "2"]);
+
+    assert_eq!(code, 1, "{text}");
+    // The paths are in the log, and nothing was pushed, merged or marked.
+    assert!(text.contains("conflicts in"), "{text}");
+    assert!(text.contains("notes.txt"), "{text}");
+    assert!(!text.contains("zaf do push"), "{text}");
+    assert!(!text.contains("gate-light"), "{text}");
+    assert!(!called(&project, "pr merge"), "{text}");
+    assert!(!called(&project, "issue edit"), "{text}");
+    assert_eq!(remote_slice(&project), head);
+    assert!(dir.is_dir(), "the workspace went");
+    assert_eq!(commit_field(&dir, "@-", "commit_id"), head);
+    assert!(record(&project, "2").is_some());
+}
+
+#[test]
+fn slice_merge_not_run_step_is_not_a_conflict() {
+    let (project, dir, head) = landing();
+    advance_base_elsewhere(&project, "merged.txt", "merged\n");
+    // `merge-base` has no description: zaf does not run it, which is exit 125 and not 1.
+    let actions = project.root.join(".zaf/actions");
+    write(&actions, "merge-base", "#!/bin/sh\nexit 1\n");
+    fs::set_permissions(
+        actions.join("merge-base"),
+        fs::Permissions::from_mode(0o750),
+    )
+    .expect("mode");
+
+    let (code, text) = action(&project, &["slice-merge", "2"]);
+
+    assert_eq!(code, 125, "{text}");
+    assert!(text.contains("NOT_RUN merge-base"), "{text}");
+    // Nothing was pushed or merged, and the slice is as it was.
+    assert!(!text.contains("zaf do push"), "{text}");
+    assert!(!called(&project, "pr merge"), "{text}");
+    assert_eq!(remote_slice(&project), head);
+    assert!(dir.is_dir());
+    assert_eq!(commit_field(&dir, "@-", "commit_id"), head);
+}
+
+#[test]
+fn slice_merge_pushes_a_moved_head_and_asks_for_a_check() {
+    let (project, dir, head) = landing();
+    advance_base_elsewhere(&project, "merged.txt", "merged\n");
+
+    let (code, text) = action(&project, &["slice-merge", "2"]);
+
+    // The base moved the head: it is pushed and the run ends with 1, so the team checks again.
+    assert_eq!(code, 1, "{text}");
+    assert!(text.contains("zaf do push"), "{text}");
+    assert!(text.contains("run zaf check pr again"), "{text}");
+    assert!(!text.contains("zaf do pr-merge"), "{text}");
+    assert!(!text.contains("gate-light"), "{text}");
+    let moved = commit_field(&dir, "@-", "commit_id");
+    assert_ne!(moved, head);
+    assert_eq!(remote_slice(&project), moved);
+    assert!(
+        dir.join("merged.txt").is_file(),
+        "the base is in the workspace"
+    );
+    assert!(!called(&project, "pr merge"), "{text}");
+    assert!(!called(&project, "issue edit"), "{text}");
+    assert!(record(&project, "2").is_some());
+}
+
+#[test]
+fn slice_merge_moved_head_still_marks_done() {
+    let (mut project, dir, head) = landing();
+    advance_base_elsewhere(&project, "merged.txt", "merged\n");
+    let (code, text) = action(&project, &["slice-merge", "2"]);
+    assert_eq!(code, 1, "{text}");
+    let moved = commit_field(&dir, "@-", "commit_id");
+    assert_ne!(moved, head);
+
+    // The forge now shows the pushed head, and `check pr` is clean on it: the task is in `land`.
+    forge_at(&mut project, &moved);
+    pr_check(&project, "clean", &moved);
+    let (code, text) = action(&project, &["slice-merge", "2"]);
+
+    // The base is already in: nothing moves, the pull request merges and the board marks it done.
+    assert_eq!(code, 0, "{text}");
+    assert!(!text.contains("zaf do push"), "{text}");
+    assert!(called(&project, "pr merge 7 --merge"), "{text}");
+    assert!(called(&project, "issue edit 2 "), "{text}");
+    assert!(!dir.exists(), "the workspace is still there");
+    assert_eq!(record(&project, "2"), None);
+    assert_eq!(bookmark_at(&project.root, SLICE), moved);
+}
+
+#[test]
+fn failed_pr_merge_needs_a_new_check() {
+    let (mut project, dir, head) = landing();
+    advance_base_elsewhere(&project, "merged.txt", "merged\n");
+    let (code, text) = action(&project, &["slice-merge", "2"]);
+    assert_eq!(code, 1, "{text}");
+    let moved = commit_field(&dir, "@-", "commit_id");
+    assert_ne!(moved, head);
+
+    // The merge was pushed, so the forge's head moved on and the last `check pr` is for the old
+    // one: the task is out of `land`, and a merge is not even attempted.
+    forge_at(&mut project, &moved);
+    let before = project.gh_calls().len();
+    let text = assert_not_run_in(&project, "publish");
+    assert!(text.contains("NOT_RUN"), "{text}");
+    assert!(
+        project.gh_calls()[before..]
+            .iter()
+            .all(|call| !call.starts_with("pr merge") && !call.starts_with("issue edit"))
+    );
+    assert!(dir.is_dir());
+
+    // A new `check pr` that is clean on the pushed head puts it back in `land`; if the forge then
+    // refuses the merge, the run stops there: nothing is marked done and the workspace stays.
+    pr_check(&project, "clean", &moved);
+    project.fail_first("pr merge *", "Pull request #7 has failing required checks");
+    let (code, text) = action(&project, &["slice-merge", "2"]);
+    assert_eq!(code, 1, "{text}");
+    assert!(text.contains("failing required checks"), "{text}");
+    assert!(!text.contains("zaf do workspace-drop"), "{text}");
+    assert!(!called(&project, "issue edit"), "{text}");
+    assert!(dir.is_dir());
+    assert!(record(&project, "2").is_some());
+}
+
+#[test]
+fn slice_merge_outside_land_refuses() {
+    // Claimed, no slice: `claim`.
+    let project = project();
+    assert_not_run_in(&project, "claim");
+
+    // A slice open and nothing published: `build`.
+    let dir = open(&project);
+    write(&dir, "writer.csv", "a,b\n");
+    assert_not_run_in(&project, "build");
+    assert!(dir.is_dir());
+}
+
+#[test]
+fn slice_merge_ahead_of_the_head_refuses() {
+    let (project, dir, head) = landing();
+    // A commit past the pull request's head: the clean result is for an older commit.
+    write(&dir, "more.csv", "c,d\n");
+    jj(&dir, &["commit", "-m", "One more thing"]);
+    assert_ne!(commit_field(&dir, "@-", "commit_id"), head);
+
+    assert_not_run_in(&project, "build");
+
+    assert!(dir.is_dir());
+    assert_eq!(remote_slice(&project), head);
+}
+
+#[test]
+fn slice_merge_on_a_done_task_refuses() {
+    let (mut project, dir, _) = landing();
+    // The board has the task done already.
+    project.on_first("issue view 2 *", DONE);
+
+    assert_not_run_in(&project, "done");
+
+    assert!(dir.is_dir());
+    assert!(!called(&project, "issue edit"));
+}
+
+#[test]
+fn claim_to_done_walks_the_phases() {
+    let mut project = project();
+    // `slice-merge` runs only in `land`, so its refusal names the phase the task stands in.
+    assert_not_run_in(&project, "claim");
+
+    let dir = open(&project);
+    assert_not_run_in(&project, "build");
+
+    // A task check has passed on the work: `check`.
+    write(&dir, "writer.csv", "a,b\n");
+    record_check(&project, "clean");
+    assert_not_run_in(&project, "check");
+
+    // Published with the pull request recorded, no step run on it: `publish`.
+    let (code, text) = action(&project, &["slice-pr", "2"]);
+    assert_eq!(code, 0, "{text}");
+    let head = commit_field(&dir, "@-", "commit_id");
+    forge_at(&mut project, &head);
+    assert_not_run_in(&project, "publish");
+
+    // `check pr` ran and a step failed: `review`.
+    pr_check(&project, "step-failed", &head);
+    assert_not_run_in(&project, "review");
+
+    // `check pr` is clean for the head the workspace is on: `land`, and the run lands it.
+    pr_check(&project, "clean", &head);
+    let (code, text) = action(&project, &["slice-merge", "2"]);
+    assert_eq!(code, 0, "{text}");
+    assert!(called(&project, "pr merge 7 --merge"), "{text}");
+    assert!(!dir.exists());
+
+    // The board shows `done` now.
+    project.on_first("issue view 2 *", DONE);
+    assert_not_run_in(&project, "done");
+}
+
+#[test]
+fn must_fix_round_returns_to_build() {
+    let mut project = project();
+    let dir = open(&project);
+    write(&dir, "writer.csv", "a,b\n");
+    let (code, text) = action(&project, &["slice-pr", "2"]);
+    assert_eq!(code, 0, "{text}");
+    let head = commit_field(&dir, "@-", "commit_id");
+    forge_at(&mut project, &head);
+
+    // `check pr` found something to fix on the head: back to `build`.
+    pr_check(&project, "must-fix", &head);
+    assert_not_run_in(&project, "build");
+
+    // The fix is published as a new head, which no `check pr` has seen: `publish`.
+    write(&dir, "writer.csv", "a,b\n1,2\n");
+    let (code, text) = action(&project, &["slice-pr", "2"]);
+    assert_eq!(code, 0, "{text}");
+    let fixed = commit_field(&dir, "@-", "commit_id");
+    assert_ne!(fixed, head);
+    forge_at(&mut project, &fixed);
+    assert_not_run_in(&project, "publish");
+
+    // `check` is only passed through when a task check ran, later than the pull request.
+    write(
+        &project.root,
+        ".zaf/runs/check-task-2.json",
+        r#"{"target":"task #2","verdict":"clean","lines":[],"at":"2099-01-01T00:00:00Z"}"#,
+    );
+    assert_not_run_in(&project, "check");
+    fs::remove_file(project.root.join(".zaf/runs/check-task-2.json")).expect("remove");
+    assert_not_run_in(&project, "publish");
+
+    // A clean `check pr` on the fixed head: `land`.
+    pr_check(&project, "clean", &fixed);
+    let (code, text) = action(&project, &["slice-merge", "2"]);
+    assert_eq!(code, 0, "{text}");
+    assert!(called(&project, "pr merge 7 --merge"), "{text}");
 }
 
 #[test]
