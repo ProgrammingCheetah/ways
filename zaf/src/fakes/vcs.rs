@@ -26,6 +26,8 @@ struct Slice {
     uncommitted: BTreeSet<String>,
     commits: u32,
     published: u32,
+    /// The last commit made; a new slice stands on its base.
+    latest: CommitId,
 }
 
 #[derive(Debug, Default)]
@@ -137,6 +139,7 @@ impl Vcs for FakeVcs {
             uncommitted: BTreeSet::new(),
             commits: 0,
             published: 0,
+            latest: CommitId::from(format!("fake-base-{base}")),
         };
         state.slices.insert(slice.clone(), opened);
         Ok(SliceOpening::Opened)
@@ -160,16 +163,18 @@ impl Vcs for FakeVcs {
 
     fn commit(&self, slice: &SliceName, message: &str) -> Result<CommitId, PortError> {
         let mut state = self.state();
+        let next_commit = state.next_commit + 1;
         let slice = state.slice_mut(slice)?;
         if slice.uncommitted.is_empty() {
             return Err(PortError::Rejected(format!(
                 "nothing to commit for `{message}`"
             )));
         }
+        let commit_id = CommitId::from(format!("fake-{next_commit}"));
         slice.uncommitted.clear();
         slice.commits += 1;
-        state.next_commit += 1;
-        let commit_id = CommitId::from(format!("fake-{}", state.next_commit));
+        slice.latest = commit_id.clone();
+        state.next_commit = next_commit;
         Ok(commit_id)
     }
 
@@ -186,6 +191,15 @@ impl Vcs for FakeVcs {
     fn is_clean(&self, slice: &SliceName) -> Result<bool, PortError> {
         let mut state = self.state();
         Ok(state.slice_mut(slice)?.uncommitted.is_empty())
+    }
+
+    fn latest_commit(&self, workspace: &Path) -> Result<CommitId, PortError> {
+        self.state()
+            .slices
+            .values()
+            .find(|slice| slice.workspace.as_deref() == Some(workspace))
+            .map(|slice| slice.latest.clone())
+            .ok_or_else(|| PortError::NotFound(format!("workspace {}", workspace.display())))
     }
 
     fn diff_stat(&self, workspace: &Path, base: &BaseName) -> Result<DiffStat, PortError> {

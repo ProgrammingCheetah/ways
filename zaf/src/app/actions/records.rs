@@ -9,10 +9,11 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use super::run::{RunOutcome, RunRequest, RunResult};
 use crate::app::brief::RUNS_DIR;
-use crate::app::check::Target;
+use crate::app::check::{CheckRecord, Target};
 use crate::composition::STATE_DIR;
 use crate::domain::IssueNumber;
 use crate::ports::PrNumber;
@@ -108,6 +109,27 @@ impl SliceRecords {
     pub fn pr(&self, task: IssueNumber) -> Option<PrNumber> {
         let text = fs::read_to_string(self.dir.join(pr_file(task))).ok()?;
         pr_value(&text)
+    }
+
+    /// When the task's pull request record was written; none when that cannot be read.
+    pub fn pr_recorded_at(&self, task: IssueNumber) -> Option<SystemTime> {
+        let metadata = fs::metadata(self.dir.join(pr_file(task))).ok()?;
+        metadata.modified().ok()
+    }
+
+    /// The last `zaf check <task>` record; one that cannot be read is no record.
+    pub fn task_check(&self, task: IssueNumber) -> Option<CheckRecord> {
+        self.check_record(Target::Task(task))
+    }
+
+    /// The last `zaf check pr` record of a pull request; one that cannot be read is no record.
+    pub fn pr_check(&self, pr: PrNumber) -> Option<CheckRecord> {
+        self.check_record(Target::Pr { pr, task: None })
+    }
+
+    fn check_record(&self, target: Target) -> Option<CheckRecord> {
+        let text = fs::read_to_string(self.runs.join(check_file(target))).ok()?;
+        serde_json::from_str(&text).ok()
     }
 
     /// Writes one record whole, or not at all. The rename replaces whatever sits at the name, so

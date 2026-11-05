@@ -108,6 +108,12 @@ pub trait Vcs {
     /// Whether the slice has no uncommitted work.
     fn is_clean(&self, slice: &SliceName) -> Result<bool, PortError>;
 
+    /// The commit [`publish`](Self::publish) would move the slice's line to, by its git id: the
+    /// workspace's latest commit, hand-made or not, with uncommitted work no part of it. The
+    /// workspace is the one the slice record names. A directory that is no workspace is
+    /// [`PortError::NotFound`].
+    fn latest_commit(&self, workspace: &Path) -> Result<CommitId, PortError>;
+
     /// The change in a workspace against its base, stat only. The workspace is the one the
     /// slice record names and the base comes from the branch pattern: the VCS reads neither
     /// from its own state. A directory that is no workspace is [`PortError::NotFound`].

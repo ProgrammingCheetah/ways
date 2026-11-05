@@ -273,6 +273,39 @@ fn publish_pushes_a_commit_made_by_hand() {
 }
 
 #[test]
+fn latest_commit_reads_the_workspace() {
+    let fixture = Fixture::new(false);
+    let (slice, _base) = fixture.slice();
+    let dir = fixture.slice_dir(&slice);
+    write(&dir, "by_hand.txt", "hand\n");
+    jj(&dir, &["commit", "-m", "Made by hand"]);
+    // The hand-made commit left the bookmark on the base; the read does not follow the bookmark.
+    assert_eq!(fixture.target(SLICE), fixture.target(BASE));
+    let hand_made = jj(&dir, &["log", "--no-graph", "-r", "@-", "-T", "commit_id"]);
+    assert_ne!(hand_made, fixture.target(BASE));
+    assert_eq!(
+        fixture.vcs.latest_commit(&dir),
+        Ok(CommitId::from(hand_made.as_str()))
+    );
+    // Uncommitted work is not a commit `push` would move the bookmark to.
+    write(&dir, "wip.txt", "wip\n");
+    assert_eq!(
+        fixture.vcs.latest_commit(&dir),
+        Ok(CommitId::from(hand_made.as_str()))
+    );
+    jj(&dir, &["commit", "-m", "Finished"]);
+    // It is the commit `publish` moves the bookmark to, by the id the remote knows it by.
+    let latest = fixture.vcs.latest_commit(&dir).expect("latest commit");
+    assert_ne!(latest.to_string(), hand_made);
+    assert_eq!(fixture.vcs.publish(&slice), Ok(Publication::Published));
+    assert_eq!(fixture.remote_target(SLICE), latest.to_string());
+    assert!(matches!(
+        fixture.vcs.latest_commit(&dir.join("no-workspace")),
+        Err(PortError::NotFound(_))
+    ));
+}
+
+#[test]
 fn publish_of_uncommitted_work_is_rejected_and_pushes_nothing() {
     let fixture = Fixture::new(false);
     let (slice, _base) = fixture.slice();

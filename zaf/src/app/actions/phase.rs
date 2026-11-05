@@ -3,11 +3,17 @@
 //! [`derive_phase`] is the guard of the merge path, so it is a pure decision: it
 //! reads no file, no board and no clock, only the [`PhaseFacts`] it is handed.
 //! Wherever a fact is missing it falls to the earlier phase: no head is no result,
-//! and a time it cannot read is never newer.
+//! and a time it cannot read is never newer. [`gather_phase_facts`] collects those facts; a
+//! board, forge or workspace read that fails is no missing fact but a [`PhaseUnreadable`]
+//! refusal (`NOT_RUN`, exit 125), so a guard that cannot see the state lets nothing through.
 
 use std::time::SystemTime;
 
 use crate::app::check::{CheckRecord, Verdict};
+
+mod gather;
+
+pub use gather::{PhaseUnreadable, gather_phase_facts};
 
 /// Where a task stands. The seven of §3 and `Unclaimed`, in lifecycle order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, strum::Display)]
@@ -15,7 +21,7 @@ use crate::app::check::{CheckRecord, Verdict};
 pub enum Phase {
     /// No rule held. Derived only: no `phases:` line may name it.
     Unclaimed,
-    /// Claimed under a live lease, no slice yet.
+    /// Claimed, no slice yet.
     Claim,
     /// Its slice open, a programmer at work.
     Build,
@@ -55,7 +61,8 @@ impl Phase {
 /// The task's `.zaf/slices/<task>` record, with the workspace it names.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorkspaceFacts {
-    /// The workspace's latest commit; none when it could not be read.
+    /// The workspace's latest commit; none is never the pull request's head. The gatherer
+    /// always fills it: a workspace it cannot read refuses the action instead.
     pub latest_commit: Option<String>,
 }
 
@@ -75,8 +82,8 @@ pub struct PhaseFacts {
     pub done: bool,
     /// The board's `claimed` label.
     pub claimed: bool,
-    /// The lease comment is present and unexpired.
-    pub live_lease: bool,
+    /// The board holds a claim comment for the task. It has no expiry: it stands until released.
+    pub claim_comment: bool,
     /// The workspace record, when one exists.
     pub workspace: Option<WorkspaceFacts>,
     /// The pull request record, when one exists.
@@ -170,7 +177,7 @@ pub fn derive_phase(facts: &PhaseFacts) -> Phase {
     if facts.workspace.is_some() {
         return Phase::Build;
     }
-    if facts.claimed && facts.live_lease {
+    if facts.claimed && facts.claim_comment {
         return Phase::Claim;
     }
     Phase::Unclaimed
