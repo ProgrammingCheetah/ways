@@ -1030,6 +1030,48 @@ fn group_digit_applies() {
 }
 
 #[test]
+fn role_named_in_group_gets_its_digit() {
+    let project = project();
+    // There is no fixed list of roles: a project's own name counts as a built-in one does.
+    for role in ["auditor", "night-shift", "engineer", "team"] {
+        let instance = format!("{role} instance 1 on #9");
+        let refused = format!("refused-{role}");
+        let permitted = format!("permitted-{role}");
+        gated(
+            &project,
+            &refused,
+            &format!("# zaf mode: 701\n# zaf group: {role}\n"),
+        );
+        gated(
+            &project,
+            &permitted,
+            &format!("# zaf mode: 710\n# zaf group: {role}\n"),
+        );
+        assert_refused(
+            &project,
+            &refused,
+            &run_as(&project, &refused, Some(&instance)),
+            role,
+        );
+        assert_ran(
+            &project,
+            &permitted,
+            &run_as(&project, &permitted, Some(&instance)),
+        );
+
+        // The same files read another digit for a role the group does not name.
+        let other = "inspector instance 1 on #9";
+        assert_ran(&project, &refused, &run_as(&project, &refused, Some(other)));
+        assert_refused(
+            &project,
+            &permitted,
+            &run_as(&project, &permitted, Some(other)),
+            "inspector",
+        );
+    }
+}
+
+#[test]
 fn others_digit_applies() {
     let project = project();
     // A mode with no group: every role is others.
@@ -1054,28 +1096,23 @@ fn others_digit_applies() {
         "programmer",
     );
 
-    // A role outside the vocabulary is others, even named in the group.
-    let auditor = "auditor instance 1 on #9";
-    gated(
-        &project,
-        "group-shut",
-        "# zaf mode: 710\n# zaf group: auditor\n",
-    );
-    assert_refused(
-        &project,
-        "group-shut",
-        &run_as(&project, "group-shut", Some(auditor)),
-        "auditor",
-    );
+    // A name no list of roles holds is still others when the group leaves it out.
     gated(
         &project,
         "others-open",
-        "# zaf mode: 701\n# zaf group: auditor\n",
+        "# zaf mode: 701\n# zaf group: team\n",
     );
+    let auditor = "auditor instance 1 on #9";
     assert_ran(
         &project,
         "others-open",
         &run_as(&project, "others-open", Some(auditor)),
+    );
+    assert_refused(
+        &project,
+        "unnamed",
+        &run_as(&project, "unnamed", Some(auditor)),
+        "auditor",
     );
 
     // No role name reaches the Engineer's digit.

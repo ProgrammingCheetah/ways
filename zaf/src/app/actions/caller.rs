@@ -14,23 +14,13 @@ use crate::domain::{Instance, RoleName};
 /// Names the instance a process runs as; absent on a hand run.
 pub const INSTANCE_VAR: &str = "ZAF_INSTANCE";
 
-/// The roles an instance can run as. A role outside it is others, even named in a group.
-const VOCABULARY: [&str; 7] = [
-    "team",
-    "programmer",
-    "keeper",
-    "planning",
-    "challenger",
-    "release",
-    "designer",
-];
-
 /// Who asks for a run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Caller {
     /// A hand run: no `ZAF_INSTANCE`.
     Engineer,
-    /// The role `ZAF_INSTANCE` names. A role called `engineer` is still a role.
+    /// The role `ZAF_INSTANCE` names, whatever its name: there is no fixed list of roles, and a
+    /// role called `engineer` is still a role.
     Role(RoleName),
 }
 
@@ -68,10 +58,10 @@ impl Caller {
     }
 }
 
-/// Whether the group digit covers `role`: named in `group` and in the vocabulary.
+/// Whether the group digit covers `role`: `group` names it.
 fn in_group(role: &RoleName, group: &[String]) -> bool {
     let role: &str = role.as_ref();
-    VOCABULARY.contains(&role) && group.iter().any(|named| named == role)
+    group.iter().any(|named| named == role)
 }
 
 /// The word a refusal prints. A role is whatever the variable held, so it is escaped: it stays

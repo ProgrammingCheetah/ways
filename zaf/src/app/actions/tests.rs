@@ -506,9 +506,13 @@ fn permits_reads_only_the_callers_digit() {
         for (caller, mode) in cases {
             assert_eq!(permits(&caller, &mode, &group), open, "{caller:?} {mode}");
         }
-        // Outside the vocabulary a role named in the group still reads the others digit.
+        // A role named in the group reads the group digit, whatever its name.
         let auditor = ["auditor"];
-        assert!(!permits(&role("auditor"), &format!("0{digit}0"), &auditor));
+        assert_eq!(
+            permits(&role("auditor"), &format!("0{digit}0"), &auditor),
+            open
+        );
+        assert!(!permits(&role("auditor"), &format!("70{digit}"), &auditor));
     }
 }
 
