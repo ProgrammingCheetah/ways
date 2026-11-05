@@ -5,8 +5,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::time::SystemTime;
 
+use super::phases::plans_of;
 use super::reports::{WORKING, last_report};
-use super::{EpicRow, GroupRow, Snapshot, TicketRow};
+use super::{EpicRow, GroupRow, ModelRow, Snapshot, TicketRow};
 use crate::app::actions::{PhaseUnreadable, SliceRecords, derive_phase, gather_phase_facts};
 use crate::app::report::PriceTable;
 use crate::app::report::epics::cost_of;
@@ -218,5 +219,14 @@ fn ticket_row(
         phase: derive_phase(&facts),
         word,
         since,
+        models: plans_of(inputs.state_dir, task.number)
+            .into_iter()
+            .map(|(plan, _)| ModelRow {
+                iteration: plan.iteration(),
+                current: plan.current().map(str::to_owned),
+                role: plan.role,
+                phases: plan.phases,
+            })
+            .collect(),
     })
 }
