@@ -11,6 +11,8 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 use super::run::{RunOutcome, RunRequest, RunResult};
+use crate::app::brief::RUNS_DIR;
+use crate::app::check::Target;
 use crate::composition::STATE_DIR;
 use crate::domain::IssueNumber;
 use crate::ports::PrNumber;
@@ -20,6 +22,9 @@ const SLICE_OPEN: &str = "slice-open";
 
 /// The action whose hand-back is the task's pull request.
 const SLICE_PR: &str = "slice-pr";
+
+/// The actions that end a slice: on exit 0 the records are forgotten.
+const SLICE_ENDS: [&str; 2] = ["slice-merge", "slice-drop"];
 
 /// The folder of `.zaf/` that holds the records.
 const SLICES_DIR: &str = "slices";
@@ -52,6 +57,8 @@ pub fn hand_back(log: &Path) -> io::Result<Option<String>> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SliceRecords {
     dir: PathBuf,
+    /// Where the check records are: `.zaf/runs`.
+    runs: PathBuf,
 }
 
 impl SliceRecords {
@@ -59,7 +66,34 @@ impl SliceRecords {
     pub fn new(root: &Path) -> Self {
         Self {
             dir: root.join(STATE_DIR).join(SLICES_DIR),
+            runs: root.join(STATE_DIR).join(RUNS_DIR),
         }
+    }
+
+    /// Forgets the task: both slice records, and the check records of the task and of its
+    /// recorded pull request (`.zaf/runs/check-task-<task>.json`, `check-pr-<n>.json`), so a
+    /// dropped task is back in `claim` and a reopened slice starts clean. A record that is not
+    /// there is already forgotten. Every removal is tried, and the first error is returned.
+    pub fn forget(&self, task: IssueNumber) -> io::Result<()> {
+        // Read before the record goes: it names the pull request whose check record goes too.
+        let mut doomed = vec![
+            self.dir.join(workspace_file(task)),
+            self.dir.join(pr_file(task)),
+            self.runs.join(check_file(Target::Task(task))),
+        ];
+        if let Some(pr) = self.pr(task) {
+            doomed.push(self.runs.join(check_file(Target::Pr { pr, task: None })));
+        }
+        let mut first = Ok(());
+        for file in doomed {
+            match fs::remove_file(&file) {
+                Err(error) if error.kind() != io::ErrorKind::NotFound && first.is_ok() => {
+                    first = Err(error);
+                }
+                _ => {}
+            }
+        }
+        first
     }
 
     /// The task's workspace. Read by the same rule that wrote it: a record that does not hold, or
@@ -102,6 +136,11 @@ fn pr_file(task: IssueNumber) -> String {
     format!("{}.pr", task.get())
 }
 
+/// The file name of a check target's record, as `zaf check` stores it.
+fn check_file(target: Target) -> String {
+    format!("check-{}.json", target.slug())
+}
+
 /// `text` as a workspace: an absolute path of an existing directory. Absolute because the record
 /// is read later from elsewhere, where a relative path would name some other directory.
 fn workspace_value(text: &str) -> Option<&Path> {
@@ -129,7 +168,27 @@ pub(super) fn keep_hand_back(request: &RunRequest<'_>, outcome: RunOutcome) -> R
         .as_deref()
         .ok_or_else(|| "no log to read a value from".to_owned())
         .and_then(|log| keep(request, log));
-    match kept {
+    refuse_if(kept, outcome)
+}
+
+/// Forgets the task's records when a slice-ending name exited 0. Records that cannot be forgotten
+/// turn the run into `FAIL`, exit 2, rather than leave the guard reading a slice that has ended;
+/// a run that did not exit 0 forgets nothing, and any other name passes through.
+pub(super) fn forget_records(request: &RunRequest<'_>, outcome: RunOutcome) -> RunOutcome {
+    if outcome.result != RunResult::Ok || !SLICE_ENDS.contains(&request.name) {
+        return outcome;
+    }
+    let forgotten = task_and_root(request).and_then(|(task, root)| {
+        SliceRecords::new(root)
+            .forget(task)
+            .map_err(|error| format!("cannot forget the records: {error}"))
+    });
+    refuse_if(forgotten, outcome)
+}
+
+/// `outcome`, or `FAIL` with exit 2 and `reason` when the records could not be dealt with.
+fn refuse_if(done: Result<(), String>, outcome: RunOutcome) -> RunOutcome {
+    match done {
         Ok(()) => outcome,
         Err(reason) => RunOutcome {
             result: RunResult::Fail,
@@ -140,8 +199,8 @@ pub(super) fn keep_hand_back(request: &RunRequest<'_>, outcome: RunOutcome) -> R
     }
 }
 
-/// Reads the task, the place and the value, and writes the record once all of them hold.
-fn keep(request: &RunRequest<'_>, log: &Path) -> Result<(), String> {
+/// The task the caller named first, and the project whose records it is.
+fn task_and_root<'a>(request: &RunRequest<'a>) -> Result<(IssueNumber, &'a Path), String> {
     let task = request
         .args
         .first()
@@ -150,7 +209,13 @@ fn keep(request: &RunRequest<'_>, log: &Path) -> Result<(), String> {
         .ok_or("no task number as its first argument")?;
     let root = request
         .project_root
-        .ok_or("no project to keep the record in")?;
+        .ok_or("no project to keep the records in")?;
+    Ok((task, root))
+}
+
+/// Reads the task, the place and the value, and writes the record once all of them hold.
+fn keep(request: &RunRequest<'_>, log: &Path) -> Result<(), String> {
+    let (task, root) = task_and_root(request)?;
     let value = hand_back(log)
         .map_err(|error| format!("cannot read the value: {error}"))?
         .ok_or("handed back no value")?;
