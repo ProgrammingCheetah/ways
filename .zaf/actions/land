@@ -1,0 +1,14 @@
+#!/bin/sh
+# zaf description: merge a pull request by hand, then sync: `pr-merge <pr>` then `sync main`, each with its own log; a refused merge stops before the sync
+# zaf 1: refused: the arguments are not <pr>, or the merge was refused (no sync was run), or the sync was refused
+# zaf 2: a backend failed (gh or jj is missing or refused, or the fetch failed); after a merge it may already have happened
+# zaf mode: 750
+# zaf group: team, release
+if [ "$#" -ne 1 ]; then
+    echo "usage: land <pr>" >&2
+    exit 1
+fi
+
+# The merge comes first and its code passes through, so a refused merge never reaches the sync.
+zaf do pr-merge "$1" || exit $?
+zaf do sync main || exit $?
