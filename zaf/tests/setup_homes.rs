@@ -23,8 +23,11 @@ repo = "example/tracker"
 const ALLOW_LIST: &str =
     "*\n!.gitignore\n!config.toml\n!actions/\n!actions/**\n!roles/\n!roles/**\n";
 
+/// A project that provides the four `slice-*` actions, so setup has nothing missing to report.
 fn project() -> Project {
-    Project::new(MANIFEST)
+    let project = Project::new(MANIFEST);
+    project.provide_slice_actions();
+    project
 }
 
 /// Every path under `dir` with its text (`None` for a folder), relative to `dir`.

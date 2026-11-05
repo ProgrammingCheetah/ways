@@ -102,6 +102,22 @@ impl Project {
         command.output().expect("run zaf")
     }
 
+    /// Writes the four `slice-*` actions into the project's `.zaf/actions`: zaf ships none, and
+    /// `zaf doctor` (and so `zaf setup`) fails while a needed name has no provider.
+    pub fn provide_slice_actions(&self) {
+        use std::os::unix::fs::PermissionsExt;
+        let actions = self.root.join(".zaf/actions");
+        for name in ["slice-open", "slice-pr", "slice-merge", "slice-drop"] {
+            write(
+                &actions,
+                name,
+                "#!/bin/sh\n# zaf description: a slice step\n# zaf 1: failed\ntrue\n",
+            );
+            fs::set_permissions(actions.join(name), fs::Permissions::from_mode(0o755))
+                .expect("mode");
+        }
+    }
+
     /// Every `gh` call's argv, joined by spaces, in order.
     pub fn gh_calls(&self) -> Vec<String> {
         let Ok(entries) = fs::read_dir(self.scene.join("calls")) else {

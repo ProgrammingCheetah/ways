@@ -23,6 +23,24 @@ fn read(path: &Path) -> String {
     fs::read_to_string(path).expect("a readable file")
 }
 
+/// Writes the four `slice-*` actions every project needs into the project's tier, so doctor finds
+/// nothing missing.
+fn provide_slice_actions(root: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = root.join(".zaf/actions");
+    fs::create_dir_all(&dir).expect("actions dir");
+    for name in ["slice-open", "slice-pr", "slice-merge", "slice-drop"] {
+        let file = dir.join(name);
+        fs::write(
+            &file,
+            "#!/bin/sh\n# zaf description: a slice step\n# zaf 1: failed\ntrue\n",
+        )
+        .expect("action");
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).expect("mode");
+    }
+}
+
 #[test]
 fn ensure_homes_makes_folders_and_files_and_changes_nothing_the_second_time() {
     let (_dir, root, home) = places();
@@ -95,7 +113,7 @@ fn ensure_homes_keeps_every_kind_of_old_gitignore() {
 #[test]
 fn setup_replaces_an_old_star_gitignore_and_keeps_another() {
     let (_dir, root, home) = places();
-    fs::create_dir(root.join(".zaf")).expect("state dir");
+    provide_slice_actions(&root);
     fs::write(root.join(".zaf/.gitignore"), "*\n").expect("an old file");
     let commands = FakeCommands::new();
     let report = setup(&root, Some(&home), &manifest(""), &commands).expect("sets up");
@@ -133,6 +151,7 @@ fn a_root_gitignore_of_the_whole_folder_is_a_step_but_a_star_is_not() {
 #[test]
 fn setup_is_idempotent() {
     let (_dir, root, home) = places();
+    provide_slice_actions(&root);
     let manifest = manifest("");
     let commands = FakeCommands::new();
     let first = setup(&root, Some(&home), &manifest, &commands).expect("sets up");
@@ -181,6 +200,7 @@ fn the_worksheet_names_each_missing_tool() {
 #[test]
 fn a_declared_sibling_design_repo_is_cloned_when_missing() {
     let (dir, root, home) = places();
+    provide_slice_actions(&root);
     let manifest = manifest(
         "[design]\nkind = \"git-sibling\"\nrepo = \"example/b-design\"\npath = \"../b-design\"\n",
     );
