@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use super::*;
 use crate::fakes::FakeVcs;
 
@@ -73,20 +75,22 @@ fn diffs_come_as_stat_first_and_hunks_on_request() {
     let vcs = FakeVcs::default();
     let port: &dyn Vcs = &vcs;
     let (slice, base) = names();
+    let workspace = Path::new("/project/.zaf/workspaces/feature/v1-export-2");
     port.open_slice(&slice, &base).expect("open");
+    vcs.place(&slice, workspace).expect("place");
     vcs.edit(&slice, "src/b.rs", 4, 1, "@@ b @@").expect("edit");
     vcs.edit(&slice, "src/a.rs", 2, 0, "@@ a @@").expect("edit");
-    let stat = port.diff_stat(&slice).expect("stat");
+    let stat = port.diff_stat(workspace, &base).expect("stat");
     assert_eq!(
         stat.to_string(),
         "src/a.rs +2 -0\nsrc/b.rs +4 -1\n2 files +6 -1\n"
     );
     assert_eq!(
-        port.diff_hunks(&slice, "src/a.rs"),
+        port.diff_hunks(workspace, &base, "src/a.rs"),
         Ok("@@ a @@".to_owned())
     );
     assert!(matches!(
-        port.diff_hunks(&slice, "src/c.rs"),
+        port.diff_hunks(workspace, &base, "src/c.rs"),
         Err(PortError::NotFound(_))
     ));
 }

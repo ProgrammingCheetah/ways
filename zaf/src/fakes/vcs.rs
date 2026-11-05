@@ -1,6 +1,7 @@
 //! The in-memory VCS.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::ports::{
@@ -18,6 +19,7 @@ struct Change {
 #[derive(Debug, Clone)]
 struct Slice {
     base: BaseName,
+    workspace: Option<PathBuf>,
     behind_base: bool,
     conflicts: Vec<String>,
     changes: BTreeMap<String, Change>,
@@ -61,6 +63,12 @@ impl FakeVcs {
         Ok(())
     }
 
+    /// Records where an open slice's workspace is, the way a slice record would name it.
+    pub fn place(&self, slice: &SliceName, workspace: &Path) -> Result<(), PortError> {
+        self.state().slice_mut(slice)?.workspace = Some(workspace.to_owned());
+        Ok(())
+    }
+
     /// Moves a base ahead, so every slice on it is behind.
     pub fn advance_base(&self, base: &BaseName) {
         let mut state = self.state();
@@ -96,6 +104,16 @@ impl State {
             .get_mut(name)
             .ok_or_else(|| PortError::NotFound(format!("slice {name}")))
     }
+
+    /// The slice placed at a workspace on a base; any other workspace or base is not found.
+    fn slice_at(&self, workspace: &Path, base: &BaseName) -> Result<&Slice, PortError> {
+        self.slices
+            .values()
+            .find(|slice| slice.workspace.as_deref() == Some(workspace) && slice.base == *base)
+            .ok_or_else(|| {
+                PortError::NotFound(format!("workspace {} on {base}", workspace.display()))
+            })
+    }
 }
 
 impl Vcs for FakeVcs {
@@ -112,6 +130,7 @@ impl Vcs for FakeVcs {
         }
         let opened = Slice {
             base: base.clone(),
+            workspace: None,
             behind_base: false,
             conflicts: Vec::new(),
             changes: BTreeMap::new(),
@@ -169,10 +188,10 @@ impl Vcs for FakeVcs {
         Ok(state.slice_mut(slice)?.uncommitted.is_empty())
     }
 
-    fn diff_stat(&self, slice: &SliceName) -> Result<DiffStat, PortError> {
-        let mut state = self.state();
+    fn diff_stat(&self, workspace: &Path, base: &BaseName) -> Result<DiffStat, PortError> {
+        let state = self.state();
         let files = state
-            .slice_mut(slice)?
+            .slice_at(workspace, base)?
             .changes
             .iter()
             .map(|(path, change)| FileStat {
@@ -184,10 +203,15 @@ impl Vcs for FakeVcs {
         Ok(DiffStat { files })
     }
 
-    fn diff_hunks(&self, slice: &SliceName, path: &str) -> Result<String, PortError> {
-        let mut state = self.state();
+    fn diff_hunks(
+        &self,
+        workspace: &Path,
+        base: &BaseName,
+        path: &str,
+    ) -> Result<String, PortError> {
+        let state = self.state();
         state
-            .slice_mut(slice)?
+            .slice_at(workspace, base)?
             .changes
             .get(path)
             .map(|change| change.hunks.clone())
