@@ -7,8 +7,12 @@ use std::process::Command;
 use super::Cli;
 use super::exit::{BACKEND, OK, REFUSED, fail, fail_composition};
 
-use crate::app::brief::{BriefError, BriefPorts, BriefQuery, NodesChain, brief};
-use crate::composition::Composition;
+use crate::app::actions::Caller;
+use crate::app::brief::{
+    ActionsView, BriefActionsError, BriefError, BriefPorts, BriefQuery, NodesChain,
+    brief_with_actions,
+};
+use crate::composition::{Composition, zaf_home};
 use crate::domain::IssueNumber;
 
 /// The environment variable naming the instance a brief or an ask is for.
@@ -38,6 +42,13 @@ pub fn run(cli: &Cli, task: IssueNumber) -> u8 {
         Ok(design) => design,
         Err(error) => return fail_composition(&path, &error),
     };
+    let caller = match Caller::from_env() {
+        Ok(caller) => caller,
+        Err(reason) => {
+            eprintln!("zaf {path}: {reason}");
+            return REFUSED;
+        }
+    };
     let instance = instance();
     let state_dir = composition.state_dir();
     let root = composition.root().to_owned();
@@ -57,7 +68,13 @@ pub fn run(cli: &Cli, task: IssueNumber) -> u8 {
         design: design.as_deref(),
         nodes: chain.as_ref().map(|chain| chain as NodesChain<'_>),
     };
-    match brief(&query, &ports) {
+    let home = zaf_home();
+    let view = ActionsView {
+        project_root: composition.root(),
+        home: home.as_deref(),
+        caller: &caller,
+    };
+    match brief_with_actions(&query, &ports, view) {
         Ok(brief) if cli.json => {
             println!("{}", serde_json::json!(brief));
             OK
@@ -67,12 +84,23 @@ pub fn run(cli: &Cli, task: IssueNumber) -> u8 {
             println!("~{} tokens", brief.tokens);
             OK
         }
-        Err(BriefError::Board(error) | BriefError::Design(error)) => fail(&path, &error),
-        Err(error @ BriefError::Instance(_)) => {
+        Err(BriefActionsError::Brief(error)) => fail_brief(&path, error),
+        Err(error @ BriefActionsError::Actions(_)) => {
+            eprintln!("zaf {path}: {error}");
+            BACKEND
+        }
+    }
+}
+
+/// Reports why no pack was written and returns the exit code.
+fn fail_brief(path: &str, error: BriefError) -> u8 {
+    match error {
+        BriefError::Board(error) | BriefError::Design(error) => fail(path, &error),
+        BriefError::Instance(_) => {
             eprintln!("zaf {path}: {error}");
             REFUSED
         }
-        Err(error @ BriefError::Write { .. }) => {
+        BriefError::Write { .. } => {
             eprintln!("zaf {path}: {error}");
             BACKEND
         }

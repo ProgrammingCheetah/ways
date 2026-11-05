@@ -277,12 +277,11 @@ fn init_in(dir: &Path, home: &Path, answers: &str) -> Output {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn zaf init");
-    child
-        .stdin
-        .take()
-        .expect("stdin")
-        .write_all(answers.as_bytes())
-        .expect("answers");
+    // A `zaf init` that exits early closes the pipe: the write may fail with a broken pipe,
+    // and the child is judged by its exit and output, not by the write.
+    let mut stdin = child.stdin.take().expect("stdin");
+    let _ = stdin.write_all(answers.as_bytes());
+    drop(stdin);
     child.wait_with_output().expect("zaf init")
 }
 

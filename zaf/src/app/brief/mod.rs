@@ -5,7 +5,8 @@
 //! each design page the ticket names
 //! in full, `nodes chain <path>` for each owned path (or, when the cli passes no
 //! chain, a note and the plain list of owned paths), the project's style file,
-//! and the interface help page. Each place gets one map, and a node that two
+//! the actions the reader may read (`## Actions`: name, tier and description, left out when
+//! there are none) and the interface help page. Each place gets one map, and a node that two
 //! maps share is printed once, under the first place that reaches it.
 //! It is written to `.zaf/runs/<instance slug>/brief-<task>.md`, the slug being
 //! [`Instance::slug_of`] of the instance's name.
@@ -15,6 +16,8 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use super::actions::{Caller, ListedAction, ResolveError, list_actions};
+use crate::composition::STATE_DIR;
 use crate::domain::{Instance, IssueNumber, PageId, TaskTemplate};
 use crate::ports::{Board, Design, NewQuestion, Page, PortError, Ticket};
 
@@ -44,6 +47,18 @@ pub const ALL_PRINTED_NOTE: &str = "Every node of this place's map is printed ab
 
 /// Runs `nodes chain <path>` and returns its output, or why it failed.
 pub type NodesChain<'a> = &'a dyn Fn(&str) -> Result<String, String>;
+
+/// Where the actions the pack lists are read, and who reads them.
+#[derive(Debug, Clone, Copy)]
+pub struct ActionsView<'a> {
+    /// The project root, whose `.zaf/actions/` is the project tier.
+    pub project_root: &'a Path,
+    /// The machine's zaf home, whose `actions/` is the machine tier; `None` when the machine has
+    /// none, and then only the project's actions are listed.
+    pub home: Option<&'a Path>,
+    /// Who reads the pack: an action their mode hides from them is not listed.
+    pub caller: &'a Caller,
+}
 
 /// What the pack is built for.
 #[derive(Debug, Clone, Copy)]
@@ -103,8 +118,46 @@ pub enum BriefError {
     },
 }
 
-/// Builds the task's pack, writes it and returns where, with its size.
+/// Why a pack with actions was not written.
+#[derive(Debug, thiserror::Error)]
+pub enum BriefActionsError {
+    /// An actions folder or a file in it could not be read.
+    #[error("actions: {0}")]
+    Actions(ResolveError),
+    /// The pack itself could not be built.
+    #[error(transparent)]
+    Brief(#[from] BriefError),
+}
+
+/// Builds the task's pack with no `## Actions` section, writes it and returns where, with its size.
 pub fn brief(query: &BriefQuery<'_>, ports: &BriefPorts<'_>) -> Result<Brief, BriefError> {
+    build(query, ports, &[])
+}
+
+/// Builds the task's pack, writes it and returns where, with its size.
+///
+/// The pack gains an `## Actions` section listing each project and machine action the view's
+/// caller may read, unless there is none: then it is the pack [`brief`] writes.
+pub fn brief_with_actions(
+    query: &BriefQuery<'_>,
+    ports: &BriefPorts<'_>,
+    view: ActionsView<'_>,
+) -> Result<Brief, BriefActionsError> {
+    // No machine home: the machine tier is pointed at the project's own state folder, whose
+    // `actions/` is the project tier. Every name then resolves to the project, so none is listed
+    // from the machine.
+    let project_state = view.project_root.join(STATE_DIR);
+    let home = view.home.unwrap_or(&project_state);
+    let actions = list_actions(Some(view.project_root), home, view.caller)
+        .map_err(BriefActionsError::Actions)?;
+    Ok(build(query, ports, &actions)?)
+}
+
+fn build(
+    query: &BriefQuery<'_>,
+    ports: &BriefPorts<'_>,
+    actions: &[ListedAction],
+) -> Result<Brief, BriefError> {
     if !is_path_segment(query.instance) {
         return Err(BriefError::Instance(query.instance.to_owned()));
     }
@@ -120,8 +173,16 @@ pub fn brief(query: &BriefQuery<'_>, ports: &BriefPorts<'_>) -> Result<Brief, Br
         .board
         .questions_on(query.task)
         .map_err(BriefError::Board)?;
-    let text = render(query, ports, &ticket, &questions, template.as_ref(), &pages)
-        .expect("writing to a String cannot fail");
+    let text = render(
+        query,
+        ports,
+        &ticket,
+        &questions,
+        template.as_ref(),
+        &pages,
+        actions,
+    )
+    .expect("writing to a String cannot fail");
 
     let runs = ensure_runs_dir(query.state_dir)
         .map_err(|source| write_error(&query.state_dir.join(RUNS_DIR), source))?;
@@ -246,6 +307,7 @@ fn render(
     questions: &[(Ticket, Option<String>)],
     template: Option<&TaskTemplate>,
     pages: &[Page],
+    actions: &[ListedAction],
 ) -> Result<String, fmt::Error> {
     let mut text = String::new();
     writeln!(text, "# Brief: {} {}\n", ticket.number, ticket.title)?;
@@ -343,6 +405,18 @@ fn render(
                 )?;
             }
         },
+    }
+
+    if !actions.is_empty() {
+        writeln!(text, "## Actions\n")?;
+        for action in actions {
+            writeln!(
+                text,
+                "- {} ({}): {}",
+                action.name, action.tier, action.description
+            )?;
+        }
+        writeln!(text)?;
     }
 
     writeln!(text, "## Interface\n\n{}", INTERFACE_PAGE.trim_end())?;

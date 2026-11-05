@@ -619,6 +619,91 @@ fn a_rerun_whose_plugin_list_already_shows_the_pack_installs_nothing_and_changes
     );
 }
 
+/// The pack's own manifest at `vendor/kit`, declaring `version`.
+fn write_plugin(root: &Path, version: &str) {
+    let dir = root.join("vendor/kit/.claude-plugin");
+    fs::create_dir_all(&dir).expect("plugin dir");
+    let plugin = json!({ "name": "kit", "version": version });
+    fs::write(dir.join("plugin.json"), plugin.to_string()).expect("writes");
+}
+
+#[test]
+fn profile_init_updates_a_changed_pack() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    write_marketplace(dir.path(), "./vendor/kit");
+    write_plugin(dir.path(), "1.3.0");
+    // The profile holds 1.2.3 (KIT_LISTED); the pack now declares 1.3.0.
+    let shell = RecordingShell::listing(KIT_LISTED, SHELF_ADDED);
+    let report = init_through(&state, &manifest(PATH_PACK), &shell).expect("updates");
+    let home = state.join("profiles/build").display().to_string();
+    let env = format!("CLAUDE_CONFIG_DIR='{home}' claude plugin");
+    assert_eq!(
+        shell.lines(),
+        [
+            format!("{env} list"),
+            format!("{env} marketplace update 'shelf'"),
+            format!("{env} update 'kit@shelf'"),
+        ],
+        "only the profile that carries plugins is updated, and nothing is installed again"
+    );
+    assert!(
+        report
+            .lines()
+            .contains(&"updated kit@shelf to 1.3.0 in profiles/build".to_owned()),
+        "{:?}",
+        report.lines()
+    );
+    assert!(!report.unchanged());
+}
+
+#[test]
+fn a_rerun_with_the_same_pack_version_issues_no_plugin_command() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    write_marketplace(dir.path(), "./vendor/kit");
+    write_plugin(dir.path(), "1.2.3");
+    let shell = RecordingShell::listing(KIT_LISTED, SHELF_ADDED);
+    let report = init_through(&state, &manifest(PATH_PACK), &shell).expect("generates");
+    assert!(
+        shell
+            .lines()
+            .iter()
+            .all(|line| line.ends_with("claude plugin list")),
+        "only the listing is asked: {:?}",
+        shell.lines()
+    );
+    assert!(report.installed.is_empty());
+}
+
+#[test]
+fn a_failed_pack_update_is_an_error_naming_the_line() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    write_marketplace(dir.path(), "./vendor/kit");
+    write_plugin(dir.path(), "2.0.0");
+    let shell = FailingUpdate(RecordingShell::listing(KIT_LISTED, SHELF_ADDED));
+    let root = state.parent().expect("a parent");
+    let result = init_with(root, &state, &manifest(PATH_PACK), &shell, None);
+    let Err(ProfileError::Install { line, .. }) = result else {
+        panic!("an install error");
+    };
+    assert!(line.ends_with("marketplace update 'shelf'"), "{line}");
+}
+
+/// A shell that answers like [`RecordingShell`] but fails every `update`.
+struct FailingUpdate(RecordingShell);
+
+impl Shell for FailingUpdate {
+    fn run(&self, line: &CommandLine) -> Result<GateRun, PortError> {
+        let mut ran = self.0.run(line)?;
+        if line.as_ref().contains(" update ") {
+            ran.verdict = GateVerdict::Failed;
+        }
+        Ok(ran)
+    }
+}
+
 #[test]
 fn a_marketplace_already_added_is_not_added_again() {
     let dir = tempfile::tempdir().expect("temp dir");
