@@ -1235,3 +1235,309 @@ fn bad_instance_is_refused() {
         }
     }
 }
+
+/// `args` run by `instance`, or by hand with none.
+fn zaf_as(project: &Project, args: &[&str], instance: Option<&str>) -> Output {
+    let env: Vec<(&str, &str)> = instance
+        .map(|role| ("ZAF_INSTANCE", role))
+        .into_iter()
+        .collect();
+    zaf_in(project, &project.root, args, &env)
+}
+
+/// The names `zaf do` lists for `instance`, which the text and the `--json` listing agree on.
+fn listed_for(project: &Project, instance: Option<&str>) -> Vec<String> {
+    let (code, stdout, stderr) = outcome(&zaf_as(project, &["do"], instance));
+    assert_eq!(code, 0, "{instance:?}: {stdout}{stderr}");
+    let names: Vec<String> = stdout
+        .lines()
+        .map(|line| line.split_whitespace().next().expect("a name").to_owned())
+        .collect();
+
+    let (code, stdout, stderr) = outcome(&zaf_as(project, &["do", "--json"], instance));
+    assert_eq!(code, 0, "{instance:?}: {stdout}{stderr}");
+    let rows: serde_json::Value = serde_json::from_str(&stdout).expect(&stdout);
+    let json_names: Vec<String> = rows
+        .as_array()
+        .expect("an array")
+        .iter()
+        .map(|row| row["name"].as_str().expect("a name").to_owned())
+        .collect();
+    assert_eq!(names, json_names, "{instance:?}");
+    names
+}
+
+/// Files whose modes answer each kind of caller differently, and the ones whose mode cannot be
+/// told. What a role gets from them is always the digit, never a fallback.
+fn modes_to_read(project: &Project) {
+    let team = "# zaf group: team\n";
+    gated(project, "open", "# zaf mode: 755\n");
+    gated(project, "hand-only", "# zaf mode: 700\n");
+    gated(project, "team-reads", &format!("# zaf mode: 750\n{team}"));
+    gated(project, "team-shut", &format!("# zaf mode: 705\n{team}"));
+    gated(project, "run-only", "# zaf mode: 711\n");
+    gated(project, "read-only", "# zaf mode: 744\n");
+    gated(project, "owner-shut", "# zaf mode: 011\n");
+    gated(project, "write-only", "# zaf mode: 722\n");
+    // Each of these names its mode, or would, in a file that does not parse.
+    let actions = project.root.join(".zaf/actions");
+    executable(&actions, "no-metadata", "#!/bin/sh\necho SECRET\n");
+    executable(
+        &actions,
+        "bad-mode",
+        "#!/bin/sh\n# zaf description: SECRET\n# zaf 1: no\n# zaf mode: open\n",
+    );
+    executable(
+        &actions,
+        "bad-line",
+        "#!/bin/sh\n# zaf description: SECRET\n# zaf 1: no\n# zaf mode: 755\n# zaf nonsense: x\n",
+    );
+    // A byte that is no text would end the block early, and the mode under it would be lost.
+    let odd = actions.join("not-text");
+    fs::write(
+        &odd,
+        b"#!/bin/sh\n# zaf description: SECRET\n# zaf 1: no\n# \xff\n# zaf mode: 700\n",
+    )
+    .expect("not-text");
+    fs::set_permissions(&odd, fs::Permissions::from_mode(0o755)).expect("chmod");
+}
+
+#[test]
+fn listing_hides_the_unreadable() {
+    let project = project();
+    modes_to_read(&project);
+
+    assert_eq!(
+        listed_for(&project, Some(PROGRAMMER)),
+        ["open", "read-only", "team-shut"],
+        "others: the third digit's read bit"
+    );
+    assert_eq!(
+        listed_for(&project, Some(TEAM)),
+        ["open", "read-only", "team-reads"],
+        "the group: the second digit's, even where others may read"
+    );
+    assert_eq!(
+        listed_for(&project, None),
+        [
+            "bad-line",
+            "bad-mode",
+            "hand-only",
+            "no-metadata",
+            "not-text",
+            "open",
+            "read-only",
+            "run-only",
+            "team-reads",
+            "team-shut",
+            "write-only",
+        ],
+        "the Engineer: the first digit's, and what only the Engineer can repair"
+    );
+
+    // Hidden is hidden: no row, no width, no reason from the file.
+    for args in [&["do"][..], &["do", "--json"], &["do", "--more"]] {
+        let (_, stdout, stderr) = outcome(&zaf_as(&project, args, Some(PROGRAMMER)));
+        for hidden in [
+            "hand-only",
+            "no-metadata",
+            "bad-mode",
+            "invalid metadata",
+            "SECRET",
+        ] {
+            assert!(!stdout.contains(hidden), "{args:?}: {hidden}: {stdout}");
+            assert!(!stderr.contains(hidden), "{args:?}: {hidden}: {stderr}");
+        }
+    }
+
+    // A caller that cannot be told sees nothing at all, in either form.
+    for value in ["", " ", "local", "team", "team instance 1 on #9\nengineer"] {
+        for args in [&["do"][..], &["do", "--json"]] {
+            let (code, stdout, stderr) = outcome(&zaf_as(&project, args, Some(value)));
+            assert_eq!(code, 2, "{value:?} {args:?}: {stdout}{stderr}");
+            assert_eq!(stdout, "", "{value:?} {args:?}");
+            assert!(stderr.contains("ZAF_INSTANCE"), "{value:?}: {stderr}");
+        }
+    }
+}
+
+#[test]
+fn listing_of_nothing_readable_is_empty_not_an_error() {
+    let project = project();
+    gated(&project, "hand-only", "# zaf mode: 700\n");
+    assert_eq!(listed_for(&project, Some(PROGRAMMER)), Vec::<String>::new());
+}
+
+#[test]
+fn machine_tier_needs_read_outside_a_project() {
+    let project = project();
+    let outside = project.temp.path().join("elsewhere");
+    fs::create_dir_all(&outside).expect("outside");
+    let machine = project.home.join("actions");
+    let text = action_text("tool", "# zaf mode: 700\n", "true");
+    executable(&machine, "tool", &text);
+    let role = [("ZAF_INSTANCE", PROGRAMMER)];
+
+    let (code, stdout, stderr) = outcome(&zaf_in(&project, &outside, &["do"], &role));
+    assert_eq!((code, stdout.as_str()), (0, ""), "{stderr}");
+    let (code, stdout, stderr) = outcome(&zaf_in(
+        &project,
+        &outside,
+        &["do", "--show", "tool"],
+        &role,
+    ));
+    assert_eq!((code, stdout.as_str()), (125, ""));
+    assert_eq!(stderr, "NOT_RUN tool: not permitted for programmer\n");
+
+    let shown = zaf_in(&project, &outside, &["do", "--show", "tool"], &[]);
+    assert_eq!(outcome(&shown).0, 0, "{}", said(&shown));
+    assert_eq!(shown.stdout, text.as_bytes());
+}
+
+#[test]
+fn listing_passes_the_role_through_nesting() {
+    let project = project();
+    gated(&project, "hand-only", "# zaf mode: 700\n");
+    action(
+        &project,
+        "lists",
+        "",
+        "zaf do\nzaf do --show hand-only\necho \"show=$?\"",
+    );
+
+    let run = zaf_as(&project, &["do", "lists"], Some(PROGRAMMER));
+    assert_eq!(outcome(&run).0, 0, "{}", said(&run));
+    let text = read(&log_of(&project, "lists"));
+    assert!(text.contains("the lists action"), "{text}");
+    assert!(!text.contains("the hand-only action"), "{text}");
+    assert!(text.contains("show=125"), "{text}");
+
+    for log in logs_of(&project, "lists") {
+        fs::remove_file(log).expect("clear the log");
+    }
+    let run = zaf_as(&project, &["do", "lists"], None);
+    assert_eq!(outcome(&run).0, 0, "{}", said(&run));
+    let text = read(&log_of(&project, "lists"));
+    assert!(text.contains("the hand-only action"), "{text}");
+    assert!(text.contains("show=0"), "{text}");
+}
+
+/// `--show` of `name` printed the file, byte for byte, and ran nothing.
+fn assert_shown(project: &Project, name: &str, instance: Option<&str>) {
+    let run = zaf_as(project, &["do", "--show", name], instance);
+    assert_eq!(outcome(&run).0, 0, "{name} {instance:?}: {}", said(&run));
+    let file = project.root.join(".zaf/actions").join(name);
+    let bytes = fs::read(file).expect("the file");
+    assert_eq!(run.stdout, bytes, "{name} {instance:?}");
+    assert_nothing_started(project, name);
+}
+
+/// `--show` of `name` was refused the way a run is: one line, exit 125, none of the file.
+fn assert_show_refused(project: &Project, name: &str, instance: Option<&str>, role: &str) {
+    let run = zaf_as(project, &["do", "--show", name], instance);
+    assert_refused(project, name, &run, role);
+}
+
+#[test]
+fn show_needs_read() {
+    let project = project();
+    modes_to_read(&project);
+
+    // Others read the third digit.
+    let who = Some(PROGRAMMER);
+    for name in ["open", "read-only", "team-shut"] {
+        assert_shown(&project, name, who);
+    }
+    for name in [
+        "hand-only",
+        "team-reads",
+        "run-only",
+        "owner-shut",
+        "write-only",
+    ] {
+        assert_show_refused(&project, name, who, "programmer");
+    }
+
+    // Neither bit stands in for the other: what cannot be read can run, and the reverse.
+    assert_ran(
+        &project,
+        "run-only",
+        &run_as(&project, "run-only", Some(PROGRAMMER)),
+    );
+    assert_refused(
+        &project,
+        "read-only",
+        &run_as(&project, "read-only", Some(PROGRAMMER)),
+        "programmer",
+    );
+
+    // The group reads the second, and is refused where others may read.
+    let who = Some(TEAM);
+    for name in ["open", "read-only", "team-reads"] {
+        assert_shown(&project, name, who);
+    }
+    for name in ["team-shut", "hand-only", "run-only", "write-only"] {
+        assert_show_refused(&project, name, who, "team");
+    }
+
+    // The Engineer reads the first, and a closed digit closes it for the Engineer too.
+    for name in ["open", "hand-only", "run-only", "read-only", "write-only"] {
+        assert_shown(&project, name, None);
+    }
+    assert_show_refused(&project, "owner-shut", None, "the Engineer");
+
+    // A file whose mode cannot be told is not read by a role: nothing of it comes out, not
+    // even why it does not parse. The Engineer, who repairs it, still can.
+    for name in ["no-metadata", "bad-mode", "bad-line", "not-text"] {
+        assert_show_refused(&project, name, Some(PROGRAMMER), "programmer");
+        assert_show_refused(&project, name, Some(TEAM), "team");
+        assert_shown(&project, name, None);
+    }
+
+    // The refusal is the same one in `--json`, and the file stays out of it.
+    for args in [
+        &["do", "--json", "--show", "hand-only"][..],
+        &["--json", "do", "--show", "hand-only"],
+    ] {
+        let run = zaf_as(&project, args, Some(PROGRAMMER));
+        let (code, stdout, stderr) = outcome(&run);
+        assert_eq!(code, 125, "{args:?}: {stdout}{stderr}");
+        let report: serde_json::Value = serde_json::from_str(&stdout).expect("one JSON line");
+        assert_eq!(report["result"], "NOT_RUN", "{args:?}");
+        assert_eq!(
+            report["meaning"], "not permitted for programmer",
+            "{args:?}"
+        );
+        assert!(!stdout.contains("the hand-only action"), "{stdout}");
+    }
+
+    // A caller that cannot be told reads nothing, whatever the file's mode says.
+    for value in ["", " ", "local", "team", "team instance 1 on #9\nengineer"] {
+        for name in ["open", "hand-only"] {
+            let run = zaf_as(&project, &["do", "--show", name], Some(value));
+            let (code, stdout, stderr) = outcome(&run);
+            assert_eq!(code, 125, "{value:?}: {stdout}{stderr}");
+            assert_eq!(stdout, "", "{value:?}");
+            let expected = format!(
+                "NOT_RUN {name}: ZAF_INSTANCE is {value:?}, not `<role> instance <n> on #<epic>`\n"
+            );
+            assert_eq!(stderr, expected, "{value:?}");
+        }
+    }
+
+    // A name no tier has reads the same for everyone.
+    let run = zaf_as(&project, &["do", "--show", "ghost"], Some(PROGRAMMER));
+    assert_eq!(outcome(&run).0, 125, "{}", said(&run));
+    assert_eq!(said(&run), "NOT_RUN ghost: no such action\n");
+}
+
+#[test]
+fn show_does_not_fall_through_to_the_shadowed_file() {
+    let project = project();
+    machine_action(&project, "both", "echo machine body");
+    gated(&project, "both", "# zaf mode: 700\n");
+
+    assert_show_refused(&project, "both", Some(PROGRAMMER), "programmer");
+    assert_eq!(listed_for(&project, Some(PROGRAMMER)), Vec::<String>::new());
+    assert_shown(&project, "both", None);
+}

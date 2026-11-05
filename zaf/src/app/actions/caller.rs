@@ -1,4 +1,4 @@
-//! Who asks for a run, and whether an action's mode lets them (docs/zaf-actions.md §3).
+//! Who asks for an action, and whether its mode lets them run or read it (docs/zaf-actions.md §3).
 //!
 //! The caller comes from `ZAF_INSTANCE`, which a body inherits, so a nested call is decided for
 //! the same role as the call above it. Modes guard against mistakes, not against a process that
@@ -8,7 +8,7 @@ use std::ffi::OsStr;
 use std::fmt;
 use std::str::FromStr;
 
-use super::metadata::ActionMode;
+use super::metadata::{ActionMode, Bits};
 use crate::domain::{Instance, RoleName};
 
 /// Names the instance a process runs as; absent on a hand run.
@@ -49,12 +49,22 @@ impl Caller {
     /// counts, as with a file: a group member the group digit refuses is refused, whatever the
     /// others digit says.
     pub fn permits(&self, mode: ActionMode, group: &[String]) -> bool {
-        let digit = match self {
+        self.digit(mode, group).run()
+    }
+
+    /// Whether `mode` lets this caller list and show an action naming `group`, by the same one
+    /// digit: running and reading are separate bits, and neither implies the other.
+    pub fn permits_read(&self, mode: ActionMode, group: &[String]) -> bool {
+        self.digit(mode, group).read()
+    }
+
+    /// The one digit of `mode` that speaks for this caller.
+    fn digit(&self, mode: ActionMode, group: &[String]) -> Bits {
+        match self {
             Self::Engineer => mode.owner(),
             Self::Role(role) if in_group(role, group) => mode.group(),
             Self::Role(_) => mode.others(),
-        };
-        digit.run()
+        }
     }
 }
 

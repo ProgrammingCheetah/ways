@@ -1,4 +1,4 @@
-//! `zaf do`: list every action, run one, or print the file a name resolves to.
+//! `zaf do`: list the actions the caller may read, run one, or print the file a name resolves to.
 //!
 //! Parses and prints; [`crate::app::actions`] spawns, logs and times out. Exit 0 prints nothing
 //! beyond what `--more` or `--json` asks for. `FAIL` and `NOT_RUN` go to stderr, the way every
@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use super::Cli;
 use super::exit::{BACKEND, OK};
 use crate::app::actions::{
-    Caller, MINUTE, Nesting, RunOutcome, RunRequest, RunResult, find_action, last_lines,
-    list_actions, run_action,
+    Caller, MINUTE, Nesting, Refused, RunOutcome, RunRequest, RunResult, last_lines, list_actions,
+    read_action, run_action,
 };
 use crate::composition::{Composition, CompositionError, zaf_home};
 use crate::manifest::{ActionsSection, HOME_FILE};
@@ -27,7 +27,7 @@ pub struct DoArgs {
     /// Print the file the name resolves to instead of running it.
     #[arg(long)]
     pub show: bool,
-    /// The action's name and its arguments; no name lists every action.
+    /// The action's name and its arguments; no name lists every action the caller may read.
     #[arg(
         value_name = "NAME [ARGS]",
         trailing_var_arg = true,
@@ -191,16 +191,18 @@ fn print_tail(log: &Path) {
     }
 }
 
-/// `zaf do`: name, tier and description of every action.
+/// `zaf do`: name, tier and description of every action the caller may read. A caller that cannot
+/// be told is an error, with nothing listed.
 fn list(cli: &Cli, path: &str) -> u8 {
-    let place = match Place::here() {
-        Ok(place) => place,
+    let found = Place::here().and_then(|place| Ok((place, Caller::from_env()?)));
+    let (place, caller) = match found {
+        Ok(found) => found,
         Err(reason) => {
             eprintln!("zaf {path}: {reason}");
             return BACKEND;
         }
     };
-    let listed = match list_actions(place.root.as_deref(), &place.home) {
+    let listed = match list_actions(place.root.as_deref(), &place.home, &caller) {
         Ok(listed) => listed,
         Err(error) => {
             eprintln!("zaf {path}: {error}");
@@ -233,22 +235,20 @@ fn list(cli: &Cli, path: &str) -> u8 {
     OK
 }
 
-/// `zaf do --show <name>`: the file, byte for byte.
+/// `zaf do --show <name>`: the file, byte for byte, when the caller may read it.
 fn show(cli: &Cli, name: &str) -> u8 {
-    let found = Place::here().and_then(|place| {
-        find_action(place.root.as_deref(), &place.home, name)
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "no such action".to_owned())
-    });
-    let bytes = found.and_then(|found| {
-        std::fs::read(&found.path)
-            .map_err(|error| format!("cannot read {}: {error}", found.path.display()))
-    });
+    let bytes = Place::here()
+        .and_then(|place| Ok((place, Caller::from_env()?)))
+        .map_err(Refused::before_the_file)
+        .and_then(|(place, caller)| read_action(place.root.as_deref(), &place.home, name, &caller));
     match bytes {
         Ok(bytes) => {
             let _ = std::io::stdout().write_all(&bytes);
             OK
         }
-        Err(reason) => print_outcome(cli, &RunOutcome::not_run(name, None, reason)),
+        Err(refused) => print_outcome(
+            cli,
+            &RunOutcome::not_run(name, refused.tier, refused.reason),
+        ),
     }
 }
