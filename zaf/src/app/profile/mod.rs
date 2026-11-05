@@ -11,7 +11,9 @@
 //! - `[pack] path`: the project root is added as a marketplace (its
 //!   `.claude-plugin/marketplace.json` names the marketplace and lists the pack) and the
 //!   pack is installed from it. What is already added or installed is read from
-//!   `claude plugin list` and `claude plugin marketplace list`, and issues no command.
+//!   `claude plugin list` and `claude plugin marketplace list`, and issues no command, unless
+//!   the pack's `plugin.json` now declares another version than the listing shows: then
+//!   `claude plugin marketplace update` and `claude plugin update` bring the profile to it.
 //! - `[pack] tag`: the pack is installed from the marketplace on GitHub at that tag.
 //!
 //! The two share the install step. The profile's settings enable the pack.
@@ -57,6 +59,10 @@ pub const CONFIG_DIR_VAR: &str = "CLAUDE_CONFIG_DIR";
 /// The record, under a profile's `plugins/`, of the tag installed from the marketplace,
 /// so a rerun with the same tag installs nothing.
 pub const INSTALLED_TAG_FILE: &str = ".zaf-pack-tag";
+/// A plugin's own manifest, under its source folder.
+const PLUGIN_FILE: &str = ".claude-plugin/plugin.json";
+/// What [`listed_version`] says of a listed plugin that shows no `Version:` line.
+const UNKNOWN_VERSION: &str = "unknown";
 /// The file a Claude home keeps its login in.
 pub const CREDENTIALS_FILE: &str = ".credentials.json";
 /// The Claude home's folder under the user's home.
@@ -417,8 +423,17 @@ fn register(
 ) -> Result<(), ProfileError> {
     if pack.path.is_some() {
         let id = pack_ref.to_string();
-        if listed_version(&run(shell, &plugin_line(home, "list"))?, &id).is_some() {
-            return Ok(());
+        if let Some(have) = listed_version(&run(shell, &plugin_line(home, "list"))?, &id) {
+            let wanted = pack
+                .path
+                .as_deref()
+                .and_then(|path| source_version(root, path));
+            return match wanted {
+                Some(wanted) if have != UNKNOWN_VERSION && have != wanted => {
+                    update(shell, state_dir, home, pack_ref, &wanted, report)
+                }
+                _ => Ok(()),
+            };
         }
         let marketplaces = run(shell, &plugin_line(home, "marketplace list"))?;
         if !lists_marketplace(&marketplaces, &pack_ref.marketplace) {
@@ -457,6 +472,43 @@ fn install(
     run(shell, line)?;
     report.installed.push(format!(
         "installed {spec} into {}",
+        relative(state_dir, home).display()
+    ));
+    Ok(())
+}
+
+/// The version the pack's own `.claude-plugin/plugin.json` declares, under `root` at `path`;
+/// `None` when the file is missing, unreadable or declares none (the pack is not versioned).
+fn source_version(root: &Path, path: &Path) -> Option<String> {
+    let text = fs::read_to_string(root.join(path).join(PLUGIN_FILE)).ok()?;
+    let Value::Object(plugin) = serde_json::from_str::<Value>(&text).ok()? else {
+        return None;
+    };
+    let version = plugin.get("version")?.as_str()?.trim();
+    (!version.is_empty()).then(|| version.to_owned())
+}
+
+/// Brings the pack in the profile at `home` to the version the source holds: refreshes the
+/// marketplace, then updates the plugin, so the profile holds `wanted`.
+fn update(
+    shell: &dyn Shell,
+    state_dir: &Path,
+    home: &Path,
+    pack_ref: &PackRef,
+    wanted: &str,
+    report: &mut Report,
+) -> Result<(), ProfileError> {
+    let marketplace = format!(
+        "{} {}",
+        plugin_line(home, "marketplace update"),
+        single_quote(&pack_ref.marketplace)
+    );
+    run(shell, &marketplace)?;
+    let id = pack_ref.to_string();
+    let line = format!("{} {}", plugin_line(home, "update"), single_quote(&id));
+    run(shell, &line)?;
+    report.installed.push(format!(
+        "updated {id} to {wanted} in {}",
         relative(state_dir, home).display()
     ));
     Ok(())
@@ -524,7 +576,7 @@ pub fn listed_version(listing: &str, id: &str) -> Option<String> {
             return Some(bare(version).to_owned());
         }
     }
-    Some("unknown".to_owned())
+    Some(UNKNOWN_VERSION.to_owned())
 }
 
 /// Whether `claude plugin marketplace list` shows a marketplace called `name`.

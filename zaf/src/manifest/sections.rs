@@ -456,11 +456,17 @@ const VERSION_PLACEHOLDER: &str = "{version}";
 /// The prefix of the variables zaf sets itself; no `[env]` key may start with it.
 const RESERVED_PREFIX: &str = "ZAF_";
 
+/// The variable that points a Claude process at its profile's home; zaf sets it for each
+/// profile, so no `[env]` key may be it.
+const PROFILE_HOME_VAR: &str = "CLAUDE_CONFIG_DIR";
+
 /// `[env]`: variables every child zaf starts gets, as `NAME = "value"` pairs.
 ///
 /// A value may use `{root}` for the absolute project root and `{version}` for the version
 /// of the epic. No name may start with `ZAF_` (whatever its case): those are zaf's own, and a
-/// manifest setting `ZAF_INSTANCE` would dodge the modes. The check runs when the manifest
+/// manifest setting `ZAF_INSTANCE` would dodge the modes. `CLAUDE_CONFIG_DIR` is refused too:
+/// zaf sets it for each profile, and a manifest pointing it elsewhere would take an instance
+/// out of its profile's denies. The check runs when the manifest
 /// loads, so a bad table never reaches a child. Default: no variables.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(try_from = "BTreeMap<String, toml::Value>")]
@@ -554,6 +560,11 @@ fn check_env_name(name: &str) -> Result<(), String> {
     if name.to_ascii_uppercase().starts_with(RESERVED_PREFIX) {
         return Err(format!(
             "[env] `{name}` starts with `{RESERVED_PREFIX}`: those variables are zaf's own and no manifest sets them"
+        ));
+    }
+    if name.eq_ignore_ascii_case(PROFILE_HOME_VAR) {
+        return Err(format!(
+            "[env] `{name}` is not allowed: zaf sets it for each profile, and no manifest may point an instance away from its profile's denies"
         ));
     }
     Ok(())
