@@ -283,6 +283,12 @@ impl Vcs for JjVcs {
         jj.working_copy_is("empty")
     }
 
+    fn latest_commit(&self, workspace: &Path) -> Result<CommitId, PortError> {
+        // The revision `publish` settles the bookmark on.
+        self.workspace_command(workspace)?
+            .commit_id(Place::Workspace, "@-")
+    }
+
     fn diff_stat(&self, workspace: &Path, base: &BaseName) -> Result<DiffStat, PortError> {
         let jj = self.workspace_command(workspace)?;
         let fork_point = Self::fork_point(base);

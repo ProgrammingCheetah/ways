@@ -3,11 +3,15 @@
 //! [`derive_phase`] is the guard of the merge path, so it is a pure decision: it
 //! reads no file, no board and no clock, only the [`PhaseFacts`] it is handed.
 //! Wherever a fact is missing it falls to the earlier phase: no head is no result,
-//! and a time it cannot read is never newer.
+//! and a time it cannot read is never newer. [`gather_phase_facts`] collects those facts.
 
 use std::time::SystemTime;
 
 use crate::app::check::{CheckRecord, Verdict};
+
+mod gather;
+
+pub use gather::gather_phase_facts;
 
 /// Where a task stands. The seven of §3 and `Unclaimed`, in lifecycle order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, strum::Display)]

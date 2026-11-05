@@ -360,6 +360,61 @@ fn records_that_do_not_hold_read_as_none() {
     assert_eq!(records.workspace(task()), None);
 }
 
+#[test]
+fn check_records_read_back_as_zaf_check_stores_them() {
+    let place = Place::new();
+    let records = place.records();
+    let pr = PrNumber::from(271);
+    assert_eq!(records.task_check(task()), None);
+    assert_eq!(records.pr_check(pr), None);
+
+    let record = |target: &str, head: Option<&str>| CheckRecord {
+        target: target.to_owned(),
+        verdict: crate::app::check::Verdict::Clean,
+        lines: Vec::new(),
+        head: head.map(str::to_owned),
+        at: Some("2026-11-04T00:00:00Z".to_owned()),
+    };
+    let (task_record, pr_record) = (record("#140", None), record("pr:271", Some("abc")));
+    fs::create_dir_all(place.runs()).expect("mkdir");
+    let json = |record: &CheckRecord| serde_json::to_string_pretty(record).expect("json");
+    fs::write(place.runs().join("check-task-140.json"), json(&task_record)).expect("write");
+    fs::write(place.runs().join("check-pr-271.json"), json(&pr_record)).expect("write");
+    assert_eq!(records.task_check(task()), Some(task_record));
+    assert_eq!(records.pr_check(pr), Some(pr_record));
+    // Another pull request's record is not this one's.
+    assert_eq!(records.pr_check(PrNumber::from(272)), None);
+}
+
+#[test]
+fn check_records_that_do_not_parse_read_as_none() {
+    let place = Place::new();
+    let records = place.records();
+    fs::create_dir_all(place.runs()).expect("mkdir");
+    fs::write(place.runs().join("check-task-140.json"), "{}").expect("write");
+    fs::write(place.runs().join("check-pr-271.json"), "not json").expect("write");
+    assert_eq!(records.task_check(task()), None);
+    assert_eq!(records.pr_check(PrNumber::from(271)), None);
+}
+
+#[test]
+fn the_pr_record_knows_when_it_was_written() {
+    let place = Place::new();
+    let records = place.records();
+    assert_eq!(records.pr_recorded_at(task()), None);
+
+    fs::create_dir_all(place.slices()).expect("mkdir");
+    let file = place.slices().join("140.pr");
+    fs::write(&file, "271").expect("write");
+    let written = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+    fs::File::options()
+        .write(true)
+        .open(&file)
+        .and_then(|open| open.set_modified(written))
+        .expect("set the time");
+    assert_eq!(records.pr_recorded_at(task()), Some(written));
+}
+
 const SLICE_MERGE: &str = "slice-merge";
 const SLICE_DROP: &str = "slice-drop";
 
