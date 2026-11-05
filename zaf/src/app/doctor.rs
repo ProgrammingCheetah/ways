@@ -7,8 +7,9 @@
 //! run with `CLAUDE_CONFIG_DIR` set to it; a missing login is reported with its fix,
 //! never fixed, and does not fail the doctor. Its line also says what its `.credentials.json`
 //! is: shared with the Claude home, or a copy that goes stale; the token is never printed.
-//! Each profile that carries the pack is asked `claude plugin list` the same way and
-//! reports the pack's version, or that it is missing. Every action either tier provides is
+//! Each profile that carries the pack reports the version its `plugins/installed_plugins.json`
+//! records, or that the pack is missing; a version other than the source pack's `plugin.json`
+//! declares fails the report, and `zaf profile init` updates it. Every action either tier provides is
 //! reported with its validity and its mode; an invalid file fails the report (see [`ActionCheck`]).
 //! Every action name the project needs is reported with the tier that provides it; a needed name
 //! with no provider fails the report (see [`NeededCheck`]).
@@ -35,6 +36,12 @@ pub use needed::NeededCheck;
 const DEFAULT_DESIGN_INDEX: &str = "index.md";
 /// Where a credentials file holds its access token's expiry, in milliseconds since the epoch.
 const EXPIRES_AT: &str = "/claudeAiOauth/expiresAt";
+/// Where Claude records a profile's installed plugins, under the profile's home.
+const INSTALLED_PLUGINS_FILE: &str = "plugins/installed_plugins.json";
+/// A plugin's own manifest, under its source folder.
+const PLUGIN_FILE: &str = ".claude-plugin/plugin.json";
+/// What an installed pack that records no version is reported as.
+const UNKNOWN_VERSION: &str = "unknown";
 
 /// What a finished command wrote.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,24 +201,44 @@ impl LoginCheck {
     }
 }
 
-/// Whether a profile has the pack registered, as `claude plugin list` inside it says.
+/// Which pack version a profile has installed, as its `plugins/installed_plugins.json` says,
+/// against the version the source pack declares.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct PackCheck {
     /// The profile's name.
     pub profile: String,
     /// The pack as `<plugin>@<marketplace>`, when the manifest names one Claude can know.
     pub pack: Option<String>,
-    /// The version the listing shows, when the pack is listed.
+    /// The version the profile has installed, when the pack is installed there.
     pub version: Option<String>,
-    /// Whether the pack is listed.
+    /// The version the source pack's `.claude-plugin/plugin.json` declares, when it declares one.
+    pub source_version: Option<String>,
+    /// Whether the pack is installed at the source's version (or the source declares none).
     pub ok: bool,
 }
 
 impl PackCheck {
-    /// `profile <name>: pack <pack>@<marketplace> <version> ok`, or `pack missing` with its fix.
+    /// Whether the profile holds a version other than the one the source declares.
+    ///
+    /// An installed pack that records no version is never stale: there is nothing to compare.
+    pub fn stale(&self) -> bool {
+        match (&self.version, &self.source_version) {
+            (Some(have), Some(wanted)) => have != UNKNOWN_VERSION && have != wanted,
+            _ => false,
+        }
+    }
+
+    /// `profile <name>: pack <pack>@<marketplace> <version> ok`; a stale pack names both versions
+    /// and its fix; a missing one says `pack missing` with its fix.
     pub fn line(&self) -> String {
         match (&self.pack, &self.version) {
-            (Some(pack), Some(version)) if self.ok => {
+            (Some(pack), Some(have)) if self.stale() => format!(
+                "profile {}: pack {pack} {have} is stale: the source pack is {} \
+                 (fix: zaf profile init updates it)",
+                self.profile,
+                self.source_version.as_deref().unwrap_or(UNKNOWN_VERSION)
+            ),
+            (Some(pack), Some(version)) => {
                 format!("profile {}: pack {pack} {version} ok", self.profile)
             }
             _ => format!(
@@ -236,7 +263,7 @@ pub struct Report {
     /// One entry per generated profile; informational, it never fails the report.
     pub logins: Vec<LoginCheck>,
     /// One entry per generated profile that carries the pack, when the manifest has a `[pack]`;
-    /// informational, it never fails the report.
+    /// a stale pack fails the report, a missing one is reported only.
     pub packs: Vec<PackCheck>,
     /// One entry per action either tier provides, in name order; an invalid one fails the report.
     pub actions: Vec<ActionCheck>,
@@ -251,6 +278,7 @@ impl Report {
     /// Whether every check passed.
     pub fn passed(&self) -> bool {
         self.tools.iter().all(|check| check.status.is_ok())
+            && self.packs.iter().all(|check| !check.stale())
             && self.actions.iter().all(|check| check.ok)
             && self.actions_error.is_none()
             && self.needed.iter().all(|check| check.ok)
@@ -434,15 +462,21 @@ fn is_past(expires_at: u64, now: SystemTime) -> bool {
         .is_ok_and(|since| since.as_millis() > u128::from(expires_at))
 }
 
-/// Asks each generated profile that carries the pack whether `claude plugin list` shows it.
+/// Reads, for each generated profile that carries the pack, the version its
+/// `plugins/installed_plugins.json` records, and compares it with the source pack's version.
 ///
 /// Reads only: a profile not generated yet, or a pack the project's marketplace file cannot
-/// name, is missing without asking; the fix is `zaf profile init`, which doctor never runs.
-pub fn packs(root: &Path, manifest: &Manifest, commands: &dyn Commands) -> Vec<PackCheck> {
+/// name, is missing; the fix is `zaf profile init`, which doctor never runs. Only a `[pack] path`
+/// has a source version to compare with.
+pub fn packs(root: &Path, manifest: &Manifest) -> Vec<PackCheck> {
     let Some(pack) = &manifest.pack else {
         return Vec::new();
     };
     let pack_ref = profile::pack_ref(root, pack).ok().flatten();
+    let source_version = pack
+        .path
+        .as_deref()
+        .and_then(|path| declared_version(&root.join(path)));
     let state_dir = root.join(STATE_DIR);
     profile::generated(manifest)
         .into_iter()
@@ -451,23 +485,45 @@ pub fn packs(root: &Path, manifest: &Manifest, commands: &dyn Commands) -> Vec<P
             let home = profile::home(&state_dir, name);
             let version = pack_ref
                 .as_ref()
-                .filter(|_| home.is_dir())
-                .and_then(|pack_ref| {
-                    let setting = format!("{CONFIG_DIR_VAR}={}", home.display());
-                    let output = commands
-                        .run("env", &[&setting, "claude", "plugin", "list"])
-                        .ok()
-                        .filter(|output| output.success)?;
-                    profile::listed_version(&output.text, &pack_ref.to_string())
-                });
-            PackCheck {
+                .and_then(|pack_ref| installed_version(&home, &pack_ref.to_string()));
+            let mut check = PackCheck {
                 profile: name.to_string(),
                 pack: pack_ref.as_ref().map(ToString::to_string),
-                ok: version.is_some(),
                 version,
-            }
+                source_version: source_version.clone(),
+                ok: false,
+            };
+            check.ok = check.version.is_some() && !check.stale();
+            check
         })
         .collect()
+}
+
+/// The version a profile at `home` has installed for `id` (`plugin@marketplace`), from its
+/// `plugins/installed_plugins.json`; `unknown` when installed with no version, `None` when the
+/// file is missing or unreadable or does not list `id`.
+fn installed_version(home: &Path, id: &str) -> Option<String> {
+    let text = fs::read_to_string(home.join(INSTALLED_PLUGINS_FILE)).ok()?;
+    let installed: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let entries = installed.get("plugins")?.get(id)?.as_array()?;
+    if entries.is_empty() {
+        return None;
+    }
+    let version = entries
+        .iter()
+        .find_map(|entry| entry.get("version")?.as_str())
+        .map(str::trim)
+        .filter(|version| !version.is_empty());
+    Some(version.unwrap_or(UNKNOWN_VERSION).to_owned())
+}
+
+/// The version the pack's own `.claude-plugin/plugin.json` declares under `source`; `None` when
+/// the file is missing, unreadable or declares none (the pack is not versioned).
+fn declared_version(source: &Path) -> Option<String> {
+    let text = fs::read_to_string(source.join(PLUGIN_FILE)).ok()?;
+    let plugin: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let version = plugin.get("version")?.as_str()?.trim();
+    (!version.is_empty()).then(|| version.to_owned())
 }
 
 /// Checks the required tools, the design folder, the workspaces folder, the profiles' logins and
@@ -535,7 +591,7 @@ pub fn doctor_with(
         design_index,
         workspaces,
         logins: logins(root, manifest, commands, claude_home, now),
-        packs: packs(root, manifest, commands),
+        packs: packs(root, manifest),
         actions,
         actions_error,
         needed,
