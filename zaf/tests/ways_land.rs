@@ -252,6 +252,42 @@ fn land_stops_on_a_refused_merge() {
     assert!(!project.root.join("merged.txt").exists());
 }
 
+/// Replaces an action with one that has no description, which zaf does not run: `NOT_RUN`, 125.
+fn break_action(project: &Project, name: &str) {
+    let actions = project.root.join(".zaf/actions");
+    write(&actions, name, "#!/bin/sh\ntrue\n");
+    fs::set_permissions(actions.join(name), fs::Permissions::from_mode(0o750)).expect("mode");
+}
+
+#[test]
+fn land_maps_a_nested_not_run_to_two() {
+    // A merge that did not run: land declares 1 and 2, never 125, so it is a failed backend, and
+    // no sync follows.
+    let project = project();
+    break_action(&project, "pr-merge");
+    let (code, text) = land(&project, &["7"]);
+    assert_eq!(code, 2, "{text}");
+    assert!(text.contains("NOT_RUN pr-merge"), "{text}");
+    assert!(
+        !logs(&project).iter().any(|name| name == "sync.log"),
+        "{text}"
+    );
+    assert_eq!(project.gh_calls(), Vec::<String>::new());
+
+    // The same for a sync that did not run, after the merge was made.
+    let mut project = self::project();
+    project.on("pr view *", "OPEN\n").on("pr merge *", "");
+    break_action(&project, "sync");
+    let (code, text) = land(&project, &["7"]);
+    assert_eq!(code, 2, "{text}");
+    assert!(text.contains("NOT_RUN sync"), "{text}");
+    assert_eq!(
+        project.gh_calls(),
+        [view_call("7"), merge_call("7")],
+        "{text}"
+    );
+}
+
 #[test]
 fn land_refuses_with_1_what_it_cannot_use() {
     let project = project();
