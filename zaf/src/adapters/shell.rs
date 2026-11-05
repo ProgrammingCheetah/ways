@@ -3,6 +3,7 @@
 //! The line's stdout and stderr come back interleaved as printed. The shell owns a
 //! process group of its own, so a run past the bound takes its children down with it.
 
+use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -20,6 +21,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(10);
 pub struct SystemShell {
     dir: PathBuf,
     timeout: Duration,
+    env: BTreeMap<String, String>,
 }
 
 impl SystemShell {
@@ -30,7 +32,16 @@ impl SystemShell {
         Self {
             dir: dir.to_owned(),
             timeout,
+            env: BTreeMap::new(),
         }
+    }
+
+    /// The same shell with `env` set on every line, on top of the inherited environment: a
+    /// name in `env` replaces an inherited one of the same name.
+    #[must_use]
+    pub fn with_env(mut self, env: BTreeMap<String, String>) -> Self {
+        self.env = env;
+        self
     }
 }
 
@@ -43,6 +54,7 @@ impl Shell for SystemShell {
             .arg("-c")
             .arg(&script)
             .current_dir(&self.dir)
+            .envs(&self.env)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
