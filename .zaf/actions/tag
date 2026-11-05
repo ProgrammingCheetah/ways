@@ -1,0 +1,76 @@
+#!/bin/sh
+# zaf description: tag a commit (default: the parent of the working copy) and push the tag; a name already on the same commit is quiet, and still pushed if the remote lacks it; hands back the tagged commit
+# zaf 1: refused: the arguments are not <name> [rev], the name is not a usable tag name, the revision is not one commit, or the name is already on another commit, here or on the remote
+# zaf 2: a backend failed (jj is missing or refused, or the push failed)
+# zaf mode: 750
+# zaf group: team, release
+name=$1
+rev=${2-@-}
+
+if [ -z "$ZAF_ROOT" ] || [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+    echo "usage: tag <name> [rev], with ZAF_ROOT set" >&2
+    exit 1
+fi
+
+# A tag name is fit to sit inside a revset string and never reads as an option.
+case $name in
+    "" | -* | *\"* | *\\* | *[[:space:]]*)
+        echo "tag name $name is not a usable tag name" >&2
+        exit 1
+        ;;
+esac
+case $rev in
+    "" | -*)
+        echo "revision $rev is not a usable revision" >&2
+        exit 1
+        ;;
+esac
+
+if ! command -v jj >/dev/null 2>&1; then
+    echo "jj is not installed" >&2
+    exit 2
+fi
+
+jj_run() {
+    jj --no-pager --color=never -R "$ZAF_ROOT" "$@"
+}
+
+# The revision names exactly one commit.
+if ! ids=$(jj_run log --no-graph -r "$rev" -T 'commit_id ++ "\n"' 2>&1); then
+    printf '%s\n' "$ids" >&2
+    echo "revision $rev does not name a commit" >&2
+    exit 1
+fi
+case $ids in
+    "" | *"
+"*)
+        echo "revision $rev does not name exactly one commit" >&2
+        exit 1
+        ;;
+esac
+target=$ids
+
+# The remote may hold the name already, which this repository has not fetched: bring the remote's
+# tags in first, so a name on another commit there is seen as one here.
+jj_run git fetch --tag "exact:$name" || exit 2
+
+# A name on another commit is a refusal, never a move.
+if ! existing=$(jj_run --ignore-working-copy log --no-graph -r "tags(exact:\"$name\")" -T 'commit_id ++ "\n"'); then
+    exit 2
+fi
+if [ -n "$existing" ] && [ "$existing" != "$target" ]; then
+    echo "tag $name is already on another commit" >&2
+    exit 1
+fi
+
+if [ -z "$existing" ]; then
+    jj_run tag set "$name" -r "$target" || exit 2
+fi
+
+# A plain push of just this tag; a tag the remote already holds at this commit pushes nothing.
+if ! pushed=$(jj_run git push --tag "exact:$name" 2>&1); then
+    printf '%s\n' "$pushed" >&2
+    exit 2
+fi
+printf '%s\n' "$pushed" >&2
+echo "$target"
