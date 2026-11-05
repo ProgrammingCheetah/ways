@@ -6,9 +6,13 @@
 //! from the project root alone, so an action file inside a slice workspace is
 //! never found: an edit to an action runs only once it has merged and reached
 //! the root.
+//!
+//! Finding the file reads no metadata: [`can_shadow`] is what a run holds the shadowed file's mode
+//! against.
 
 use std::path::{Path, PathBuf};
 
+use super::metadata::ActionMode;
 use crate::composition::STATE_DIR;
 
 /// The folder under a tier's home that holds its actions.
@@ -137,6 +141,12 @@ pub fn resolve(
         (Some(only), None) | (None, Some(only)) => Some(only),
         (None, None) => None,
     })
+}
+
+/// Whether a file in a higher tier may override a file of `mode`: the `w` of the owner digit, the
+/// only digit that can say, since the Engineer writes those files.
+pub fn can_shadow(mode: ActionMode) -> bool {
+    mode.owner().write()
 }
 
 /// Every name once, sorted, with the tier it resolves to and the tier it
