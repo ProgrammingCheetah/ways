@@ -1,6 +1,6 @@
 //! `zaf report`: tokens per model, the subagent growth profile and the per-run table.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use super::Cli;
@@ -105,27 +105,35 @@ fn ledger_rows(composition: &Composition, all: bool) -> Result<Vec<LedgerRow>, S
         format!("no home for the ledger ~/.zaf/{LEDGER_FILE}: set ZAF_HOME or HOME")
     })?;
     let ledger = Ledger::open(&home.join(LEDGER_FILE)).map_err(|error| error.to_string())?;
-    let project = composition.manifest().project.name.as_ref();
     let rows = ledger.rows().map_err(|error| error.to_string())?;
-    Ok(rows
-        .into_iter()
-        .filter(|row| all || row.project == project)
-        .collect())
+    Ok(project_rows(
+        rows,
+        all,
+        composition.manifest().project.name.as_ref(),
+        composition.root(),
+    ))
+}
+
+/// The rows that count for the project named `name` at `root`, or every row with `all`.
+fn project_rows(rows: Vec<LedgerRow>, all: bool, name: &str, root: &Path) -> Vec<LedgerRow> {
+    rows.into_iter()
+        .filter(|row| all || ledger::is_this_project(&row.project, name, root))
+        .collect()
 }
 
 /// Prints the per-epic rows; a board that fails exits `2`.
 fn print_epics(cli: &Cli, rows: &[LedgerRow], board: &dyn Board, prices: &PriceTable) -> u8 {
-    let rows = match epics::epic_rows(rows, board, prices) {
-        Ok(rows) => rows,
+    let view = match epics::epic_view(rows, board, prices) {
+        Ok(view) => view,
         Err(error) => {
             eprintln!("zaf {}: the board failed: {error}", cli.verb.path());
             return BACKEND;
         }
     };
     if cli.json {
-        println!("{}", epics::to_json(&rows));
+        println!("{}", view.to_json());
     } else {
-        print!("{}", epics::render_text(&rows));
+        print!("{}", view.render_text());
     }
     OK
 }

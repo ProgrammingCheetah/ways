@@ -313,3 +313,45 @@ fn a_board_failure_is_an_error_but_a_missing_task_is_not() {
     let error = epic_rows(&rows, &Down, &PriceTable::default()).expect_err("fails");
     assert_eq!(error, PortError::Backend("gh is down".to_owned()));
 }
+
+#[test]
+fn outside_any_epic_prints_one_line() {
+    let rows = [
+        run("in", Some("team"), Some(103), &[96]),
+        run("loose", Some("keeper"), None, &[]),
+        run("unknown", None, None, &[999]),
+    ];
+    let view = epic_view(&rows, &board(), &PriceTable::default()).expect("view");
+    assert_eq!(view.rows.len(), 1);
+    let outside = view.outside.as_ref().expect("two runs ran outside");
+    // opus: 4 + 5 + 0.2 + 20 dollars per million of each kind; two runs of 1M each.
+    let one = 4.0 + 5.0 + 0.2 + 20.0;
+    assert_eq!((outside.runs, outside.turns), (2, 20));
+    assert!(
+        (outside.est_usd - 2.0 * one).abs() < 1e-9,
+        "{}",
+        outside.est_usd
+    );
+    assert_eq!(outside.tokens.input, 2_000_000);
+
+    let text = view.render_text();
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|line| line.contains("outside any epic"))
+        .collect();
+    assert_eq!(lines.len(), 1, "one line: {text}");
+    assert!(lines[0].contains("$58.40"), "{}", lines[0]);
+    assert_eq!(
+        epic_rows(&rows, &board(), &PriceTable::default()).expect("rows"),
+        view.rows,
+        "the row per epic is unchanged"
+    );
+
+    let value: serde_json::Value = serde_json::from_str(&view.to_json()).expect("json");
+    assert_eq!(value["outside_any_epic"]["runs"], 2);
+
+    let inside = [run("in", Some("team"), Some(103), &[96])];
+    let view = epic_view(&inside, &board(), &PriceTable::default()).expect("view");
+    assert_eq!(view.outside, None);
+    assert!(!view.render_text().contains("outside any epic"));
+}

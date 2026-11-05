@@ -5,7 +5,8 @@
 //! no task, or only tasks the board knows no epic for, belongs to the epic its row holds. A
 //! subagent already holds its parent session's epic in the ledger. Tasks done are read from
 //! the board. Dollars are computed here from the price table, never stored, so a changed
-//! price moves every row alike. The spend outside any epic is not a row here.
+//! price moves every row alike. The spend outside any epic is not a row: it is one line after
+//! the rows, so that spend stays visible.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -101,6 +102,28 @@ impl<'a> Tasks<'a> {
     }
 }
 
+/// What ran outside any epic: the runs no task and no row put in one.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct Outside {
+    /// Runs.
+    pub runs: usize,
+    /// Turns over every run.
+    pub turns: u64,
+    /// Estimated dollars.
+    pub est_usd: f64,
+    /// Tokens by kind.
+    pub tokens: Tokens,
+}
+
+/// The per-epic rows and the one line for what ran outside any epic.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EpicView {
+    /// One row per epic, in epic order.
+    pub rows: Vec<EpicRow>,
+    /// What ran outside any epic; none when every run belongs to an epic.
+    pub outside: Option<Outside>,
+}
+
 /// One row per epic that has a run in `rows`, in epic order.
 ///
 /// A board failure other than a missing issue is an error: a row with a guessed task count
@@ -110,8 +133,18 @@ pub fn epic_rows(
     board: &dyn Board,
     prices: &PriceTable,
 ) -> Result<Vec<EpicRow>, PortError> {
+    epic_view(rows, board, prices).map(|view| view.rows)
+}
+
+/// The rows of [`epic_rows`] and what ran outside any epic, from one pass over the board.
+pub fn epic_view(
+    rows: &[LedgerRow],
+    board: &dyn Board,
+    prices: &PriceTable,
+) -> Result<EpicView, PortError> {
     let mut tasks = Tasks::new(board);
     let mut by_epic: BTreeMap<u64, Vec<&LedgerRow>> = BTreeMap::new();
+    let mut loose: Vec<&LedgerRow> = Vec::new();
     for row in rows {
         let mut epic = None;
         for task in &row.tasks {
@@ -120,8 +153,9 @@ pub fn epic_rows(
                 break;
             }
         }
-        if let Some(epic) = epic.or(row.epic) {
-            by_epic.entry(epic).or_default().push(row);
+        match epic.or(row.epic) {
+            Some(epic) => by_epic.entry(epic).or_default().push(row),
+            None => loose.push(row),
         }
     }
     let mut done: BTreeMap<u64, usize> = BTreeMap::new();
@@ -133,7 +167,7 @@ pub fn epic_rows(
             *done.entry(epic.get()).or_default() += 1;
         }
     }
-    Ok(by_epic
+    let rows = by_epic
         .into_iter()
         .map(|(epic, runs)| {
             row_of(
@@ -143,7 +177,32 @@ pub fn epic_rows(
                 prices,
             )
         })
-        .collect())
+        .collect();
+    Ok(EpicView {
+        rows,
+        outside: outside_of(&loose, prices),
+    })
+}
+
+fn outside_of(runs: &[&LedgerRow], prices: &PriceTable) -> Option<Outside> {
+    if runs.is_empty() {
+        return None;
+    }
+    let mut outside = Outside {
+        runs: runs.len(),
+        turns: 0,
+        est_usd: 0.0,
+        tokens: Tokens::default(),
+    };
+    for run in runs {
+        outside.turns += run.turns;
+        outside.est_usd += cost_of(run, prices);
+        outside.tokens.input += run.input;
+        outside.tokens.cache_write += run.cache_write;
+        outside.tokens.cache_read += run.cache_read;
+        outside.tokens.output += run.output;
+    }
+    Some(outside)
 }
 
 fn cost_of(row: &LedgerRow, prices: &PriceTable) -> f64 {
@@ -251,11 +310,35 @@ pub fn render_text(rows: &[EpicRow]) -> String {
 
 /// The rows as JSON, with the note that the dollars are estimates.
 pub fn to_json(rows: &[EpicRow]) -> String {
+    json_of(rows, None)
+}
+
+fn json_of(rows: &[EpicRow], outside: Option<&Outside>) -> String {
     serde_json::to_string_pretty(&serde_json::json!({
         "note": ESTIMATE_NOTE,
         "epics": rows,
+        "outside_any_epic": outside,
     }))
     .unwrap_or_else(|_| "{}".to_owned())
+}
+
+impl EpicView {
+    /// The rows as text, then one line for what ran outside any epic, when anything did.
+    pub fn render_text(&self) -> String {
+        let mut out = render_text(&self.rows);
+        if let Some(outside) = &self.outside {
+            out.push_str(&format!(
+                "outside any epic: {} runs, {} turns, est ${:.2}\n",
+                outside.runs, outside.turns, outside.est_usd
+            ));
+        }
+        out
+    }
+
+    /// The rows as JSON, with `outside_any_epic` holding the line's figures, or null.
+    pub fn to_json(&self) -> String {
+        json_of(&self.rows, self.outside.as_ref())
+    }
 }
 
 #[cfg(test)]

@@ -174,6 +174,23 @@ pub fn sources(state_dir: &Path, project: &str, default_config_dir: Option<&Path
     sources
 }
 
+/// Claude's folder name for a project root: every character that is not an ASCII letter or
+/// digit becomes `-`, so `/home/zuri/code/ways` is `-home-zuri-code-ways`.
+pub fn encoded_root(root: &Path) -> String {
+    root.to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
+}
+
+/// Whether a row's project is this project: its name, which the profiles' runs carry, or its
+/// encoded root, which the default config dir's runs carry, the Engineer's own sessions here.
+pub fn is_this_project(row_project: &str, name: &str, root: &Path) -> bool {
+    row_project == name
+        || row_project == encoded_root(root)
+        || fs::canonicalize(root).is_ok_and(|real| row_project == encoded_root(&real))
+}
+
 fn same_dir(one: &Path, other: &Path) -> bool {
     one == other
         || matches!(
