@@ -19,10 +19,13 @@ kind = "jj"
 kind = "github"
 repo = "ProgrammingCheetah/ways"
 
-# The design page is docs/zuri-ai-framework.md; it is not an id-indexed page set yet,
-# so the design source stays absent and `brief` carries the ticket's named pages only.
+# The design pages are in docs/, listed in docs/index.md. A page's id is its file name up to the
+# first dash, so docs/zaf-actions.md is page `zaf`. `zaf ask` checks the keeper's quotes against
+# them; with no source it rejects every citation, so the keeper could only say `not settled`.
+# Tickets name docs by path, not id, so `brief` carries no page and the keeper serves them on request.
 [design]
-kind = "none"
+kind = "repo-dir"
+path = "docs"
 
 [workspaces]
 path = ".zaf/workspaces"
