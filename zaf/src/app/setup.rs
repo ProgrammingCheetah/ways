@@ -421,7 +421,14 @@ fn setup_with(
     if let Some(claude_home) = claude_home {
         link_logins(root, manifest, claude_home)?;
     }
-    let report = doctor_with(root, manifest, commands, claude_home, SystemTime::now());
+    let report = doctor_with(
+        root,
+        home,
+        manifest,
+        commands,
+        claude_home,
+        SystemTime::now(),
+    );
     let worksheet = worksheet(manifest, root, clone.as_ref(), &report, &homes);
     Ok(SetupReport {
         homes,
