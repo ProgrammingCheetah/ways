@@ -10,8 +10,8 @@ use crate::domain::{Instance, InstanceNumber, IssueNumber, Location, RoleName, T
 use crate::manifest::RepoName;
 use crate::ports::{
     Author, BaseName, Board, Check, CheckName, CheckState, ClaimOutcome, ClaimRecord, Forge,
-    NewQuestion, PortError, PrMerge, PrNumber, PrRequest, ReviewComment, RuleId, ScanningAlert,
-    SliceName, Ticket,
+    NewQuestion, PortError, PrMerge, PrNumber, PrRequest, QUESTION_TITLE_LIMIT, ReviewComment,
+    RuleId, ScanningAlert, SliceName, Ticket,
 };
 
 const REPO: &str = "example/tracker";
@@ -615,7 +615,7 @@ fn open_question_creates_a_labelled_issue() {
         "--title",
         "Which columns does the export carry?",
         "--body",
-        "Raised on #2.",
+        "Raised on #2.\n\nWhich columns does the export carry?",
         "--label",
         "question",
         "--label",
@@ -624,6 +624,120 @@ fn open_question_creates_a_labelled_issue() {
         REPO,
     ]);
     assert_eq!(fake.calls(), [expected_call]);
+}
+
+/// A question of `words` words, `word` repeated, raised on #2.
+fn wordy_question(word: &str, words: usize) -> NewQuestion {
+    NewQuestion {
+        on: IssueNumber::from(2),
+        text: vec![word; words].join(" "),
+        door: false,
+    }
+}
+
+/// The `--title` and `--body` the one `issue create` call carried.
+fn created_title_and_body(fake: &FakeGh) -> (String, String) {
+    let calls = fake.calls();
+    let [call] = calls.as_slice() else {
+        panic!("one call expected, got {calls:?}");
+    };
+    let value = |flag: &str| {
+        let at = call.iter().position(|arg| arg == flag).expect("flag");
+        call[at + 1].clone()
+    };
+    (value("--title"), value("--body"))
+}
+
+#[test]
+fn long_question_is_filed() {
+    let fake = FakeGh::new();
+    fake.on(
+        "issue create *",
+        &format!("https://github.com/{REPO}/issues/7\n"),
+    );
+    let question = NewQuestion {
+        on: IssueNumber::from(2),
+        text: "Which columns? ".repeat(70).trim().to_owned(),
+        door: false,
+    };
+    assert!(question.text.chars().count() >= 1000);
+    assert_eq!(
+        fake.board().open_question(&question),
+        Ok(IssueNumber::from(7))
+    );
+    let (title, _) = created_title_and_body(&fake);
+    assert!(title.chars().count() <= 200, "GitHub refuses a long title");
+}
+
+#[test]
+fn long_question_title_is_cut_at_a_word() {
+    let fake = FakeGh::new();
+    fake.on(
+        "issue create *",
+        &format!("https://github.com/{REPO}/issues/7\n"),
+    );
+    let question = wordy_question("columns", 150);
+    fake.board().open_question(&question).expect("filed");
+    let (title, _) = created_title_and_body(&fake);
+    assert!(title.chars().count() <= 200);
+    assert!(title.chars().count() > 180, "the cut keeps what fits");
+    assert!(question.text.starts_with(&title));
+    assert!(
+        question.text[title.len()..].starts_with(' '),
+        "the cut falls between words, not inside `columns`"
+    );
+    assert!(!title.ends_with(' '));
+}
+
+#[test]
+fn short_question_title_is_unchanged() {
+    let fake = FakeGh::new();
+    fake.on(
+        "issue create *",
+        &format!("https://github.com/{REPO}/issues/7\n"),
+    );
+    let exact = NewQuestion {
+        on: IssueNumber::from(2),
+        text: "a".repeat(QUESTION_TITLE_LIMIT),
+        door: false,
+    };
+    fake.board().open_question(&exact).expect("filed");
+    let (title, _) = created_title_and_body(&fake);
+    assert_eq!(title, exact.text);
+    assert_eq!(
+        wordy_question("x", 3).title(),
+        "x x x",
+        "a short question is its own title"
+    );
+}
+
+#[test]
+fn long_question_body_holds_the_whole_text() {
+    let fake = FakeGh::new();
+    fake.on(
+        "issue create *",
+        &format!("https://github.com/{REPO}/issues/7\n"),
+    );
+    let question = wordy_question("columns", 150);
+    fake.board().open_question(&question).expect("filed");
+    let (_, body) = created_title_and_body(&fake);
+    assert!(body.starts_with("Raised on #2."));
+    assert!(body.ends_with(&question.text));
+    let listed = serde_json::json!([{
+        "number": 7,
+        "title": question.title(),
+        "body": body,
+        "labels": [{ "name": "question" }],
+    }]);
+    let listing = FakeGh::new();
+    listing.on("issue list *", &listed.to_string());
+    let raised = listing
+        .board()
+        .questions_on(IssueNumber::from(2))
+        .expect("questions on the task");
+    assert_eq!(raised.len(), 1, "questions_on still finds it");
+    assert_eq!(NewQuestion::text_of(&raised[0].0), question.text);
+    assert!(question.is_asked_by(&raised[0].0));
 }
 
 #[test]

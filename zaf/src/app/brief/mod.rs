@@ -15,7 +15,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::domain::{Instance, IssueNumber, PageId, TaskTemplate};
-use crate::ports::{Board, Design, Page, PortError, Ticket};
+use crate::ports::{Board, Design, NewQuestion, Page, PortError, Ticket};
 
 /// The interface help page every brief ends with.
 pub const INTERFACE_PAGE: &str = include_str!("../../../assets/interface.md");
@@ -237,7 +237,12 @@ fn render(
         writeln!(text, "— none\n")?;
     }
     for (question, ruling) in questions {
-        writeln!(text, "{} {}", question.number, question.title)?;
+        writeln!(
+            text,
+            "{} {}",
+            question.number,
+            NewQuestion::text_of(question)
+        )?;
         match ruling {
             Some(ruling) => writeln!(text, "ruling: {ruling}\n")?,
             None => writeln!(text, "open\n")?,
