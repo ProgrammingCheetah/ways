@@ -161,3 +161,33 @@ fn epics_prints_and_exits_ok_when_the_board_answers() {
     let rows = [ledger_row(vec![])];
     assert_eq!(print_epics(&cli, &rows, &board, &PriceTable::default()), OK);
 }
+
+#[test]
+fn encoded_root_counts_as_this_project() {
+    let root = Path::new("/home/zuri/code/ai/ways");
+    let with_project = |project: &str| {
+        let mut row = ledger_row(vec![]);
+        row.project = project.to_owned();
+        row
+    };
+    let own = with_project("-home-zuri-code-ai-ways");
+    let named = with_project("demo");
+    let rows = vec![
+        own.clone(),
+        named.clone(),
+        with_project("-home-zuri-code-other"),
+        with_project("-home-zuri-code-ai-ways-extra"),
+    ];
+
+    let kept = project_rows(rows.clone(), false, "demo", root);
+    assert_eq!(kept, [own, named], "the encoded root and the name only");
+    assert_eq!(
+        project_rows(rows, true, "demo", root).len(),
+        4,
+        "--all keeps all"
+    );
+    assert_eq!(
+        ledger::encoded_root(Path::new("/home/zuri/my code/ways.rs")),
+        "-home-zuri-my-code-ways-rs"
+    );
+}
