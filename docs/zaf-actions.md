@@ -1,6 +1,6 @@
 # zaf actions
 
-Draft v13, 2026-11-04, with the Engineer's rulings and the answers to the planning questions (§8). An **action** is a runnable file that `zaf` names, lists and runs through `zaf do <name>`. Actions are how a project or a machine makes zaf its own, and zaf is the abstraction layer over them: it owns the names, the listing, the environment, the log, the modes, the phases and one exit contract; what a name *does* is the action behind it. zaf ships none: whoever sets zaf up writes them, and every place a verb shells out is a name the project or the machine must provide. What Claude assumed beyond the rulings is listed in §9, open to veto.
+Draft v14, 2026-11-05, with the Engineer's rulings and the answers to the planning questions (§8). An **action** is a runnable file that `zaf` names, lists and runs through `zaf do <name>`. Actions are how a project or a machine makes zaf its own, and zaf is the abstraction layer over them: it owns the names, the listing, the environment, the log, the modes, the phases and one exit contract; what a name *does* is the action behind it. zaf ships none: whoever sets zaf up writes them, and every place a verb shells out is a name the project or the machine must provide. What Claude assumed beyond the rulings is listed in §9, open to veto.
 
 ## 1. Principles
 
@@ -75,15 +75,17 @@ A file with no metadata, no description or no declared code, or one that declare
 
 | Phase | The task is | Derived from |
 |---|---|---|
-| `claim` | claimed under a live lease, no slice yet | the `claimed` label and the lease comment |
+| `claim` | claimed, no slice yet | the `claimed` label and the claim comment |
 | `build` | its slice open, a programmer at work (or a fix round) | the workspace and `.zaf/slices/<task>` exist |
-| `check` | its task checks have passed on the workspace; a must-fix or a failed step stays in `build` | the last `zaf check <task>` record, clean |
+| `check` | its task checks have passed on the workspace; a must-fix or a failed step stays in `build`; the team flow may skip it (ruling 39) | the last `zaf check <task>` record, clean |
 | `publish` | its pull request open, review steps not yet run | `.zaf/slices/<task>.pr` |
 | `review` | the PR's steps have run; a must-fix returns it to `build` | the last `zaf check pr` record |
 | `land` | the last `zaf check pr` result for the PR and its current head is clean, and the workspace's latest commit is that head; no result is not clean | that record's head against the PR's head and the workspace's latest commit |
 | `done` | merged | the `done` label |
 
-The first rule that holds decides: the `done` label is `done`; a `check pr` record clean for the PR's current head, with the workspace's latest commit at that head, is `land`; a clean record with the workspace ahead of it, or a must-fix record, is `build`, or `check` when a clean task check is newer; a failed step is `review`; a `.pr` record with no result for the current head is `publish`, or `check` when a clean task check is newer than the `.pr` record, or `build` when the last task check failed; a clean task check is `check`; a workspace record is `build`; the `claimed` label with a live lease is `claim`; anything else is `unclaimed`, which no `phases:` may name.
+The first rule that holds decides: the `done` label is `done`; a `check pr` record clean for the PR's current head, with the workspace's latest commit at that head, is `land`; a clean record with the workspace ahead of it, or a must-fix record, is `build`, or `check` when a clean task check is newer; a failed step is `review`; a `.pr` record with no result for the current head is `publish`, or `check` when a clean task check is newer than the `.pr` record, or `build` when the last task check failed; a clean task check is `check`; a workspace record is `build`; the `claimed` label is `claim`; anything else is `unclaimed`, which no `phases:` may name.
+
+A fact zaf could not read, because a board or forge read failed, refuses the action with `NOT_RUN`. A fact that is absent, such as a pull request with no head or a missing workspace, falls to the earlier phase, so it can never reach `land`. A claim has no expiry: the spawner hands back a timed-out instance's claims (ruling 41).
 
 **The records.** zaf writes them, never a script. When `slice-open` or `slice-pr` exits 0, zaf stores what it handed back in `.zaf/slices/<task>` (the workspace path) or `.zaf/slices/<task>.pr` (the number). When `slice-merge` or `slice-drop` exits 0, zaf forgets both and the task's check records, so a drop returns the task to `claim` and a reopened slice starts clean. `zaf check` and `zaf changes` read the workspace from the record and fill the base from `ZAF_VERSION` and the branch pattern. These are plain files, so this stops a script's mistake, not a process set on forging them.
 
@@ -162,14 +164,14 @@ Built through the lifecycle on this repo (epic #103, planned, built by team inst
 | Action | Mode, group | Target, phases | Does |
 |---|---|---|---|
 | `slice-open` | `750` team, release | task: `claim` | a jj workspace and a same-named bookmark at the base; hands back the workspace path |
-| `slice-pr` | `750` team, release | task: `check`, `review` | `commit`, `push`, `pr-open`; hands back the PR number |
-| `slice-merge` | `750` team, release | task: `land` | `merge-base`, `gate-light`, `push`, `pr-merge`, `zaf board done`, `workspace-drop`; a task already done is refused by its phase |
+| `slice-pr` | `750` team, release | task: `build`, `check`, `review` | `commit`, `push`, `pr-open`; hands back the PR number |
+| `slice-merge` | `750` team, release | task: `land` | `merge-base`; when the base moved the head, `push` and exit 1, so the team runs `check pr` again (CI is the gate, ruling 39); otherwise `pr-merge`, `zaf board done`, `workspace-drop`; a task already done is refused by its phase |
 | `slice-drop` | `750` team, release | task: `build`, `check`, `done` | `workspace-drop` |
 | `commit`, `push`, `pr-open`, `pr-merge`, `merge-base`, `sync`, `tag`, `workspace-open`, `workspace-drop` | `750` team, release | none | the jj and gh steps the four above compose |
 | `land <pr>` | `750` team, release | none | `pr-merge` then `sync main`: the Engineer's `gh pr merge … && jj git fetch && jj new main` |
 | `release <version>` | `750` release | none | check `zaf/Cargo.toml` is at `<version>`, `pr-merge` the integration branch's pull request, `sync main`, `tag zaf-v<version>`; the workflow does the rest |
 | `gate-light`, `gate` | `755` | none | the cargo lines of today's `[gate]` |
-| `nodes-check` | `755` | none | `nodes check --root "$ZAF_ROOT"`; the `[check.pr]` step |
+| `nodes-check` | `755` | none | `nodes check --root "$ZAF_ROOT"`; not a `[check.pr]` step since ruling 39 |
 
 **What an instance may not run.** The ways manifest's `[forbidden] commands` denies `gh pr merge`, `zaf do pr-merge`, `zaf do land` and their `--tier machine` forms in every instance profile. An instance merges only through `slice-merge`, which the phase guards, or `release`, whose mode names only the release role. Nested calls run inside an action's process, where the permission layer does not see them, so those two still work. The Engineer's own session is under no profile, so `zaf do land <pr>` stays theirs. This is not a wall: `gh api` can still reach the merge endpoint, and the forge's ruleset covers only `main`.
 
@@ -217,6 +219,10 @@ Rulings 1 to 19 are of 2026-11-03; 20 to 30 of 2026-11-04.
 36. **Shadowing, from the build (#264):** a project file shadowing a machine file with invalid metadata is refused, `NOT_RUN` naming both, since the machine file's write bit cannot be read. A refused shadow is refused for running only; `--show` and the listing still show the file, which is how the Engineer sees why. A run of a shadowing file needs both files to permit the caller, each under its own group, because masking digits would let a longer `group` widen it.
 37. **The design source (#266):** `[design]` is `repo-dir` on `docs/`, and `docs/index.md` lists `zaf-actions.md` as page `zaf` and `zuri-ai-framework.md` as page `zuri`. With no source `zaf ask` rejects every citation, so all 52 answers up to this ruling were `not settled` with no page cited. Tickets keep naming docs by path, so `brief` stays small and programmers get the design through `zaf ask`.
 38. **The release role and slice records, from the build (#272, #273):** `ZAF.toml` has a `[roles.release]` table (opus, xhigh, profile `build`, 200 turns) so `release` can stay in §7's groups; the spawner does not launch it yet. A slice record's workspace is an absolute path to an existing directory, a symlink to a directory passes, and it need not be inside the project. A PR number is ASCII digits above 0 fitting u64: `#12`, padded values and `0` are refused, and `007` is stored as `7`. A missing or malformed task is `FAIL`, exit 2, and writes nothing; `#140` and `140` are the same record. A slice name exiting 0 outside a project is `FAIL`, exit 2.
+39. **CI is the only gate (the Engineer, 2026-11-05):** only CI stands between a task's pull request and its merge. The team instance does not run `zaf check <task>` again after the programmer's round, and `[check.pr]` is `["ci"]`, with no per-PR model review. Reviews are paid once per release, x.y.z, on the integration branch's pull request. That review covers the merge-path tickets that were security-flagged (#132, #139, #203, #204, #217, #218, #269). The programmer still ends its round on a clean `zaf check <task>`. `slice-pr` runs from `build`, and `slice-merge` drops `gate-light` (§7). The reason: the 23 tasks merged that day averaged about 80 lines of code each, at a median 9 minutes from claim to merge, and most of that was fixed cost.
+40. **Units of work (the Engineer, 2026-11-05):** the rest of 0.2.0 is grouped into units of 2 or 3 tickets. Each unit has one programmer, one workspace and one pull request. Units are chosen so they depend little on each other, and so the work within one is similar. zaf has no unit yet, so each unit is one ticket that folds the others, and the folded tickets are closed pointing at it. `[roles.team] batch = 1` replaces ruling 33's batch, and `[roles.programmer] turns = 150` gives a unit room, so an instance carries one unit and stays inside 45 minutes. The four lanes (`[spawn] slots = 4`) run four units at once. #132 and #195 to #198 move to 0.2.1, and #230 is dropped along with the team's task check. This supersedes ruling 32 for units and brings #232 forward.
+41. **Phase facts (#285 to #287):** a board or forge read that fails while deriving a phase refuses the action, `NOT_RUN`. A fact that is absent, such as a pull request with no head or a missing workspace, falls to the earlier phase. A claim has no expiry, because the spawner hands back a timed-out instance's claims (#95), and §3 says `claimed` where it said `live lease`.
+42. **Two rulings from the build (#214, #309):** a failed `gh pr merge` exits 1, since the other actions also put forge refusals under 1. #110's CLI wiring is within its scope. A malformed `ZAF_INSTANCE` fails `zaf brief`, and with no machine home the brief lists the project's actions only.
 
 ## 9. Assumed by Claude, open to veto
 
