@@ -12,7 +12,7 @@ use super::Cli;
 use super::exit::{self, BACKEND, REFUSED};
 use crate::adapters::gate::RUNS_DIR;
 use crate::adapters::shell::SystemShell;
-use crate::app::actions::SliceRecords;
+use crate::app::actions::{RunOutcome, SliceRecords};
 use crate::app::check::{
     CheckRecord, Engine, EngineSettings, Shell, Step, StepPorts, Target, TaskInputs, check_task,
 };
@@ -253,6 +253,11 @@ impl StepPorts for LivePorts {
 
     fn runner(&self, name: &RunnerName) -> Result<Box<dyn Runner>, PortError> {
         self.composition.runner(name).map_err(unavailable)
+    }
+
+    /// Runs the action as `zaf do <name>` would from here: the same tiers, modes and log.
+    fn action(&self, name: &str) -> RunOutcome {
+        super::do_action::run_named(name, &[], None)
     }
 }
 
