@@ -231,6 +231,74 @@ fn unsized_task_is_in_no_median() {
     assert!(render_text(&rows).contains("  -"), "a dash for no median");
 }
 
+/// `count` done S tasks in `epic`, numbered from `first`, each with one run of its own that
+/// costs `ONE_RUN` less `saved` (the output tokens dropped, at $20 per million).
+fn small_epic(board: &FakeBoard, epic: u64, first: u64, count: u64, saved: bool) -> Vec<LedgerRow> {
+    (first..first + count)
+        .map(|task| {
+            board.add_ticket(Ticket {
+                epic: Some(number(epic)),
+                ..sized(task, Some(TaskLabel::Done), "S")
+            });
+            let mut one = run(&format!("r{task}"), Some("programmer"), Some(epic), &[task]);
+            if saved {
+                one.output = 0;
+            }
+            one
+        })
+        .collect()
+}
+
+#[test]
+fn five_tasks_give_a_verdict() {
+    let board = board();
+    let mut rows = small_epic(&board, 37, 200, 5, false);
+    rows.extend(small_epic(&board, 103, 210, 5, true));
+    rows.extend(small_epic(&board, 150, 220, 5, true));
+    let rows = epic_rows(&rows, &board, &PriceTable::default()).expect("rows");
+    let first = row_for(&rows, 37);
+    assert_eq!(
+        first.versus_last,
+        SizeVerdicts::default(),
+        "no earlier epic"
+    );
+    let cheaper = row_for(&rows, 103);
+    assert_eq!(cheaper.done_by_size.s, 5);
+    assert_eq!(cheaper.versus_last.s, Some(Verdict::Lower));
+    // The same median as the epic before it is not lower.
+    assert_eq!(row_for(&rows, 150).versus_last.s, Some(Verdict::NotLower));
+    // No M task on either side: no verdict for M.
+    assert_eq!(cheaper.versus_last.m, Some(Verdict::TooFew));
+    let text = render_text(&rows);
+    assert!(text.contains("lower"), "{text}");
+    assert!(text.contains("not lower"), "{text}");
+    let value: serde_json::Value = serde_json::from_str(&to_json(&rows)).expect("json");
+    let versus = &value["epics"][1]["versus_last"];
+    assert_eq!(versus["s"], "lower");
+    assert_eq!(versus["m"], "too_few");
+}
+
+#[test]
+fn four_tasks_say_too_few() {
+    // Four on the later side.
+    let board = board();
+    let mut rows = small_epic(&board, 37, 200, 5, false);
+    rows.extend(small_epic(&board, 103, 210, 4, true));
+    let rows = epic_rows(&rows, &board, &PriceTable::default()).expect("rows");
+    let later = row_for(&rows, 103);
+    assert_eq!(later.done_by_size.s, 4);
+    assert!(later.median_usd.s.is_some(), "the median is still shown");
+    assert_eq!(later.versus_last.s, Some(Verdict::TooFew));
+    assert!(render_text(&rows).contains("too few"));
+
+    // Four on the earlier side.
+    let board = self::board();
+    let mut rows = small_epic(&board, 37, 200, 4, false);
+    rows.extend(small_epic(&board, 103, 210, 5, true));
+    let rows = epic_rows(&rows, &board, &PriceTable::default()).expect("rows");
+    assert_eq!(row_for(&rows, 103).versus_last.s, Some(Verdict::TooFew));
+}
+
 fn transcript(prompt: &str) -> String {
     let user = json!({
         "type": "user",

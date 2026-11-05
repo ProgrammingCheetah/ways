@@ -1,6 +1,6 @@
 # zaf actions
 
-Draft v10, 2026-11-04, with the Engineer's rulings and the answers to the planning questions (§8). An **action** is a runnable file that `zaf` names, lists and runs through `zaf do <name>`. Actions are how a project or a machine makes zaf its own, and zaf is the abstraction layer over them: it owns the names, the listing, the environment, the log, the modes, the phases and one exit contract; what a name *does* is the action behind it. zaf ships none: whoever sets zaf up writes them, and every place a verb shells out is a name the project or the machine must provide. What Claude assumed beyond the rulings is listed in §9, open to veto.
+Draft v11, 2026-11-04, with the Engineer's rulings and the answers to the planning questions (§8). An **action** is a runnable file that `zaf` names, lists and runs through `zaf do <name>`. Actions are how a project or a machine makes zaf its own, and zaf is the abstraction layer over them: it owns the names, the listing, the environment, the log, the modes, the phases and one exit contract; what a name *does* is the action behind it. zaf ships none: whoever sets zaf up writes them, and every place a verb shells out is a name the project or the machine must provide. What Claude assumed beyond the rulings is listed in §9, open to veto.
 
 ## 1. Principles
 
@@ -214,6 +214,7 @@ Rulings 1 to 19 are of 2026-11-03; 20 to 30 of 2026-11-04.
 33. **Batch two, limit 45:** `[roles.team] batch = 2`, which matches the two programmers an instance runs at once. The runner limit stays 45 minutes: instances are short-lived by design, so one that reaches the limit is carrying too much work.
 34. **Phases and modes, from the build (#234 to #238):** a failed task check with a `.pr` record and no result for the current head is `build`. A mode refusing the owner prints `the Engineer`. A blank `ZAF_INSTANCE` does not parse, so it is refused; `zaf setup` keeps treating blank as none. There is no fixed list of roles: the role a well-formed `ZAF_INSTANCE` names is the caller's and `group` decides its digit, so a project's own role works without a zaf release.
 35. **`zaf hub` (the Engineer, 2026-11-04):** the live view of §5 is in 0.2.0, so it is there for the first real dogfood. No tail: it redraws when a report arrives. A bar for each epic, each group and each model's ticket, and a general word for what the model is doing. Groups are `group:<name>` labels, set from the re-plan's map; the planning instance labels what it files, and Unit of Work (#232) can build on them later.
+36. **Shadowing, from the build (#264):** a project file shadowing a machine file with invalid metadata is refused, `NOT_RUN` naming both, since the machine file's write bit cannot be read. A refused shadow is refused for running only; `--show` and the listing still show the file, which is how the Engineer sees why. A run of a shadowing file needs both files to permit the caller, each under its own group, because masking digits would let a longer `group` widen it.
 
 ## 9. Assumed by Claude, open to veto
 
