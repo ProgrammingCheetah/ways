@@ -155,6 +155,82 @@ fn an_epic_with_no_task_done_has_no_per_task_figure() {
     assert!(render_text(&rows).contains("  -"), "a dash, not a zero");
 }
 
+/// A task ticket whose body reads, so the board gives it a size.
+fn sized(n: u64, label: Option<TaskLabel>, size: &str) -> Ticket {
+    let body = format!(
+        "Goal: g\nOwned paths: p\nInterfaces: i\nDesign pages: d\nArchitecture: none\n\
+         Acceptance:\n  - a\nTests: t\nSecurity trigger: no\nModel: sonnet\nSize: {size}\n\
+         Blocked by: —\n"
+    );
+    Ticket {
+        body,
+        ..ticket(n, Some(103), label)
+    }
+}
+
+/// What one run of `run` costs: 1M of each kind on opus.
+const ONE_RUN: f64 = 4.0 + 5.0 + 0.2 + 20.0;
+
+#[test]
+fn median_splits_across_named_tasks() {
+    let board = board();
+    board.add_ticket(sized(98, Some(TaskLabel::Done), "S"));
+    board.add_ticket(sized(99, Some(TaskLabel::Done), "M"));
+    board.add_ticket(sized(100, Some(TaskLabel::Claimed), "S"));
+    board.add_ticket(sized(101, Some(TaskLabel::Done), "S"));
+    let rows = [
+        // Two named tasks: half each, and the claimed one's half is in no median.
+        run("a", Some("programmer"), Some(103), &[101, 100]),
+        run("b", Some("programmer"), Some(103), &[98]),
+        run("d", Some("programmer"), Some(103), &[99]),
+        // Names nothing: split evenly across the epic's three done tasks.
+        run("c", Some("planning"), Some(103), &[]),
+    ];
+    let rows = epic_rows(&rows, &board, &PriceTable::default()).expect("rows");
+    let epic = row_for(&rows, 103);
+    assert_eq!(epic.tasks_done, 3);
+    let third = ONE_RUN / 3.0;
+    let task_101 = ONE_RUN / 2.0 + third;
+    let task_98 = ONE_RUN + third;
+    let task_99 = ONE_RUN + third;
+    let small = epic.median_usd.s.expect("two S tasks are done");
+    assert!(
+        (small - f64::midpoint(task_101, task_98)).abs() < 1e-9,
+        "{small}"
+    );
+    let medium = epic.median_usd.m.expect("one M task is done");
+    assert!((medium - task_99).abs() < 1e-9, "{medium}");
+    let text = render_text(&rows);
+    assert!(text.contains("med S $"), "{text}");
+    assert!(text.contains(&format!("{small:.2}")), "{text}");
+    let value: serde_json::Value = serde_json::from_str(&to_json(&rows)).expect("json");
+    assert!(value["epics"][0]["median_usd"]["m"].is_number());
+}
+
+#[test]
+fn unsized_task_is_in_no_median() {
+    let board = board();
+    board.add_ticket(sized(98, Some(TaskLabel::Done), "S"));
+    // #96 is done but its body does not read, so it has no size.
+    let rows = [
+        run("a", Some("programmer"), Some(103), &[96]),
+        run("b", Some("programmer"), Some(103), &[98]),
+        run("c", Some("planning"), Some(103), &[]),
+    ];
+    let rows = epic_rows(&rows, &board, &PriceTable::default()).expect("rows");
+    let epic = row_for(&rows, 103);
+    assert_eq!(epic.tasks_done, 2);
+    assert!(
+        (epic.est_usd - 3.0 * ONE_RUN).abs() < 1e-9,
+        "the unsized task's dollars are in the total"
+    );
+    // #98 alone: its own run plus half of the run that names nothing.
+    let small = epic.median_usd.s.expect("one S task");
+    assert!((small - 1.5 * ONE_RUN).abs() < 1e-9, "{small}");
+    assert_eq!(epic.median_usd.m, None, "no M task is done");
+    assert!(render_text(&rows).contains("  -"), "a dash for no median");
+}
+
 fn transcript(prompt: &str) -> String {
     let user = json!({
         "type": "user",
