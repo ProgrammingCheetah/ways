@@ -149,6 +149,15 @@ pub fn can_shadow(mode: ActionMode) -> bool {
     mode.owner().write()
 }
 
+/// Whether two paths are one file, which then shadows nothing: a project at the parent of the zaf
+/// home has one folder for both tiers, and a link to the machine's file runs that very file.
+pub fn same_file(one: &Path, other: &Path) -> bool {
+    matches!(
+        (std::fs::canonicalize(one), std::fs::canonicalize(other)),
+        (Ok(one), Ok(other)) if one == other
+    )
+}
+
 /// Every name once, sorted, with the tier it resolves to and the tier it
 /// shadows. Entries whose names `check_name` refuses, and anything that is not
 /// a file, are skipped: they cannot be named.

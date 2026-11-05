@@ -21,7 +21,7 @@ use super::caller::Caller;
 use super::metadata::{ActionMetadata, parse};
 use super::records::{forget_records, keep_hand_back};
 use super::resolve::{
-    ResolveError, Resolved, Tier, can_shadow, check_name, list, resolve, resolve_in,
+    ResolveError, Resolved, Tier, can_shadow, check_name, list, resolve, resolve_in, same_file,
 };
 use super::slice_env::{SliceContext, SliceEnv};
 use crate::composition::{STATE_DIR, ZAF_HOME_VAR};
@@ -474,15 +474,6 @@ fn shadowed_metadata(
         ));
     }
     Ok(Some(metadata))
-}
-
-/// Whether two paths are one file, which then shadows nothing: a project at the parent of the zaf
-/// home has one folder for both tiers, and a link to the machine's file runs that very file.
-fn same_file(one: &Path, other: &Path) -> bool {
-    matches!(
-        (fs::canonicalize(one), fs::canonicalize(other)),
-        (Ok(one), Ok(other)) if one == other
-    )
 }
 
 /// Whether `caller` may run a file: by its own mode and group, and by those of the file it shadows.
