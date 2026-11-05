@@ -51,6 +51,12 @@ pub enum ManifestError {
         /// What the key allows.
         reason: String,
     },
+    /// An `[env]` value uses `{version}` and no version was given to resolve it with.
+    #[error("[env] `{name}` uses `{{version}}`, and no version was given")]
+    EnvNeedsVersion {
+        /// The variable.
+        name: String,
+    },
     /// A root `ZAF.toml` beside `.zaf.toml` or `.zaf/config.toml`: the retired name and the
     /// new ones never mix.
     #[error(

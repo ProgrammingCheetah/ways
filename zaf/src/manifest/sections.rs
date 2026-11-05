@@ -446,3 +446,115 @@ pub struct ForbiddenSection {
     /// The commands.
     pub commands: Vec<CommandLine>,
 }
+
+/// The placeholder in an `[env]` value for the absolute project root.
+const ROOT_PLACEHOLDER: &str = "{root}";
+
+/// The placeholder in an `[env]` value for the version of the epic.
+const VERSION_PLACEHOLDER: &str = "{version}";
+
+/// The prefix of the variables zaf sets itself; no `[env]` key may start with it.
+const RESERVED_PREFIX: &str = "ZAF_";
+
+/// `[env]`: variables every child zaf starts gets, as `NAME = "value"` pairs.
+///
+/// A value may use `{root}` for the absolute project root and `{version}` for the version
+/// of the epic. No name may start with `ZAF_` (whatever its case): those are zaf's own, and a
+/// manifest setting `ZAF_INSTANCE` would dodge the modes. The check runs when the manifest
+/// loads, so a bad table never reaches a child. Default: no variables.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(try_from = "BTreeMap<String, toml::Value>")]
+pub struct EnvSection {
+    vars: BTreeMap<String, String>,
+}
+
+impl TryFrom<BTreeMap<String, toml::Value>> for EnvSection {
+    type Error = String;
+
+    fn try_from(table: BTreeMap<String, toml::Value>) -> Result<Self, Self::Error> {
+        let mut vars = BTreeMap::new();
+        for (name, value) in table {
+            check_env_name(&name)?;
+            let toml::Value::String(text) = value else {
+                return Err(format!(
+                    "[env] `{name}` must be a string, got {}",
+                    value.type_str()
+                ));
+            };
+            if text.contains('\0') {
+                return Err(format!("[env] `{name}` must not hold a NUL character"));
+            }
+            vars.insert(name, text);
+        }
+        Ok(Self { vars })
+    }
+}
+
+impl EnvSection {
+    /// The variables as written, placeholders unresolved, by name.
+    pub fn vars(&self) -> &BTreeMap<String, String> {
+        &self.vars
+    }
+
+    /// Whether the table sets nothing.
+    pub fn is_empty(&self) -> bool {
+        self.vars.is_empty()
+    }
+
+    /// The variables with `{root}` and `{version}` filled in, by name.
+    ///
+    /// `root` is the absolute project root; `version` is the epic's version, which a value
+    /// that uses `{version}` needs: without one the error names that variable. Any other
+    /// text, braces included, is kept as written.
+    pub fn resolve(
+        &self,
+        root: &Path,
+        version: Option<&str>,
+    ) -> Result<BTreeMap<String, String>, super::ManifestError> {
+        let root = root.to_string_lossy();
+        let mut resolved = BTreeMap::new();
+        for (name, value) in &self.vars {
+            let mut text = String::with_capacity(value.len());
+            let mut rest = value.as_str();
+            while let Some(at) = rest.find('{') {
+                text.push_str(&rest[..at]);
+                rest = &rest[at..];
+                if let Some(after) = rest.strip_prefix(ROOT_PLACEHOLDER) {
+                    text.push_str(&root);
+                    rest = after;
+                } else if let Some(after) = rest.strip_prefix(VERSION_PLACEHOLDER) {
+                    let Some(version) = version else {
+                        return Err(super::ManifestError::EnvNeedsVersion { name: name.clone() });
+                    };
+                    text.push_str(version);
+                    rest = after;
+                } else {
+                    text.push('{');
+                    rest = &rest[1..];
+                }
+            }
+            text.push_str(rest);
+            resolved.insert(name.clone(), text);
+        }
+        Ok(resolved)
+    }
+}
+
+/// Refuses a name a child process cannot carry or zaf reserves.
+fn check_env_name(name: &str) -> Result<(), String> {
+    let mut chars = name.chars();
+    let starts_well = chars
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_');
+    if !starts_well || !chars.all(|rest| rest.is_ascii_alphanumeric() || rest == '_') {
+        return Err(format!(
+            "[env] `{name}` is not a variable name: use letters, digits and `_`, not starting with a digit"
+        ));
+    }
+    if name.to_ascii_uppercase().starts_with(RESERVED_PREFIX) {
+        return Err(format!(
+            "[env] `{name}` starts with `{RESERVED_PREFIX}`: those variables are zaf's own and no manifest sets them"
+        ));
+    }
+    Ok(())
+}

@@ -6,7 +6,7 @@ use super::Cli;
 use super::exit::{self, OK, REFUSED};
 
 use crate::app::doctor::{CommandOutput, Commands, doctor};
-use crate::composition::Composition;
+use crate::composition::{Composition, zaf_home};
 use crate::manifest::CommandLine;
 use crate::ports::{GateVerdict, Shell};
 
@@ -79,7 +79,12 @@ pub fn run(cli: &Cli) -> u8 {
         }
     };
     let commands = ShellCommands::new(composition.shell());
-    let report = doctor(composition.root(), composition.manifest(), &commands);
+    let report = doctor(
+        composition.root(),
+        zaf_home().as_deref(),
+        composition.manifest(),
+        &commands,
+    );
     if cli.json {
         match serde_json::to_string_pretty(&report) {
             Ok(json) => println!("{json}"),

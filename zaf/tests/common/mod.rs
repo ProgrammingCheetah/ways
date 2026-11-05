@@ -24,7 +24,8 @@ pub struct Project {
 }
 
 impl Project {
-    /// An empty project root with `manifest` as its `ZAF.toml`.
+    /// An empty project root with `manifest` as its `.zaf.toml`. A test that exercises the
+    /// retired `ZAF.toml` writes that file itself.
     pub fn new(manifest: &str) -> Self {
         let temp = tempfile::tempdir().expect("temp dir");
         let root = temp.path().join("repo");
@@ -34,7 +35,7 @@ impl Project {
         fs::create_dir_all(&root).expect("root");
         fs::create_dir_all(&scene).expect("scene");
         fs::write(scene.join("rules"), "").expect("rules");
-        fs::write(root.join("ZAF.toml"), manifest).expect("manifest");
+        fs::write(root.join(".zaf.toml"), manifest).expect("manifest");
         Self {
             temp,
             root,

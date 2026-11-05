@@ -7,8 +7,10 @@
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
-use crate::composition::MANIFEST_FILE;
-use crate::manifest::{Manifest, ManifestError};
+use crate::manifest::{Manifest, ManifestError, ProjectFiles, ROOT_FILE};
+
+/// The file `init` writes.
+pub const MANIFEST_FILE: &str = ROOT_FILE;
 
 /// Why no manifest was written.
 #[derive(Debug, thiserror::Error)]
@@ -60,16 +62,29 @@ fn quoted(text: &str) -> String {
     toml::Value::String(text.to_owned()).to_string()
 }
 
-/// Writes `<dir>/ZAF.toml` from answers read on `input`, prompting on `output`;
-/// returns the file's path. Refuses, before asking anything, when one exists.
+/// Writes `<dir>/.zaf.toml` from answers read on `input`, prompting on `output`;
+/// returns the file's path. Refuses, before asking anything, when `dir` holds any manifest
+/// file. See [`init_with_home`] to leave the zaf home's own `config.toml` out of that check.
 pub fn init(
     dir: &Path,
     input: &mut dyn BufRead,
     output: &mut dyn Write,
 ) -> Result<PathBuf, InitError> {
+    init_with_home(dir, None, input, output)
+}
+
+/// [`init`] knowing the zaf `home`: when `dir/.zaf` is the zaf home, its `config.toml` is the
+/// machine's, not a project manifest, and does not make init refuse.
+pub fn init_with_home(
+    dir: &Path,
+    home: Option<&Path>,
+    input: &mut dyn BufRead,
+    output: &mut dyn Write,
+) -> Result<PathBuf, InitError> {
     let path = dir.join(MANIFEST_FILE);
-    if path.exists() {
-        return Err(InitError::Exists(path));
+    let found = ProjectFiles::find(dir, home);
+    if let Some(existing) = found.root.or(found.folder).or(found.legacy) {
+        return Err(InitError::Exists(existing));
     }
     let name = required(input, output, "project name")?;
     let board = required(input, output, "board repo (owner/name)")?;

@@ -5,6 +5,7 @@
 //! the tick returns), and exits `2` when a launch
 //! could not be recorded or its runner could not run. Each launch runs the
 //! `team` role through [`Composition::runner_for_role`], inside its profile.
+//! The tick ends by filling the ledger; a ledger failure warns and leaves the exit code.
 //! With `--dry-run` it prints the plan and, per launch, the instance, the epic,
 //! the tasks, the profile, the environment and the command line, and stops there.
 
@@ -117,6 +118,9 @@ pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool) -> u8 {
             })
             .collect();
         println!("{json}");
+    }
+    if let Err(message) = super::report::ingest_ledger(&composition) {
+        eprintln!("zaf {path}: warning: {message}");
     }
     code
 }

@@ -1,6 +1,6 @@
 # zaf actions
 
-Draft v6, 2026-11-04, with the Engineer's rulings and the answers to the planning questions (§8). An **action** is a runnable file that `zaf` names, lists and runs through `zaf do <name>`. Actions are how a project or a machine makes zaf its own, and zaf is the abstraction layer over them: it owns the names, the listing, the environment, the log, the modes, the phases and one exit contract; what a name *does* is the action behind it. zaf ships none: whoever sets zaf up writes them, and every place a verb shells out is a name the project or the machine must provide. What Claude assumed beyond the rulings is listed in §9, open to veto.
+Draft v9, 2026-11-04, with the Engineer's rulings and the answers to the planning questions (§8). An **action** is a runnable file that `zaf` names, lists and runs through `zaf do <name>`. Actions are how a project or a machine makes zaf its own, and zaf is the abstraction layer over them: it owns the names, the listing, the environment, the log, the modes, the phases and one exit contract; what a name *does* is the action behind it. zaf ships none: whoever sets zaf up writes them, and every place a verb shells out is a name the project or the machine must provide. What Claude assumed beyond the rulings is listed in §9, open to veto.
 
 ## 1. Principles
 
@@ -83,7 +83,7 @@ A file with no metadata, no description or no declared code, or one that declare
 | `land` | the last `zaf check pr` result for the PR and its current head is clean, and the workspace's latest commit is that head; no result is not clean | that record's head against the PR's head and the workspace's latest commit |
 | `done` | merged | the `done` label |
 
-The first rule that holds decides: the `done` label is `done`; a `check pr` record clean for the PR's current head, with the workspace's latest commit at that head, is `land`; a clean record with the workspace ahead of it, or a must-fix record, is `build`, or `check` when a clean task check is newer; a failed step is `review`; a `.pr` record with no result for the current head is `publish`, or `check` when a clean task check is newer than the `.pr` record; a clean task check is `check`; a workspace record is `build`; the `claimed` label with a live lease is `claim`; anything else is `unclaimed`, which no `phases:` may name.
+The first rule that holds decides: the `done` label is `done`; a `check pr` record clean for the PR's current head, with the workspace's latest commit at that head, is `land`; a clean record with the workspace ahead of it, or a must-fix record, is `build`, or `check` when a clean task check is newer; a failed step is `review`; a `.pr` record with no result for the current head is `publish`, or `check` when a clean task check is newer than the `.pr` record, or `build` when the last task check failed; a clean task check is `check`; a workspace record is `build`; the `claimed` label with a live lease is `claim`; anything else is `unclaimed`, which no `phases:` may name.
 
 **The records.** zaf writes them, never a script. When `slice-open` or `slice-pr` exits 0, zaf stores what it handed back in `.zaf/slices/<task>` (the workspace path) or `.zaf/slices/<task>.pr` (the number). When `slice-merge` or `slice-drop` exits 0, zaf forgets both and the task's check records, so a drop returns the task to `claim` and a reopened slice starts clean. `zaf check` and `zaf changes` read the workspace from the record and fill the base from `ZAF_VERSION` and the branch pattern. These are plain files, so this stops a script's mistake, not a process set on forging them.
 
@@ -93,7 +93,7 @@ The first rule that holds decides: the `done` label is `done`; a `check pr` reco
 
 **Handing a value back.** An action that stands in for a verb's step hands its value back as the last non-empty line of its log: `pr-open` a pull request number, `commit` a commit id, `slice-open` the workspace path. `merge-base` exit 1 means conflicted, with the paths in the log; any other non-zero is a backend failure.
 
-**Output and exit.** Everything the body writes, stdout and stderr, goes to `.zaf/logs/<DATETIME>_<ZAF_ACTION_NAME>.log` (`~/.zaf/logs/` outside a project), `<DATETIME>` as `YYYYMMDDTHHMMSSZ`. On exit 0 `zaf` prints nothing. When the body ran and exits non-zero, it prints `FAIL <name>: exit <n>, <its declared meaning>, log <path>` and the last ten lines of the log; an undeclared code prints `exit <n>, undeclared`. The code passes through unchanged. A run past its time bound did run, so it is `FAIL`, exit 2. When the body never ran (§5), it prints `NOT_RUN <name>: <reason>` and exits 125. A body that exits 125 because a nested action did not run is `FAIL`, `exit 125, a nested action did not run`, and the code passes through. `--more` prints the whole log after the run; `--json` gives result (`OK`, `FAIL` or `NOT_RUN`), name, tier, exit, meaning, seconds and log. A nested `zaf do` writes its own log and its path into the outer one.
+**Output and exit.** Everything the body writes, stdout and stderr, goes to `.zaf/logs/<DATETIME>_<ZAF_ACTION_NAME>.log` (`~/.zaf/logs/` outside a project), `<DATETIME>` as `YYYYMMDDTHHMMSSZ`. On exit 0 `zaf` prints nothing. When the body ran and exits non-zero, it prints `FAIL <name>: exit <n>, <its declared meaning>, log <path>` and the last ten lines of the log; an undeclared code prints `exit <n>, undeclared`. The code passes through unchanged. A run past its time bound did run, so it is `FAIL`, exit 2. When the body never ran (§5), it prints `NOT_RUN <name>: <reason>` and exits 125. A body that exits 125 because a nested action did not run is `FAIL`, `exit 125, a nested action did not run`, and the code passes through. `--more` prints the whole log after the run; `--json` gives result (`OK`, `FAIL` or `NOT_RUN`), name, tier, exit, meaning, seconds and log. A nested `zaf do` writes its own log and its path into the outer one. A `zaf check` step that runs a process logs the same way (ruling 30).
 
 ## 4. The verbs, as compositions
 
@@ -162,7 +162,7 @@ Not actions: `/nodes:chart --diff` (a model's job, a skill) and the spawner's mi
 
 ## 8. Rulings
 
-Rulings 1 to 19 are of 2026-11-03; 20 to 29 of 2026-11-04.
+Rulings 1 to 19 are of 2026-11-03; 20 to 30 of 2026-11-04.
 
 1. **Global home:** a configurable zaf home, default `~/.zaf/`, laid out like a project; `zaf setup` makes it first when it has not run, and may be called from the beginning.
 2. **Local home:** projects gain a committed `.zaf/` folder; actions live in `.zaf/actions/`; the file name is the action name, no spaces, hyphens and the like allowed.
@@ -193,6 +193,11 @@ Rulings 1 to 19 are of 2026-11-03; 20 to 29 of 2026-11-04.
 27. **Drop and reopen (planning decision 4):** `slice-open` is refused past `claim`; forgetting a slice also removes the task's check records; `slice-drop` also runs in `check`.
 28. **Accepted as planned:** `slice-merge` on a done task refuses (decision 3); a base merge pushed by `slice-merge` followed by a failed `pr-merge` needs a new `check pr` (5); doctor finds needed names by scanning bodies for a literal `zaf do` (6); the `ZAF.toml` rename comes last (7); `ZAF_BASE` arrives in #140 (8).
 29. **The ledger (#147):** zaf holds an SQLite ledger. It is zaf's own state, not a committed file, so no row has to reach `main` and the release has no step for it.
+30. **Logs are kept (#158):** a check step's whole output goes to `.zaf/logs/<DATETIME>_<name>.log`, git-ignored, as an action's does (§3). What the step returns is short: a word and the log's path.
+31. **Tickets state scope, not files:** a ticket's `Owned paths` becomes `Scope`, the capability it changes in words, with a file or folder named only as a place to start, and `Out of scope`, what it leaves alone and the ticket that has it. The programmer goes where the goal needs and stops at `Out of scope`. `Architecture` goes: `zaf check` takes its symbols from `Interfaces` and looks for them in the whole tree. The reason: 5 of the 8 questions raised during this build came from a closed file list (#149, #157, #158, #166, #173), and each one stops the loop for the Engineer. Tickets written for people state scope as behaviour with explicit exclusions; agent vendors treat a named file as a hint; no measurement supports a closed list.
+32. **One behaviour per ticket:** the Goal is one sentence with no "and". Size S expects a pull request under 200 lines and M under 400; anything larger splits. These are planning targets read against the merged pull request, not gates. The numbers come from review research on people and are unproven for agents.
+33. **Batch two, limit 45:** `[roles.team] batch = 2`, which matches the two programmers an instance runs at once. The runner limit stays 45 minutes: instances are short-lived by design, so one that reaches the limit is carrying too much work.
+34. **Phases and modes, from the build (#234 to #238):** a failed task check with a `.pr` record and no result for the current head is `build`. A mode refusing the owner prints `the Engineer`. A blank `ZAF_INSTANCE` does not parse, so it is refused; `zaf setup` keeps treating blank as none. There is no fixed list of roles: the role a well-formed `ZAF_INSTANCE` names is the caller's and `group` decides its digit, so a project's own role works without a zaf release.
 
 ## 9. Assumed by Claude, open to veto
 
@@ -207,9 +212,12 @@ Rulings 1 to 19 are of 2026-11-03; 20 to 29 of 2026-11-04.
 9. A root `ZAF.toml` beside a `.zaf.toml` or `.zaf/config.toml` is an error in every verb, not only in doctor.
 10. `command:` check steps and the `zaf slice …` verbs stay one release beside `action:` and `zaf do slice-…`, then retire; `changes` stays a verb over a Vcs port shrunk to diffs.
 11. The manifest combines table by table, property by property; an array is replaced, not merged. `[env]` applies to every gate, test, check and action run and can set no `ZAF_*` variable.
-12. The group digit covers exactly the roles named; a role not in `ZAF_INSTANCE`'s vocabulary is others; programmers share their team's identity until they run as their own process, which no task in this epic needs.
+12. The group digit covers exactly the roles named, and a role not named is others; programmers share their team's identity until they run as their own process, which no task in this epic needs.
 13. The unit and the verb of §10, and the ledger's place and per-run shape, are Claude's design, for the Engineer's ask of 2026-11-04.
 14. The ledger uses `rusqlite` with SQLite bundled, zaf's first C dependency. "Every backend is reached by shelling out" still holds, because the ledger is zaf's own state, not a backend, and no `sqlite3` needs installing.
+15. Until 0.2.0 is installed, tickets keep the labels installed 0.1.2 requires, because its parser needs them and refuses an unknown field: scope in words under `Owned paths`, `Architecture: none`, and out of scope as the first acceptance line. 0.2.0 reads both forms.
+16. With no file lists, tickets that touch the same area are ordered with `Blocked by`. A collision that still happens is met at merge: the base is merged, the gate runs again, and a conflict goes back as a round. No source publishes a conflict rate for this, so ours is read from the rounds per task after the re-plan.
+17. `zaf brief` prints a map for each place a ticket names to start and each node once. Today it repeats the chain per path, and 74 to 83% of that section's lines are repeats.
 
 ## 10. Is it saving tokens
 

@@ -130,7 +130,7 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::app::ask::{CheckResult, LogLine};
+    use crate::app::ask::{CheckResult, LogLine, Read};
     use crate::domain::{Answer, Profile, RoleName};
     use crate::ports::RunRequest;
 
@@ -177,6 +177,7 @@ command = \"echo local-model\"
             answer: answer.to_owned(),
             rung: None,
             check,
+            read: Read::default(),
         }
     }
 
