@@ -121,7 +121,7 @@
     }
   ],
   "notes": [
-    "Task fields: Goal, Owned paths, Interfaces, Design pages, Architecture, Acceptance, Tests, Security trigger, Model, Size; check reads Tests, Architecture and Acceptance",
+    "Task fields: Goal, Scope with Out of scope (or Owned paths; Scope wins when both are given), Interfaces, Design pages, Architecture (optional), Acceptance, Tests, Security trigger, Model, Size; check reads Tests, Architecture and Acceptance",
     "Task labels ready, claimed, blocked, question, done and page statuses decided, current, proposed, superseded are the vocabularies shared with the board and design source",
     "Ask kinds are fact, rule, term, exists, where"
   ]
