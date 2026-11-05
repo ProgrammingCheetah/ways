@@ -543,6 +543,17 @@ fn permits_read_takes_the_read_bit_of_the_callers_digit() {
 }
 
 #[test]
+fn can_shadow_reads_only_the_owner_w() {
+    for owner in 0..8_u8 {
+        for rest in ["00", "22", "77"] {
+            let mode = ActionMode::parse(&format!("{owner}{rest}")).expect("a mode");
+            assert_eq!(can_shadow(mode), owner & 2 == 2, "{mode}");
+        }
+    }
+    assert!(can_shadow(ActionMode::DEFAULT));
+}
+
+#[test]
 fn only_an_absent_instance_is_the_engineer() {
     use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt;
