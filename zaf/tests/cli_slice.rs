@@ -128,6 +128,11 @@ fn a_slice_goes_from_open_to_merged() {
     assert!(stdout.contains("already open"), "{stdout}");
 
     write(&dir, "src/export.txt", "title\nauthor\nyear\n");
+    let (code, _, stderr) = outcome(&project.zaf(&["changes", "2"]));
+    assert_eq!(code, 1, "no slice record, nothing to read");
+    assert!(stderr.contains("is not open"), "{stderr}");
+    // `slice-open` leaves the record: the workspace path, alone.
+    write(&project.root, ".zaf/slices/2", &dir.to_string_lossy());
     let (code, stdout, stderr) = outcome(&project.zaf(&["changes", "2"]));
     assert_eq!(code, 0, "{stderr}");
     assert_eq!(stdout, "src/export.txt +3 -0\n1 files +3 -0\n");

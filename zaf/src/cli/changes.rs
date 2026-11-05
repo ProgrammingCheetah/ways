@@ -3,8 +3,10 @@
 use serde_json::json;
 
 use super::Cli;
-use super::exit::fail_composition;
+use super::check::not_open;
+use super::exit::{REFUSED, fail_composition};
 use super::slice::{fail_slice, prepare, print};
+use crate::app::actions::SliceRecords;
 use crate::app::changes::{self, Changes, ChangesQuery};
 use crate::domain::IssueNumber;
 
@@ -15,12 +17,19 @@ pub fn run(cli: &Cli, task: IssueNumber, path: Option<&str>) -> u8 {
         Ok(prepared) => prepared,
         Err(code) => return code,
     };
+    // The workspace is the one the slice record names, never guessed from the branch patterns;
+    // the base is the target's, from the pattern. A task with no record is refused.
+    let Some(workspace) = SliceRecords::new(composition.root()).workspace(task) else {
+        eprintln!("zaf {verb}: {}", not_open(task));
+        return REFUSED;
+    };
     let vcs = match composition.vcs() {
         Ok(vcs) => vcs,
         Err(error) => return fail_composition(&verb, &error),
     };
     let query = ChangesQuery {
         target,
+        workspace,
         path: path.map(str::to_owned),
     };
     match changes::changes(vcs.as_ref(), &query) {
