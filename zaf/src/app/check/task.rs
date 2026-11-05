@@ -1,8 +1,8 @@
 //! The task kind: what is checkable about a task, line by line, with no model.
 //!
 //! The light gate runs; each test named on `Tests:` runs through the manifest's
-//! `[gate] tests` template; each interface id on `Architecture:` is searched as a
-//! symbol inside the owned paths; every `Acceptance:` line is listed as manual
+//! `[gate] tests` template; each interface id on `Interfaces:` is searched as a
+//! symbol in the whole tree (`Architecture:` is not read); every `Acceptance:` line is listed as manual
 //! for the reviewer. Names are the backticked spans of a field, or, when it has
 //! none, its comma- or semicolon-separated items that are one identifier each;
 //! any other item is prose and listed as manual.
@@ -27,7 +27,7 @@ pub enum LineKind {
     Gate,
     /// A test named on `Tests:`.
     Test,
-    /// An interface id on `Architecture:`.
+    /// An interface id on `Interfaces:`.
     Interface,
     /// An `Acceptance:` line.
     Acceptance,
@@ -87,7 +87,7 @@ pub struct TaskInputs<'a> {
     pub tests: Option<&'a CommandLine>,
     /// The shell that runs each named test.
     pub shell: &'a dyn Shell,
-    /// The project root the owned paths are relative to.
+    /// The tree an interface symbol is searched in: the task's workspace.
     pub root: &'a Path,
 }
 
@@ -102,14 +102,13 @@ pub fn check_task(template: &TaskTemplate, inputs: &TaskInputs<'_>) -> TaskCheck
     }
     lines.extend(manual(LineKind::Test, test_prose));
 
-    let (interfaces, interface_prose) = names(&template.architecture);
-    let owned = owned_paths(&template.owned_paths, inputs.root);
+    let (interfaces, interface_prose) = names(&template.interfaces);
     for id in interfaces {
         let symbol = id.rsplit("::").next().unwrap_or(&id);
-        let status = if owned.iter().any(|path| symbols::defines(path, symbol)) {
+        let status = if symbols::defines(inputs.root, symbol) {
             LineStatus::Pass
         } else {
-            LineStatus::Fail("not found in the owned paths".to_owned())
+            LineStatus::Fail("not found in the tree".to_owned())
         };
         lines.push(line(LineKind::Interface, id.clone(), status));
     }
@@ -202,28 +201,6 @@ fn names(field: &str) -> (Vec<String>, Vec<String>) {
 fn is_identifier(text: &str) -> bool {
     text.chars()
         .all(|character| character.is_alphanumeric() || matches!(character, '_' | ':'))
-}
-
-/// The paths named in `Owned paths:` that exist under the root, globs cut at the first `*`.
-fn owned_paths(field: &str, root: &Path) -> Vec<std::path::PathBuf> {
-    field
-        .split(|character: char| character.is_whitespace() || matches!(character, ',' | ';'))
-        .map(|token| {
-            token.trim_matches(|character| matches!(character, '`' | '(' | ')' | '"' | '\''))
-        })
-        .map(|token| {
-            token
-                .split('*')
-                .next()
-                .unwrap_or(token)
-                .trim_end_matches('/')
-        })
-        .filter(|token| {
-            token.contains(['/', '.']) && !token.starts_with('/') && !token.contains("..")
-        })
-        .map(|token| root.join(token))
-        .filter(|path| path.exists())
-        .collect()
 }
 
 #[cfg(test)]
