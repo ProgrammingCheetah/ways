@@ -5,17 +5,20 @@
 //! in the project's `.zaf/actions/` or the machine's, [`caller`] decides whether
 //! its mode lets the caller run it, and [`run`] runs it, logs it and bounds it in
 //! time. [`phase`] derives the Team Phase an action's `phases:` line is held
-//! against. zaf ships no actions.
+//! against, and [`records`] keeps what `slice-open` and `slice-pr` hand back.
+//! zaf ships no actions.
 
 mod caller;
 mod metadata;
 mod phase;
+mod records;
 mod resolve;
 mod run;
 
 pub use caller::{Caller, INSTANCE_VAR};
 pub use metadata::{ActionMetadata, ActionMode, Bits, MetadataError, ParsedAction, Target, parse};
 pub use phase::{Phase, PhaseFacts, PrFacts, WorkspaceFacts, derive_phase};
+pub use records::{SliceRecords, hand_back};
 pub use resolve::{
     ACTIONS_DIR, ResolveError, Resolved, Tier, can_shadow, check_name, list, resolve, resolve_in,
 };
