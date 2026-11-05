@@ -5,14 +5,17 @@
 //! no task, or only tasks the board knows no epic for, belongs to the epic its row holds. A
 //! subagent already holds its parent session's epic in the ledger. Tasks done are read from
 //! the board. Dollars are computed here from the price table, never stored, so a changed
-//! price moves every row alike. The spend outside any epic is not a row: it is one line after
+//! price moves every row alike. Each row also holds the median dollars per done task by size
+//! (S, M): a run that names tasks splits evenly across them, any other run across the epic's
+//! done tasks, and a task with no readable size is in the epic's total but in no median. The
+//! spend outside any epic is not a row: it is one line after
 //! the rows, so that spend stays visible.
 
 use std::collections::{BTreeMap, HashMap};
 
 use super::ledger::LedgerRow;
 use super::{PriceTable, median};
-use crate::domain::{IssueNumber, TaskLabel};
+use crate::domain::{IssueNumber, TaskLabel, TaskSize, TaskTemplate};
 use crate::ports::{Board, PortError};
 
 /// What the text and the JSON say about every dollar figure.
@@ -68,12 +71,35 @@ pub struct EpicRow {
     pub context_last: Option<f64>,
     /// Each role's share of the estimated dollars, largest first.
     pub roles: Vec<RoleShare>,
+    /// Median estimated dollars per done task, by size.
+    pub median_usd: SizeMedians,
 }
+
+/// The median estimated dollars per done task, for each size.
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize)]
+pub struct SizeMedians {
+    /// Over the done tasks of size S; none without one.
+    pub s: Option<f64>,
+    /// Over the done tasks of size M; none without one.
+    pub m: Option<f64>,
+}
+
+/// What the board holds on a task: its epic, whether it is done and its size when the body
+/// reads.
+#[derive(Debug, Clone, Copy)]
+struct Found {
+    epic: IssueNumber,
+    done: bool,
+    size: Option<TaskSize>,
+}
+
+/// The done tasks of one epic that the ledger saw work on, each with its size when it reads.
+type DoneTasks = [(u64, Option<TaskSize>)];
 
 /// The epic of every task the rows name, as the board has it, and whether it is done.
 struct Tasks<'a> {
     board: &'a dyn Board,
-    seen: HashMap<u64, Option<(IssueNumber, bool)>>,
+    seen: HashMap<u64, Option<Found>>,
 }
 
 impl<'a> Tasks<'a> {
@@ -84,16 +110,22 @@ impl<'a> Tasks<'a> {
         }
     }
 
-    /// The task's epic and whether it is done; none for a task the board does not have or
-    /// that has no epic. Any other board failure is an error.
-    fn look_up(&mut self, task: u64) -> Result<Option<(IssueNumber, bool)>, PortError> {
+    /// The task's epic, state and size; none for a task the board does not have or that has
+    /// no epic. A body that does not read gives no size. Any other board failure is an error.
+    fn look_up(&mut self, task: u64) -> Result<Option<Found>, PortError> {
         if let Some(known) = self.seen.get(&task) {
             return Ok(*known);
         }
         let found = match self.board.task(IssueNumber::from(task)) {
-            Ok(ticket) => ticket
-                .epic
-                .map(|epic| (epic, ticket.label == Some(TaskLabel::Done))),
+            Ok(ticket) => ticket.epic.map(|epic| Found {
+                epic,
+                done: ticket.label == Some(TaskLabel::Done),
+                size: ticket
+                    .body
+                    .parse::<TaskTemplate>()
+                    .ok()
+                    .map(|template| template.size),
+            }),
             Err(PortError::NotFound(_)) => None,
             Err(error) => return Err(error),
         };
@@ -148,8 +180,8 @@ pub fn epic_view(
     for row in rows {
         let mut epic = None;
         for task in &row.tasks {
-            if let Some((found, _)) = tasks.look_up(*task)? {
-                epic = Some(found.get());
+            if let Some(found) = tasks.look_up(*task)? {
+                epic = Some(found.epic.get());
                 break;
             }
         }
@@ -158,13 +190,17 @@ pub fn epic_view(
             None => loose.push(row),
         }
     }
-    let mut done: BTreeMap<u64, usize> = BTreeMap::new();
+    let mut done: BTreeMap<u64, Vec<(u64, Option<TaskSize>)>> = BTreeMap::new();
     let mut named: Vec<u64> = rows.iter().flat_map(|row| row.tasks.clone()).collect();
     named.sort_unstable();
     named.dedup();
     for task in named {
-        if let Some((epic, true)) = tasks.look_up(task)? {
-            *done.entry(epic.get()).or_default() += 1;
+        if let Some(found) = tasks.look_up(task)?
+            && found.done
+        {
+            done.entry(found.epic.get())
+                .or_default()
+                .push((task, found.size));
         }
     }
     let rows = by_epic
@@ -173,7 +209,7 @@ pub fn epic_view(
             row_of(
                 epic,
                 &runs,
-                done.get(&epic).copied().unwrap_or_default(),
+                done.get(&epic).map_or(&[], Vec::as_slice),
                 prices,
             )
         })
@@ -211,7 +247,47 @@ fn cost_of(row: &LedgerRow, prices: &PriceTable) -> f64 {
         .cost(row.input, row.cache_write, row.cache_read, row.output)
 }
 
-fn row_of(epic: u64, runs: &[&LedgerRow], tasks_done: usize, prices: &PriceTable) -> EpicRow {
+/// The median dollars per done task, by size.
+///
+/// A run whose row names tasks splits its dollars evenly across them; any other run splits
+/// evenly across the epic's done tasks. A task not done takes its share out of every median,
+/// and a task whose size does not read is in no median, though its dollars stay in the
+/// epic's total.
+fn size_medians(runs: &[&LedgerRow], done: &DoneTasks, prices: &PriceTable) -> SizeMedians {
+    let mut spent: BTreeMap<u64, f64> = done.iter().map(|(task, _)| (*task, 0.0)).collect();
+    for run in runs {
+        let cost = cost_of(run, prices);
+        let mut named = run.tasks.clone();
+        named.sort_unstable();
+        named.dedup();
+        if named.is_empty() {
+            let share = cost / done.len().max(1) as f64;
+            spent.values_mut().for_each(|total| *total += share);
+        } else {
+            let share = cost / named.len() as f64;
+            for task in named {
+                if let Some(total) = spent.get_mut(&task) {
+                    *total += share;
+                }
+            }
+        }
+    }
+    let of_size = |wanted: TaskSize| {
+        let costs: Vec<f64> = done
+            .iter()
+            .filter(|(_, size)| *size == Some(wanted))
+            .map(|(task, _)| spent[task])
+            .collect();
+        (!costs.is_empty()).then(|| median(costs))
+    };
+    SizeMedians {
+        s: of_size(TaskSize::S),
+        m: of_size(TaskSize::M),
+    }
+}
+
+fn row_of(epic: u64, runs: &[&LedgerRow], done: &DoneTasks, prices: &PriceTable) -> EpicRow {
+    let tasks_done = done.len();
     let mut tokens = Tokens::default();
     let mut by_role: BTreeMap<String, f64> = BTreeMap::new();
     let mut est_usd = 0.0;
@@ -257,6 +333,7 @@ fn row_of(epic: u64, runs: &[&LedgerRow], tasks_done: usize, prices: &PriceTable
         context_first: median_of(|run| run.context_first),
         context_last: median_of(|run| run.context_last),
         roles,
+        median_usd: size_medians(runs, done, prices),
     }
 }
 
@@ -270,11 +347,13 @@ pub fn render_text(rows: &[EpicRow]) -> String {
     let none = || "-".to_owned();
     let thousands = |value: Option<f64>| value.map_or_else(none, |v| format!("{:.0}k", v / 1e3));
     out.push_str(&format!(
-        "{:<6} {:>5} {:>8} {:>7} {:>10} {:>6} {:>6} {:>8} {:>8} {:>9} {:>8}  roles\n",
+        "{:<6} {:>5} {:>8} {:>7} {:>7} {:>7} {:>10} {:>6} {:>6} {:>8} {:>8} {:>9} {:>8}  roles\n",
         "epic",
         "done",
         "est $",
         "$/task",
+        "med S $",
+        "med M $",
         "turns/task",
         "ctx1",
         "ctxN",
@@ -290,11 +369,13 @@ pub fn render_text(rows: &[EpicRow]) -> String {
             .map(|role| format!("{} {:.0}%", role.role, role.share_percent))
             .collect();
         out.push_str(&format!(
-            "{:<6} {:>5} {:>8.2} {:>7} {:>10} {:>6} {:>6} {:>7.2}M {:>7.1}M {:>8.1}M {:>7.2}M  {}\n",
+            "{:<6} {:>5} {:>8.2} {:>7} {:>7} {:>7} {:>10} {:>6} {:>6} {:>7.2}M {:>7.1}M {:>8.1}M {:>7.2}M  {}\n",
             format!("#{}", row.epic),
             row.tasks_done,
             row.est_usd,
             row.usd_per_task.map_or_else(none, |v| format!("{v:.2}")),
+            row.median_usd.s.map_or_else(none, |v| format!("{v:.2}")),
+            row.median_usd.m.map_or_else(none, |v| format!("{v:.2}")),
             row.turns_per_task.map_or_else(none, |v| format!("{v:.0}")),
             thousands(row.context_first),
             thousands(row.context_last),
