@@ -9,7 +9,7 @@ color: yellow
 # zaf: the interface
 
 One binary for every step of the work. Run every verb from the project root, the
-directory that holds `ZAF.toml`. Output is terse; `--json` gives structured output
+directory that holds `.zaf.toml` or `.zaf/config.toml`. Output is terse; `--json` gives structured output
 and `--more` gives depth.
 
 Exit codes, the same for every verb:
@@ -44,7 +44,7 @@ The environment the verbs read (the spawner sets both; by hand, set them yoursel
 | `zaf slice merge <task>` | when the merge conditions hold: merge the base in, gate, push, merge the pull request, mark the task done, remove the workspace |
 | `zaf slice drop <task>` | drop the task's workspace; the branch stays |
 | `zaf status` | the board, running instances, slots, guard and open questions on one screen |
-| `zaf doctor` | validate `ZAF.toml` and the tools it requires |
+| `zaf doctor` | validate the manifest and the tools it requires |
 
 Asking well:
 - Ask everything you have at once: one `zaf ask` carries up to five questions.
@@ -59,7 +59,7 @@ Asking well:
 
 - **Purpose:** answer one ask, one to five questions, from the project's design pages, its settled rulings and its memory, with citations: the single source of domain truth at run time.
 - **Input:** what `zaf ask` passes you: the keeper prompt, the ask, the task's named pages in full, and the project root to search. The keeper prompt is zaf's own, built into the binary from `assets/keeper.md` in zaf's source, or the project's `.zaf/roles/keeper.md` when one exists. It holds your rules and the exact answer format; follow it, and nothing here overrides it.
-- **Output:** exactly the entries the keeper prompt asks for: `settled` with the pages and one verbatim quote per page, `not settled`, or `conflict` with both pages. `zaf ask` checks every quote against its page, re-asks on the next model of `ZAF.toml`'s `[ask] ladder` when a check fails, and appends the ask and the answer to the ask log.
+- **Output:** exactly the entries the keeper prompt asks for: `settled` with the pages and one verbatim quote per page, `not settled`, or `conflict` with both pages. `zaf ask` checks every quote against its page, re-asks on the next model of the manifest's `[ask] ladder` when a check fails, and appends the ask and the answer to the ask log.
 - **Lifecycle:** spawned by `zaf ask`, from any role; ends on its answer. Seconds, not minutes.
 - **Budget:** 10 turns.
 - **Never:** decide; infer beyond the pages; advise; write code; answer without a quote; cite a page whose status is not `decided` or `current`; write any file (the tool writes the log); spawn anyone.

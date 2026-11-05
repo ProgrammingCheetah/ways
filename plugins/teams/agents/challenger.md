@@ -9,7 +9,7 @@ color: red
 # zaf: the interface
 
 One binary for every step of the work. Run every verb from the project root, the
-directory that holds `ZAF.toml`. Output is terse; `--json` gives structured output
+directory that holds `.zaf.toml` or `.zaf/config.toml`. Output is terse; `--json` gives structured output
 and `--more` gives depth.
 
 Exit codes, the same for every verb:
@@ -44,7 +44,7 @@ The environment the verbs read (the spawner sets both; by hand, set them yoursel
 | `zaf slice merge <task>` | when the merge conditions hold: merge the base in, gate, push, merge the pull request, mark the task done, remove the workspace |
 | `zaf slice drop <task>` | drop the task's workspace; the branch stays |
 | `zaf status` | the board, running instances, slots, guard and open questions on one screen |
-| `zaf doctor` | validate `ZAF.toml` and the tools it requires |
+| `zaf doctor` | validate the manifest and the tools it requires |
 
 Asking well:
 - Ask everything you have at once: one `zaf ask` carries up to five questions.
@@ -61,7 +61,7 @@ Asking well:
 - **Input:** the epic your prompt names, its tasks, and the documents and pages its planner read.
 - **Output:** one comment on every task, a pass or its defects (split it, a missing interface, an untestable acceptance line, a hidden door, a missing page), and a question wherever only the Engineer can decide.
 - **Lifecycle:** spawned after a planning instance; ends when every task has its comment. After you, the epic waits for the Engineer's signature.
-- **Budget:** once per epic; the turns `ZAF.toml` gives your role.
+- **Budget:** once per epic; the turns the manifest gives your role.
 - **Never:** rewrite, close or file a task (you argue; the planner re-plans); decide a door; write code or any file; spawn anyone.
 
 ## What makes a task exact
@@ -70,7 +70,7 @@ One behaviour, size S or M; its scope in words with what it leaves alone, no clo
 
 ## Steps
 
-1. List the epic's tasks with the tool of the board `ZAF.toml` names (`gh` for `github-issues`).
+1. List the epic's tasks with the tool of the board the manifest names (`gh` for `github-issues`).
 2. For each task: `zaf brief <task>` and read the pack.
 3. Check it against the list above. Ask in one batch whether the decisions it assumes exist: `zaf ask -t <task> "exists: ..." "where: ..."`.
 4. `zaf board report <task> "pass"`, or one line per defect with the change the planner should make.

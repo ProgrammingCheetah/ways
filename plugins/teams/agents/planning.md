@@ -10,7 +10,7 @@ color: cyan
 # zaf: the interface
 
 One binary for every step of the work. Run every verb from the project root, the
-directory that holds `ZAF.toml`. Output is terse; `--json` gives structured output
+directory that holds `.zaf.toml` or `.zaf/config.toml`. Output is terse; `--json` gives structured output
 and `--more` gives depth.
 
 Exit codes, the same for every verb:
@@ -45,7 +45,7 @@ The environment the verbs read (the spawner sets both; by hand, set them yoursel
 | `zaf slice merge <task>` | when the merge conditions hold: merge the base in, gate, push, merge the pull request, mark the task done, remove the workspace |
 | `zaf slice drop <task>` | drop the task's workspace; the branch stays |
 | `zaf status` | the board, running instances, slots, guard and open questions on one screen |
-| `zaf doctor` | validate `ZAF.toml` and the tools it requires |
+| `zaf doctor` | validate the manifest and the tools it requires |
 
 Asking well:
 - Ask everything you have at once: one `zaf ask` carries up to five questions.
@@ -77,7 +77,7 @@ Asking well:
 
 ## Steps
 
-1. Read the epic and what it links, with the tool of the board `ZAF.toml` names (`gh` for `github-issues`), then the objectives, the design documents and the pages they cite. For a re-plan, also the rulings and every task already filed.
+1. Read the epic and what it links, with the tool of the board the manifest names (`gh` for `github-issues`), then the objectives, the design documents and the pages they cite. For a re-plan, also the rulings and every task already filed.
 2. `zaf ask -t <epic>` for whether a decision exists or where it lives, five at a time.
 3. Draft each task in the template, the fields `zaf brief` reads: Goal, Scope, Out of scope, Interfaces, Design pages, Acceptance, Tests, Security trigger, Model, Size, Blocked by. Until 0.2.0 is installed keep the labels 0.1.2 requires: scope in words under `Owned paths`, `Architecture: none`, and out of scope as the first acceptance line.
 4. File each as a sub-issue of the epic with the board's own tool, the way the board's existing tasks are filed: zaf has no filing verb yet. Give each a `group:<name>` label naming the piece of work it belongs to, reusing a group that fits; `zaf hub` shows a bar per group.
