@@ -602,6 +602,52 @@ fn a_launch_puts_its_environment_on_the_request() {
 }
 
 #[test]
+fn spawn_launches_with_env() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let manifest: Manifest = format!(
+        "{MANIFEST}\n[env]\nCARGO_TARGET_DIR = \"{{root}}/.zaf/target\"\nGATE_BASE = \"feature/release-{{version}}@origin\"\nHOME = \"/from/manifest\"\n"
+    )
+    .parse()
+    .expect("manifest parses");
+    let root = Path::new("/work/bookshelf");
+    let board = board();
+    let runner = FakeRunner::default();
+    let prepared = prepare(&board, &state_dir, &manifest, &|_| true, OWN_PID).expect("prepares");
+    let context = LaunchContext {
+        env: manifest_env(&manifest, root, "0-3").expect("resolves"),
+        ..context(&state_dir)
+    };
+    launch(&board, &runner, &context, &prepared.plan.launches[0]).expect("records the run");
+    let requests = runner.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].env,
+        BTreeMap::from([
+            (
+                "CARGO_TARGET_DIR".to_owned(),
+                "/work/bookshelf/.zaf/target".to_owned()
+            ),
+            (
+                "GATE_BASE".to_owned(),
+                "feature/release-0-3@origin".to_owned()
+            ),
+            ("HOME".to_owned(), "/from/manifest".to_owned()),
+        ])
+    );
+}
+
+#[test]
+fn a_table_that_needs_a_version_resolves_with_the_one_given() {
+    let manifest: Manifest = format!("{MANIFEST}\n[env]\nBASE = \"release-{{version}}\"\n")
+        .parse()
+        .expect("manifest parses");
+    let env = manifest_env(&manifest, Path::new("/p"), "0.2.0").expect("resolves");
+    assert_eq!(env["BASE"], "release-0.2.0");
+    assert!(manifest_env(&self::manifest(), Path::new("/p"), "0.2.0").is_ok_and(|e| e.is_empty()));
+}
+
+#[test]
 fn launches_run_in_parallel_threads_and_all_are_joined() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state_dir = dir.path().join(".zaf");

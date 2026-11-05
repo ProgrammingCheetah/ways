@@ -51,8 +51,16 @@ pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool) -> u8 {
     }
     let manifest = composition.manifest();
     let state_dir = composition.state_dir();
+    // Resolved before anything is reserved, so a bad table holds no slot.
+    let project_env = match spawn::manifest_env(manifest, composition.root(), version) {
+        Ok(env) => env,
+        Err(error) => {
+            eprintln!("zaf {path}: {error}");
+            return REFUSED;
+        }
+    };
     if dry_run {
-        return dry(cli, &path, &composition, version);
+        return dry(cli, &path, &composition, version, &project_env);
     }
     let prepared = match spawn::prepare(
         board.as_ref(),
@@ -73,7 +81,7 @@ pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool) -> u8 {
         }
         print!("{}", prepared.plan.render_text());
     }
-    let jobs = jobs(&composition, &prepared, version);
+    let jobs = jobs(&composition, &prepared, version, &project_env);
     let ports = || -> Result<LaunchPorts, PortError> {
         let board = composition
             .board()
@@ -130,6 +138,7 @@ fn jobs<'a>(
     composition: &Composition,
     prepared: &'a Prepared,
     version: &str,
+    project_env: &BTreeMap<String, String>,
 ) -> Vec<(&'a spawn::PlannedLaunch, LaunchContext)> {
     let manifest = composition.manifest();
     let profile = spawn::team_profile(manifest);
@@ -142,7 +151,7 @@ fn jobs<'a>(
                 state_dir: composition.state_dir(),
                 project: manifest.project.name.to_string(),
                 profile,
-                env: launch_env(&planned.instance, version),
+                env: with_project_env(project_env, launch_env(&planned.instance, version)),
             };
             (planned, context)
         })
@@ -150,7 +159,13 @@ fn jobs<'a>(
 }
 
 /// The dry run: plans the tick without reserving it and prints what each launch would run.
-fn dry(cli: &Cli, path: &str, composition: &Composition, version: &str) -> u8 {
+fn dry(
+    cli: &Cli,
+    path: &str,
+    composition: &Composition,
+    version: &str,
+    project_env: &BTreeMap<String, String>,
+) -> u8 {
     let board = match composition.board() {
         Ok(board) => board,
         Err(error) => return exit::fail_composition(path, &error),
@@ -161,7 +176,7 @@ fn dry(cli: &Cli, path: &str, composition: &Composition, version: &str) -> u8 {
             Ok(prepared) => prepared,
             Err(error) => return failed(path, &error),
         };
-    let jobs = jobs(composition, &prepared, version);
+    let jobs = jobs(composition, &prepared, version, project_env);
     let describe = |request: &RunRequest| {
         composition
             .role_launch(request)
@@ -186,6 +201,17 @@ fn dry(cli: &Cli, path: &str, composition: &Composition, version: &str) -> u8 {
         print!("{}", launch.render_text());
     }
     OK
+}
+
+/// The manifest's `[env]` first, then zaf's own variables over it (no `[env]` key may
+/// start with `ZAF_`, so none is shadowed).
+fn with_project_env(
+    project_env: &BTreeMap<String, String>,
+    own: BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut env = project_env.clone();
+    env.extend(own);
+    env
 }
 
 /// The environment a launch carries for the verbs its instance runs.
@@ -234,6 +260,21 @@ mod tests {
     #[test]
     fn without_a_version_the_tick_refuses() {
         assert_eq!(cli::run(["zaf", "spawn", "--once"]), REFUSED);
+    }
+
+    #[test]
+    fn a_launch_carries_the_manifests_env_beside_zafs_own() {
+        let instance = Instance {
+            role: RoleName::from("team"),
+            epic: IssueNumber::from(16),
+            number: InstanceNumber::from(12),
+        };
+        let project = BTreeMap::from([("GATE_BASE".to_owned(), "feature/release-0-3".to_owned())]);
+        let env = with_project_env(&project, launch_env(&instance, "0-3"));
+        assert_eq!(env["GATE_BASE"], "feature/release-0-3");
+        assert_eq!(env["ZAF_VERSION"], "0-3");
+        assert_eq!(env["ZAF_INSTANCE"], "team instance 12 on #16");
+        assert_eq!(env.len(), 3);
     }
 
     #[test]
