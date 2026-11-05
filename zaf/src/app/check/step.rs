@@ -8,6 +8,7 @@ mod bot;
 mod ci;
 mod codeql;
 mod command;
+mod log;
 mod runner;
 
 pub use runner::{BRIEF_FILE, CRITIQUE_BRIEF, SECURITY_BRIEF};
@@ -178,7 +179,7 @@ pub fn run(
     let source = step.source();
     match &step.kind {
         StepKind::Ci => ci::run(&source, ports, context),
-        StepKind::Command(line) => command::run(&source, line, ports),
+        StepKind::Command(line) => command::run(&source, line, ports, context),
         StepKind::Runner(runner_step) => runner::run(&source, runner_step, ports, context),
         StepKind::Bot(login) => bot::run(&source, login, ports, context),
         StepKind::Codeql => codeql::run(&source, ports, context),
