@@ -192,6 +192,12 @@ impl Forge for GithubForge {
         Ok(pull.head_ref_oid.filter(|head| !head.is_empty()))
     }
 
+    fn merged(&self, pr: PrNumber) -> Result<bool, PortError> {
+        let number = bare(pr);
+        let pull: PrStateRow = self.gh.json(&["pr", "view", &number, "--json", "state"])?;
+        Ok(pull.state == "MERGED")
+    }
+
     fn last_changed_file(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
         let number = bare(pr);
         let files: Vec<FileRow> = self.gh.api_list(&format!("pulls/{number}/files"))?;

@@ -164,6 +164,15 @@ pub(super) fn run_named(name: &str, args: &[OsString], only: Option<Tier>) -> Ru
         .project
         .as_ref()
         .map(|project| project.board().map_err(|error| error.to_string()));
+    // The same for the forge and the version control, which only an action with `phases` reads.
+    let forge = place
+        .project
+        .as_ref()
+        .map(|project| project.forge().map_err(|error| error.to_string()));
+    let vcs = place
+        .project
+        .as_ref()
+        .map(|project| project.vcs().map_err(|error| error.to_string()));
     let version = std::env::var(VERSION_VAR)
         .ok()
         .filter(|version| !version.is_empty());
@@ -171,8 +180,12 @@ pub(super) fn run_named(name: &str, args: &[OsString], only: Option<Tier>) -> Ru
         .project
         .as_ref()
         .zip(board.as_ref())
-        .map(|(project, board)| SliceContext {
+        .zip(forge.as_ref())
+        .zip(vcs.as_ref())
+        .map(|(((project, board), forge), vcs)| SliceContext {
             board: board.as_ref().map(|board| &**board).map_err(Clone::clone),
+            forge: forge.as_ref().map(|forge| &**forge).map_err(Clone::clone),
+            vcs: vcs.as_ref().map(|vcs| &**vcs).map_err(Clone::clone),
             branches: &project.manifest().branches,
             version: version.as_deref(),
         });

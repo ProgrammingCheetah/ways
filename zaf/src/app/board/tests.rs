@@ -1,6 +1,10 @@
+use std::path::{Path, PathBuf};
+
 use super::*;
+use crate::app::check::{CheckRecord, Verdict};
 use crate::domain::{InstanceNumber, RoleName};
-use crate::fakes::FakeBoard;
+use crate::fakes::{FakeBoard, FakeForge, FakeVcs};
+use crate::ports::{BaseName, PrNumber, PrRequest, SliceName};
 
 fn ticket(number: u64, label: TaskLabel) -> Ticket {
     Ticket {
@@ -270,4 +274,212 @@ fn a_ruling_returns_the_task_to_ready_so_it_can_be_claimed_again() {
         claim(&board, &claim_command(2, 2, 1)),
         Ok(ClaimOutcome::Claimed)
     );
+}
+
+/// A project on disk and the fakes behind it, holding one claimed task.
+struct Scene {
+    _dir: tempfile::TempDir,
+    root: PathBuf,
+    workspace: PathBuf,
+    board: FakeBoard,
+    forge: FakeForge,
+    vcs: FakeVcs,
+}
+
+const TASK: u64 = 319;
+const SLICE: &str = "feature/0.2.0-103-319";
+const BASE: &str = "feature/0.2.0";
+
+fn put(file: &Path, text: &str) {
+    std::fs::create_dir_all(file.parent().expect("parent")).expect("mkdir");
+    std::fs::write(file, text).expect("write");
+}
+
+impl Scene {
+    /// A claimed task with a slice, a pull request at the slice's head and a clean review of it.
+    fn landable() -> Self {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let base = std::fs::canonicalize(dir.path()).expect("real path");
+        let (root, workspace) = (base.join("project"), base.join("workspace"));
+        std::fs::create_dir_all(&workspace).expect("mkdir");
+        let scene = Self {
+            _dir: dir,
+            root,
+            workspace,
+            board: board_with(&[(TASK, TaskLabel::Ready)]),
+            forge: FakeForge::default(),
+            vcs: FakeVcs::default(),
+        };
+        scene
+            .board
+            .claim(scene.task(), &instance(1))
+            .expect("claim");
+        let workspace = scene.workspace.display().to_string();
+        put(&scene.root.join(".zaf/slices/319"), &workspace);
+        let slice = SliceName::from(SLICE);
+        scene
+            .vcs
+            .open_slice(&slice, &BaseName::from(BASE))
+            .expect("open");
+        scene.vcs.place(&slice, &scene.workspace).expect("place");
+        let head = scene.commit();
+        let pr = scene.open_pr(&head);
+        let record = CheckRecord {
+            target: format!("pr:{}:#{TASK}", pr.get()),
+            verdict: Verdict::Clean,
+            lines: Vec::new(),
+            head: Some(head),
+            at: Some("2001-01-01T00:00:00Z".to_owned()),
+        };
+        let file = format!(".zaf/runs/check-pr-{}.json", pr.get());
+        let json = serde_json::to_string(&record).expect("json");
+        put(&scene.root.join(file), &json);
+        scene
+    }
+
+    fn task(&self) -> IssueNumber {
+        IssueNumber::from(TASK)
+    }
+
+    fn commit(&self) -> String {
+        let slice = SliceName::from(SLICE);
+        self.vcs.edit(&slice, "a.rs", 1, 0, "+a").expect("edit");
+        self.vcs.commit(&slice, "Work").expect("commit").to_string()
+    }
+
+    fn open_pr(&self, head: &str) -> PrNumber {
+        let request = PrRequest {
+            slice: SliceName::from(SLICE),
+            base: BaseName::from(BASE),
+            title: "Task".to_owned(),
+            body: String::new(),
+        };
+        let pr = self.forge.open_pr(&request).expect("open pr");
+        self.forge.set_head(pr, Some(head)).expect("head");
+        put(&self.root.join(".zaf/slices/319.pr"), &pr.get().to_string());
+        pr
+    }
+
+    fn records(&self) -> SliceRecords {
+        SliceRecords::new(&self.root)
+    }
+
+    fn phase(&self) -> Phase {
+        let (board, forge, vcs) = (&self.board, &self.forge, &self.vcs);
+        let facts = gather_phase_facts(board, forge, vcs, &self.records(), self.task());
+        derive_phase(&facts.expect("facts"))
+    }
+
+    fn done(&self) -> Result<DoneOutcome, BoardError> {
+        let (board, forge, vcs) = (&self.board, &self.forge, &self.vcs);
+        done(board, forge, vcs, &self.records(), self.task())
+    }
+
+    fn label(&self) -> Option<TaskLabel> {
+        self.board.task(self.task()).expect("task").label
+    }
+
+    fn comments(&self) -> Vec<String> {
+        self.board.comments(self.task())
+    }
+}
+
+#[test]
+fn board_done_in_land_marks_the_task() {
+    let scene = Scene::landable();
+    assert_eq!(scene.phase(), Phase::Land);
+    assert_eq!(scene.label(), Some(TaskLabel::Claimed));
+    assert_eq!(scene.done(), Ok(DoneOutcome::Marked));
+    assert_eq!(scene.label(), Some(TaskLabel::Done));
+    assert_eq!(scene.phase(), Phase::Done);
+}
+
+#[test]
+fn board_done_after_the_recorded_pr_merged() {
+    let scene = Scene::landable();
+    // `slice-merge` merges the base in first, which moves the head: the task has left `land`.
+    scene.commit();
+    let pr = scene.records().pr(scene.task()).expect("a pull request");
+    scene.forge.merge(pr).expect("merge");
+    assert_eq!(scene.phase(), Phase::Build);
+    assert_eq!(scene.done(), Ok(DoneOutcome::Marked));
+    assert_eq!(scene.label(), Some(TaskLabel::Done));
+}
+
+#[test]
+fn board_done_twice_is_quiet() {
+    let scene = Scene::landable();
+    assert_eq!(scene.done(), Ok(DoneOutcome::Marked));
+    let comments = scene.comments();
+    assert_eq!(scene.done(), Ok(DoneOutcome::AlreadyDone));
+    assert_eq!(scene.label(), Some(TaskLabel::Done));
+    assert_eq!(scene.comments(), comments);
+}
+
+#[test]
+fn board_done_outside_land_refuses() {
+    // Work past the reviewed head is `build`, and no pull request has merged.
+    let scene = Scene::landable();
+    scene.commit();
+    let refusal = scene.done().expect_err("a refusal");
+    assert_eq!(
+        refusal,
+        BoardError::NotInLand {
+            task: scene.task(),
+            phase: Phase::Build,
+        }
+    );
+    assert_eq!(refusal.to_string(), "#319 is in build, not land");
+    assert_eq!(scene.label(), Some(TaskLabel::Claimed));
+
+    // A task with no recorded pull request at all.
+    let bare = Scene::landable();
+    std::fs::remove_file(bare.root.join(".zaf/slices/319.pr")).expect("remove");
+    let refusal = bare.done().expect_err("a refusal");
+    assert!(matches!(refusal, BoardError::NotInLand { .. }), "{refusal}");
+    assert_eq!(bare.label(), Some(TaskLabel::Claimed));
+
+    // A task with no slice at all.
+    let unclaimed = Scene::landable();
+    std::fs::remove_file(unclaimed.root.join(".zaf/slices/319.pr")).expect("remove");
+    std::fs::remove_file(unclaimed.root.join(".zaf/slices/319")).expect("remove");
+    let refusal = unclaimed.done().expect_err("a refusal");
+    assert_eq!(
+        refusal.to_string(),
+        "#319 is in claim, not land",
+        "claimed, nothing built"
+    );
+    assert_eq!(unclaimed.label(), Some(TaskLabel::Claimed));
+}
+
+#[test]
+fn board_done_open_pr_refuses() {
+    let scene = Scene::landable();
+    scene.commit();
+    let pr = scene.records().pr(scene.task()).expect("a pull request");
+    assert_eq!(scene.forge.merged(pr), Ok(false));
+    assert!(matches!(
+        scene.done(),
+        Err(BoardError::NotInLand {
+            phase: Phase::Build,
+            ..
+        })
+    ));
+    assert_eq!(scene.label(), Some(TaskLabel::Claimed));
+}
+
+#[test]
+fn a_forge_that_cannot_answer_changes_nothing() {
+    // The merged read fails, outside land: the label stays.
+    let scene = Scene::landable();
+    scene.commit();
+    scene.forge.fail_merged_reads();
+    assert!(matches!(scene.done(), Err(BoardError::Port(_))));
+    assert_eq!(scene.label(), Some(TaskLabel::Claimed));
+
+    // A pull request the forge does not know: the phase cannot be read.
+    let unknown = Scene::landable();
+    put(&unknown.root.join(".zaf/slices/319.pr"), "404");
+    assert!(matches!(unknown.done(), Err(BoardError::Unreadable(_))));
+    assert_eq!(unknown.label(), Some(TaskLabel::Claimed));
 }

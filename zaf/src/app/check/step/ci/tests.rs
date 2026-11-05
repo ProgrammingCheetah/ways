@@ -55,6 +55,10 @@ impl Forge for ScriptedForge {
         self.inner.head(pr)
     }
 
+    fn merged(&self, pr: PrNumber) -> Result<bool, PortError> {
+        self.inner.merged(pr)
+    }
+
     fn last_changed_file(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
         self.inner.last_changed_file(pr)
     }

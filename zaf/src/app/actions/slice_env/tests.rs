@@ -114,6 +114,8 @@ fn context<'a>(
 ) -> SliceContext<'a> {
     SliceContext {
         board: Ok(board),
+        forge: Err("no forge in this test".to_owned()),
+        vcs: Err("no version control in this test".to_owned()),
         branches,
         version,
     }
@@ -122,6 +124,8 @@ fn context<'a>(
 fn failing<'a>(branches: &'a BranchesSection, version: Option<&'a str>) -> SliceContext<'a> {
     SliceContext {
         board: Err("the board is down".to_owned()),
+        forge: Err("no forge in this test".to_owned()),
+        vcs: Err("no version control in this test".to_owned()),
         branches,
         version,
     }

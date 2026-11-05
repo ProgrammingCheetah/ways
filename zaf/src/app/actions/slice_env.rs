@@ -16,7 +16,7 @@ use super::run::RunRequest;
 use crate::app::slice::{SliceQuery, resolve};
 use crate::domain::IssueNumber;
 use crate::manifest::BranchesSection;
-use crate::ports::Board;
+use crate::ports::{Board, Forge, Vcs};
 
 /// The integration branch, from `ZAF_VERSION` and the branch pattern.
 pub const BASE_VAR: &str = "ZAF_BASE";
@@ -44,6 +44,10 @@ const TICKET_PLACEHOLDERS: [&str; 2] = ["{task}", "{epic}"];
 pub struct SliceContext<'a> {
     /// The board, or why there is none; a run that needs it and finds none starts nothing.
     pub board: Result<&'a dyn Board, String>,
+    /// The forge, or why there is none; an action with `phases` that finds none starts nothing.
+    pub forge: Result<&'a dyn Forge, String>,
+    /// The version control, or why there is none; read like the forge.
+    pub vcs: Result<&'a dyn Vcs, String>,
     /// The manifest's `[branches]`.
     pub branches: &'a BranchesSection,
     /// `ZAF_VERSION`: the release the branches build toward; `None` when unset or blank.
@@ -57,6 +61,14 @@ impl fmt::Debug for SliceContext<'_> {
             .field(
                 "board",
                 &self.board.as_ref().map(|_| "..").map_err(Clone::clone),
+            )
+            .field(
+                "forge",
+                &self.forge.as_ref().map(|_| "..").map_err(Clone::clone),
+            )
+            .field(
+                "vcs",
+                &self.vcs.as_ref().map(|_| "..").map_err(Clone::clone),
             )
             .field("branches", &self.branches)
             .field("version", &self.version)
