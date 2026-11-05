@@ -15,6 +15,7 @@ mod dashboard;
 mod draw;
 mod gather;
 mod hook;
+mod phases;
 mod reports;
 mod watch;
 
@@ -22,6 +23,7 @@ pub use dashboard::{BindError, Dashboard, Page, lan_address, lan_url};
 pub use draw::draw;
 pub use gather::{HubError, HubInputs, gather};
 pub use hook::{PROGRAMMER, TEAM, TESTING, ToolCall, WAITING_ON_REVIEW, task_in_workspace};
+pub use phases::{PhaseError, PhasePlan, declare, enter, plans_dir, plans_of};
 pub use reports::{MAX_LINES, Report, WORKING, append, last_report, record, reports_file};
 pub use watch::{Mark, Watch};
 
@@ -83,6 +85,22 @@ pub struct TicketRow {
     pub word: String,
     /// Since its last report; none when it has made none.
     pub since: Option<Duration>,
+    /// One row per model that declared phases on it, by role.
+    pub models: Vec<ModelRow>,
+}
+
+/// A model's own phases on a task: the ones it declared and where it is among them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelRow {
+    /// The role that declared them, as `programmer`.
+    pub role: String,
+    /// The declared phases, in order.
+    pub phases: Vec<String>,
+    /// The phase it reported last; none before its first report.
+    pub current: Option<String>,
+    /// How often it has entered the current phase: 1 the first time, 2 on the second, zero before
+    /// its first report.
+    pub iteration: u32,
 }
 
 #[cfg(test)]

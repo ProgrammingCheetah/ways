@@ -9,6 +9,7 @@ fn ticket(number: u64, phase: Phase) -> TicketRow {
         phase,
         word: "testing".to_owned(),
         since: Some(Duration::from_secs(40)),
+        models: vec![],
     }
 }
 
@@ -292,4 +293,125 @@ fn a_report_reads_back_as_written() {
         text.contains("95 - team reading with tabs and lines"),
         "{text:?}"
     );
+}
+
+fn words(phases: &[&str]) -> Vec<String> {
+    phases.iter().map(|phase| (*phase).to_owned()).collect()
+}
+
+fn model(role: &str, phases: &[&str], current: Option<&str>, iteration: u32) -> ModelRow {
+    ModelRow {
+        role: role.to_owned(),
+        phases: words(phases),
+        current: current.map(str::to_owned),
+        iteration,
+    }
+}
+
+#[test]
+fn a_repeated_phase_counts_an_iteration() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let task = crate::domain::IssueNumber::from(330);
+    declare(
+        dir.path(),
+        task,
+        "programmer",
+        &words(&["read", "write", "test"]),
+    )
+    .expect("declares");
+    let iteration = |phase: &str| {
+        let plan = enter(dir.path(), task, "programmer", phase).expect("enters");
+        (plan.current().map(str::to_owned), plan.iteration())
+    };
+    assert_eq!(iteration("read"), (Some("read".to_owned()), 1));
+    assert_eq!(iteration("write"), (Some("write".to_owned()), 1));
+    // The same phase again, with nothing between, is not a second pass.
+    assert_eq!(iteration("write"), (Some("write".to_owned()), 1));
+    assert_eq!(iteration("test"), (Some("test".to_owned()), 1));
+    assert_eq!(iteration("write"), (Some("write".to_owned()), 2));
+    assert_eq!(iteration("test"), (Some("test".to_owned()), 2));
+    assert_eq!(iteration("write"), (Some("write".to_owned()), 3));
+    // The hub reads it back from the files, and draws the second pass as `write ×2`.
+    let plans = plans_of(dir.path(), task);
+    assert_eq!(plans.len(), 1);
+    assert_eq!(plans[0].0.iteration(), 3);
+    assert_eq!(
+        plans_of(dir.path(), crate::domain::IssueNumber::from(331)),
+        vec![]
+    );
+    let mut row = epic();
+    row.groups.clear();
+    row.tickets[0].models = vec![model(
+        "programmer",
+        &["read", "write", "test"],
+        Some("write"),
+        2,
+    )];
+    let frame = frame_of(row, 100);
+    assert!(frame.contains("write ×2"), "{frame}");
+}
+
+#[test]
+fn frame_draws_a_row_per_reporting_model() {
+    let mut row = epic();
+    row.groups.clear();
+    row.tickets[0].models = vec![
+        model(
+            "programmer",
+            &["read", "write", "test", "fix"],
+            Some("test"),
+            1,
+        ),
+        model("keeper", &["search", "answer"], None, 0),
+    ];
+    let frame = frame_of(row, 100);
+    let lines: Vec<&str> = frame.lines().collect();
+    let at = lines
+        .iter()
+        .position(|line| line.contains("#143"))
+        .expect("ticket");
+    let programmer = lines[at + 1];
+    let keeper = lines[at + 2];
+    assert!(programmer.trim_start().starts_with("programmer"), "{frame}");
+    assert!(programmer.contains("test"), "{frame}");
+    assert!(
+        !programmer.contains('×'),
+        "first pass shows no count: {frame}"
+    );
+    assert_eq!(filled(programmer), bar_cells(programmer) * 3 / 4, "{frame}");
+    assert!(keeper.trim_start().starts_with("keeper"), "{frame}");
+    assert_eq!(filled(keeper), 0, "not started: {frame}");
+    // Nothing else sits between the ticket and its models.
+    assert_eq!(lines.len(), at + 3, "{frame}");
+}
+
+#[test]
+fn a_ticket_gains_one_line_per_model() {
+    let mut row = epic();
+    row.groups.clear();
+    let plain = frame_of(row.clone(), 100);
+    row.tickets[0].models = vec![model("programmer", &["read"], Some("read"), 1)];
+    let with = frame_of(row, 100);
+    assert_eq!(with.lines().count(), plain.lines().count() + 1);
+}
+
+#[test]
+fn no_model_row_passes_the_width() {
+    let mut long = epic();
+    long.tickets[0].models = vec![model(
+        "a-role-with-a-very-long-name",
+        &["a-long-phase", "another-long-phase", "third"],
+        Some("another-long-phase"),
+        12,
+    )];
+    long.groups[0].tickets[0].models = long.tickets[0].models.clone();
+    for width in [0, 1, 10, 20, 40, 60, 80, 100, 200] {
+        let frame = frame_of(long.clone(), width);
+        for line in frame.lines() {
+            assert!(
+                line.chars().count() <= width,
+                "width {width}, line {line:?}"
+            );
+        }
+    }
 }
