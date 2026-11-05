@@ -1,17 +1,22 @@
 //! `command:<cmd>`: run a line in the project; its report lines count, and a
-//! non-zero exit with no must-fix line of its own is one must-fix.
+//! non-zero exit with no must-fix line of its own is one must-fix. The whole output
+//! is kept in the step's log, and the must-fix for the exit names that log.
 
 use crate::app::check::{StepPorts, parse_report};
 use crate::domain::{Finding, FindingSource, Severity};
 use crate::manifest::CommandLine;
 use crate::ports::{GateVerdict, PortError};
 
+use super::{StepContext, log};
+
 pub(super) fn run(
     source: &FindingSource,
     line: &CommandLine,
     ports: &dyn StepPorts,
+    context: &StepContext,
 ) -> Result<Vec<Finding>, PortError> {
     let gate_run = ports.run(line)?;
+    let log_path = log::keep(&context.root, source, &gate_run.output)?;
     let mut findings = parse_report(source, &gate_run.output);
     let has_must_fix = findings
         .iter()
@@ -20,7 +25,7 @@ pub(super) fn run(
         findings.push(Finding {
             source: source.clone(),
             severity: Severity::MustFix,
-            message: format!("`{line}` exited non-zero"),
+            message: format!("`{line}` exited non-zero, log {}", log_path.display()),
             location: None,
         });
     }

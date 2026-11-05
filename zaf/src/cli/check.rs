@@ -613,7 +613,19 @@ mod tests {
         assert_eq!(without.head, None);
         assert_eq!(without.verdict, with_head.verdict);
         assert_eq!(without.verdict.code(), 1);
-        assert_eq!(without.lines, with_head.lines);
+        // Each run kept its log in a temp project of its own, so the paths differ.
+        let unlogged = |record: &CheckRecord| -> Vec<(String, String)> {
+            let text = |line: &crate::app::check::RecordLine| match line.text.split_once(", log ") {
+                Some((reason, _)) => reason.to_owned(),
+                None => line.text.clone(),
+            };
+            record
+                .lines
+                .iter()
+                .map(|line| (line.status.clone(), text(line)))
+                .collect()
+        };
+        assert_eq!(unlogged(&without), unlogged(&with_head));
         // A forge that cannot answer at all (no such pull request) is the same: none.
         let (forge, _) = pull_request(None);
         let elsewhere = PrNumber::from(99);
