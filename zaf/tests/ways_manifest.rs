@@ -115,7 +115,10 @@ fn ways_needs_no_machine_action() {
 fn ways_provides_every_needed_name() {
     let report = doctor_report();
     let needed = report["needed"].as_array().expect("needed rows");
-    assert!(!needed.is_empty(), "the repo needs the slice verbs at least");
+    assert!(
+        !needed.is_empty(),
+        "the repo needs the slice verbs at least"
+    );
     for row in needed {
         assert_eq!(row["ok"], true, "a needed name is not provided: {row}");
         assert_eq!(
