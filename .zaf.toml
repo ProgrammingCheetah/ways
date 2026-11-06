@@ -69,6 +69,12 @@ profile = "build"
 turns = 200
 batch = 1
 
+[roles.release]
+model = "opus"
+effort = "xhigh"
+profile = "build"
+turns = 200
+
 [check.pr]
 steps = ["ci"]
 
@@ -83,3 +89,16 @@ guard = [70, 85, 95]
 
 [isolation]
 kind = "process"
+
+# Commands no instance runs, in every profile: each becomes a deny, bare and with arguments.
+# The merge paths are denied here so that only `zaf do slice-merge` and `zaf do release`,
+# which this list never names, merge anything. Regenerate the profiles after editing it:
+# a profile already written has no denies until `zaf profile init` runs again.
+[forbidden]
+commands = [
+  "gh pr merge",
+  "zaf do pr-merge",
+  "zaf do land",
+  "zaf do --tier machine pr-merge",
+  "zaf do --tier machine land",
+]

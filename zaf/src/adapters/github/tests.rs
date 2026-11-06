@@ -10,8 +10,8 @@ use crate::domain::{Instance, InstanceNumber, IssueNumber, Location, RoleName, T
 use crate::manifest::RepoName;
 use crate::ports::{
     Author, BaseName, Board, Check, CheckName, CheckState, ClaimOutcome, ClaimRecord, Forge,
-    NewQuestion, PortError, PrMerge, PrNumber, PrRequest, ReviewComment, RuleId, ScanningAlert,
-    SliceName, Ticket,
+    NewQuestion, PortError, PrMerge, PrNumber, PrRequest, QUESTION_TITLE_LIMIT, ReviewComment,
+    RuleId, ScanningAlert, SliceName, Ticket,
 };
 
 const REPO: &str = "example/tracker";
@@ -615,7 +615,7 @@ fn open_question_creates_a_labelled_issue() {
         "--title",
         "Which columns does the export carry?",
         "--body",
-        "Raised on #2.",
+        "Raised on #2.\n\nWhich columns does the export carry?",
         "--label",
         "question",
         "--label",
@@ -624,6 +624,120 @@ fn open_question_creates_a_labelled_issue() {
         REPO,
     ]);
     assert_eq!(fake.calls(), [expected_call]);
+}
+
+/// A question of `words` words, `word` repeated, raised on #2.
+fn wordy_question(word: &str, words: usize) -> NewQuestion {
+    NewQuestion {
+        on: IssueNumber::from(2),
+        text: vec![word; words].join(" "),
+        door: false,
+    }
+}
+
+/// The `--title` and `--body` the one `issue create` call carried.
+fn created_title_and_body(fake: &FakeGh) -> (String, String) {
+    let calls = fake.calls();
+    let [call] = calls.as_slice() else {
+        panic!("one call expected, got {calls:?}");
+    };
+    let value = |flag: &str| {
+        let at = call.iter().position(|arg| arg == flag).expect("flag");
+        call[at + 1].clone()
+    };
+    (value("--title"), value("--body"))
+}
+
+#[test]
+fn long_question_is_filed() {
+    let fake = FakeGh::new();
+    fake.on(
+        "issue create *",
+        &format!("https://github.com/{REPO}/issues/7\n"),
+    );
+    let question = NewQuestion {
+        on: IssueNumber::from(2),
+        text: "Which columns? ".repeat(70).trim().to_owned(),
+        door: false,
+    };
+    assert!(question.text.chars().count() >= 1000);
+    assert_eq!(
+        fake.board().open_question(&question),
+        Ok(IssueNumber::from(7))
+    );
+    let (title, _) = created_title_and_body(&fake);
+    assert!(title.chars().count() <= 200, "GitHub refuses a long title");
+}
+
+#[test]
+fn long_question_title_is_cut_at_a_word() {
+    let fake = FakeGh::new();
+    fake.on(
+        "issue create *",
+        &format!("https://github.com/{REPO}/issues/7\n"),
+    );
+    let question = wordy_question("columns", 150);
+    fake.board().open_question(&question).expect("filed");
+    let (title, _) = created_title_and_body(&fake);
+    assert!(title.chars().count() <= 200);
+    assert!(title.chars().count() > 180, "the cut keeps what fits");
+    assert!(question.text.starts_with(&title));
+    assert!(
+        question.text[title.len()..].starts_with(' '),
+        "the cut falls between words, not inside `columns`"
+    );
+    assert!(!title.ends_with(' '));
+}
+
+#[test]
+fn short_question_title_is_unchanged() {
+    let fake = FakeGh::new();
+    fake.on(
+        "issue create *",
+        &format!("https://github.com/{REPO}/issues/7\n"),
+    );
+    let exact = NewQuestion {
+        on: IssueNumber::from(2),
+        text: "a".repeat(QUESTION_TITLE_LIMIT),
+        door: false,
+    };
+    fake.board().open_question(&exact).expect("filed");
+    let (title, _) = created_title_and_body(&fake);
+    assert_eq!(title, exact.text);
+    assert_eq!(
+        wordy_question("x", 3).title(),
+        "x x x",
+        "a short question is its own title"
+    );
+}
+
+#[test]
+fn long_question_body_holds_the_whole_text() {
+    let fake = FakeGh::new();
+    fake.on(
+        "issue create *",
+        &format!("https://github.com/{REPO}/issues/7\n"),
+    );
+    let question = wordy_question("columns", 150);
+    fake.board().open_question(&question).expect("filed");
+    let (_, body) = created_title_and_body(&fake);
+    assert!(body.starts_with("Raised on #2."));
+    assert!(body.ends_with(&question.text));
+    let listed = serde_json::json!([{
+        "number": 7,
+        "title": question.title(),
+        "body": body,
+        "labels": [{ "name": "question" }],
+    }]);
+    let listing = FakeGh::new();
+    listing.on("issue list *", &listed.to_string());
+    let raised = listing
+        .board()
+        .questions_on(IssueNumber::from(2))
+        .expect("questions on the task");
+    assert_eq!(raised.len(), 1, "questions_on still finds it");
+    assert_eq!(NewQuestion::text_of(&raised[0].0), question.text);
+    assert!(question.is_asked_by(&raised[0].0));
 }
 
 #[test]
@@ -1163,6 +1277,43 @@ fn scanning_alerts_read_the_open_alerts_of_the_head_ref() {
 }
 
 #[test]
+fn last_changed_file_reads_the_diff() {
+    let fake = FakeGh::new();
+    let files = r#"[[
+        {"filename":"README.md","status":"modified"},
+        {"filename":"src/export.rs","status":"added"}
+    ],[
+        {"filename":"src/z/last.rs","status":"renamed","previous_filename":"src/a.rs"}
+    ]]"#;
+    let endpoint = format!("repos/{REPO}/pulls/7/files");
+    fake.on(&format!("api {endpoint} *"), files)
+        .on(&format!("api repos/{REPO}/pulls/8/files *"), "[[]]");
+    let forge = fake.forge();
+    assert_eq!(
+        forge.last_changed_file(PrNumber::from(7)),
+        Ok(Some("src/z/last.rs".to_owned()))
+    );
+    assert_eq!(forge.last_changed_file(PrNumber::from(8)), Ok(None));
+    let expected_calls = vec![
+        argv(&["api", &endpoint, "--paginate", "--slurp"]),
+        argv(&[
+            "api",
+            &format!("repos/{REPO}/pulls/8/files"),
+            "--paginate",
+            "--slurp",
+        ]),
+    ];
+    assert_eq!(fake.calls(), expected_calls);
+
+    let broken = FakeGh::new();
+    broken.fail_on("api *", "HTTP 404: Not Found");
+    assert!(matches!(
+        broken.forge().last_changed_file(PrNumber::from(7)),
+        Err(PortError::Backend(_))
+    ));
+}
+
+#[test]
 fn merge_merges_once_and_a_merged_pr_is_quiet() {
     let fake = FakeGh::new();
     fake.on("pr view 7 *", r#"{"state":"OPEN"}"#)
@@ -1177,6 +1328,31 @@ fn merge_merges_once_and_a_merged_pr_is_quiet() {
         argv(&["pr", "view", "8", "--json", "state", "--repo", REPO]),
     ];
     assert_eq!(fake.calls(), expected_calls);
+}
+
+#[test]
+fn merged_is_true_only_for_a_merged_pr_and_changes_nothing() {
+    let fake = FakeGh::new();
+    fake.on("pr view 7 *", r#"{"state":"OPEN"}"#)
+        .on("pr view 8 *", r#"{"state":"MERGED"}"#)
+        .on("pr view 9 *", r#"{"state":"CLOSED"}"#);
+    let forge = fake.forge();
+    assert_eq!(forge.merged(PrNumber::from(7)), Ok(false));
+    assert_eq!(forge.merged(PrNumber::from(8)), Ok(true));
+    assert_eq!(forge.merged(PrNumber::from(9)), Ok(false));
+    let expected_calls = vec![
+        argv(&["pr", "view", "7", "--json", "state", "--repo", REPO]),
+        argv(&["pr", "view", "8", "--json", "state", "--repo", REPO]),
+        argv(&["pr", "view", "9", "--json", "state", "--repo", REPO]),
+    ];
+    assert_eq!(fake.calls(), expected_calls);
+
+    let broken = FakeGh::new();
+    broken.fail_on("pr view *", "HTTP 502");
+    assert!(matches!(
+        broken.forge().merged(PrNumber::from(7)),
+        Err(PortError::Backend(_))
+    ));
 }
 
 #[test]

@@ -273,6 +273,39 @@ fn publish_pushes_a_commit_made_by_hand() {
 }
 
 #[test]
+fn latest_commit_reads_the_workspace() {
+    let fixture = Fixture::new(false);
+    let (slice, _base) = fixture.slice();
+    let dir = fixture.slice_dir(&slice);
+    write(&dir, "by_hand.txt", "hand\n");
+    jj(&dir, &["commit", "-m", "Made by hand"]);
+    // The hand-made commit left the bookmark on the base; the read does not follow the bookmark.
+    assert_eq!(fixture.target(SLICE), fixture.target(BASE));
+    let hand_made = jj(&dir, &["log", "--no-graph", "-r", "@-", "-T", "commit_id"]);
+    assert_ne!(hand_made, fixture.target(BASE));
+    assert_eq!(
+        fixture.vcs.latest_commit(&dir),
+        Ok(CommitId::from(hand_made.as_str()))
+    );
+    // Uncommitted work is not a commit `push` would move the bookmark to.
+    write(&dir, "wip.txt", "wip\n");
+    assert_eq!(
+        fixture.vcs.latest_commit(&dir),
+        Ok(CommitId::from(hand_made.as_str()))
+    );
+    jj(&dir, &["commit", "-m", "Finished"]);
+    // It is the commit `publish` moves the bookmark to, by the id the remote knows it by.
+    let latest = fixture.vcs.latest_commit(&dir).expect("latest commit");
+    assert_ne!(latest.to_string(), hand_made);
+    assert_eq!(fixture.vcs.publish(&slice), Ok(Publication::Published));
+    assert_eq!(fixture.remote_target(SLICE), latest.to_string());
+    assert!(matches!(
+        fixture.vcs.latest_commit(&dir.join("no-workspace")),
+        Err(PortError::NotFound(_))
+    ));
+}
+
+#[test]
 fn publish_of_uncommitted_work_is_rejected_and_pushes_nothing() {
     let fixture = Fixture::new(false);
     let (slice, _base) = fixture.slice();
@@ -471,22 +504,49 @@ fn merging_over_uncommitted_work_is_rejected() {
 #[test]
 fn diffs_come_as_stat_first_and_hunks_on_request() {
     let fixture = Fixture::new(false);
-    let (slice, _base) = fixture.slice();
+    let (slice, base) = fixture.slice();
     let dir = fixture.slice_dir(&slice);
     write(&dir, "notes.txt", "one\nTWO\nthree\n");
     fixture.vcs.commit(&slice, "Shout").expect("commit");
     write(&dir, "src/a b.rs", "fn a() {}\nfn b() {}\n");
     fixture.advance_base("base-1.txt", "1\n");
-    let stat = fixture.vcs.diff_stat(&slice).expect("stat");
+    let stat = fixture.vcs.diff_stat(&dir, &base).expect("stat");
     assert_eq!(
         stat.to_string(),
         "notes.txt +1 -1\nsrc/a b.rs +2 -0\n2 files +3 -1\n"
     );
-    let hunks = fixture.vcs.diff_hunks(&slice, "src/a b.rs").expect("hunks");
+    let hunks = fixture
+        .vcs
+        .diff_hunks(&dir, &base, "src/a b.rs")
+        .expect("hunks");
     assert!(hunks.contains("+fn a() {}\n+fn b() {}"), "{hunks}");
     assert!(!hunks.contains("notes.txt"), "{hunks}");
     assert!(matches!(
-        fixture.vcs.diff_hunks(&slice, "src/c.rs"),
+        fixture.vcs.diff_hunks(&dir, &base, "src/c.rs"),
+        Err(PortError::NotFound(_))
+    ));
+}
+
+#[test]
+fn diffs_read_no_jj_config_key() {
+    let fixture = Fixture::new(false);
+    let (slice, base) = fixture.slice();
+    let dir = fixture.slice_dir(&slice);
+    write(&dir, "a.txt", "a\n");
+    jj(&dir, &["config", "unset", "--workspace", BASE_KEY]);
+    let stat = fixture.vcs.diff_stat(&dir, &base).expect("stat");
+    assert_eq!(stat.to_string(), "a.txt +1 -0\n1 files +1 -0\n");
+    let hunks = fixture.vcs.diff_hunks(&dir, &base, "a.txt").expect("hunks");
+    assert!(hunks.contains("+a"), "{hunks}");
+}
+
+#[test]
+fn a_directory_that_is_no_workspace_is_not_found() {
+    let fixture = Fixture::new(false);
+    let (_slice, base) = fixture.slice();
+    let nowhere = fixture.root.join("not-a-workspace");
+    assert!(matches!(
+        fixture.vcs.diff_stat(&nowhere, &base),
         Err(PortError::NotFound(_))
     ));
 }

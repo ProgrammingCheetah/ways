@@ -83,3 +83,18 @@ fn an_undeclared_level_is_unavailable_and_runs_nothing() {
     ));
     assert!(!dir.path().join(RUNS_DIR).exists());
 }
+
+#[test]
+fn env_is_set_beside_the_inherited_environment_and_wins_over_it() {
+    let dir = temp_dir();
+    let command = "echo \"$FROM_ENV_TABLE $HOME\"; test -n \"$PATH\"";
+    let env = BTreeMap::from([
+        ("FROM_ENV_TABLE".to_owned(), "set".to_owned()),
+        ("HOME".to_owned(), "/overridden".to_owned()),
+    ]);
+    let gate = ShellGate::new(dir.path(), &gate_section(command, None)).with_env(env);
+    let gate_log = gate.run_logged(GateLevel::Full).expect("run");
+    assert_eq!(gate_log.exit_code, Some(0));
+    let captured = std::fs::read_to_string(&gate_log.path).expect("log");
+    assert_eq!(captured, "set /overridden\n");
+}

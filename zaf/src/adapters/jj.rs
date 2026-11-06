@@ -76,6 +76,18 @@ impl JjVcs {
         Some(BaseName::from(stdout.trim()))
     }
 
+    /// The runner for a workspace the caller names, or [`PortError::NotFound`] when the
+    /// directory holds no jj workspace. No config key is read: the caller knows the base.
+    fn workspace_command(&self, workspace: &Path) -> Result<JjCommand, PortError> {
+        if !workspace.join(".jj").is_dir() {
+            return Err(PortError::NotFound(format!(
+                "workspace {}",
+                workspace.display()
+            )));
+        }
+        Ok(self.command(workspace))
+    }
+
     /// An open slice's runner and base, or [`PortError::NotFound`].
     fn open(&self, slice: &SliceName) -> Result<(JjCommand, BaseName), PortError> {
         let dir = self.slice_dir(slice)?;
@@ -271,9 +283,15 @@ impl Vcs for JjVcs {
         jj.working_copy_is("empty")
     }
 
-    fn diff_stat(&self, slice: &SliceName) -> Result<DiffStat, PortError> {
-        let (jj, base) = self.open(slice)?;
-        let fork_point = Self::fork_point(&base);
+    fn latest_commit(&self, workspace: &Path) -> Result<CommitId, PortError> {
+        // The revision `publish` settles the bookmark on.
+        self.workspace_command(workspace)?
+            .commit_id(Place::Workspace, "@-")
+    }
+
+    fn diff_stat(&self, workspace: &Path, base: &BaseName) -> Result<DiffStat, PortError> {
+        let jj = self.workspace_command(workspace)?;
+        let fork_point = Self::fork_point(base);
         let diff = jj.run(
             Place::Workspace,
             &["diff", "--git", "--from", &fork_point, "--to", "@"],
@@ -282,9 +300,14 @@ impl Vcs for JjVcs {
         Ok(DiffStat { files })
     }
 
-    fn diff_hunks(&self, slice: &SliceName, path: &str) -> Result<String, PortError> {
-        let (jj, base) = self.open(slice)?;
-        let fork_point = Self::fork_point(&base);
+    fn diff_hunks(
+        &self,
+        workspace: &Path,
+        base: &BaseName,
+        path: &str,
+    ) -> Result<String, PortError> {
+        let jj = self.workspace_command(workspace)?;
+        let fork_point = Self::fork_point(base);
         let fileset = format!("root-file:{}", quoted(path));
         let hunks = jj.run(
             Place::Workspace,

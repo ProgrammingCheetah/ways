@@ -207,6 +207,30 @@ fn a_ruled_question_is_in_the_brief_so_it_is_not_asked_again() {
 }
 
 #[test]
+fn brief_prints_the_whole_question() {
+    let board = board_with(BODY);
+    let long = NewQuestion {
+        on: task(),
+        text: "Which columns does the export carry? "
+            .repeat(30)
+            .trim()
+            .to_owned(),
+        door: false,
+    };
+    let opened = board.open_question(&long).expect("question");
+    let ticket = board.task(opened).expect("ticket");
+    assert!(ticket.title.chars().count() <= 200, "the title is cut");
+    assert!(ticket.title.len() < long.text.len());
+
+    let rulings = rulings_of(&board);
+
+    assert_eq!(
+        rulings,
+        format!("## Rulings\n\n{opened} {}\nopen", long.text)
+    );
+}
+
+#[test]
 fn the_rulings_come_after_the_ticket_and_before_the_design_pages() {
     let board = board_with(BODY);
     let ruled = raise(&board, 80, 12, "Which columns?");
@@ -429,6 +453,178 @@ fn the_instance_must_be_one_path_segment() {
     }
 }
 
+/// A project root and a zaf home, each with an actions folder to put files in.
+struct Tiers {
+    root: tempfile::TempDir,
+    home: tempfile::TempDir,
+}
+
+impl Tiers {
+    fn new() -> Self {
+        Self {
+            root: tempfile::tempdir().expect("temp dir"),
+            home: tempfile::tempdir().expect("temp dir"),
+        }
+    }
+
+    fn put(dir: &Path, name: &str, description: &str, extra: &str) {
+        fs::create_dir_all(dir).expect("actions folder");
+        let text =
+            format!("#!/bin/sh\n# zaf description: {description}\n# zaf 1: failed\n{extra}true\n");
+        fs::write(dir.join(name), text).expect("action");
+    }
+
+    fn project(&self, name: &str, description: &str, extra: &str) {
+        Self::put(
+            &self.root.path().join(".zaf/actions"),
+            name,
+            description,
+            extra,
+        );
+    }
+
+    fn machine(&self, name: &str, description: &str, extra: &str) {
+        Self::put(&self.home.path().join("actions"), name, description, extra);
+    }
+
+    fn view<'a>(&'a self, caller: &'a Caller) -> ActionsView<'a> {
+        ActionsView {
+            project_root: self.root.path(),
+            home: Some(self.home.path()),
+            caller,
+        }
+    }
+}
+
+fn programmer() -> Caller {
+    Caller::from_value(Some("programmer instance 1 on #3".as_ref())).expect("caller")
+}
+
+fn pack(state: &Path, view: Option<ActionsView<'_>>) -> String {
+    let board = board_with(BODY);
+    let ports = BriefPorts {
+        board: &board,
+        design: None,
+        nodes: None,
+    };
+    let query = query(state, None);
+    let written = match view {
+        Some(view) => brief_with_actions(&query, &ports, view).expect("brief"),
+        None => brief(&query, &ports).expect("brief"),
+    };
+    fs::read_to_string(written.path).expect("pack")
+}
+
+#[test]
+fn brief_lists_project_and_machine_actions() {
+    let tiers = Tiers::new();
+    tiers.project("slice-pr", "open the task's pull request", "");
+    tiers.machine("notify", "tell the Engineer a task is done", "");
+    let state = tempfile::tempdir().expect("temp dir");
+    let caller = programmer();
+
+    let text = pack(state.path(), Some(tiers.view(&caller)));
+
+    assert_eq!(
+        section(&text, "Actions").trim_end(),
+        "## Actions\n\n\
+         - notify (machine): tell the Engineer a task is done\n\
+         - slice-pr (project): open the task's pull request"
+    );
+    let headings: Vec<&str> = text
+        .lines()
+        .filter(|line| line.starts_with("## "))
+        .collect();
+    assert_eq!(
+        headings,
+        [
+            "## Ticket",
+            "## Rulings",
+            "## Design pages",
+            "## Owned paths",
+            "## Style",
+            "## Actions",
+            "## Interface"
+        ]
+    );
+}
+
+#[test]
+fn brief_without_actions_is_unchanged() {
+    let state = tempfile::tempdir().expect("temp dir");
+    let before = pack(state.path(), None);
+    assert!(!before.contains("## Actions"));
+
+    let tiers = Tiers::new();
+    let caller = programmer();
+    let with_none = pack(state.path(), Some(tiers.view(&caller)));
+
+    assert_eq!(with_none, before);
+}
+
+#[test]
+fn brief_hides_an_unreadable_action() {
+    let tiers = Tiers::new();
+    tiers.project("slice-pr", "open the task's pull request", "");
+    tiers.project(
+        "merge",
+        "merge the pull request",
+        "# zaf mode: 750\n# zaf group: team\n",
+    );
+    tiers.machine("land", "land a pull request", "# zaf mode: 700\n");
+    let state = tempfile::tempdir().expect("temp dir");
+
+    let caller = programmer();
+    let text = pack(state.path(), Some(tiers.view(&caller)));
+    assert!(text.contains("- slice-pr (project)"));
+    assert!(!text.contains("- merge (project)"), "{text}");
+    assert!(!text.contains("land a pull request"), "{text}");
+
+    let team = Caller::from_value(Some("team instance 2 on #3".as_ref())).expect("caller");
+    let text = pack(state.path(), Some(tiers.view(&team)));
+    assert!(text.contains("- merge (project): merge the pull request"));
+    assert!(!text.contains("land a pull request"), "{text}");
+
+    let only_hidden = Tiers::new();
+    only_hidden.project(
+        "merge",
+        "merge the pull request",
+        "# zaf mode: 750\n# zaf group: team\n",
+    );
+    let text = pack(state.path(), Some(only_hidden.view(&caller)));
+    assert!(!text.contains("## Actions"), "{text}");
+}
+
+#[test]
+fn brief_without_a_machine_home_lists_the_project_actions_only() {
+    let tiers = Tiers::new();
+    tiers.project("slice-pr", "open the task's pull request", "");
+    tiers.machine("notify", "tell the Engineer a task is done", "");
+    let state = tempfile::tempdir().expect("temp dir");
+    let caller = programmer();
+    let view = ActionsView {
+        home: None,
+        ..tiers.view(&caller)
+    };
+
+    let text = pack(state.path(), Some(view));
+
+    assert_eq!(
+        section(&text, "Actions").trim_end(),
+        "## Actions\n\n- slice-pr (project): open the task's pull request"
+    );
+    assert!(!text.contains("notify"), "{text}");
+
+    let machine_only = Tiers::new();
+    machine_only.machine("notify", "tell the Engineer a task is done", "");
+    let view = ActionsView {
+        home: None,
+        ..machine_only.view(&caller)
+    };
+    let text = pack(state.path(), Some(view));
+    assert!(!text.contains("## Actions"), "{text}");
+}
+
 #[test]
 fn owned_paths_drop_globs_prose_and_repeats() {
     let field = "zaf/src/app/brief/**, `zaf/src/cli/brief.rs` (new) plus lines in zaf/src/app.rs; docs/*, zaf/src/app.rs";
@@ -439,6 +635,111 @@ fn owned_paths_drop_globs_prose_and_repeats() {
             "zaf/src/cli/brief.rs",
             "zaf/src/app.rs",
             "docs"
+        ]
+    );
+}
+
+/// A chain as `nodes chain <path>` prints it: the root's node down to the path's, split by blank lines.
+fn chain_of(path: &str) -> Result<String, String> {
+    let mut nodes = vec![".  (charted 2026-11-04)\nshort: the root".to_owned()];
+    let mut walked = String::new();
+    for segment in path.split('/') {
+        if !walked.is_empty() {
+            walked.push('/');
+        }
+        walked.push_str(segment);
+        nodes.push(format!("{walked}  (charted 2026-11-04)\nshort: {segment}"));
+    }
+    Ok(nodes.join("\n\n"))
+}
+
+fn pack_with_owned_paths(owned: &str) -> String {
+    let state = tempfile::tempdir().expect("temp dir");
+    let body = BODY.replace("src/export/**, src/cli/export.rs (new)", owned);
+    let board = board_with(&body);
+    let chain = chain_of;
+    let ports = BriefPorts {
+        board: &board,
+        design: None,
+        nodes: Some(&chain),
+    };
+    let brief = brief(&query(state.path(), None), &ports).expect("brief");
+    fs::read_to_string(&brief.path).expect("pack")
+}
+
+#[test]
+fn brief_maps_each_named_place() {
+    let text = pack_with_owned_paths("zaf/src/app/brief, docs/pages");
+    let owned = section(&text, "Owned paths");
+
+    assert!(owned.contains("### zaf/src/app/brief\n\n```\n"));
+    assert!(owned.contains("### docs/pages\n\n```\n"));
+    assert!(owned.contains("short: brief"));
+    assert!(owned.contains("short: pages"));
+    assert_eq!(owned.matches("### ").count(), 2);
+}
+
+#[test]
+fn brief_prints_each_node_once() {
+    let text = pack_with_owned_paths("zaf/src/app/brief, zaf/src/cli, docs/pages");
+    let owned = section(&text, "Owned paths");
+
+    for node in [
+        ".",
+        "zaf",
+        "zaf/src",
+        "zaf/src/app",
+        "zaf/src/app/brief",
+        "zaf/src/cli",
+        "docs",
+        "docs/pages",
+    ] {
+        let lines = owned
+            .lines()
+            .filter(|line| line.starts_with(&format!("{node}  (charted")))
+            .count();
+        assert_eq!(lines, 1, "{node} in:\n{owned}");
+    }
+    assert_eq!(
+        owned.matches("### ").count(),
+        3,
+        "every place keeps its heading"
+    );
+    let cli = &owned[owned.find("### zaf/src/cli").expect("cli map")..];
+    assert!(cli.contains("zaf/src/cli  (charted"));
+    assert!(
+        !cli.contains("zaf/src/app"),
+        "the shared nodes stay in the first map"
+    );
+}
+
+#[test]
+fn a_place_whose_nodes_are_all_printed_says_so() {
+    let text = pack_with_owned_paths("zaf/src/app, zaf/src");
+    let owned = section(&text, "Owned paths");
+
+    assert!(owned.contains(&format!("### zaf/src\n\n{ALL_PRINTED_NOTE}\n")));
+}
+
+#[test]
+fn brief_without_a_place_prints_no_map() {
+    let text = pack_with_owned_paths("none");
+    let owned = section(&text, "Owned paths");
+
+    assert_eq!(owned.trim_end(), "## Owned paths");
+    let headings: Vec<&str> = text
+        .lines()
+        .filter(|line| line.starts_with("## "))
+        .collect();
+    assert_eq!(
+        headings,
+        [
+            "## Ticket",
+            "## Rulings",
+            "## Design pages",
+            "## Owned paths",
+            "## Style",
+            "## Interface"
         ]
     );
 }

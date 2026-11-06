@@ -27,7 +27,7 @@ In a repo the Engineer doesn't own (the push remote's owner is neither their for
 
 ## Install on a new computer
 
-**Goal:** your work project has a `ZAF.toml` and Claude starts there with a clean `zaf doctor`.
+**Goal:** your work project has a `.zaf.toml` and Claude starts there with a clean `zaf doctor`.
 
 1. **Check** Claude Code's version.
    `claude --version`
@@ -49,7 +49,7 @@ In a repo the Engineer doesn't own (the push remote's owner is neither their for
    Done when: it prints a version number.
 7. **Run** `zaf init` at your work project's root folder and answer its four questions (project name, board repo, forge repo, gate command).
    `cd <your project root> && zaf init`
-   Done when: the output ends with `wrote ZAF.toml`.
+   Done when: the output ends with `wrote .zaf.toml`.
 8. **Run** `zaf setup`, do the steps it prints, and run it again until nothing is left.
    `cd <your project root> && zaf setup`
    Done when: it exits 0.
@@ -65,7 +65,7 @@ To get worksheets like this one from Claude in every project, also run `claude p
 
 ## Updating
 
-`claude plugin marketplace update ways`, then `claude plugin update teams@ways` (and each other pack you use), then start a new session. Or turn on auto-update: `/plugin` → **Marketplaces** → `ways` → **Enable auto-update**. `main` is the release channel and stays shippable: every commit on it is a new version of the plugins. Only `teams` carries a version number in its `plugin.json` (2.0.0), which `zaf doctor` reports; the other packs carry none. The `zaf` binary is released separately, from tags `zaf-vX.Y.Z`.
+`claude plugin marketplace update ways`, then `claude plugin update teams@ways` (and each other pack you use), then start a new session. Or turn on auto-update: `/plugin` → **Marketplaces** → `ways` → **Enable auto-update**. `main` is the release channel and stays shippable: every commit on it is a new version of the plugins. Only `teams` carries a version number in its `plugin.json` (2.1.0), which `zaf doctor` reports; the other packs carry none. The `zaf` binary is released separately, from tags `zaf-vX.Y.Z`.
 
 ## Layout
 
@@ -76,5 +76,6 @@ plugins/handoff/                  /handoff:how-to
 plugins/nodes/                    the nodes pack
 zaf/                              the zaf crate: the binary the teams pack drives, released from tags zaf-vX.Y.Z
 docs/                             zuri-ai-framework.md, the method's design draft, and the 2026-10-27 baseline
-ZAF.toml                          zaf's manifest for this repo, which runs the framework on itself
+.zaf.toml                         zaf's manifest for this repo, which runs the framework on itself
+.zaf/actions/                     this repo's own actions (slice steps, merge, release), the project tier
 ```

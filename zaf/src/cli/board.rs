@@ -1,4 +1,4 @@
-//! `zaf board ready|claim|report|question|ruling`.
+//! `zaf board ready|claim|report|question|ruling|done`.
 //!
 //! The verbs that act as an instance (`claim`, `report`) read who it is from
 //! [`INSTANCE_VAR`], which the spawner sets, in the form the board prints it:
@@ -9,7 +9,10 @@ use serde_json::json;
 use super::exit::{BACKEND, REFUSED, code_for, fail_composition};
 use super::slice::print;
 use super::{BoardAction, Cli};
-use crate::app::board::{self, BoardError, ClaimCommand, ReportCommand, RulingCommand};
+use crate::app::actions::SliceRecords;
+use crate::app::board::{
+    self, BoardError, ClaimCommand, DoneOutcome, ReportCommand, RulingCommand,
+};
 use crate::composition::Composition;
 use crate::domain::{Instance, InstanceNumber, IssueNumber, RoleName};
 use crate::ports::{ClaimOutcome, NewQuestion};
@@ -112,6 +115,25 @@ pub fn run(cli: &Cli, action: &BoardAction) -> u8 {
                 print(cli, &json, format!("{kind} {number} on {on}"))
             })
         }
+        BoardAction::Done { task } => {
+            let forge = match composition.forge() {
+                Ok(forge) => forge,
+                Err(error) => return fail_composition(&path, &error),
+            };
+            let vcs = match composition.vcs() {
+                Ok(vcs) => vcs,
+                Err(error) => return fail_composition(&path, &error),
+            };
+            let records = SliceRecords::new(composition.root());
+            board::done(board, forge.as_ref(), vcs.as_ref(), &records, *task).map(|outcome| {
+                let (word, terse) = match outcome {
+                    DoneOutcome::Marked => ("marked", "done"),
+                    DoneOutcome::AlreadyDone => ("already_done", "already done"),
+                };
+                let json = json!({ "task": task.get(), "outcome": word });
+                print(cli, &json, format!("{task} {terse}"))
+            })
+        }
         BoardAction::Ruling { question, text } => {
             let command = RulingCommand {
                 question: *question,
@@ -132,11 +154,18 @@ pub fn run(cli: &Cli, action: &BoardAction) -> u8 {
     };
     done.unwrap_or_else(|error| {
         eprintln!("zaf {path}: {error}");
-        match error {
-            BoardError::BatchFull { .. } => REFUSED,
-            BoardError::Port(error) => code_for(&error),
-        }
+        exit_code(&error)
     })
+}
+
+/// The exit code a board error comes to.
+pub(super) fn exit_code(error: &BoardError) -> u8 {
+    match error {
+        BoardError::BatchFull { .. } | BoardError::NotInLand { .. } => REFUSED,
+        // A read that failed is no answer about the task: exit 2, never a refusal.
+        BoardError::Unreadable(_) => BACKEND,
+        BoardError::Port(error) => code_for(error),
+    }
 }
 
 /// The instance this process acts as, from [`INSTANCE_VAR`]; a missing or unreadable one exits 2.

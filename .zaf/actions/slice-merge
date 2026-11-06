@@ -1,0 +1,60 @@
+#!/bin/sh
+# zaf description: land a task's slice with CI as the only gate: `merge-base`; when the base moved the head, `push` it and stop so the team runs `check pr` again; otherwise `pr-merge`, `zaf board done` and `workspace-drop`, stopping at the first that fails
+# zaf 1: refused: the arguments are not <task>, the base conflicts (the paths are in the log, the slice is unchanged), the base merge was pushed and needs a new `zaf check pr`, or a step refused
+# zaf 2: a backend failed (jj, gh or the board failed, or a step did not run (it exited 125), or a step ended with a code `slice-merge` does not know); after `pr-merge` the merge may already have happened
+# zaf mode: 750
+# zaf group: team, release
+# zaf target: task
+# zaf phases: land
+
+# zaf sets ZAF_SLICE, ZAF_BASE and ZAF_PR on a `target: task` run, ZAF_PR from the task's record;
+# a hand-written call has none of them.
+if [ "$#" -ne 1 ] || [ -z "$ZAF_ROOT" ] || [ -z "$ZAF_SLICE" ] || [ -z "$ZAF_BASE" ] || [ -z "$ZAF_PR" ]; then
+    echo "usage: slice-merge <task>, run by zaf with ZAF_SLICE, ZAF_BASE and ZAF_PR set" >&2
+    exit 1
+fi
+
+# The workspace goes at the end, so nothing here may stand inside it.
+cd "$ZAF_ROOT" || exit 2
+
+# A step ends slice-merge with its own code when it is 1, a refusal, or 2. 125 is zaf's alone, a
+# step that never ran, so it is never passed on as slice-merge's own: a step that did not run is a
+# backend that failed, exit 2, as in `land`. Any other code is a failure too.
+stop() {
+    case $1 in
+        1 | 2) exit "$1" ;;
+        *) exit 2 ;;
+    esac
+}
+
+# The slice's latest commit, which is what the pull request's head is compared with.
+head_of() {
+    (cd "$ZAF_ROOT/.zaf/workspaces/$ZAF_SLICE" && jj --no-pager --color=never log --no-graph -r @- -T commit_id)
+}
+
+before=$(head_of) || exit 2
+
+# `--more` brings the step's whole log back, so a conflict's paths reach this log. Exit 1 is a
+# conflict only when the step ran: a step that never ran is 125, which ends this action with 2,
+# and nothing is pushed for it.
+status=0
+log=$(zaf do --more merge-base "$ZAF_SLICE" "$ZAF_BASE" 2>&1) || status=$?
+printf '%s\n' "$log"
+if [ "$status" -ne 0 ]; then
+    stop "$status"
+fi
+
+# CI is the gate (ruling 39), and it ran on the head the pull request had. A base merge moved the
+# head, so that result no longer counts: publish the merge and let the team check again.
+after=$(head_of) || exit 2
+if [ "$before" != "$after" ]; then
+    zaf do push "$ZAF_SLICE" || stop $?
+    echo "the base was merged into $ZAF_SLICE and pushed; run zaf check pr again before merging" >&2
+    exit 1
+fi
+
+# The merge names the head compared above, so a push after CI makes the forge refuse it, and the
+# task is then not marked done.
+zaf do pr-merge "$ZAF_PR" --match-head-commit "$after" || stop $?
+zaf board done "$1" || stop $?
+zaf do workspace-drop "$ZAF_SLICE" || stop $?

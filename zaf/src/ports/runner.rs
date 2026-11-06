@@ -32,7 +32,8 @@ pub struct RunOutput {
 
 /// Something that runs a role: a model CLI, a local model, a recorded replay.
 pub trait Runner {
-    /// Runs the role and waits for it; an absent runner is [`PortError::Unavailable`].
+    /// Runs the role and waits for it; an absent runner is [`PortError::Unavailable`]
+    /// and a run past its time bound is [`PortError::TimedOut`].
     fn run(&self, request: &RunRequest) -> Result<RunOutput, PortError>;
 }
 

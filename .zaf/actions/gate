@@ -1,0 +1,4 @@
+#!/bin/sh
+# zaf description: the full gate, the cargo lines CI runs, in the current directory
+# zaf 1: a gate step failed, or the zaf crate folder is missing
+cd zaf && cargo fmt --check && cargo build && cargo clippy --all-targets -- -D warnings && cargo test || exit 1

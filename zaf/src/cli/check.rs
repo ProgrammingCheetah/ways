@@ -4,25 +4,23 @@
 //! Exit codes: 0 clean, 1 must-fix present (or a task line failed), 2 a step
 //! failed or timed out, or a backend is missing.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use super::Cli;
 use super::exit::{self, BACKEND, REFUSED};
-use super::slice::{VERSION_VAR, fail_slice};
+use super::slice::VERSION_VAR;
 use crate::adapters::gate::RUNS_DIR;
-use crate::adapters::shell::SystemShell;
+use crate::app::actions::{RunOutcome, SliceRecords};
 use crate::app::check::{
     CheckRecord, Engine, EngineSettings, Shell, Step, StepPorts, Target, TaskInputs, check_task,
 };
-use crate::app::slice::{self, SliceQuery};
-use crate::composition::{Composition, CompositionError, SHELL_TIMEOUT};
+use crate::composition::{Composition, CompositionError};
 use crate::domain::{IssueNumber, SecurityTrigger, TaskTemplate};
 use crate::manifest::{CheckTarget, CommandLine, RunnerName};
-use crate::ports::{
-    Board, Forge, Gate, GateRun, PortError, PrNumber, Runner, Shell as ShellPort, SliceName,
-};
+use crate::ports::{Board, Forge, Gate, GateRun, PortError, PrNumber, Runner, Shell as ShellPort};
 
 /// Runs the configured check steps for a target, or reads the last result.
 pub fn run(cli: &Cli, target: &str, status: bool) -> u8 {
@@ -50,15 +48,29 @@ fn check(cli: &Cli, target: Target, status: bool) -> u8 {
     if status {
         return show_stored(cli, &path, &stored);
     }
+    // The manifest's `[env]` for every command the check runs. A value that needs a version the
+    // caller has not set runs nothing, rather than run without it.
+    let version = std::env::var(VERSION_VAR)
+        .ok()
+        .filter(|version| !version.is_empty());
+    let env = match composition.project_env(version.as_deref()) {
+        Ok(env) => env,
+        Err(error) => {
+            eprintln!("zaf {path}: {error}; set {VERSION_VAR}");
+            return BACKEND;
+        }
+    };
     let (record, slice_line) = match target {
-        Target::Task(task) => match check_task_target(cli, &path, &composition, &target, task) {
+        Target::Task(task) => match check_task_target(&path, &composition, &target, task, &env) {
             Ok((record, line)) => (record, Some(line)),
             Err(code) => return code,
         },
-        Target::Pr { pr, task } => match check_pr_target(&path, &composition, &target, pr, task) {
-            Ok(record) => (record, None),
-            Err(code) => return code,
-        },
+        Target::Pr { pr, task } => {
+            match check_pr_target(&path, &composition, &target, pr, task, &env) {
+                Ok(record) => (record, None),
+                Err(code) => return code,
+            }
+        }
     };
     if let Err(error) = store(&stored, &record) {
         eprintln!("zaf {path}: the result was not stored for --status: {error}");
@@ -77,8 +89,6 @@ type GateIn<'a> = dyn Fn(&Path) -> Result<Box<dyn Gate>, CompositionError> + 'a;
 struct TaskPorts<'a> {
     /// The board, to read the ticket.
     board: &'a dyn Board,
-    /// The release version for the branch patterns, if the environment gave one.
-    version: Option<String>,
     /// Builds the gate to run inside a directory.
     gate_in: &'a GateIn<'a>,
     /// Builds the shell that runs each named test inside a directory.
@@ -95,56 +105,57 @@ impl Shell for DirShell {
 }
 
 fn check_task_target(
-    cli: &Cli,
     path: &str,
     composition: &Composition,
     target: &Target,
     task: IssueNumber,
+    env: &BTreeMap<String, String>,
 ) -> Result<(CheckRecord, String), u8> {
     let board = composition
         .board()
         .map_err(|error| exit::fail_composition(path, &error))?;
-    let ports = TaskPorts {
-        board: board.as_ref(),
-        version: std::env::var(VERSION_VAR)
-            .ok()
-            .filter(|version| !version.is_empty()),
-        gate_in: &|dir| composition.gate_in(dir),
-        shell_in: &|dir| Box::new(DirShell(Box::new(SystemShell::new(dir, SHELL_TIMEOUT)))),
-    };
-    check_task_in_slice(cli, path, composition, &ports, target, task)
+    check_task_with_board(path, composition, board.as_ref(), target, task, env)
 }
 
-/// Checks a task inside its slice's workspace: the gate and the named tests run there.
-/// A slice that is not open is refused, and nothing runs at the project root.
+/// [`check_task_in_slice`] with the live gate and shell: both run with `env` set.
+fn check_task_with_board(
+    path: &str,
+    composition: &Composition,
+    board: &dyn Board,
+    target: &Target,
+    task: IssueNumber,
+    env: &BTreeMap<String, String>,
+) -> Result<(CheckRecord, String), u8> {
+    let ports = TaskPorts {
+        board,
+        gate_in: &|dir| composition.gate_in_with_env(dir, env),
+        shell_in: &|dir| Box::new(DirShell(composition.shell_in_with_env(dir, env))),
+    };
+    check_task_in_slice(path, composition, &ports, target, task)
+}
+
+/// Checks a task inside its slice's workspace, the one the slice record names: the gate and the
+/// named tests run there. A task with no record is refused and nothing runs, at the project root
+/// or anywhere else: the workspace is never guessed from the branch patterns or the folder.
 fn check_task_in_slice(
-    cli: &Cli,
     path: &str,
     composition: &Composition,
     ports: &TaskPorts<'_>,
     target: &Target,
     task: IssueNumber,
 ) -> Result<(CheckRecord, String), u8> {
-    let query = SliceQuery {
-        task,
-        version: ports.version.clone(),
-    };
-    let branches = &composition.manifest().branches;
-    let resolved = slice::resolve(ports.board, branches, &query)
-        .map_err(|error| fail_slice(path, cli, &error))?;
-    let dir = composition.slice_dir(&resolved.slice);
-    if !dir.is_dir() {
-        eprintln!("zaf {path}: {}", not_open(&resolved.slice, task));
+    let Some(dir) = SliceRecords::new(composition.root()).workspace(task) else {
+        eprintln!("zaf {path}: {}", not_open(task));
         return Err(REFUSED);
-    }
-    let template = resolved
-        .ticket
-        .body
-        .parse::<TaskTemplate>()
-        .map_err(|error| {
-            eprintln!("zaf {path}: {task} is not a task ticket: {error}");
-            REFUSED
-        })?;
+    };
+    let ticket = ports
+        .board
+        .task(task)
+        .map_err(|error| exit::fail(path, &error))?;
+    let template = ticket.body.parse::<TaskTemplate>().map_err(|error| {
+        eprintln!("zaf {path}: {task} is not a task ticket: {error}");
+        REFUSED
+    })?;
     let gate = match (ports.gate_in)(&dir) {
         Ok(gate) => Some(gate),
         Err(CompositionError::Absent { .. }) => None,
@@ -162,15 +173,16 @@ fn check_task_in_slice(
         shell: shell.as_ref(),
         root: &dir,
     };
+    let began = SystemTime::now();
     let check = check_task(&template, &inputs);
-    let line = format!("slice {} at {}", resolved.slice, dir.display());
-    Ok((CheckRecord::from_task(target, &check), line))
+    let line = format!("workspace {}", dir.display());
+    Ok((CheckRecord::from_task(target, &check, began), line))
 }
 
-/// Why a task whose slice has no workspace is refused.
-fn not_open(slice: &SliceName, task: IssueNumber) -> String {
+/// Why a task with no slice record is refused.
+pub(super) fn not_open(task: IssueNumber) -> String {
     format!(
-        "slice {slice} is not open; run zaf slice open {}",
+        "slice for {task} is not open; run zaf do slice-open {}",
         task.get()
     )
 }
@@ -181,6 +193,7 @@ fn check_pr_target(
     target: &Target,
     pr: PrNumber,
     task: Option<IssueNumber>,
+    env: &BTreeMap<String, String>,
 ) -> Result<CheckRecord, u8> {
     let configured = composition
         .manifest()
@@ -206,11 +219,34 @@ fn check_pr_target(
     };
     let ports: Arc<dyn StepPorts> = Arc::new(LivePorts {
         composition: composition.clone(),
+        env: env.clone(),
     });
     let mut settings = EngineSettings::new(composition.root().to_owned(), runs_dir(composition));
     settings.ci_grace = Duration::from_secs(composition.manifest().check.ci_grace_seconds);
-    let report = Engine::new(ports, settings).run(&steps, pr, flagged);
-    Ok(CheckRecord::from_report(target, &report))
+    Ok(run_steps(ports, settings, &steps, target, pr, flagged))
+}
+
+/// Runs the steps and builds the pull request's record.
+///
+/// The head is read before any step starts and stored as read: a head that moves during
+/// the run leaves the old one in the record, so the result does not count for the new one.
+/// A forge that fails or reports no head leaves none, and nothing else changes.
+fn run_steps(
+    ports: Arc<dyn StepPorts>,
+    settings: EngineSettings,
+    steps: &[Step],
+    target: &Target,
+    pr: PrNumber,
+    flagged: bool,
+) -> CheckRecord {
+    let began = SystemTime::now();
+    let head = ports
+        .forge()
+        .and_then(|forge| forge.head(pr))
+        .ok()
+        .flatten();
+    let report = Engine::new(ports, settings).run(steps, pr, flagged);
+    CheckRecord::from_report(target, &report, head, began)
 }
 
 fn task_template(
@@ -231,12 +267,16 @@ fn task_template(
 /// The live ports a check reaches, built from the composition inside each step's thread.
 struct LivePorts {
     composition: Composition,
+    /// The manifest's `[env]`, resolved, set on every line the shell runs.
+    env: BTreeMap<String, String>,
 }
 
 impl Shell for LivePorts {
-    /// Runs the line through the composition's shell, at the project root.
+    /// Runs the line through the composition's shell, at the project root, with `[env]` set.
     fn run(&self, line: &CommandLine) -> Result<GateRun, PortError> {
-        self.composition.shell().run(line)
+        self.composition
+            .shell_in_with_env(self.composition.root(), &self.env)
+            .run(line)
     }
 }
 
@@ -248,6 +288,11 @@ impl StepPorts for LivePorts {
     fn runner(&self, name: &RunnerName) -> Result<Box<dyn Runner>, PortError> {
         self.composition.runner(name).map_err(unavailable)
     }
+
+    /// Runs the action as `zaf do <name>` would from here: the same tiers, modes and log.
+    fn action(&self, name: &str) -> RunOutcome {
+        super::do_action::run_named(name, &[], None)
+    }
 }
 
 fn unavailable(error: CompositionError) -> PortError {
@@ -258,6 +303,8 @@ fn runs_dir(composition: &Composition) -> PathBuf {
     composition.root().join(RUNS_DIR)
 }
 
+/// Where a target's record is stored: `.zaf/runs/check-<slug>.json`, one per task and
+/// per pull request.
 fn stored_path(composition: &Composition, target: &Target) -> PathBuf {
     runs_dir(composition).join(format!("check-{}.json", target.slug()))
 }
@@ -329,8 +376,11 @@ mod tests {
     #[test]
     fn the_live_shell_runs_a_line_at_the_project_root() {
         let dir = project(MANIFEST);
-        let composition = Composition::load(dir.path()).expect("loads");
-        let shell = LivePorts { composition };
+        let composition = Composition::load_with_home(dir.path(), None).expect("loads");
+        let shell = LivePorts {
+            composition,
+            env: BTreeMap::new(),
+        };
         let passed = shell.run(&CommandLine::from("echo hello")).expect("runs");
         assert_eq!(passed.output, "hello\n");
         let failed = shell.run(&CommandLine::from("exit 4")).expect("runs");
@@ -346,8 +396,11 @@ mod tests {
     #[test]
     fn an_absent_forge_or_runner_is_unavailable() {
         let dir = project(MANIFEST);
-        let composition = Composition::load(dir.path()).expect("loads");
-        let ports = LivePorts { composition };
+        let composition = Composition::load_with_home(dir.path(), None).expect("loads");
+        let ports = LivePorts {
+            composition,
+            env: BTreeMap::new(),
+        };
         assert!(matches!(ports.forge(), Err(PortError::Unavailable(_))));
         let missing = ports.runner(&RunnerName::from("local"));
         assert!(matches!(missing, Err(PortError::Unavailable(_))));
@@ -419,54 +472,307 @@ mod tests {
         };
         let ports = TaskPorts {
             board: &board,
-            version: Some("0.1.1".to_owned()),
             gate_in: &gate_in,
             shell_in: &|_| Box::new(NoShell),
         };
-        let cli = <Cli as clap::Parser>::try_parse_from(["zaf", "check", "46"]).expect("parses");
         let target = Target::Task(IssueNumber::from(46));
-        let outcome = check_task_in_slice(
-            &cli,
-            "check",
-            composition,
-            &ports,
-            &target,
-            IssueNumber::from(46),
-        );
+        let outcome =
+            check_task_in_slice("check", composition, &ports, &target, IssueNumber::from(46));
         let runs = ran.lock().expect("lock").clone();
         (outcome, runs)
     }
 
-    #[test]
-    fn a_task_whose_slice_is_open_gates_inside_the_slice_and_says_where() {
-        let dir = project(MANIFEST);
-        let composition = Composition::load(dir.path()).expect("loads");
-        let slice_dir = dir.path().join(".zaf/workspaces").join(SLICE);
-        std::fs::create_dir_all(&slice_dir).expect("slice dir");
-        let (outcome, runs) = check_with_fakes(&composition);
-        let (record, line) = outcome.expect("checked");
-        assert_eq!(runs, vec![slice_dir.clone()]);
-        assert_eq!(line, format!("slice {SLICE} at {}", slice_dir.display()));
-        assert_eq!(record.verdict, crate::app::check::Verdict::Clean);
+    /// Writes the slice record the way `slice-open` leaves it: the workspace path, alone.
+    fn record_workspace(root: &Path, task: u64, workspace: &Path) {
+        let slices = root.join(".zaf/slices");
+        std::fs::create_dir_all(&slices).expect("slices dir");
+        std::fs::write(
+            slices.join(task.to_string()),
+            workspace.to_string_lossy().as_bytes(),
+        )
+        .expect("record");
     }
 
     #[test]
-    fn a_task_without_a_slice_directory_is_refused_and_nothing_runs() {
+    fn check_runs_in_the_recorded_workspace() {
         let dir = project(MANIFEST);
-        let composition = Composition::load(dir.path()).expect("loads");
+        let composition = Composition::load_with_home(dir.path(), None).expect("loads");
+        // The workspace is where the record says, not where the branch patterns would put it.
+        let elsewhere = tempfile::tempdir().expect("workspace dir");
+        let workspace = elsewhere.path().canonicalize().expect("absolute");
+        record_workspace(dir.path(), 46, &workspace);
+        let (outcome, runs) = check_with_fakes(&composition);
+        let (record, line) = outcome.expect("checked");
+        assert_eq!(runs, vec![workspace.clone()]);
+        assert_eq!(line, format!("workspace {}", workspace.display()));
+        assert_eq!(record.verdict, crate::app::check::Verdict::Clean);
+    }
+
+    const ENV_MANIFEST: &str = r#"[project]
+name = "example"
+
+[board]
+kind = "github-issues"
+repo = "owner/example"
+
+[gate]
+full = "true"
+light = "printf '%s|%s' \"$CARGO_TARGET_DIR\" \"$HOME\" > seen && test -n \"$PATH\""
+
+[env]
+CARGO_TARGET_DIR = "{root}/.zaf/target"
+HOME = "/overridden"
+"#;
+
+    #[test]
+    fn check_runs_the_gate_with_env() {
+        let dir = project(ENV_MANIFEST);
+        let composition = Composition::load_with_home(dir.path(), None).expect("loads");
+        let elsewhere = tempfile::tempdir().expect("workspace dir");
+        let workspace = elsewhere.path().canonicalize().expect("absolute");
+        record_workspace(dir.path(), 46, &workspace);
+        let board = crate::fakes::FakeBoard::default();
+        board.add_ticket(ticket());
+        let env = composition.project_env(None).expect("resolves");
+        let target = Target::Task(IssueNumber::from(46));
+        let (record, _) = check_task_with_board(
+            "check",
+            &composition,
+            &board,
+            &target,
+            IssueNumber::from(46),
+            &env,
+        )
+        .expect("checked");
+        // The gate saw the variable at the absolute root, an `[env]` key over an inherited one,
+        // and the rest of the inherited environment (PATH) still in place.
+        assert_eq!(record.verdict, crate::app::check::Verdict::Clean);
+        let seen = std::fs::read_to_string(workspace.join("seen")).expect("the gate ran");
+        let expected = format!("{}/.zaf/target|/overridden", composition.root().display());
+        assert_eq!(seen, expected);
+        assert!(Path::new(seen.split('|').next().expect("value")).is_absolute());
+    }
+
+    #[test]
+    fn a_command_line_runs_with_env_over_the_inherited_environment() {
+        let dir = project(ENV_MANIFEST);
+        let composition = Composition::load_with_home(dir.path(), None).expect("loads");
+        let env = composition.project_env(None).expect("resolves");
+        let shell = LivePorts { composition, env };
+        let line = CommandLine::from("echo \"$CARGO_TARGET_DIR $HOME\"; test -n \"$PATH\"");
+        let ran = shell.run(&line).expect("runs");
+        assert_eq!(ran.verdict, crate::ports::GateVerdict::Passed);
+        assert!(
+            ran.output.ends_with("/.zaf/target /overridden\n"),
+            "{}",
+            ran.output
+        );
+    }
+
+    #[test]
+    fn a_version_placeholder_without_a_version_names_the_key_and_the_placeholder() {
+        let manifest = ENV_MANIFEST.replace("{root}/.zaf/target", "{root}/target-{version}");
+        let dir = project(&manifest);
+        let composition = Composition::load_with_home(dir.path(), None).expect("loads");
+        let error = composition.project_env(None).expect_err("needs a version");
+        let text = error.to_string();
+        assert!(text.contains("CARGO_TARGET_DIR"), "{text}");
+        assert!(text.contains("{version}"), "{text}");
+        let env = composition.project_env(Some("0.2.0")).expect("resolves");
+        assert!(env["CARGO_TARGET_DIR"].ends_with("/target-0.2.0"));
+    }
+
+    #[test]
+    fn check_without_a_record_refuses() {
+        let dir = project(MANIFEST);
+        let composition = Composition::load_with_home(dir.path(), None).expect("loads");
+        // A workspace that predates the records sits where the patterns would put it: no record,
+        // so it is refused rather than guessed at.
+        std::fs::create_dir_all(dir.path().join(".zaf/workspaces").join(SLICE)).expect("old");
         let (outcome, runs) = check_with_fakes(&composition);
         assert_eq!(outcome.err(), Some(REFUSED));
         assert_eq!(
-            not_open(&SliceName::from(SLICE), IssueNumber::from(46)),
-            "slice feature/0.1.1-37-46 is not open; run zaf slice open 46"
+            not_open(IssueNumber::from(46)),
+            "slice for #46 is not open; run zaf do slice-open 46"
         );
         assert!(runs.is_empty(), "the gate ran at {runs:?}");
+        // A record whose workspace has gone is no record either.
+        let gone = dir.path().join("gone");
+        record_workspace(dir.path(), 46, &gone);
+        let (outcome, runs) = check_with_fakes(&composition);
+        assert_eq!(outcome.err(), Some(REFUSED));
+        assert!(runs.is_empty(), "the gate ran at {runs:?}");
+    }
+
+    /// Lends a shared fake forge to a step's thread.
+    struct SharedForge(Arc<crate::fakes::FakeForge>);
+
+    impl Forge for SharedForge {
+        fn open_pr(&self, request: &crate::ports::PrRequest) -> Result<PrNumber, PortError> {
+            self.0.open_pr(request)
+        }
+
+        fn checks(&self, pr: PrNumber) -> Result<Vec<crate::ports::Check>, PortError> {
+            self.0.checks(pr)
+        }
+
+        fn review_comments(
+            &self,
+            pr: PrNumber,
+        ) -> Result<Vec<crate::ports::ReviewComment>, PortError> {
+            self.0.review_comments(pr)
+        }
+
+        fn head(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
+            self.0.head(pr)
+        }
+
+        fn merged(&self, pr: PrNumber) -> Result<bool, PortError> {
+            self.0.merged(pr)
+        }
+
+        fn last_changed_file(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
+            self.0.last_changed_file(pr)
+        }
+
+        fn scanning_alerts(
+            &self,
+            pr: PrNumber,
+        ) -> Result<Vec<crate::ports::ScanningAlert>, PortError> {
+            self.0.scanning_alerts(pr)
+        }
+
+        fn merge(&self, pr: PrNumber) -> Result<crate::ports::PrMerge, PortError> {
+            self.0.merge(pr)
+        }
+    }
+
+    /// Ports whose shell fails the one step and, when told, moves the pull request's head
+    /// while it runs.
+    struct MovingPorts {
+        forge: Arc<crate::fakes::FakeForge>,
+        pr: PrNumber,
+        moves_to: Option<&'static str>,
+    }
+
+    impl Shell for MovingPorts {
+        fn run(&self, _line: &CommandLine) -> Result<GateRun, PortError> {
+            if let Some(head) = self.moves_to {
+                self.forge.set_head(self.pr, Some(head))?;
+            }
+            Ok(GateRun {
+                verdict: crate::ports::GateVerdict::Failed,
+                output: "error: something broke\n".to_owned(),
+            })
+        }
+    }
+
+    impl StepPorts for MovingPorts {
+        fn forge(&self) -> Result<Box<dyn Forge>, PortError> {
+            Ok(Box::new(SharedForge(Arc::clone(&self.forge))))
+        }
+
+        fn runner(&self, name: &RunnerName) -> Result<Box<dyn Runner>, PortError> {
+            Err(PortError::Unavailable(format!("no runner {name}")))
+        }
+    }
+
+    /// A pull request on a fake forge, at `head` when one is given.
+    fn pull_request(head: Option<&str>) -> (Arc<crate::fakes::FakeForge>, PrNumber) {
+        let forge = Arc::new(crate::fakes::FakeForge::default());
+        let pr = forge
+            .open_pr(&crate::ports::PrRequest {
+                slice: crate::ports::SliceName::from("feature/one-task"),
+                base: crate::ports::BaseName::from("feature/one"),
+                title: "#7 one task".to_owned(),
+                body: String::new(),
+            })
+            .expect("opens");
+        forge.set_head(pr, head).expect("sets the head");
+        (forge, pr)
+    }
+
+    /// Runs one failing `command:lint` step over the ports.
+    fn run_lint(ports: MovingPorts) -> CheckRecord {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let pr = ports.pr;
+        let settings = EngineSettings::new(dir.path().to_owned(), dir.path().join(".zaf/runs"));
+        let steps = vec!["command:lint".parse::<Step>().expect("step")];
+        let target = Target::Pr { pr, task: None };
+        run_steps(Arc::new(ports), settings, &steps, &target, pr, false)
+    }
+
+    #[test]
+    fn record_keeps_the_head_from_before_the_steps() {
+        let (forge, pr) = pull_request(Some("old-head"));
+        let ports = MovingPorts {
+            forge: Arc::clone(&forge),
+            pr,
+            moves_to: Some("new-head"),
+        };
+        let record = run_lint(ports);
+        assert_eq!(
+            forge.head(pr).expect("reads"),
+            Some("new-head".to_owned()),
+            "the head moved during the run"
+        );
+        assert_eq!(record.head.as_deref(), Some("old-head"));
+        assert!(record.at.is_some());
+    }
+
+    #[test]
+    fn no_head_from_the_forge_keeps_the_verdict() {
+        let run = |head: Option<&str>| {
+            let (forge, pr) = pull_request(head);
+            run_lint(MovingPorts {
+                forge,
+                pr,
+                moves_to: None,
+            })
+        };
+        let with_head = run(Some("abc123"));
+        let without = run(None);
+        assert_eq!(with_head.head.as_deref(), Some("abc123"));
+        assert_eq!(without.head, None);
+        assert_eq!(without.verdict, with_head.verdict);
+        assert_eq!(without.verdict.code(), 1);
+        // Each run kept its log in a temp project of its own, so the paths differ.
+        let unlogged = |record: &CheckRecord| -> Vec<(String, String)> {
+            let text = |line: &crate::app::check::RecordLine| match line.text.split_once(", log ") {
+                Some((reason, _)) => reason.to_owned(),
+                None => line.text.clone(),
+            };
+            record
+                .lines
+                .iter()
+                .map(|line| (line.status.clone(), text(line)))
+                .collect()
+        };
+        assert_eq!(unlogged(&without), unlogged(&with_head));
+        // A forge that cannot answer at all (no such pull request) is the same: none.
+        let (forge, _) = pull_request(None);
+        let elsewhere = PrNumber::from(99);
+        let dir = tempfile::tempdir().expect("temp dir");
+        let settings = EngineSettings::new(dir.path().to_owned(), dir.path().join(".zaf/runs"));
+        let steps = vec!["command:lint".parse::<Step>().expect("step")];
+        let target = Target::Pr {
+            pr: elsewhere,
+            task: None,
+        };
+        let ports = MovingPorts {
+            forge,
+            pr: elsewhere,
+            moves_to: None,
+        };
+        let record = run_steps(Arc::new(ports), settings, &steps, &target, elsewhere, false);
+        assert_eq!(record.head, None);
+        assert_eq!(record.verdict, with_head.verdict);
     }
 
     #[test]
     fn a_stored_record_reads_back_with_its_exit_code() {
         let dir = project(MANIFEST);
-        let composition = Composition::load(dir.path()).expect("loads");
+        let composition = Composition::load_with_home(dir.path(), None).expect("loads");
         let target = Target::Pr {
             pr: PrNumber::from(5),
             task: None,
@@ -476,6 +782,8 @@ mod tests {
             target: target.to_string(),
             verdict: crate::app::check::Verdict::MustFix,
             lines: Vec::new(),
+            head: None,
+            at: None,
         };
         store(&stored, &record).expect("stores");
         assert!(stored.ends_with(".zaf/runs/check-pr-5.json"));

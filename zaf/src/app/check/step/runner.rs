@@ -1,11 +1,14 @@
 //! `runner:<name>:<role>`: write the review brief, run the role on the runner,
-//! and parse its report into findings.
+//! and parse its report into findings. A report that does not end with its
+//! `REVIEWED:` line fails the step, so a silent runner never reads as clean; so
+//! does a `REVIEWED:` path that is not the last file of the pull request's diff
+//! as the forge lists it, so a made-up path never reads as clean either.
 
-use crate::app::check::{StepPorts, parse_report};
+use crate::app::check::{StepPorts, parse_report, reviewed_path};
 use crate::domain::{Finding, FindingSource, Profile};
 use crate::ports::{PortError, RunRequest};
 
-use super::{RunnerStep, StepContext};
+use super::{RunnerStep, StepContext, log};
 
 /// The default brief for a critique role.
 pub const CRITIQUE_BRIEF: &str = include_str!(concat!(
@@ -49,10 +52,24 @@ pub(super) fn run(
         env: std::collections::BTreeMap::new(),
     };
     let output = runner.run(&request)?;
+    let log_path = log::keep(&context.root, source, &output.transcript)?;
+    let log_path = log_path.display();
     if output.exit_code != 0 {
         return Err(PortError::Backend(format!(
-            "{source} exited {}",
+            "{source} exited {}, log {log_path}",
             output.exit_code
+        )));
+    }
+    let Some(reviewed) = reviewed_path(&output.transcript) else {
+        return Err(PortError::Backend(format!(
+            "{source} ended without a REVIEWED line, log {log_path}"
+        )));
+    };
+    let last = ports.forge()?.last_changed_file(context.pr)?;
+    if last.as_deref() != Some(reviewed) {
+        return Err(PortError::Backend(format!(
+            "{source} named `{reviewed}` as the last file reviewed, but the pull request's diff ends at {}, log {log_path}",
+            last.map_or_else(|| "no file".to_owned(), |path| format!("`{path}`"))
         )));
     }
     Ok(parse_report(source, &output.transcript))

@@ -14,7 +14,9 @@ mod runner;
 mod shell;
 mod vcs;
 
-pub use board::{Board, ClaimOutcome, ClaimRecord, NewQuestion, Ticket};
+pub use board::{
+    Board, ClaimOutcome, ClaimRecord, EpicTask, EpicTree, NewQuestion, QUESTION_TITLE_LIMIT, Ticket,
+};
 pub use design::{Design, Page};
 pub use errors::PortError;
 pub use forge::{

@@ -1,13 +1,15 @@
 //! The step syntax of `[check.<target>] steps` and the step kinds, one module each.
 //!
-//! A step is `ci`, `command:<cmd>`, `runner:<name>:<role>`, `bot:<login>` or
-//! `codeql`, with an optional `?flagged` suffix that runs it only for a
-//! security-flagged task.
+//! A step is `ci`, `command:<cmd>`, `action:<name>`, `runner:<name>:<role>`,
+//! `bot:<login>` or `codeql`, with an optional `?flagged` suffix that runs it only
+//! for a security-flagged task.
 
+mod action;
 mod bot;
 mod ci;
 mod codeql;
 mod command;
+mod log;
 mod runner;
 
 pub use runner::{BRIEF_FILE, CRITIQUE_BRIEF, SECURITY_BRIEF};
@@ -41,6 +43,8 @@ pub enum StepKind {
     Ci,
     /// Run a command line in the project; its exit code and report lines count.
     Command(CommandLine),
+    /// Run the action of that name through the one action runner; a `FAIL` is a must-fix.
+    Action(String),
     /// Run a review role on a runner; its report lines count.
     Runner(RunnerStep),
     /// Wait for a review bot's review, then read its comments as findings.
@@ -66,11 +70,13 @@ pub enum StepError {
     Empty,
     /// A kind this build does not run.
     #[error(
-        "check step `{0}`: unknown kind (known: ci, command:<cmd>, runner:<name>:<role>, bot:<login>, codeql)"
+        "check step `{0}`: unknown kind (known: ci, command:<cmd>, action:<name>, runner:<name>:<role>, bot:<login>, codeql)"
     )]
     UnknownKind(String),
     /// A known kind missing its parts.
-    #[error("check step `{0}`: expected `command:<cmd>`, `runner:<name>:<role>` or `bot:<login>`")]
+    #[error(
+        "check step `{0}`: expected `command:<cmd>`, `action:<name>`, `runner:<name>:<role>` or `bot:<login>`"
+    )]
     MissingPart(String),
 }
 
@@ -86,6 +92,7 @@ impl fmt::Display for StepKind {
         match self {
             Self::Ci => formatter.write_str("ci"),
             Self::Command(line) => write!(formatter, "command:{line}"),
+            Self::Action(name) => write!(formatter, "action:{name}"),
             Self::Runner(step) => write!(formatter, "runner:{}:{}", step.runner, step.role),
             Self::Bot(login) => write!(formatter, "bot:{login}"),
             Self::Codeql => formatter.write_str("codeql"),
@@ -134,6 +141,13 @@ impl FromStr for Step {
                 }
                 StepKind::Command(CommandLine::from(line))
             }
+            Some(("action", name)) => {
+                let name = name.trim();
+                if name.is_empty() || name.contains(':') {
+                    return Err(missing_part_error());
+                }
+                StepKind::Action(name.to_owned())
+            }
             Some(("runner", rest)) => {
                 let (runner, role) = rest.split_once(':').ok_or_else(missing_part_error)?;
                 let (runner, role) = (runner.trim(), role.trim());
@@ -178,7 +192,8 @@ pub fn run(
     let source = step.source();
     match &step.kind {
         StepKind::Ci => ci::run(&source, ports, context),
-        StepKind::Command(line) => command::run(&source, line, ports),
+        StepKind::Command(line) => command::run(&source, line, ports, context),
+        StepKind::Action(name) => action::run(&source, name, ports),
         StepKind::Runner(runner_step) => runner::run(&source, runner_step, ports, context),
         StepKind::Bot(login) => bot::run(&source, login, ports, context),
         StepKind::Codeql => codeql::run(&source, ports, context),

@@ -5,8 +5,12 @@
 //! [`crate::app`] and sees only ports.
 
 use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 
+use crate::app::setup::ensure_homes;
+use crate::composition::Composition;
 use crate::domain::IssueNumber;
+use crate::manifest::ProjectFiles;
 
 pub mod ask;
 pub mod asklog;
@@ -14,11 +18,14 @@ pub mod board;
 pub mod brief;
 pub mod changes;
 pub mod check;
+pub mod do_action;
 pub mod doctor;
 pub mod exit;
 pub mod guard;
+pub mod hub;
 pub mod init;
 pub mod profile;
+pub mod progress;
 pub mod report;
 pub mod setup;
 pub mod slice;
@@ -125,7 +132,7 @@ pub enum Verb {
     },
     /// Validate the manifest and verify the required tools.
     Doctor,
-    /// Install what the manifest requires and generate the profiles.
+    /// Make the project's `.zaf/` and the zaf home, run doctor and print what is left to do.
     Setup,
     /// Manage the context profiles.
     Profile {
@@ -133,6 +140,61 @@ pub enum Verb {
         #[command(subcommand)]
         action: ProfileAction,
     },
+    /// List the actions, run one, or print the file a name resolves to.
+    Do(do_action::DoArgs),
+    /// The live view of what is happening; `zaf hub report` is the tool-call hook.
+    #[command(args_conflicts_with_subcommands = true)]
+    Hub {
+        /// What to do; none draws the hub.
+        #[command(subcommand)]
+        action: Option<HubAction>,
+        /// Serve the frame as a web page on every interface at this port, for anyone on the
+        /// LAN, and redraw it when a report arrives; 0 takes a free port. GET only, no login.
+        #[arg(long, value_name = "PORT")]
+        port: Option<u16>,
+    },
+    /// A model's phases on a task: declare them, then report each change.
+    Progress {
+        /// What to do with the phases.
+        #[command(subcommand)]
+        action: ProgressAction,
+    },
+}
+
+/// `zaf progress …`.
+#[derive(Debug, clap::Subcommand, strum::IntoStaticStr)]
+#[strum(serialize_all = "kebab-case")]
+pub enum ProgressAction {
+    /// Declare the phases this model goes through on a task, in order.
+    Plan {
+        /// The task.
+        task: IssueNumber,
+        /// The phases, one word each.
+        #[arg(required = true, num_args = 1..)]
+        phases: Vec<String>,
+        /// The role the phases are for; the role `ZAF_INSTANCE` names when not given.
+        #[arg(long)]
+        role: Option<String>,
+    },
+    /// Report that this model is now in one of its declared phases.
+    At {
+        /// The task.
+        task: IssueNumber,
+        /// The phase, as declared.
+        phase: String,
+        /// The role the phase is for; the role `ZAF_INSTANCE` names when not given.
+        #[arg(long)]
+        role: Option<String>,
+    },
+}
+
+/// `zaf hub …`.
+#[derive(Debug, clap::Subcommand, strum::IntoStaticStr)]
+#[strum(serialize_all = "kebab-case")]
+pub enum HubAction {
+    /// Leave a report of the tool call on stdin: the profiles' `PostToolUse` hook. Prints
+    /// nothing and exits 0 whatever it is given.
+    Report,
 }
 
 /// `zaf board …`.
@@ -169,6 +231,11 @@ pub enum BoardAction {
         question: IssueNumber,
         /// The ruling.
         text: String,
+    },
+    /// Mark a task done once its work has landed: in land, or when its recorded pull request has merged.
+    Done {
+        /// The task.
+        task: IssueNumber,
     },
 }
 
@@ -214,6 +281,8 @@ impl Verb {
             Self::Board { action } => Some(action.into()),
             Self::Slice { action } => Some(action.into()),
             Self::Profile { action } => Some(action.into()),
+            Self::Hub { action, .. } => action.as_ref().map(Into::into),
+            Self::Progress { action } => Some(action.into()),
             _ => None,
         };
         action.map_or_else(|| verb.to_owned(), |action| format!("{verb} {action}"))
@@ -232,12 +301,71 @@ where
             let _ = error.print();
             u8::try_from(error.exit_code()).unwrap_or(2)
         },
-        |cli| dispatch(&cli),
+        |cli| {
+            // The unit tests call `run` in-process from the crate's own folder: they must
+            // never make the real zaf home or this repository's `.zaf/`.
+            // The hook runs after every tool call and prints nothing: it makes nothing either.
+            let hook = matches!(
+                cli.verb,
+                Verb::Hub {
+                    action: Some(HubAction::Report),
+                    ..
+                }
+            );
+            if !cfg!(test) && !hook && !matches!(cli.verb, Verb::Setup) {
+                first_run();
+            }
+            dispatch(&cli)
+        },
     )
 }
 
+/// Makes a missing project `.zaf/` and zaf home before the verb runs, one line on stderr when
+/// it made anything and nothing on stdout. Outside a project only the zaf home is made. A
+/// failure is reported and the verb still runs: it will say what it needs itself.
+pub fn first_run() {
+    let Ok(here) = std::env::current_dir() else {
+        return;
+    };
+    first_run_at(&here, crate::composition::zaf_home().as_deref());
+}
+
+/// [`first_run`] from `here` with the zaf `home` given instead of read from the environment.
+pub fn first_run_at(here: &Path, home: Option<&Path>) {
+    let root = project_root(here, home);
+    match ensure_homes(root.as_deref(), home) {
+        Ok(homes) => {
+            if let Some(notice) = homes.notice() {
+                eprintln!("{notice}");
+            }
+        }
+        Err(error) => eprintln!("zaf: cannot make the zaf homes: {error}"),
+    }
+}
+
+/// The project root for `here`: the one discovery finds, else, when a manifest is broken, the
+/// nearest directory up the tree that holds any manifest file; `None` outside a project.
+pub fn project_root(here: &Path, home: Option<&Path>) -> Option<PathBuf> {
+    if let Ok(composition) = Composition::discover_with_home(here, home) {
+        return Some(composition.root().to_owned());
+    }
+    here.ancestors()
+        .find(|dir| !ProjectFiles::find(dir, home).is_empty())
+        .map(Path::to_owned)
+}
+
 /// Runs a parsed command line: each verb goes to its module; an unbuilt one says so and exits 64.
+/// A verb that changed something then leaves its report for the hub. The unit tests run verbs
+/// in-process from the crate's own folder and must not write this repository's reports.
 pub fn dispatch(cli: &Cli) -> u8 {
+    let code = run_verb(cli);
+    if !cfg!(test) {
+        hub::leave_report(&cli.verb, code);
+    }
+    code
+}
+
+fn run_verb(cli: &Cli) -> u8 {
     match &cli.verb {
         Verb::Board { action } => board::run(cli, action),
         Verb::Ask { task, questions } => ask::run(cli, *task, questions),
@@ -259,6 +387,9 @@ pub fn dispatch(cli: &Cli) -> u8 {
             dry_run,
         } => spawn::run(cli, *once, version.as_deref(), *dry_run),
         Verb::Profile { action } => profile::run(cli, action),
+        Verb::Do(args) => do_action::run(cli, args),
+        Verb::Hub { action, port } => hub::run(cli, action.as_ref(), *port),
+        Verb::Progress { action } => progress::run(cli, action),
     }
 }
 

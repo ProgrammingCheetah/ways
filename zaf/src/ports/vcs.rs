@@ -4,6 +4,7 @@
 //! VCSes disagree on the latter and a verb should not care.
 
 use std::fmt;
+use std::path::Path;
 
 use super::PortError;
 use crate::newtype::text_newtype;
@@ -107,11 +108,25 @@ pub trait Vcs {
     /// Whether the slice has no uncommitted work.
     fn is_clean(&self, slice: &SliceName) -> Result<bool, PortError>;
 
-    /// The slice's change against its base, stat only.
-    fn diff_stat(&self, slice: &SliceName) -> Result<DiffStat, PortError>;
+    /// The commit [`publish`](Self::publish) would move the slice's line to, by its git id: the
+    /// workspace's latest commit, hand-made or not, with uncommitted work no part of it. The
+    /// workspace is the one the slice record names. A directory that is no workspace is
+    /// [`PortError::NotFound`].
+    fn latest_commit(&self, workspace: &Path) -> Result<CommitId, PortError>;
 
-    /// The hunks of one changed file, on request.
-    fn diff_hunks(&self, slice: &SliceName, path: &str) -> Result<String, PortError>;
+    /// The change in a workspace against its base, stat only. The workspace is the one the
+    /// slice record names and the base comes from the branch pattern: the VCS reads neither
+    /// from its own state. A directory that is no workspace is [`PortError::NotFound`].
+    fn diff_stat(&self, workspace: &Path, base: &BaseName) -> Result<DiffStat, PortError>;
+
+    /// The hunks of one changed file of a workspace against its base, on request; a file
+    /// with no change is [`PortError::NotFound`].
+    fn diff_hunks(
+        &self,
+        workspace: &Path,
+        base: &BaseName,
+        path: &str,
+    ) -> Result<String, PortError>;
 
     /// Removes the slice's workspace; a slice already gone succeeds quietly.
     fn drop_slice(&self, slice: &SliceName) -> Result<(), PortError>;

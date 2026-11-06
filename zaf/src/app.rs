@@ -4,6 +4,7 @@
 //! traits of [`crate::ports`], never an adapter; [`crate::composition`] hands
 //! the live ones in and [`crate::fakes`] the test ones.
 
+pub mod actions;
 pub mod ask;
 pub mod asklog;
 pub mod board;
@@ -12,6 +13,7 @@ pub mod changes;
 pub mod check;
 pub mod doctor;
 pub mod guard;
+pub mod hub;
 pub mod init;
 pub mod profile;
 pub mod report;

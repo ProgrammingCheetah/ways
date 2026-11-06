@@ -20,7 +20,7 @@ pub mod task;
 
 pub use engine::{CheckReport, Engine, EngineSettings, StepPorts, StepResult, StepStatus};
 pub use record::{CheckRecord, RecordLine};
-pub use report::{CheckedFinding, dedupe, parse_report};
+pub use report::{CheckedFinding, dedupe, parse_report, reviewed_path};
 pub use step::{RunnerStep, Step, StepError, StepKind};
 pub use target::{Target, TargetError};
 pub use task::{LineKind, LineStatus, TaskCheck, TaskInputs, TaskLine, check_task};

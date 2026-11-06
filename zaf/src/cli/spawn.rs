@@ -5,6 +5,7 @@
 //! the tick returns), and exits `2` when a launch
 //! could not be recorded or its runner could not run. Each launch runs the
 //! `team` role through [`Composition::runner_for_role`], inside its profile.
+//! The tick ends by filling the ledger; a ledger failure warns and leaves the exit code.
 //! With `--dry-run` it prints the plan and, per launch, the instance, the epic,
 //! the tasks, the profile, the environment and the command line, and stops there.
 
@@ -16,8 +17,7 @@ use super::board::INSTANCE_VAR;
 use super::exit::{self, BACKEND, OK, REFUSED};
 use super::slice::VERSION_VAR;
 use crate::app::spawn::{
-    self, DryLaunch, LaunchContext, LaunchExit, LaunchPorts, Launched, Prepared, SpawnError,
-    TEAM_ROLE,
+    self, DryLaunch, LaunchContext, LaunchPorts, Launched, Prepared, SpawnError, TEAM_ROLE,
 };
 use crate::composition::Composition;
 use crate::domain::{Instance, RoleName};
@@ -50,8 +50,16 @@ pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool) -> u8 {
     }
     let manifest = composition.manifest();
     let state_dir = composition.state_dir();
+    // Resolved before anything is reserved, so a bad table holds no slot.
+    let project_env = match spawn::manifest_env(manifest, composition.root(), version) {
+        Ok(env) => env,
+        Err(error) => {
+            eprintln!("zaf {path}: {error}");
+            return REFUSED;
+        }
+    };
     if dry_run {
-        return dry(cli, &path, &composition, version);
+        return dry(cli, &path, &composition, version, &project_env);
     }
     let prepared = match spawn::prepare(
         board.as_ref(),
@@ -72,7 +80,7 @@ pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool) -> u8 {
         }
         print!("{}", prepared.plan.render_text());
     }
-    let jobs = jobs(&composition, &prepared, version);
+    let jobs = jobs(&composition, &prepared, version, &project_env);
     let ports = || -> Result<LaunchPorts, PortError> {
         let board = composition
             .board()
@@ -87,7 +95,7 @@ pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool) -> u8 {
     for result in spawn::launch_all(&jobs, &ports) {
         match result {
             Ok(done) => {
-                if let LaunchExit::Error(error) = &done.exit {
+                if let Some(error) = done.exit.problem() {
                     eprintln!("zaf {path}: {}: {error}", done.instance);
                     code = BACKEND;
                 }
@@ -118,6 +126,9 @@ pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool) -> u8 {
             .collect();
         println!("{json}");
     }
+    if let Err(message) = super::report::ingest_ledger(&composition) {
+        eprintln!("zaf {path}: warning: {message}");
+    }
     code
 }
 
@@ -126,6 +137,7 @@ fn jobs<'a>(
     composition: &Composition,
     prepared: &'a Prepared,
     version: &str,
+    project_env: &BTreeMap<String, String>,
 ) -> Vec<(&'a spawn::PlannedLaunch, LaunchContext)> {
     let manifest = composition.manifest();
     let profile = spawn::team_profile(manifest);
@@ -138,7 +150,7 @@ fn jobs<'a>(
                 state_dir: composition.state_dir(),
                 project: manifest.project.name.to_string(),
                 profile,
-                env: launch_env(&planned.instance, version),
+                env: with_project_env(project_env, launch_env(&planned.instance, version)),
             };
             (planned, context)
         })
@@ -146,7 +158,13 @@ fn jobs<'a>(
 }
 
 /// The dry run: plans the tick without reserving it and prints what each launch would run.
-fn dry(cli: &Cli, path: &str, composition: &Composition, version: &str) -> u8 {
+fn dry(
+    cli: &Cli,
+    path: &str,
+    composition: &Composition,
+    version: &str,
+    project_env: &BTreeMap<String, String>,
+) -> u8 {
     let board = match composition.board() {
         Ok(board) => board,
         Err(error) => return exit::fail_composition(path, &error),
@@ -157,7 +175,7 @@ fn dry(cli: &Cli, path: &str, composition: &Composition, version: &str) -> u8 {
             Ok(prepared) => prepared,
             Err(error) => return failed(path, &error),
         };
-    let jobs = jobs(composition, &prepared, version);
+    let jobs = jobs(composition, &prepared, version, project_env);
     let describe = |request: &RunRequest| {
         composition
             .role_launch(request)
@@ -182,6 +200,17 @@ fn dry(cli: &Cli, path: &str, composition: &Composition, version: &str) -> u8 {
         print!("{}", launch.render_text());
     }
     OK
+}
+
+/// The manifest's `[env]` first, then zaf's own variables over it (no `[env]` key may
+/// start with `ZAF_`, so none is shadowed).
+fn with_project_env(
+    project_env: &BTreeMap<String, String>,
+    own: BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut env = project_env.clone();
+    env.extend(own);
+    env
 }
 
 /// The environment a launch carries for the verbs its instance runs.
@@ -230,6 +259,21 @@ mod tests {
     #[test]
     fn without_a_version_the_tick_refuses() {
         assert_eq!(cli::run(["zaf", "spawn", "--once"]), REFUSED);
+    }
+
+    #[test]
+    fn a_launch_carries_the_manifests_env_beside_zafs_own() {
+        let instance = Instance {
+            role: RoleName::from("team"),
+            epic: IssueNumber::from(16),
+            number: InstanceNumber::from(12),
+        };
+        let project = BTreeMap::from([("GATE_BASE".to_owned(), "feature/release-0-3".to_owned())]);
+        let env = with_project_env(&project, launch_env(&instance, "0-3"));
+        assert_eq!(env["GATE_BASE"], "feature/release-0-3");
+        assert_eq!(env["ZAF_VERSION"], "0-3");
+        assert_eq!(env["ZAF_INSTANCE"], "team instance 12 on #16");
+        assert_eq!(env.len(), 3);
     }
 
     #[test]

@@ -1,0 +1,82 @@
+#!/bin/sh
+# zaf description: move a slice's bookmark forward to its workspace's latest commit and push it plainly, overwriting nothing; a slice with nothing new is quiet; hands back the pushed commit
+# zaf 1: refused: uncommitted work, a backward or sideways move of the bookmark, a remote with work the slice lacks, no workspace for the slice, or a slice name that is not a workspace path
+# zaf 2: a backend failed (jj is missing or refused)
+# zaf mode: 750
+# zaf group: team, release
+slice=$1
+
+if [ -z "$ZAF_ROOT" ] || [ "$#" -ne 1 ]; then
+    echo "usage: push <slice>, with ZAF_ROOT set" >&2
+    exit 1
+fi
+
+# A slice name is a relative path of plain parts, below the workspaces directory, and fit to
+# sit inside a revset string.
+case "/$slice/" in
+    *//* | */./* | */../*)
+        echo "slice name $slice is not a relative path inside the workspaces directory" >&2
+        exit 1
+        ;;
+esac
+case $slice in
+    "" | /* | -* | *\"* | *\\*)
+        echo "slice name $slice is not a relative path inside the workspaces directory" >&2
+        exit 1
+        ;;
+esac
+
+dir=$ZAF_ROOT/.zaf/workspaces/$slice
+if [ ! -d "$dir/.jj" ]; then
+    echo "no workspace for slice $slice" >&2
+    exit 1
+fi
+cd "$dir" || exit 2
+
+# jj snapshots the workspace's working copy on its first command, so what follows sees what the
+# programmer left on disk.
+jj_run() {
+    jj --no-pager --color=never "$@"
+}
+
+bookmark="bookmarks(exact:\"$slice\")"
+
+empty=$(jj_run log --no-graph -r @ -T empty) || exit 2
+if [ "$empty" != "true" ]; then
+    echo "uncommitted work in $slice; commit first" >&2
+    exit 1
+fi
+
+# A bookmark that is not an ancestor of the workspace's latest commit would move backwards or
+# sideways, which is a refusal and never an overwrite.
+behind=$(jj_run log --no-graph -r "$bookmark ~ ::@-" -T 'commit_id ++ "\n"') || exit 2
+if [ -n "$behind" ]; then
+    echo "the bookmark $slice is not behind the latest commit; moving it would go backwards or sideways" >&2
+    exit 1
+fi
+
+# A programmer may have committed by hand, leaving the bookmark behind: settle it on the latest
+# commit. `bookmark set` moves forward or stays, and refuses a backward move on its own.
+jj_run bookmark set "$slice" -r @- || exit 2
+head=$(jj_run log --no-graph -r @- -T 'commit_id') || exit 2
+
+# Already on the remote at this commit: nothing new.
+published=$(jj_run log --no-graph -r "$bookmark & remote_bookmarks(exact:\"$slice\")" -T 'commit_id ++ "\n"') || exit 2
+if [ -n "$published" ]; then
+    echo "$head"
+    exit 0
+fi
+
+# A plain push, never forced: a remote whose bookmark moved past what jj last saw refuses it.
+if ! pushed=$(jj_run git push --bookmark "exact:$slice" 2>&1); then
+    printf '%s\n' "$pushed" >&2
+    case $pushed in
+        *"unexpectedly moved on the remote"*)
+            echo "the remote has work $slice lacks" >&2
+            exit 1
+            ;;
+    esac
+    exit 2
+fi
+printf '%s\n' "$pushed" >&2
+echo "$head"

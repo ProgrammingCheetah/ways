@@ -24,8 +24,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::brief::{RUNS_DIR, ensure_runs_dir, named_pages};
 use crate::domain::{
-    Answer, AnsweredQuestion, Ask, AskError, Instance, IssueNumber, PageId, Profile, Question,
-    QuestionId, QuoteCheckError, RoleName, TaskTemplate, Verdict,
+    Answer, AnsweredQuestion, Ask, AskError, Instance, IssueNumber, PageId, PageStatus, Profile,
+    Question, QuestionId, QuoteCheckError, RoleName, TaskTemplate, Verdict,
 };
 use crate::manifest::Rung;
 use crate::ports::{Board, Design, Page, PortError, RunRequest, Runner};
@@ -119,6 +119,29 @@ impl fmt::Display for CheckResult {
     }
 }
 
+/// What the keeper was handed to read for one question, as printed after `read:` and logged.
+///
+/// The default, empty, is a question with nothing recorded: a line written before the
+/// ask log held this, a failed or interrupted run.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Read {
+    /// The sentence after `read:`; empty when nothing was recorded.
+    #[serde(default)]
+    pub note: String,
+    /// The pages the keeper was given in full, named or chosen by keyword.
+    #[serde(default)]
+    pub pages: Vec<String>,
+}
+
+impl Read {
+    fn note(note: String, pages: &[PageId]) -> Self {
+        Self {
+            note,
+            pages: pages.iter().map(ToString::to_string).collect(),
+        }
+    }
+}
+
 /// One line of the ask log: one question and what came back.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LogLine {
@@ -142,6 +165,9 @@ pub struct LogLine {
     pub rung: Option<String>,
     /// How the answer was checked.
     pub check: CheckResult,
+    /// What the keeper read for this question; absent on lines written before it was recorded.
+    #[serde(default)]
+    pub read: Read,
 }
 
 /// The verified answer and the log lines written for it.
@@ -163,7 +189,8 @@ impl AskOutcome {
     }
 
     /// The terse answer: each entry in the answer format, and for a question whose
-    /// citation check failed, its `check failed` line in the entry's place.
+    /// citation check failed, its `check failed` line in the entry's place. A question
+    /// with a recorded read ends on its `read:` line.
     #[must_use]
     pub fn render(&self) -> String {
         self.answer
@@ -171,14 +198,20 @@ impl AskOutcome {
             .iter()
             .zip(&self.lines)
             .map(|(entry, line)| {
-                if line.verdict == CHECK_FAILED {
+                let mut text = if line.verdict == CHECK_FAILED {
                     format!("{}\n", line.answer)
                 } else {
                     Answer {
                         questions: vec![entry.clone()],
                     }
                     .to_string()
+                };
+                if !line.read.note.is_empty() {
+                    text.push_str("    read: ");
+                    text.push_str(&line.read.note);
+                    text.push('\n');
                 }
+                text
             })
             .collect()
     }
@@ -210,6 +243,11 @@ pub enum AskFailure {
     /// The design source failed while reading a named page.
     #[error("design: {0}")]
     Design(PortError),
+    /// The project declares no design source, so no answer could be checked against one.
+    #[error(
+        "this project declares no design source: set `[design]` in ZAF.toml (`kind` is \"none\"), and ask again"
+    )]
+    NoDesignSource,
     /// The log or a run folder could not be read or written.
     #[error("cannot use {path}: {source}")]
     State {
@@ -222,21 +260,33 @@ pub enum AskFailure {
 }
 
 /// Asks the questions and returns the verified answer; the log has the new lines on return.
+///
+/// A project with no design source is refused first, before the log is read or a keeper runs:
+/// nothing could be quoted against it, and nothing is logged.
 pub fn ask(query: &AskQuery<'_>, ports: &AskPorts<'_>) -> Result<AskOutcome, AskFailure> {
+    if ports.design.is_none() {
+        return Err(AskFailure::NoDesignSource);
+    }
     let mut parsed = parse_ask(query)?;
     let questions = parsed.questions.clone();
     let log_path = query.state_dir.join(ASK_LOG);
     let earlier = read_log(&log_path)?;
     let now = seconds(query.now);
 
-    let mut entries: Vec<Option<(AnsweredQuestion, Option<String>, CheckResult)>> = parsed
-        .questions
-        .iter()
-        .map(|question| {
-            cached(&earlier, query, question, now)
-                .map(|(entry, rung)| (entry, rung, CheckResult::Cached))
-        })
-        .collect();
+    let mut entries: Vec<Option<(AnsweredQuestion, Option<String>, CheckResult)>> = Vec::new();
+    let mut reads: Vec<Read> = Vec::new();
+    for question in &parsed.questions {
+        match cached(&earlier, query, question, now) {
+            Some((entry, rung, read)) => {
+                entries.push(Some((entry, rung, CheckResult::Cached)));
+                reads.push(read);
+            }
+            None => {
+                entries.push(None);
+                reads.push(Read::default());
+            }
+        }
+    }
 
     let open: Vec<Question> = parsed
         .questions
@@ -248,15 +298,18 @@ pub fn ask(query: &AskQuery<'_>, ports: &AskPorts<'_>) -> Result<AskOutcome, Ask
     let mut unreadable: Vec<(QuestionId, PageId)> = Vec::new();
     if !open.is_empty() {
         let ticket = ports.board.task(query.task).map_err(AskFailure::Board)?;
-        let pages = match (ticket.body.parse::<TaskTemplate>(), ports.design) {
-            (Ok(template), Some(design)) => {
-                named_pages(design, &template.design_pages).map_err(AskFailure::Design)?
+        let template = ticket.body.parse::<TaskTemplate>().ok();
+        let chosen =
+            choose_pages(ports.design, template.as_ref(), &open).map_err(AskFailure::Design)?;
+        let mut fresh_reads = chosen.reads.iter();
+        for (slot, read) in entries.iter().zip(&mut reads) {
+            if slot.is_none() {
+                *read = fresh_reads.next().cloned().unwrap_or_default();
             }
-            _ => Vec::new(),
-        };
+        }
         parsed.context = vec![ticket.title];
         parsed.questions = open;
-        let prompt = keeper_prompt(query, &parsed, &pages)?;
+        let prompt = keeper_prompt(query, &parsed, &chosen.index, &chosen.pages)?;
         // A keeper run can outlive `zaf ask` (a caller's timeout kills the process, the
         // run goes on): the questions are in the log before it starts.
         append_log(
@@ -291,8 +344,8 @@ pub fn ask(query: &AskQuery<'_>, ports: &AskPorts<'_>) -> Result<AskOutcome, Ask
         questions: Vec::new(),
     };
     let mut lines = Vec::new();
-    for (question, slot) in questions.iter().zip(entries) {
-        let (entry, line) = match slot {
+    for ((question, slot), read) in questions.iter().zip(entries).zip(reads) {
+        let (entry, mut line) = match slot {
             Some((entry, rung, check)) => {
                 let line = log_line(query, question, &entry, rung, check, now);
                 (entry, line)
@@ -303,6 +356,7 @@ pub fn ask(query: &AskQuery<'_>, ports: &AskPorts<'_>) -> Result<AskOutcome, Ask
                 (not_settled(question.id, query.task), line)
             }
         };
+        line.read = read;
         lines.push(line);
         answer.questions.push(entry);
     }
@@ -333,13 +387,14 @@ fn parse_ask(query: &AskQuery<'_>) -> Result<Ask, AskFailure> {
     Ok(text.parse::<Ask>()?)
 }
 
-/// The freshest passed answer to the same task, kind and text inside the window, re-keyed to `question`.
+/// The freshest passed answer to the same task, kind and text inside the window, re-keyed to
+/// `question`, with the rung that gave it and what the keeper read for it.
 fn cached(
     earlier: &[LogLine],
     query: &AskQuery<'_>,
     question: &Question,
     now: u64,
-) -> Option<(AnsweredQuestion, Option<String>)> {
+) -> Option<(AnsweredQuestion, Option<String>, Read)> {
     let kind: &'static str = question.kind.into();
     let window = query.cache_window.as_secs();
     earlier
@@ -355,12 +410,165 @@ fn cached(
         .find_map(|line| {
             let mut entry = line.answer.parse::<Answer>().ok()?.questions.pop()?;
             entry.id = question.id;
-            Some((entry, line.rung.clone()))
+            Some((entry, line.rung.clone(), line.read.clone()))
         })
 }
 
-/// The keeper prompt: the role text, then the ask, then the task's named pages in full.
-fn keeper_prompt(query: &AskQuery<'_>, ask: &Ask, pages: &[Page]) -> Result<String, AskFailure> {
+/// One index entry: a page's id, status and title.
+type IndexEntry = (PageId, PageStatus, String);
+
+/// The most pages one question's keywords bring in.
+const MAX_KEYWORD_PAGES: usize = 5;
+
+/// A keyword is longer than this many letters.
+const SHORT_WORD: usize = 3;
+
+/// Words that tell nothing about a topic, so they are never keywords. Lowercase, longer
+/// than three letters (shorter words are never keywords anyway).
+const STOP_WORDS: &[&str] = &[
+    "about", "also", "been", "before", "being", "between", "could", "does", "doesn", "didn",
+    "each", "from", "have", "haven", "here", "into", "more", "most", "much", "must", "only",
+    "other", "over", "shall", "should", "shouldn", "some", "such", "than", "that", "their", "them",
+    "then", "there", "these", "they", "this", "those", "through", "under", "very", "were", "what",
+    "when", "where", "which", "while", "whose", "will", "with", "would", "your",
+];
+
+/// What the question's words say to look for: every word longer than three letters that is
+/// not a stop word, lowercase, each once, in the order first met.
+#[must_use]
+pub fn keywords(question: &str) -> Vec<String> {
+    let mut words: Vec<String> = Vec::new();
+    for word in question.split(|character: char| !character.is_alphanumeric()) {
+        let word = word.to_lowercase();
+        if word.chars().count() > SHORT_WORD
+            && !STOP_WORDS.contains(&word.as_str())
+            && !words.contains(&word)
+        {
+            words.push(word);
+        }
+    }
+    words
+}
+
+/// The pages whose title holds a keyword, ignoring case: the most keywords first, then in
+/// id order, at most [`MAX_KEYWORD_PAGES`].
+fn pages_by_keyword(index: &[IndexEntry], keywords: &[String]) -> Vec<PageId> {
+    let mut scored: Vec<(usize, &PageId)> = index
+        .iter()
+        .filter_map(|(id, _, title)| {
+            let title = title.to_lowercase();
+            let score = keywords
+                .iter()
+                .filter(|keyword| title.contains(keyword.as_str()))
+                .count();
+            (score > 0).then_some((score, id))
+        })
+        .collect();
+    scored.sort_by(|(left_score, left), (right_score, right)| {
+        right_score.cmp(left_score).then_with(|| left.cmp(right))
+    });
+    scored
+        .into_iter()
+        .take(MAX_KEYWORD_PAGES)
+        .map(|(_, id)| id.clone())
+        .collect()
+}
+
+/// What the keeper is handed to read, and what each open question's `read:` line says.
+struct Chosen {
+    /// The index titles, given when no page is named on the task.
+    index: Vec<IndexEntry>,
+    /// The pages in full: the named ones, or the keyword matches of every open question.
+    pages: Vec<Page>,
+    /// One read per open question, in order.
+    reads: Vec<Read>,
+}
+
+/// The pages for the open questions. The task's named pages stand as they are. When it
+/// names none, the keeper gets the index's titles and, for each question, the pages whose
+/// title holds one of its keywords.
+fn choose_pages(
+    design: Option<&dyn Design>,
+    template: Option<&TaskTemplate>,
+    open: &[Question],
+) -> Result<Chosen, PortError> {
+    let same_for_all = |read: Read| vec![read; open.len()];
+    let Some(design) = design else {
+        return Ok(Chosen {
+            index: Vec::new(),
+            pages: Vec::new(),
+            reads: same_for_all(Read::note("no design source".to_owned(), &[])),
+        });
+    };
+    let named = match template {
+        Some(template) => named_pages(design, &template.design_pages)?,
+        None => Vec::new(),
+    };
+    if !named.is_empty() {
+        let ids: Vec<PageId> = named.iter().map(|page| page.id.clone()).collect();
+        let note = format!("pages named on the task: {}", join(&ids));
+        return Ok(Chosen {
+            index: Vec::new(),
+            reads: same_for_all(Read::note(note, &ids)),
+            pages: named,
+        });
+    }
+    let index = design.index()?;
+    let mut pages: Vec<Page> = Vec::new();
+    let mut reads = Vec::new();
+    for question in open {
+        let words = keywords(&question.text);
+        let mut ids = Vec::new();
+        for id in pages_by_keyword(&index, &words) {
+            let page = match pages.iter().find(|page| page.id == id) {
+                Some(page) => page.clone(),
+                None => match design.page(&id) {
+                    Ok(page) => {
+                        pages.push(page.clone());
+                        page
+                    }
+                    Err(PortError::NotFound(_)) => continue,
+                    Err(other) => return Err(other),
+                },
+            };
+            ids.push(page.id);
+        }
+        let searched = if words.is_empty() {
+            "no keywords".to_owned()
+        } else {
+            words.join(", ")
+        };
+        let given = if ids.is_empty() {
+            "index titles only".to_owned()
+        } else {
+            format!("index titles and pages {}", join(&ids))
+        };
+        let note =
+            format!("no pages named on the task; the index was searched for {searched}: {given}");
+        reads.push(Read::note(note, &ids));
+    }
+    Ok(Chosen {
+        index,
+        pages,
+        reads,
+    })
+}
+
+fn join(ids: &[PageId]) -> String {
+    ids.iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The keeper prompt: the role text, then the ask, then the index titles when the task
+/// names no pages, then the pages in full.
+fn keeper_prompt(
+    query: &AskQuery<'_>,
+    ask: &Ask,
+    index: &[IndexEntry],
+    pages: &[Page],
+) -> Result<String, AskFailure> {
     let override_path = query.state_dir.join(KEEPER_OVERRIDE);
     let role = match fs::read_to_string(&override_path) {
         Ok(text) => text,
@@ -370,8 +578,23 @@ fn keeper_prompt(query: &AskQuery<'_>, ask: &Ask, pages: &[Page]) -> Result<Stri
     let mut sections = vec![
         role.trim_end().to_owned(),
         format!("## The ask\n\n{}", ask.to_string().trim_end()),
-        "## The task's pages".to_owned(),
     ];
+    if !index.is_empty() {
+        let titles: Vec<String> = index
+            .iter()
+            .map(|(id, status, title)| format!("- {id} {status} — {title}"))
+            .collect();
+        sections.push(format!(
+            "## The index\n\nThe task names no pages; these are the design pages' titles.\n\n{}",
+            titles.join("\n")
+        ));
+    }
+    let heading = if index.is_empty() {
+        "## The task's pages"
+    } else {
+        "## The pages whose title matches the questions"
+    };
+    sections.push(heading.to_owned());
     sections.extend(pages.iter().map(|page| {
         let heading = format!("### {} {} ({})", page.id, page.title, page.status);
         format!("{heading}\n\n{}", page.text.trim_end())
@@ -662,6 +885,7 @@ fn check_failed_line(
         answer: printed,
         rung: None,
         check: CheckResult::Failed(failures),
+        read: Read::default(),
     }
 }
 
@@ -696,6 +920,7 @@ fn log_line(
         answer: single.to_string(),
         rung,
         check,
+        read: Read::default(),
     }
 }
 
@@ -721,6 +946,7 @@ fn failed_lines(
                 answer: reason.to_owned(),
                 rung: None,
                 check: CheckResult::Failed(vec![reason.to_owned()]),
+                read: Read::default(),
             }
         })
         .collect()

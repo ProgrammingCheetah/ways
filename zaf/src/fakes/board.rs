@@ -5,7 +5,9 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::SystemTime;
 
 use crate::domain::{Instance, IssueNumber, TaskLabel};
-use crate::ports::{Board, ClaimOutcome, ClaimRecord, NewQuestion, PortError, Ticket};
+use crate::ports::{
+    Board, ClaimOutcome, ClaimRecord, EpicTask, EpicTree, NewQuestion, PortError, Ticket,
+};
 
 /// One issue and everything written on it.
 #[derive(Debug, Clone)]
@@ -18,6 +20,8 @@ struct Issue {
     question: bool,
     ruling: Option<String>,
     closed: bool,
+    epic: bool,
+    group: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -43,8 +47,38 @@ impl FakeBoard {
             question: false,
             ruling: None,
             closed: false,
+            epic: false,
+            group: None,
         };
         self.state().issues.insert(ticket.number, issue);
+    }
+
+    /// Puts an open epic on the board, as [`Board::epic_trees`] lists it.
+    pub fn add_epic(&self, number: IssueNumber, title: &str) {
+        self.add_ticket(Ticket {
+            number,
+            epic: None,
+            title: title.to_owned(),
+            body: String::new(),
+            label: None,
+        });
+        if let Some(issue) = self.state().issues.get_mut(&number) {
+            issue.epic = true;
+        }
+    }
+
+    /// Gives a task the `group:<name>` label.
+    pub fn set_group(&self, task: IssueNumber, group: &str) {
+        if let Some(issue) = self.state().issues.get_mut(&task) {
+            issue.group = Some(group.to_owned());
+        }
+    }
+
+    /// Closes an issue without any ruling, as closing it on the forge would.
+    pub fn close(&self, issue: IssueNumber) {
+        if let Some(issue) = self.state().issues.get_mut(&issue) {
+            issue.closed = true;
+        }
     }
 
     /// Puts an open question ticket on the board, labelled `question`, as `open_question` would.
@@ -111,6 +145,31 @@ impl State {
 }
 
 impl Board for FakeBoard {
+    fn epic_trees(&self) -> Result<Vec<EpicTree>, PortError> {
+        let state = self.state();
+        let trees = state
+            .issues
+            .values()
+            .filter(|issue| issue.epic && !issue.closed)
+            .map(|epic| EpicTree {
+                number: epic.ticket.number,
+                title: epic.ticket.title.clone(),
+                tasks: state
+                    .issues
+                    .values()
+                    .filter(|task| task.ticket.epic == Some(epic.ticket.number))
+                    .map(|task| EpicTask {
+                        number: task.ticket.number,
+                        label: task.ticket.label,
+                        closed: task.closed,
+                        group: task.group.clone(),
+                    })
+                    .collect(),
+            })
+            .collect();
+        Ok(trees)
+    }
+
     fn ready(&self) -> Result<Vec<Ticket>, PortError> {
         let ready = self
             .state()
@@ -262,7 +321,7 @@ impl Board for FakeBoard {
         let ticket = Ticket {
             number,
             epic: None,
-            title: question.text.clone(),
+            title: question.title(),
             body: question.body(),
             label: Some(TaskLabel::Question),
         };
@@ -275,6 +334,8 @@ impl Board for FakeBoard {
             question: true,
             ruling: None,
             closed: false,
+            epic: false,
+            group: None,
         };
         state.issues.insert(number, issue);
         Ok(number)

@@ -14,6 +14,7 @@ struct PullRequest {
     comments: Vec<ReviewComment>,
     alerts: Vec<ScanningAlert>,
     head: Option<String>,
+    files: Vec<String>,
     merged: bool,
 }
 
@@ -21,10 +22,11 @@ struct PullRequest {
 struct State {
     pulls: BTreeMap<PrNumber, PullRequest>,
     next_number: u64,
+    merged_fails: bool,
 }
 
 /// A forge held in memory. Arrange reviews with [`FakeForge::set_checks`]
-/// [`FakeForge::add_review_comment`], [`FakeForge::set_head`] and [`FakeForge::set_scanning_alerts`].
+/// [`FakeForge::add_review_comment`], [`FakeForge::set_head`], [`FakeForge::set_changed_files`] and [`FakeForge::set_scanning_alerts`].
 #[derive(Debug, Default)]
 pub struct FakeForge {
     state: Mutex<State>,
@@ -67,6 +69,18 @@ impl FakeForge {
         Ok(())
     }
 
+    /// Replaces the files a pull request changes, in the order its diff lists them.
+    pub fn set_changed_files(&self, pr: PrNumber, files: &[&str]) -> Result<(), PortError> {
+        let mut state = self.state();
+        state.pull_mut(pr)?.files = files.iter().map(|file| (*file).to_owned()).collect();
+        Ok(())
+    }
+
+    /// Makes every [`Forge::merged`] read fail with a backend error, as a forge that is down does.
+    pub fn fail_merged_reads(&self) {
+        self.state().merged_fails = true;
+    }
+
     /// The request a pull request was opened with.
     pub fn request(&self, pr: PrNumber) -> Option<PrRequest> {
         self.state().pulls.get(&pr).map(|pull| pull.request.clone())
@@ -104,6 +118,7 @@ impl Forge for FakeForge {
             comments: Vec::new(),
             alerts: Vec::new(),
             head: None,
+            files: Vec::new(),
             merged: false,
         };
         state.pulls.insert(number, pull);
@@ -123,6 +138,19 @@ impl Forge for FakeForge {
     fn head(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
         let mut state = self.state();
         Ok(state.pull_mut(pr)?.head.clone())
+    }
+
+    fn merged(&self, pr: PrNumber) -> Result<bool, PortError> {
+        let mut state = self.state();
+        if state.merged_fails {
+            return Err(PortError::Backend("the forge is down".to_owned()));
+        }
+        Ok(state.pull_mut(pr)?.merged)
+    }
+
+    fn last_changed_file(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
+        let mut state = self.state();
+        Ok(state.pull_mut(pr)?.files.last().cloned())
     }
 
     fn scanning_alerts(&self, pr: PrNumber) -> Result<Vec<ScanningAlert>, PortError> {

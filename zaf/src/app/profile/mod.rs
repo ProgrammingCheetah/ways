@@ -11,19 +11,31 @@
 //! - `[pack] path`: the project root is added as a marketplace (its
 //!   `.claude-plugin/marketplace.json` names the marketplace and lists the pack) and the
 //!   pack is installed from it. What is already added or installed is read from
-//!   `claude plugin list` and `claude plugin marketplace list`, and issues no command.
+//!   `claude plugin list` and `claude plugin marketplace list`, and issues no command, unless
+//!   the pack's `plugin.json` now declares another version than the listing shows: then
+//!   `claude plugin marketplace update` and `claude plugin update` bring the profile to it.
 //! - `[pack] tag`: the pack is installed from the marketplace on GitHub at that tag.
 //!
 //! The two share the install step. The profile's settings enable the pack.
+//!
+//! The login is shared, never copied: a profile's `.credentials.json` is a symlink to the one
+//! file in the Claude home, so a rotated refresh token reaches every profile at once. The
+//! Claude home is `$HOME/.claude` and never `CLAUDE_CONFIG_DIR`, which in a spawned instance
+//! names a profile. A file already at the profile's path is left alone for doctor to report.
 
+use std::env;
+use std::ffi::OsString;
 use std::fmt;
 use std::fs;
 use std::io;
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value, json};
 
+use crate::app::actions::forbidden_action;
 use crate::app::brief::INTERFACE_PAGE;
+use crate::composition::HOME_VAR;
 use crate::domain::Profile;
 use crate::manifest::{CommandLine, Effort, Manifest, PackSection, RoleSection, ToolName};
 use crate::ports::{GateVerdict, Shell};
@@ -48,6 +60,14 @@ pub const CONFIG_DIR_VAR: &str = "CLAUDE_CONFIG_DIR";
 /// The record, under a profile's `plugins/`, of the tag installed from the marketplace,
 /// so a rerun with the same tag installs nothing.
 pub const INSTALLED_TAG_FILE: &str = ".zaf-pack-tag";
+/// A plugin's own manifest, under its source folder.
+const PLUGIN_FILE: &str = ".claude-plugin/plugin.json";
+/// What [`listed_version`] says of a listed plugin that shows no `Version:` line.
+const UNKNOWN_VERSION: &str = "unknown";
+/// The file a Claude home keeps its login in.
+pub const CREDENTIALS_FILE: &str = ".credentials.json";
+/// The Claude home's folder under the user's home.
+const CLAUDE_HOME_DIR: &str = ".claude";
 
 const LEAN_SETTINGS: &str = include_str!("../../../assets/profiles/lean/settings.json");
 const BUILD_SETTINGS: &str = include_str!("../../../assets/profiles/build/settings.json");
@@ -158,12 +178,23 @@ fn io_error(path: &Path) -> impl FnOnce(io::Error) -> ProfileError {
 ///
 /// `root` is the project root, which `[pack] path` is relative to and which is added as the
 /// marketplace; `shell` runs the `claude plugin` commands that register the pack and
-/// nothing else.
+/// nothing else. Each profile's login is linked to the Claude home's, see [`link_credentials`].
 pub fn init(
     root: &Path,
     state_dir: &Path,
     manifest: &Manifest,
     shell: &dyn Shell,
+) -> Result<Report, ProfileError> {
+    init_with(root, state_dir, manifest, shell, claude_home().as_deref())
+}
+
+/// [`init`] against a given Claude home; `None`, when there is none, links nothing.
+fn init_with(
+    root: &Path,
+    state_dir: &Path,
+    manifest: &Manifest,
+    shell: &dyn Shell,
+    claude_home: Option<&Path>,
 ) -> Result<Report, ProfileError> {
     let mut report = Report::default();
     let project = read_project_rules(state_dir)?;
@@ -180,6 +211,16 @@ pub fn init(
         for dir in PROFILE_DIRS {
             let dir = home.join(dir);
             fs::create_dir_all(&dir).map_err(io_error(&dir))?;
+        }
+        // Before the pack: `claude plugin` runs inside this profile, under its login.
+        if let Some(claude_home) = claude_home {
+            let link = home.join(CREDENTIALS_FILE);
+            if link_credentials(&home, claude_home).map_err(io_error(&link))? {
+                report.written.push(Written {
+                    path: relative(state_dir, &link),
+                    change: Change::Created,
+                });
+            }
         }
         let pack = pack_ref.as_ref().filter(|_| carries_pack(profile));
         if let (Some(pack_section), Some(pack)) = (&manifest.pack, pack) {
@@ -223,6 +264,48 @@ pub fn generated(manifest: &Manifest) -> Vec<Profile> {
 /// A profile's home: `<state_dir>/profiles/<name>`, what `CLAUDE_CONFIG_DIR` points at.
 pub fn home(state_dir: &Path, profile: Profile) -> PathBuf {
     state_dir.join(PROFILES_DIR).join(profile.to_string())
+}
+
+/// The host's Claude home, `$HOME/.claude`; `None` without a usable `HOME`.
+pub fn claude_home() -> Option<PathBuf> {
+    claude_home_under(env::var_os(HOME_VAR))
+}
+
+/// The Claude home under `home`, which must be absolute: a symlink holding a relative path
+/// would resolve against the profile's folder and point somewhere else.
+fn claude_home_under(home: Option<OsString>) -> Option<PathBuf> {
+    let home = PathBuf::from(home?);
+    home.is_absolute().then(|| home.join(CLAUDE_HOME_DIR))
+}
+
+/// Makes the `.credentials.json` of the profile at `home` a symlink to the one in
+/// `claude_home`, and says whether it made the link.
+///
+/// Makes nothing when the Claude home holds no such file, and never replaces what is already
+/// at the profile's path, be it a file or a link.
+pub fn link_credentials(home: &Path, claude_home: &Path) -> io::Result<bool> {
+    let source = claude_home.join(CREDENTIALS_FILE);
+    if !source.is_file() {
+        return Ok(false);
+    }
+    match symlink(&source, home.join(CREDENTIALS_FILE)) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+/// Whether the symlink at `link` leads to the credentials file of `claude_home`.
+///
+/// By its written target, so a link survives the Claude home being logged out, or by where
+/// both resolve, so a link through another spelling of the path still counts.
+pub fn links_to_claude_home(link: &Path, claude_home: &Path) -> bool {
+    let source = claude_home.join(CREDENTIALS_FILE);
+    fs::read_link(link).is_ok_and(|target| target == source)
+        || matches!(
+            (fs::canonicalize(link), fs::canonicalize(&source)),
+            (Ok(resolved), Ok(wanted)) if resolved == wanted
+        )
 }
 
 /// Whether the profile carries the pack: every generated one but `lean`, which runs plugin-free.
@@ -341,8 +424,17 @@ fn register(
 ) -> Result<(), ProfileError> {
     if pack.path.is_some() {
         let id = pack_ref.to_string();
-        if listed_version(&run(shell, &plugin_line(home, "list"))?, &id).is_some() {
-            return Ok(());
+        if let Some(have) = listed_version(&run(shell, &plugin_line(home, "list"))?, &id) {
+            let wanted = pack
+                .path
+                .as_deref()
+                .and_then(|path| source_version(root, path));
+            return match wanted {
+                Some(wanted) if have != UNKNOWN_VERSION && have != wanted => {
+                    update(shell, state_dir, home, pack_ref, &wanted, report)
+                }
+                _ => Ok(()),
+            };
         }
         let marketplaces = run(shell, &plugin_line(home, "marketplace list"))?;
         if !lists_marketplace(&marketplaces, &pack_ref.marketplace) {
@@ -381,6 +473,43 @@ fn install(
     run(shell, line)?;
     report.installed.push(format!(
         "installed {spec} into {}",
+        relative(state_dir, home).display()
+    ));
+    Ok(())
+}
+
+/// The version the pack's own `.claude-plugin/plugin.json` declares, under `root` at `path`;
+/// `None` when the file is missing, unreadable or declares none (the pack is not versioned).
+fn source_version(root: &Path, path: &Path) -> Option<String> {
+    let text = fs::read_to_string(root.join(path).join(PLUGIN_FILE)).ok()?;
+    let Value::Object(plugin) = serde_json::from_str::<Value>(&text).ok()? else {
+        return None;
+    };
+    let version = plugin.get("version")?.as_str()?.trim();
+    (!version.is_empty()).then(|| version.to_owned())
+}
+
+/// Brings the pack in the profile at `home` to the version the source holds: refreshes the
+/// marketplace, then updates the plugin, so the profile holds `wanted`.
+fn update(
+    shell: &dyn Shell,
+    state_dir: &Path,
+    home: &Path,
+    pack_ref: &PackRef,
+    wanted: &str,
+    report: &mut Report,
+) -> Result<(), ProfileError> {
+    let marketplace = format!(
+        "{} {}",
+        plugin_line(home, "marketplace update"),
+        single_quote(&pack_ref.marketplace)
+    );
+    run(shell, &marketplace)?;
+    let id = pack_ref.to_string();
+    let line = format!("{} {}", plugin_line(home, "update"), single_quote(&id));
+    run(shell, &line)?;
+    report.installed.push(format!(
+        "updated {id} to {wanted} in {}",
         relative(state_dir, home).display()
     ));
     Ok(())
@@ -448,7 +577,7 @@ pub fn listed_version(listing: &str, id: &str) -> Option<String> {
             return Some(bare(version).to_owned());
         }
     }
-    Some("unknown".to_owned())
+    Some(UNKNOWN_VERSION.to_owned())
 }
 
 /// Whether `claude plugin marketplace list` shows a marketplace called `name`.
@@ -507,9 +636,9 @@ const ZAF_ALLOW: &str = "Bash(zaf *)";
 /// programmer never stops on a listing, a loop or a search. `sh -c` is not here: a shell
 /// run from a string can write. Neither are `env`, `find`, `sed` and `awk`: `env <cmd>` runs
 /// anything, `find -exec`/`-delete` and `sed -i` write, and `awk` can call `system()`.
-pub const READ_ONLY: [&str; 21] = [
+pub const READ_ONLY: [&str; 22] = [
     "ls", "cat", "head", "tail", "wc", "diff", "rg", "grep", "fd", "pwd", "echo", "printf", "for",
-    "while", "test", "sort", "uniq", "cut", "stat", "du", "which",
+    "while", "test", "sort", "uniq", "cut", "stat", "du", "which", "printenv",
 ];
 
 /// The `git` read verbs a colocated repo (a manifest that requires `jj`) allows besides `jj`.
@@ -651,9 +780,23 @@ const NO_TOOL: [&str; 24] = [
     "builtin",
 ];
 
+/// Shells and wrapper tools that run whatever follows them. A bare `Bash(<one of these> *)`
+/// rule would let a programmer run anything, so a segment starting with one gets no tool rule:
+/// only [`allow_rule`]'s exact line covers it.
+const SHELL_OR_WRAPPER: [&str; 12] = [
+    "sh", "bash", "zsh", "dash", "env", "xargs", "nohup", "timeout", "time", "nice", "sudo", "doas",
+];
+
+/// Whether `tool`, by its file name (`/bin/sh` is `sh`), is a shell or wrapper tool.
+fn is_shell_or_wrapper(tool: &str) -> bool {
+    let name = tool.rsplit('/').next().unwrap_or(tool);
+    SHELL_OR_WRAPPER.contains(&name)
+}
+
 /// One `Bash(<tool> *)` rule per tool the command invokes, in order of appearance: the first
-/// word of each segment split on `&&`, `||`, `;` and `|` (`env` and `NAME=value` words aside),
-/// so a gate tool is allowed from any directory, not only as the verbatim line from the root.
+/// word of each segment split on `&&`, `||`, `;` and `|` (`NAME=value` words aside), so a gate
+/// tool is allowed from any directory, not only as the verbatim line from the root. A segment
+/// that starts with a shell or wrapper tool ([`SHELL_OR_WRAPPER`]) yields no rule.
 fn tool_rules(command: &CommandLine) -> Vec<String> {
     command
         .as_ref()
@@ -661,15 +804,22 @@ fn tool_rules(command: &CommandLine) -> Vec<String> {
         .filter_map(|segment| {
             let tool = segment
                 .split_whitespace()
-                .find(|word| !word.contains('=') && *word != "env")?;
+                .find(|word| !word.contains('='))?;
             let named = !tool.starts_with(['{', '$', '(', '"', '\'']);
-            (named && !NO_TOOL.contains(&tool)).then_some(tool)
+            (named && !NO_TOOL.contains(&tool) && !is_shell_or_wrapper(tool)).then_some(tool)
         })
         .map(|tool| format!("Bash({tool} *)"))
         .collect()
 }
 
-/// Each forbidden command, bare and with any arguments, sorted.
+/// Where flags may stand in a `zaf do <name>` line: before `do`, after it, both or neither.
+/// A permission pattern's `*` matches any text, spaces included, so `-*` is a flag and whatever
+/// it takes (`--tier machine`, `--tier=machine`, `--json`).
+const DO_FORMS: [&str; 4] = ["zaf do", "zaf -* do", "zaf do -*", "zaf -* do -*"];
+
+/// Each forbidden command, bare and with any arguments, sorted. A forbidden `zaf do <name>`
+/// is denied again with flags before `do` or before the name (`zaf --more do land 12`,
+/// `zaf do --json land 12`, `zaf do --tier=machine land 12`), so a flag cannot walk round it.
 fn deny_rules(manifest: &Manifest) -> Vec<String> {
     let mut rules: Vec<String> = Vec::new();
     for command in &manifest.forbidden.commands {
@@ -677,6 +827,12 @@ fn deny_rules(manifest: &Manifest) -> Vec<String> {
         let with_args = format!("{} *)", bare.trim_end_matches(')'));
         rules.push(bare);
         rules.push(with_args);
+        if let Some(name) = forbidden_action(command.as_ref()) {
+            for form in DO_FORMS {
+                rules.push(format!("Bash({form} {name})"));
+                rules.push(format!("Bash({form} {name} *)"));
+            }
+        }
     }
     rules.sort();
     rules.dedup();

@@ -15,24 +15,31 @@ pub const REPO: &str = "example/tracker";
 pub struct Project {
     pub temp: tempfile::TempDir,
     pub root: PathBuf,
+    /// The zaf home every run gets (`ZAF_HOME`), empty, so the machine's own
+    /// `~/.zaf/config.toml` never reaches a test.
+    pub home: PathBuf,
     scene: PathBuf,
     responses: usize,
     env: Vec<(String, String)>,
 }
 
 impl Project {
-    /// An empty project root with `manifest` as its `ZAF.toml`.
+    /// An empty project root with `manifest` as its `.zaf.toml`. A test that exercises the
+    /// retired `ZAF.toml` writes that file itself.
     pub fn new(manifest: &str) -> Self {
         let temp = tempfile::tempdir().expect("temp dir");
         let root = temp.path().join("repo");
         let scene = temp.path().join("gh-scene");
+        let home = temp.path().join("zaf-home");
+        fs::create_dir_all(&home).expect("home");
         fs::create_dir_all(&root).expect("root");
         fs::create_dir_all(&scene).expect("scene");
         fs::write(scene.join("rules"), "").expect("rules");
-        fs::write(root.join("ZAF.toml"), manifest).expect("manifest");
+        fs::write(root.join(".zaf.toml"), manifest).expect("manifest");
         Self {
             temp,
             root,
+            home,
             scene,
             responses: 0,
             env: Vec::new(),
@@ -47,6 +54,32 @@ impl Project {
     /// Fails `gh` calls matching `pattern` with exit code 1 and `stderr`.
     pub fn fail_on(&mut self, pattern: &str, stderr: &str) -> &mut Self {
         self.rule(pattern, 1, stderr)
+    }
+
+    /// Answers `gh` calls matching `pattern` with `stdout` before any rule given earlier, so a
+    /// scene can change between two runs of the binary.
+    pub fn on_first(&mut self, pattern: &str, stdout: &str) -> &mut Self {
+        self.rule_first(pattern, 0, stdout)
+    }
+
+    /// Fails `gh` calls matching `pattern` with exit code 1 and `stderr`, before any rule given
+    /// earlier.
+    pub fn fail_first(&mut self, pattern: &str, stderr: &str) -> &mut Self {
+        self.rule_first(pattern, 1, stderr)
+    }
+
+    fn rule_first(&mut self, pattern: &str, status: u8, text: &str) -> &mut Self {
+        let response = format!("response-{}", self.responses);
+        self.responses += 1;
+        fs::write(self.scene.join(&response), text).expect("response");
+        let rules = self.scene.join("rules");
+        let earlier = fs::read_to_string(&rules).expect("rules");
+        fs::write(
+            &rules,
+            format!("{pattern}\t{status}\t{response}\n{earlier}"),
+        )
+        .expect("rules");
+        self
     }
 
     fn rule(&mut self, pattern: &str, status: u8, text: &str) -> &mut Self {
@@ -86,12 +119,40 @@ impl Project {
             .current_dir(dir)
             .env("PATH", search_path)
             .env("FAKE_GH_DIR", &self.scene)
+            .env("ZAF_HOME", &self.home)
             .env_remove("ZAF_INSTANCE")
             .env_remove("ZAF_VERSION");
+        // A suite run inside an action (the gate is one) must not hand its caller's
+        // action state to the runs it makes.
+        for var in [
+            "ZAF_ROOT",
+            "ZAF_ACTION",
+            "ZAF_DEPTH",
+            "ZAF_ACTION_CHAIN",
+            "ZAF_ACTION_LOG",
+        ] {
+            command.env_remove(var);
+        }
         for (key, value) in &self.env {
             command.env(key, value);
         }
         command.output().expect("run zaf")
+    }
+
+    /// Writes the four `slice-*` actions into the project's `.zaf/actions`: zaf ships none, and
+    /// `zaf doctor` (and so `zaf setup`) fails while a needed name has no provider.
+    pub fn provide_slice_actions(&self) {
+        use std::os::unix::fs::PermissionsExt;
+        let actions = self.root.join(".zaf/actions");
+        for name in ["slice-open", "slice-pr", "slice-merge", "slice-drop"] {
+            write(
+                &actions,
+                name,
+                "#!/bin/sh\n# zaf description: a slice step\n# zaf 1: failed\ntrue\n",
+            );
+            fs::set_permissions(actions.join(name), fs::Permissions::from_mode(0o755))
+                .expect("mode");
+        }
     }
 
     /// Every `gh` call's argv, joined by spaces, in order.

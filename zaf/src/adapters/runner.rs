@@ -123,7 +123,7 @@ impl ProcessRunner {
         self
     }
 
-    /// Runs the runner's own command in `dir` and waits; a timeout is [`PortError::Unavailable`].
+    /// Runs the runner's own command in `dir` and waits; a timeout is [`PortError::TimedOut`].
     pub fn execute(&self, prompt: &str, dir: &Path) -> Result<ProcessReport, PortError> {
         self.launch(&self.command, &self.env, prompt, dir)
     }
@@ -167,10 +167,10 @@ impl ProcessRunner {
                 errors,
                 elapsed: started.elapsed(),
             }),
-            None => Err(PortError::Unavailable(format!(
-                "run timed out after {}s: {line}",
-                timeout.as_secs_f64()
-            ))),
+            None => Err(PortError::TimedOut {
+                bound: timeout,
+                command: line,
+            }),
         }
     }
 }

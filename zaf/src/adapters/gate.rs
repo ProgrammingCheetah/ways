@@ -4,6 +4,7 @@
 //! `.zaf/runs/` in the directory the gate runs in. That directory carries a
 //! `.gitignore` of `*`, so a gate run never shows up as uncommitted work.
 
+use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -32,6 +33,7 @@ pub struct GateLog {
 pub struct ShellGate {
     dir: PathBuf,
     gate: GateSection,
+    env: BTreeMap<String, String>,
 }
 
 impl ShellGate {
@@ -43,7 +45,16 @@ impl ShellGate {
         Self {
             dir: dir.to_owned(),
             gate: gate.clone(),
+            env: BTreeMap::new(),
         }
+    }
+
+    /// The same gate with `env` set on every run, on top of the inherited environment: a
+    /// name in `env` replaces an inherited one of the same name.
+    #[must_use]
+    pub fn with_env(mut self, env: BTreeMap<String, String>) -> Self {
+        self.env = env;
+        self
     }
 
     /// Runs a level and keeps its output in a file; an undeclared level is [`PortError::Unavailable`].
@@ -61,6 +72,7 @@ impl ShellGate {
             .arg("-c")
             .arg(command_line.as_ref())
             .current_dir(&self.dir)
+            .envs(&self.env)
             .stdin(Stdio::null())
             .stdout(stdout)
             .stderr(stderr)

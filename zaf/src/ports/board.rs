@@ -51,27 +51,101 @@ pub struct NewQuestion {
     pub door: bool,
 }
 
+/// The most characters a question's title holds; GitHub refuses a title over 256.
+pub const QUESTION_TITLE_LIMIT: usize = 200;
+
 impl NewQuestion {
-    /// The body of the ticket that carries this question: where it was raised.
-    pub fn body(&self) -> String {
-        format!("Raised on {}.", self.on)
+    /// The title of the ticket that carries this question: the text itself when it fits in
+    /// [`QUESTION_TITLE_LIMIT`] characters, else its first words, cut at a word.
+    /// A text with no word break inside the limit is cut at the limit.
+    pub fn title(&self) -> String {
+        let Some((cut, _)) = self.text.char_indices().nth(QUESTION_TITLE_LIMIT) else {
+            return self.text.clone();
+        };
+        let head = &self.text[..cut];
+        if self.text[cut..].starts_with(char::is_whitespace) {
+            return head.trim_end().to_owned();
+        }
+        match head.rfind(char::is_whitespace) {
+            Some(space) if !head[..space].trim_end().is_empty() => {
+                head[..space].trim_end().to_owned()
+            }
+            _ => head.to_owned(),
+        }
     }
 
-    /// The issue a question ticket was raised on, read back from its [`body`](Self::body).
+    /// The body of the ticket that carries this question: where it was raised, then the
+    /// whole text, so a title cut short loses nothing.
+    pub fn body(&self) -> String {
+        let raised = format!("Raised on {}.", self.on);
+        if self.text.trim().is_empty() {
+            return raised;
+        }
+        format!("{raised}\n\n{}", self.text.trim())
+    }
+
+    /// The issue a question ticket was raised on, read back from its [`body`](Self::body):
+    /// the first line says where, whatever follows.
     pub fn raised_on(body: &str) -> Option<IssueNumber> {
-        let rest = body.trim().strip_prefix("Raised on ")?;
+        let first = body.trim().lines().next()?;
+        let rest = first.trim_end().strip_prefix("Raised on ")?;
         rest.strip_suffix('.')?.parse().ok()
+    }
+
+    /// The whole question a ticket carries: what follows the `Raised on` line of its body,
+    /// or its title when the body holds nothing more (a question filed before bodies held it).
+    pub fn text_of(ticket: &Ticket) -> &str {
+        let body = ticket.body.trim();
+        let rest = match body.split_once('\n') {
+            Some((first, rest)) if Self::raised_on(first).is_some() => rest.trim(),
+            _ => "",
+        };
+        if rest.is_empty() { &ticket.title } else { rest }
     }
 
     /// Whether `ticket` is this question already open: the same text raised on the same issue.
     /// Whether it was raised as a door does not matter; the question is the same.
     pub fn is_asked_by(&self, ticket: &Ticket) -> bool {
-        ticket.title == self.text && ticket.body == self.body()
+        Self::raised_on(&ticket.body) == Some(self.on)
+            && Self::text_of(ticket).trim() == self.text.trim()
     }
+}
+
+/// A sub-issue of an epic as the hub reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EpicTask {
+    /// Its issue.
+    pub number: IssueNumber,
+    /// Its state label, if it has one.
+    pub label: Option<TaskLabel>,
+    /// Whether the issue is closed.
+    pub closed: bool,
+    /// The name in its `group:<name>` label, if it has one.
+    pub group: Option<String>,
+}
+
+/// An open epic and its sub-issues, closed ones included.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EpicTree {
+    /// Its issue.
+    pub number: IssueNumber,
+    /// Its title.
+    pub title: String,
+    /// Its tasks, in issue order.
+    pub tasks: Vec<EpicTask>,
 }
 
 /// The board the spawner and every instance read and write.
 pub trait Board {
+    /// Every open epic with its sub-issues, open and closed, in issue order.
+    ///
+    /// A board that cannot list them answers [`PortError::Rejected`] unless it overrides this.
+    fn epic_trees(&self) -> Result<Vec<EpicTree>, PortError> {
+        Err(PortError::Rejected(
+            "this board cannot list its epics".to_owned(),
+        ))
+    }
+
     /// Tasks labelled `ready`, in issue order.
     fn ready(&self) -> Result<Vec<Ticket>, PortError>;
 

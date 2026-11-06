@@ -8,9 +8,11 @@
 //! keeps the instance's output as `report.md` there, records the exit on the
 //! epic and frees the slot. Launch and exit are HTML comments on the epic:
 //! `<!-- zaf:launch <instance> -->` and `<!-- zaf:exit <instance> <status> -->`,
-//! the status being the exit code, `error` when the runner could not run, or
-//! `lost` for a launch whose process vanished without one. A lost instance's
-//! claims go back to the board: [`prepare`] releases each task it still held.
+//! the status being the exit code, `error` when the runner could not run,
+//! `timeout` when the run passed its time bound, or `lost` for a launch whose
+//! process vanished without one. A lost or timed-out instance's claims go back
+//! to the board: [`prepare`] releases each task a lost one still held, and
+//! [`launch`] those of one that timed out.
 //!
 //! A dry run ([`plan_only`] and [`dry_run`]) plans the same tick and describes
 //! each launch it would make, writing nothing: no state, no run folder, no comment.
@@ -30,8 +32,8 @@ pub use tick::{
 
 use super::guard::{GUARD_FILE, Level};
 use crate::domain::{Instance, IssueNumber, Profile, RoleName, TaskLabel};
-use crate::manifest::Manifest;
-use crate::ports::{Board, PortError, RunRequest, Runner};
+use crate::manifest::{Manifest, ManifestError};
+use crate::ports::{Board, ClaimRecord, PortError, RunRequest, Runner};
 
 /// The one-line launch prompt of a team instance, with `{instance}`, `{epic}`,
 /// `{project}`, `{tasks}` and `{brief}` placeholders.
@@ -181,13 +183,7 @@ pub fn prepare(
                 continue;
             };
             board.comment(parsed.epic, &exit_marker(instance, "lost"))?;
-            for claim in claims.iter().filter(|claim| claim.instance == parsed) {
-                board.release(claim.task, &parsed)?;
-                released.push(Released {
-                    task: claim.task,
-                    instance: parsed.clone(),
-                });
-            }
+            released.extend(release_held(board, &claims, &parsed)?);
         }
     }
     let snapshot = snapshot(board)?;
@@ -200,6 +196,23 @@ pub fn prepare(
         lost,
         released,
     })
+}
+
+/// Releases every task in `claims` that `instance` holds, so another instance can claim it.
+fn release_held(
+    board: &dyn Board,
+    claims: &[ClaimRecord],
+    instance: &Instance,
+) -> Result<Vec<Released>, PortError> {
+    let mut released = Vec::new();
+    for claim in claims.iter().filter(|claim| &claim.instance == instance) {
+        board.release(claim.task, instance)?;
+        released.push(Released {
+            task: claim.task,
+            instance: instance.clone(),
+        });
+    }
+    Ok(released)
 }
 
 /// The comment that records a launch on its epic.
@@ -254,6 +267,17 @@ pub struct LaunchContext {
     pub env: BTreeMap<String, String>,
 }
 
+/// The manifest's `[env]` table for a launch: `{root}` is the absolute project root and
+/// `{version}` the release the instances build. The runner sets these on top of the
+/// inherited environment, and a name set here wins over an inherited one.
+pub fn manifest_env(
+    manifest: &Manifest,
+    root: &Path,
+    version: &str,
+) -> Result<BTreeMap<String, String>, ManifestError> {
+    manifest.env.resolve(root, Some(version))
+}
+
 /// How a launched instance ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LaunchExit {
@@ -261,14 +285,30 @@ pub enum LaunchExit {
     Code(i32),
     /// The runner could not run it.
     Error(String),
+    /// The run passed its time bound and was stopped; the runner's message.
+    TimedOut(String),
 }
 
 impl LaunchExit {
-    /// The status word in the exit comment.
+    /// The status word in the exit comment: the exit code, `timeout` or `error`.
     pub fn status(&self) -> String {
         match self {
             Self::Code(code) => code.to_string(),
+            Self::TimedOut(_) => "timeout".to_owned(),
             Self::Error(_) => "error".to_owned(),
+        }
+    }
+
+    /// Whether the run passed its time bound and was stopped.
+    pub fn timed_out(&self) -> bool {
+        matches!(self, Self::TimedOut(_))
+    }
+
+    /// What went wrong, for a run that did not exit on its own.
+    pub fn problem(&self) -> Option<&str> {
+        match self {
+            Self::Code(_) => None,
+            Self::Error(reason) | Self::TimedOut(reason) => Some(reason),
         }
     }
 }
@@ -303,6 +343,8 @@ fn update(state_dir: &Path, change: impl FnOnce(&mut SpawnState)) -> Result<(), 
 /// The standing brief is `<state dir>/roles/team.md` when present, else the
 /// pack's, written into the run folder. A runner that cannot run is recorded
 /// as an `error` exit, not returned as an error; a board or file failure is.
+/// A run that timed out is recorded as a `timeout` exit and every task the
+/// instance still held is released; any other exit keeps its claims.
 pub fn launch(
     board: &dyn Board,
     runner: &dyn Runner,
@@ -327,12 +369,17 @@ pub fn launch(
             })?;
             LaunchExit::Code(output.exit_code)
         }
+        Err(error @ PortError::TimedOut { .. }) => LaunchExit::TimedOut(error.to_string()),
         Err(error) => LaunchExit::Error(error.to_string()),
     };
     board.comment(
         planned.instance.epic,
         &exit_marker(&instance, &exit.status()),
     )?;
+    if exit.timed_out() {
+        // A timed-out instance is as good as lost: its tasks go back to the board.
+        release_held(board, &board.claims()?, &planned.instance)?;
+    }
     update(&context.state_dir, |state| state.finish(&instance))?;
     Ok(Launched {
         instance: planned.instance.clone(),
@@ -576,10 +623,7 @@ impl Plan {
         let launched: Vec<serde_json::Value> = launched
             .iter()
             .map(|launch| {
-                let error = match &launch.exit {
-                    LaunchExit::Error(error) => Some(error.clone()),
-                    LaunchExit::Code(_) => None,
-                };
+                let error = launch.exit.problem();
                 serde_json::json!({
                     "instance": launch.instance.to_string(),
                     "epic": launch.instance.epic.get(),

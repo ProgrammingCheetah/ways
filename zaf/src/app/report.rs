@@ -6,6 +6,8 @@
 //! under a config dir's `projects/` folder; [`transcript_roots`] names the
 //! folders to read, [`report`] reads them.
 
+pub mod epics;
+pub mod ledger;
 mod prices;
 mod transcript;
 
@@ -13,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 pub use prices::{PriceTable, Rates};
-pub use transcript::{Run, parse_run};
+pub use transcript::{Attribution, Run, parse_run};
 
 /// Why a report could not be built.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

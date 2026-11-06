@@ -194,6 +194,42 @@ fn a_question_body_names_the_issue_it_was_raised_on() {
 }
 
 #[test]
+fn a_question_body_followed_by_its_text_still_names_the_issue() {
+    let asked = NewQuestion {
+        on: IssueNumber::from(12),
+        text: "Which columns?\nAnd which order?".to_owned(),
+        door: false,
+    };
+    assert_eq!(
+        asked.body(),
+        "Raised on #12.\n\nWhich columns?\nAnd which order?"
+    );
+    assert_eq!(
+        NewQuestion::raised_on(&asked.body()),
+        Some(IssueNumber::from(12))
+    );
+    let ticket = Ticket {
+        number: IssueNumber::from(30),
+        epic: None,
+        title: "Which columns?".to_owned(),
+        body: asked.body(),
+        label: None,
+    };
+    assert_eq!(NewQuestion::text_of(&ticket), asked.text);
+    assert!(asked.is_asked_by(&ticket));
+}
+
+#[test]
+fn a_question_with_no_word_break_is_cut_at_the_limit() {
+    let asked = NewQuestion {
+        on: IssueNumber::from(12),
+        text: "x".repeat(QUESTION_TITLE_LIMIT + 50),
+        door: false,
+    };
+    assert_eq!(asked.title().chars().count(), QUESTION_TITLE_LIMIT);
+}
+
+#[test]
 fn a_ruling_returns_the_waiting_task_to_ready_and_names_it() {
     let board = seeded();
     let port: &dyn Board = &board;

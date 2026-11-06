@@ -1,6 +1,19 @@
 {
   "autoCompactWindow": 150000,
   "enableAllProjectMcpServers": false,
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "zaf hub report"
+          }
+        ]
+      }
+    ]
+  },
   "permissions": {
     "allow": [],
     "defaultMode": "acceptEdits"

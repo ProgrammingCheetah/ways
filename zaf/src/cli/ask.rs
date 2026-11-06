@@ -6,6 +6,7 @@ use super::Cli;
 use super::brief::instance;
 use super::exit::{BACKEND, OK, REFUSED, fail, fail_composition};
 
+use crate::app::actions::Caller;
 use crate::app::ask::{AskFailure, AskOutcome, AskPorts, AskQuery, LadderRung, ask};
 use crate::composition::{Composition, CompositionError};
 use crate::domain::IssueNumber;
@@ -22,6 +23,11 @@ pub fn run(cli: &Cli, task: IssueNumber, questions: &[String]) -> u8 {
         Ok(composition) => composition,
         Err(error) => return fail_composition(&path, &error),
     };
+    // A blank or malformed instance is refused before anything is read and before any keeper runs.
+    if let Err(reason) = Caller::from_env() {
+        eprintln!("zaf {path}: {reason}");
+        return REFUSED;
+    }
     let board = match composition.board() {
         Ok(board) => board,
         Err(error) => return fail_composition(&path, &error),
@@ -130,7 +136,7 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::app::ask::{CheckResult, LogLine};
+    use crate::app::ask::{CheckResult, LogLine, Read};
     use crate::domain::{Answer, Profile, RoleName};
     use crate::ports::RunRequest;
 
@@ -150,7 +156,7 @@ command = \"echo local-model\"
         let root = tempfile::tempdir().expect("temp dir");
         let manifest = format!("{MANIFEST}{extra}");
         std::fs::write(root.path().join("ZAF.toml"), manifest).expect("manifest");
-        let composition = Composition::load(root.path()).expect("composition");
+        let composition = Composition::load_with_home(root.path(), None).expect("composition");
         (root, composition)
     }
 
@@ -177,6 +183,7 @@ command = \"echo local-model\"
             answer: answer.to_owned(),
             rung: None,
             check,
+            read: Read::default(),
         }
     }
 

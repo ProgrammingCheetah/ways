@@ -65,7 +65,8 @@ const SHELF_ADDED: &str =
 /// `init` for a project rooted at the state folder's parent, with a shell that must stay unused.
 fn init_here(state: &Path, manifest: &Manifest) -> Result<Report, ProfileError> {
     let shell = RecordingShell::answering(GateVerdict::Failed);
-    let report = init(state.parent().expect("a parent"), state, manifest, &shell);
+    let root = state.parent().expect("a parent");
+    let report = init_with(root, state, manifest, &shell, None);
     assert!(shell.lines().is_empty(), "no pack, no shell");
     report
 }
@@ -188,8 +189,52 @@ fn settings_carry_the_forbidden_commands_as_denies_and_the_gate_as_allows() {
         ] {
             assert!(allow.contains(&wanted), "{profile} allows {wanted}");
         }
-        assert!(settings.get("hooks").is_none());
         assert!(settings.get("mcpServers").is_none());
+    }
+}
+
+#[test]
+fn profiles_carry_the_hook() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    init_here(&state, &manifest("")).expect("generates");
+    for profile in ["lean", "build"] {
+        let settings = settings(&state, profile);
+        let hooks = settings["hooks"].as_object().expect("hooks");
+        assert_eq!(
+            hooks.keys().collect::<Vec<_>>(),
+            ["PostToolUse"],
+            "{profile}: the report hook is the only one"
+        );
+        let entries = hooks["PostToolUse"].as_array().expect("entries");
+        assert_eq!(entries.len(), 1, "{profile}");
+        assert_eq!(entries[0]["matcher"], "*", "{profile}: every tool");
+        assert_eq!(
+            entries[0]["hooks"],
+            json!([{ "type": "command", "command": "zaf hub report" }]),
+            "{profile}"
+        );
+    }
+}
+
+#[test]
+fn the_reports_file_is_git_ignored() {
+    use crate::app::setup::IGNORE_LINES;
+    assert_eq!(
+        IGNORE_LINES[0], "*",
+        "the state folder ignores what it does not list"
+    );
+    let reports = "hub/reports";
+    for line in &IGNORE_LINES[1..] {
+        let listed = line
+            .strip_prefix('!')
+            .expect("every line after the first lists a path")
+            .trim_end_matches('*')
+            .trim_end_matches('/');
+        assert!(
+            listed != reports && !reports.starts_with(&format!("{listed}/")),
+            "{line} would track .zaf/{reports}"
+        );
     }
 }
 
@@ -316,7 +361,7 @@ fn every_profile_allows_the_read_only_shell_basics() {
         let allow = strings(&settings["permissions"]["allow"]);
         for word in [
             "ls", "cat", "head", "tail", "wc", "diff", "rg", "grep", "fd", "pwd", "echo", "printf",
-            "for", "while", "test", "sort", "uniq", "cut", "stat", "du", "which",
+            "for", "while", "test", "sort", "uniq", "cut", "stat", "du", "which", "printenv",
         ] {
             let rule = format!("Bash({word} *)");
             assert!(allow.contains(&rule.as_str()), "{profile} allows {rule}");
@@ -458,9 +503,69 @@ fn a_gate_and_its_tests_allow_each_tool_once() {
 #[test]
 fn tools_are_found_across_every_separator_and_builtins_are_skipped() {
     assert_eq!(
-        tool_rules(&CommandLine::from("cd a; env X=1 b | c || d && FOO=1 e")),
+        tool_rules(&CommandLine::from("cd a; b | c || d && FOO=1 e")),
         ["Bash(b *)", "Bash(c *)", "Bash(d *)", "Bash(e *)"]
     );
+}
+
+#[test]
+fn shell_tools_get_no_wildcard_rule() {
+    for line in [
+        "sh scripts/zaf-tests.sh {name}",
+        "bash -c make",
+        "zsh x",
+        "dash x",
+        "env X=1 b",
+        "FOO=1 sh x",
+        "xargs b",
+        "nohup b",
+        "timeout 5 b",
+        "time b",
+        "nice b",
+        "sudo b",
+        "doas b",
+        "/bin/sh x",
+        "cd a && sh x | bash y",
+    ] {
+        assert_eq!(
+            tool_rules(&CommandLine::from(line)),
+            Vec::<String>::new(),
+            "{line}"
+        );
+    }
+    assert_eq!(
+        tool_rules(&CommandLine::from("cd a && sh x && cargo test")),
+        ["Bash(cargo *)"]
+    );
+}
+
+#[test]
+fn a_shell_gate_command_is_allowed_exactly_and_never_as_a_wildcard_shell() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    init_here(
+        &state,
+        &manifest("[gate]\nfull = \"make check\"\ntests = \"sh scripts/zaf-tests.sh {name}\"\n"),
+    )
+    .expect("generates");
+    for profile in ["lean", "build"] {
+        let settings = settings(&state, profile);
+        let allow = strings(&settings["permissions"]["allow"]);
+        assert!(
+            allow.contains(&"Bash(sh scripts/zaf-tests.sh *)"),
+            "{profile}"
+        );
+        assert!(!allow.contains(&"Bash(sh *)"), "{profile}");
+    }
+}
+
+#[test]
+fn a_required_shell_tool_is_still_allowed() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    init_here(&state, &manifest("[requires]\nsh = \"*\"\n")).expect("generates");
+    let settings = settings(&state, "build");
+    assert!(strings(&settings["permissions"]["allow"]).contains(&"Bash(sh *)"));
 }
 
 #[test]
@@ -497,7 +602,8 @@ fn init_through(
     manifest: &Manifest,
     shell: &RecordingShell,
 ) -> Result<Report, ProfileError> {
-    init(state.parent().expect("a parent"), state, manifest, shell)
+    let root = state.parent().expect("a parent");
+    init_with(root, state, manifest, shell, None)
 }
 
 const PATH_PACK: &str = "[pack]\npath = \"vendor/kit\"\n";
@@ -555,6 +661,91 @@ fn a_rerun_whose_plugin_list_already_shows_the_pack_installs_nothing_and_changes
         "only the listing is asked: {:?}",
         shell.lines()
     );
+}
+
+/// The pack's own manifest at `vendor/kit`, declaring `version`.
+fn write_plugin(root: &Path, version: &str) {
+    let dir = root.join("vendor/kit/.claude-plugin");
+    fs::create_dir_all(&dir).expect("plugin dir");
+    let plugin = json!({ "name": "kit", "version": version });
+    fs::write(dir.join("plugin.json"), plugin.to_string()).expect("writes");
+}
+
+#[test]
+fn profile_init_updates_a_changed_pack() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    write_marketplace(dir.path(), "./vendor/kit");
+    write_plugin(dir.path(), "1.3.0");
+    // The profile holds 1.2.3 (KIT_LISTED); the pack now declares 1.3.0.
+    let shell = RecordingShell::listing(KIT_LISTED, SHELF_ADDED);
+    let report = init_through(&state, &manifest(PATH_PACK), &shell).expect("updates");
+    let home = state.join("profiles/build").display().to_string();
+    let env = format!("CLAUDE_CONFIG_DIR='{home}' claude plugin");
+    assert_eq!(
+        shell.lines(),
+        [
+            format!("{env} list"),
+            format!("{env} marketplace update 'shelf'"),
+            format!("{env} update 'kit@shelf'"),
+        ],
+        "only the profile that carries plugins is updated, and nothing is installed again"
+    );
+    assert!(
+        report
+            .lines()
+            .contains(&"updated kit@shelf to 1.3.0 in profiles/build".to_owned()),
+        "{:?}",
+        report.lines()
+    );
+    assert!(!report.unchanged());
+}
+
+#[test]
+fn a_rerun_with_the_same_pack_version_issues_no_plugin_command() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    write_marketplace(dir.path(), "./vendor/kit");
+    write_plugin(dir.path(), "1.2.3");
+    let shell = RecordingShell::listing(KIT_LISTED, SHELF_ADDED);
+    let report = init_through(&state, &manifest(PATH_PACK), &shell).expect("generates");
+    assert!(
+        shell
+            .lines()
+            .iter()
+            .all(|line| line.ends_with("claude plugin list")),
+        "only the listing is asked: {:?}",
+        shell.lines()
+    );
+    assert!(report.installed.is_empty());
+}
+
+#[test]
+fn a_failed_pack_update_is_an_error_naming_the_line() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    write_marketplace(dir.path(), "./vendor/kit");
+    write_plugin(dir.path(), "2.0.0");
+    let shell = FailingUpdate(RecordingShell::listing(KIT_LISTED, SHELF_ADDED));
+    let root = state.parent().expect("a parent");
+    let result = init_with(root, &state, &manifest(PATH_PACK), &shell, None);
+    let Err(ProfileError::Install { line, .. }) = result else {
+        panic!("an install error");
+    };
+    assert!(line.ends_with("marketplace update 'shelf'"), "{line}");
+}
+
+/// A shell that answers like [`RecordingShell`] but fails every `update`.
+struct FailingUpdate(RecordingShell);
+
+impl Shell for FailingUpdate {
+    fn run(&self, line: &CommandLine) -> Result<GateRun, PortError> {
+        let mut ran = self.0.run(line)?;
+        if line.as_ref().contains(" update ") {
+            ran.verdict = GateVerdict::Failed;
+        }
+        Ok(ran)
+    }
 }
 
 #[test]
@@ -669,7 +860,7 @@ fn a_pack_tag_is_installed_from_the_marketplace_into_the_profile_once() {
     let state = dir.path().join(".zaf");
     let manifest = manifest("[pack]\ntag = \"kit--v1.0.0\"\n");
     let shell = RecordingShell::answering(GateVerdict::Passed);
-    let report = init(dir.path(), &state, &manifest, &shell).expect("generates");
+    let report = init_through(&state, &manifest, &shell).expect("generates");
     let home = state.join("profiles/build");
     assert_eq!(
         shell.lines(),
@@ -687,11 +878,11 @@ fn a_pack_tag_is_installed_from_the_marketplace_into_the_profile_once() {
         settings(&state, "build")["enabledPlugins"]["teams@ways"],
         true
     );
-    let again = init(dir.path(), &state, &manifest, &shell).expect("again");
+    let again = init_through(&state, &manifest, &shell).expect("again");
     assert_eq!(shell.lines().len(), 1, "the same tag installs nothing");
     assert!(again.unchanged());
     let newer = manifest_with_tag("kit--v1.1.0");
-    init(dir.path(), &state, &newer, &shell).expect("a new tag");
+    init_through(&state, &newer, &shell).expect("a new tag");
     assert_eq!(shell.lines().len(), 2, "a new tag installs again");
 }
 
@@ -704,12 +895,7 @@ fn a_failed_install_is_an_error_naming_the_line() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state = dir.path().join(".zaf");
     let shell = RecordingShell::answering(GateVerdict::Failed);
-    let result = init(
-        dir.path(),
-        &state,
-        &manifest_with_tag("kit--v1.0.0"),
-        &shell,
-    );
+    let result = init_through(&state, &manifest_with_tag("kit--v1.0.0"), &shell);
     let Err(ProfileError::Install { line, output }) = result else {
         panic!("an install error");
     };
@@ -720,5 +906,234 @@ fn a_failed_install_is_an_error_naming_the_line() {
             .join("profiles/build/plugins")
             .join(INSTALLED_TAG_FILE)
             .exists()
+    );
+}
+
+/// A Claude home in `dir`; logged in when `login` is given.
+fn a_claude_home(dir: &Path, login: Option<&str>) -> PathBuf {
+    let claude_home = dir.join("claude-home");
+    fs::create_dir(&claude_home).expect("claude home");
+    if let Some(login) = login {
+        fs::write(claude_home.join(CREDENTIALS_FILE), login).expect("credentials");
+    }
+    claude_home
+}
+
+/// `init` with no pack, against `claude_home`.
+fn init_against(state: &Path, claude_home: &Path) -> Report {
+    let shell = RecordingShell::answering(GateVerdict::Failed);
+    let root = state.parent().expect("a parent");
+    init_with(root, state, &manifest(""), &shell, Some(claude_home)).expect("generates")
+}
+
+#[test]
+fn profile_init_links_the_home_credentials() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    let claude_home = a_claude_home(dir.path(), Some("old"));
+    let source = claude_home.join(CREDENTIALS_FILE);
+    let report = init_against(&state, &claude_home);
+    for profile in ["lean", "build"] {
+        let relative = PathBuf::from("profiles")
+            .join(profile)
+            .join(CREDENTIALS_FILE);
+        let link = state.join(&relative);
+        assert_eq!(
+            fs::read_link(&link).expect("a symlink"),
+            source,
+            "{profile}"
+        );
+        assert!(
+            report.written.contains(&Written {
+                path: relative,
+                change: Change::Created
+            }),
+            "{:?}",
+            report.written
+        );
+        assert!(links_to_claude_home(&link, &claude_home), "{profile}");
+    }
+    fs::write(
+        state.join("profiles/lean").join(CREDENTIALS_FILE),
+        "rotated",
+    )
+    .expect("writes");
+    assert_eq!(
+        fs::read_to_string(state.join("profiles/build").join(CREDENTIALS_FILE)).expect("reads"),
+        "rotated",
+        "a token one profile rotates reaches every other profile"
+    );
+    assert_eq!(fs::read_to_string(&source).expect("reads"), "rotated");
+    let again = init_against(&state, &claude_home);
+    assert!(again.unchanged(), "{:?}", again.lines());
+}
+
+#[test]
+fn profile_init_writes_no_credentials_when_the_home_has_none() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    let claude_home = a_claude_home(dir.path(), None);
+    let report = init_against(&state, &claude_home);
+    assert_eq!(report.written.len(), 4, "{:?}", report.written);
+    let link = state.join("profiles/build").join(CREDENTIALS_FILE);
+    assert!(fs::symlink_metadata(&link).is_err());
+
+    symlink(
+        dir.path().join("nowhere"),
+        claude_home.join(CREDENTIALS_FILE),
+    )
+    .expect("a dangling link");
+    init_against(&state, &claude_home);
+    assert!(
+        fs::symlink_metadata(&link).is_err(),
+        "a dangling link in the home is not its file"
+    );
+}
+
+#[test]
+fn profile_init_leaves_what_is_already_at_the_path_alone() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    let claude_home = a_claude_home(dir.path(), Some("live"));
+    let build = state.join("profiles/build");
+    let lean = state.join("profiles/lean");
+    fs::create_dir_all(&build).expect("build");
+    fs::create_dir_all(&lean).expect("lean");
+    let copy = build.join(CREDENTIALS_FILE);
+    fs::write(&copy, "my copy").expect("a copy");
+    let elsewhere = dir.path().join("elsewhere.json");
+    let foreign = lean.join(CREDENTIALS_FILE);
+    symlink(&elsewhere, &foreign).expect("a dangling link elsewhere");
+
+    let report = init_against(&state, &claude_home);
+
+    assert!(
+        report
+            .written
+            .iter()
+            .all(|file| !file.path.ends_with(CREDENTIALS_FILE)),
+        "{:?}",
+        report.written
+    );
+    let kind = fs::symlink_metadata(&copy).expect("there").file_type();
+    assert!(kind.is_file(), "the copy stays a regular file");
+    assert_eq!(fs::read_to_string(&copy).expect("reads"), "my copy");
+    assert_eq!(fs::read_link(&foreign).expect("a link"), elsewhere);
+    assert!(!links_to_claude_home(&foreign, &claude_home));
+}
+
+/// Whether the permission pattern `pattern` matches `line`: `*` matches any text, spaces included.
+fn pattern_matches(pattern: &str, line: &str) -> bool {
+    let parts: Vec<&str> = pattern.split('*').collect();
+    let (first, rest) = parts.split_first().expect("a split has a part");
+    let Some(mut tail) = line.strip_prefix(first) else {
+        return false;
+    };
+    let Some((last, middle)) = rest.split_last() else {
+        return tail.is_empty();
+    };
+    for part in middle {
+        match tail.find(part) {
+            Some(at) => tail = &tail[at + part.len()..],
+            None => return false,
+        }
+    }
+    tail.ends_with(last) && tail.len() >= last.len()
+}
+
+#[test]
+fn forbidden_denies_match_flags_before_the_name() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    let manifest = manifest(
+        "[forbidden]\ncommands = [\"gh pr merge\", \"zaf do pr-merge\", \"zaf do land\", \
+         \"zaf do --tier machine land\"]\n",
+    );
+    init_here(&state, &manifest).expect("generates");
+    for profile in ["lean", "build"] {
+        let settings = settings(&state, profile);
+        let deny = strings(&settings["permissions"]["deny"]);
+        let denied = |line: &str| {
+            deny.iter().any(|rule| {
+                let pattern = rule
+                    .strip_prefix("Bash(")
+                    .and_then(|rest| rest.strip_suffix(')'))
+                    .expect("a Bash rule");
+                pattern_matches(pattern, line)
+            })
+        };
+        for line in [
+            "zaf do land",
+            "zaf do land 12",
+            "zaf do pr-merge 12",
+            "zaf --more do land 12",
+            "zaf --json do pr-merge 12",
+            "zaf do --json pr-merge 12",
+            "zaf do --tier=machine land 12",
+            "zaf do --tier machine land 12",
+            "zaf --more do --tier machine pr-merge 12",
+            "gh pr merge 12",
+        ] {
+            assert!(denied(line), "{profile} lets `{line}` through: {deny:?}");
+        }
+        // What is not forbidden stays allowed: other actions, other verbs, the merge actions.
+        for line in [
+            "zaf do slice-merge 12",
+            "zaf --more do slice-merge 12",
+            "zaf do release",
+            "zaf do --tier machine release",
+            "zaf do landing",
+            "zaf board ready",
+            "zaf --more check 12",
+        ] {
+            assert!(!denied(line), "{profile} denies `{line}`: {deny:?}");
+        }
+    }
+}
+
+#[test]
+fn a_forbidden_line_names_its_action_whatever_its_flags() {
+    for (line, name) in [
+        ("zaf do land", Some("land")),
+        ("zaf do --tier machine land", Some("land")),
+        ("zaf do --tier=machine land", Some("land")),
+        ("zaf --more do land 12", Some("land")),
+        ("gh pr merge", None),
+        ("zaf do", None),
+        ("zaf board ready", None),
+        ("zaf do --tier machine", None),
+    ] {
+        assert_eq!(forbidden_action(line), name, "{line}");
+    }
+}
+
+#[test]
+fn the_claude_home_is_only_ever_under_an_absolute_home() {
+    assert_eq!(
+        claude_home_under(Some(OsString::from("/home/someone"))),
+        Some(PathBuf::from("/home/someone/.claude"))
+    );
+    assert_eq!(claude_home_under(None), None);
+    assert_eq!(claude_home_under(Some(OsString::new())), None);
+    assert_eq!(claude_home_under(Some(OsString::from("relative"))), None);
+}
+
+#[test]
+fn a_link_through_another_spelling_of_the_home_still_leads_to_it() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let claude_home = a_claude_home(dir.path(), Some("live"));
+    let alias = dir.path().join("alias");
+    symlink(&claude_home, &alias).expect("an alias of the home");
+    let link = dir.path().join(CREDENTIALS_FILE);
+    symlink(alias.join(CREDENTIALS_FILE), &link).expect("a link");
+    assert!(links_to_claude_home(&link, &claude_home));
+
+    let other = tempfile::tempdir().expect("temp dir");
+    let logged_out = a_claude_home(other.path(), None);
+    let waiting = other.path().join(CREDENTIALS_FILE);
+    symlink(logged_out.join(CREDENTIALS_FILE), &waiting).expect("a link");
+    assert!(
+        links_to_claude_home(&waiting, &logged_out),
+        "the home's file is the target even while the home is logged out"
     );
 }

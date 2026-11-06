@@ -19,7 +19,7 @@ fn loads_the_manifest_from_the_project_root() {
     let root = scratch_dir("load");
     let manifest_text = "[project]\nname = \"bookshelf\"\n[board]\nkind = \"github-issues\"\nrepo = \"example/b\"\n";
     fs::write(root.join(MANIFEST_FILE), manifest_text).expect("write the manifest");
-    let composition = Composition::load(&root).expect("loads");
+    let composition = Composition::load_with_home(&root, None).expect("loads");
     assert_eq!(composition.manifest().project.name.as_ref(), "bookshelf");
     fs::remove_dir_all(&root).expect("clean up");
 }
@@ -28,7 +28,7 @@ fn loads_the_manifest_from_the_project_root() {
 fn a_missing_manifest_is_a_read_error() {
     let root = scratch_dir("missing");
     assert!(matches!(
-        Composition::load(&root),
+        Composition::load_with_home(&root, None),
         Err(ManifestError::Read { .. })
     ));
     fs::remove_dir_all(&root).expect("clean up");
@@ -50,7 +50,7 @@ const FULL: &str = "[project]\nname = \"bookshelf\"\n\
 fn every_declared_port_is_built_from_its_kind() {
     let root = scratch_dir("full");
     write_manifest(&root, FULL);
-    let composition = Composition::load(&root).expect("loads");
+    let composition = Composition::load_with_home(&root, None).expect("loads");
     assert!(composition.board().is_ok());
     assert!(composition.vcs().is_ok());
     assert!(
@@ -71,7 +71,7 @@ fn an_undeclared_port_is_absent_not_a_crash() {
         &root,
         "[project]\nname = \"bookshelf\"\n[board]\nkind = \"github-issues\"\nrepo = \"example/b\"\n",
     );
-    let composition = Composition::load(&root).expect("loads");
+    let composition = Composition::load_with_home(&root, None).expect("loads");
     assert!(matches!(
         composition.vcs(),
         Err(CompositionError::Absent { port: "Vcs", .. })
@@ -98,15 +98,147 @@ fn discover_walks_up_to_the_manifest() {
     write_manifest(&root, FULL);
     let deep = root.join("src").join("inner");
     fs::create_dir_all(&deep).expect("create nested dirs");
-    let composition = Composition::discover(&deep).expect("finds the root");
+    let composition = Composition::discover_with_home(&deep, None).expect("finds the root");
     assert_eq!(composition.root(), root.as_path());
     let elsewhere = scratch_dir("nowhere");
     assert!(matches!(
-        Composition::discover(&elsewhere),
+        Composition::discover_with_home(&elsewhere, None),
         Err(CompositionError::NoProject { .. })
     ));
     fs::remove_dir_all(&root).expect("clean up");
     fs::remove_dir_all(&elsewhere).expect("clean up");
+}
+
+fn write_at(dir: &Path, name: &str, text: &str) {
+    let file = dir.join(name);
+    fs::create_dir_all(file.parent().expect("parent")).expect("mkdir");
+    fs::write(file, text).expect("write");
+}
+
+#[test]
+fn zaf_home_is_not_a_project() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let dir = temp.path().join("dir");
+    let home = dir.join(".zaf");
+    write_at(&home, "config.toml", FULL);
+    let below = dir.join("src");
+    fs::create_dir_all(&below).expect("mkdir");
+    assert!(
+        matches!(
+            Composition::discover_with_home(&below, Some(&home)),
+            Err(CompositionError::NoProject { .. })
+        ),
+        "the home's config.toml is the machine's, not a project's"
+    );
+    // The same file with another home is a project's manifest.
+    let found = Composition::discover_with_home(&below, None).expect("a project");
+    assert_eq!(found.root(), dir.as_path());
+    // A real project manifest in that directory still makes it a project.
+    write_at(&dir, ".zaf.toml", "[project]\nname = \"p\"\n");
+    let found = Composition::discover_with_home(&below, Some(&home)).expect("a project");
+    assert_eq!(found.root(), dir.as_path());
+}
+
+#[test]
+fn workspace_copy_resolves_to_the_root() {
+    for file in [".zaf.toml", ".zaf/config.toml", "ZAF.toml"] {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path().join("repo");
+        let home = temp.path().join("zaf-home");
+        let copy = root.join(".zaf/workspaces/feature/0.2.0-1-2");
+        write_at(&root, file, FULL);
+        write_at(&copy, file, FULL);
+        let inside = copy.join("src");
+        fs::create_dir_all(&inside).expect("mkdir");
+        let found = Composition::discover_with_home(&inside, Some(&home)).expect("finds a root");
+        assert_eq!(found.root(), root.as_path(), "a copy of {file}");
+    }
+}
+
+#[test]
+fn a_project_folder_file_and_a_root_file_are_one_project() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path().join("repo");
+    write_at(&root, ".zaf.toml", "[project]\nname = \"p\"\n");
+    write_at(&root, ".zaf/config.toml", HEAD);
+    let found = Composition::discover_with_home(&root, None).expect("loads");
+    assert_eq!(found.root(), root.as_path());
+    assert_eq!(found.manifest().project.name.as_ref(), "p");
+}
+
+#[test]
+fn legacy_beside_new_is_refused_by_discover_and_load() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path().join("repo");
+    write_at(&root, "ZAF.toml", FULL);
+    write_at(&root, ".zaf.toml", FULL);
+    let inside = root.join("src");
+    fs::create_dir_all(&inside).expect("mkdir");
+    let load = Composition::load_with_home(&root, None).expect_err("refused");
+    assert!(matches!(load, ManifestError::LegacyBesideNew { .. }));
+    let found = Composition::discover_with_home(&inside, None).expect_err("refused");
+    let message = found.to_string();
+    assert!(
+        message.contains("ZAF.toml") && message.contains(".zaf.toml"),
+        "{message}"
+    );
+}
+
+#[test]
+fn no_project_text_names_the_files_it_looked_for() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let error = Composition::discover_with_home(temp.path(), None).expect_err("none");
+    let message = error.to_string();
+    assert!(
+        message.contains(".zaf.toml") && message.contains(".zaf/config.toml"),
+        "{message}"
+    );
+}
+
+#[test]
+fn verbs_still_resolve_the_home() {
+    let os = |text: &str| Some(std::ffi::OsString::from(text));
+    assert_eq!(
+        zaf_home_from(os("/x/zaf"), os("/u")),
+        Some(PathBuf::from("/x/zaf"))
+    );
+    assert_eq!(
+        zaf_home_from(None, os("/u")),
+        Some(PathBuf::from("/u/.zaf"))
+    );
+    assert_eq!(
+        zaf_home_from(os(""), os("/u")),
+        Some(PathBuf::from("/u/.zaf"))
+    );
+    assert_eq!(zaf_home_from(None, None), None);
+    assert_eq!(zaf_home_from(os(""), os("")), None);
+}
+
+#[test]
+fn composition_tests_ignore_the_machine_home() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let root = temp.path().join("project");
+    let home = temp.path().join("zaf-home");
+    fs::create_dir_all(&root).expect("mkdir");
+    write_manifest(
+        &root,
+        "[project]\nname = \"bookshelf\"\n[board]\nkind = \"github-issues\"\nrepo = \"example/b\"\n",
+    );
+    // A machine config that changes a manifest value: it adds the vcs the project lacks.
+    write_at(&home, "config.toml", "[vcs]\nkind = \"jj\"\n");
+
+    let with_home = Composition::load_with_home(&root, Some(&home)).expect("loads");
+    assert!(
+        with_home.vcs().is_ok(),
+        "the machine layer is read when given"
+    );
+
+    // The tests pass no home, so the same file changes nothing for them.
+    let without = Composition::load_with_home(&root, None).expect("loads");
+    assert!(matches!(
+        without.vcs(),
+        Err(CompositionError::Absent { port: "Vcs", .. })
+    ));
 }
 
 const HEAD: &str =
@@ -132,7 +264,7 @@ fn a_runner_with_a_model_has_its_command_filled_and_its_timeout_from_the_manifes
              [runners.local]\ncommand = \"echo {{model}}\"\n"
         ),
     );
-    let composition = Composition::load(&root).expect("loads");
+    let composition = Composition::load_with_home(&root, None).expect("loads");
     let claude = RunnerName::from("claude");
     let haiku = composition
         .runner_with_model(&claude, &ModelName::from("haiku"))
@@ -179,7 +311,7 @@ fn a_runner_with_a_model_has_its_command_filled_and_its_timeout_from_the_manifes
 fn the_shell_runs_lines_at_the_project_root() {
     let root = scratch_dir("shell");
     write_manifest(&root, HEAD);
-    let composition = Composition::load(&root).expect("loads");
+    let composition = Composition::load_with_home(&root, None).expect("loads");
     let shell = composition.shell();
     let run = shell.run(&CommandLine::from("cat ZAF.toml")).expect("runs");
     assert_eq!(run.verdict, GateVerdict::Passed);
@@ -212,7 +344,7 @@ fn a_sibling_design_path_is_relative_to_the_project_root() {
             "{HEAD}[design]\nkind = \"git-sibling\"\nrepo = \"example/the-design\"\npath = \"../elsewhere\"\n"
         ),
     );
-    let composition = Composition::load(&root).expect("loads");
+    let composition = Composition::load_with_home(&root, None).expect("loads");
     assert!(!reads_page(&composition), "nothing there yet");
     write_design(&parent.join("the-design"));
     assert!(
@@ -236,7 +368,7 @@ fn a_sibling_design_without_a_path_is_beside_the_project_under_the_repo_name() {
         &root,
         &format!("{HEAD}[design]\nkind = \"git-sibling\"\nrepo = \"example/the-design.git\"\n"),
     );
-    let composition = Composition::load(&root).expect("loads");
+    let composition = Composition::load_with_home(&root, None).expect("loads");
     assert!(!reads_page(&composition));
     write_design(&parent.join("the-design"));
     assert!(reads_page(&composition));
@@ -251,7 +383,7 @@ fn a_manifest_copied_into_a_slice_workspace_still_resolves_to_the_project_root()
     let nested = slice.join("src/inner");
     fs::create_dir_all(&nested).expect("slice dirs");
     write_manifest(&slice, HEAD);
-    let found = Composition::discover(&nested).expect("finds the root");
+    let found = Composition::discover_with_home(&nested, None).expect("finds the root");
     assert_eq!(found.root(), parent.as_path());
     fs::remove_dir_all(&parent).expect("clean up");
 }
@@ -264,7 +396,7 @@ fn a_custom_workspaces_path_is_honoured_by_discovery() {
     fs::create_dir_all(&slice).expect("slice dir");
     write_manifest(&root, &format!("{HEAD}[workspaces]\npath = \"slices\"\n"));
     write_manifest(&slice, HEAD);
-    let found = Composition::discover(&slice).expect("finds the root");
+    let found = Composition::discover_with_home(&slice, None).expect("finds the root");
     assert_eq!(found.root(), root.as_path());
     fs::remove_dir_all(&parent).expect("clean up");
 }
@@ -274,14 +406,14 @@ fn a_slice_dir_joins_the_root_the_workspaces_path_and_the_slice_name() {
     let slice = SliceName::from("feature/0.1.1-37-46");
     let default = scratch_dir("slice-dir-default");
     write_manifest(&default, HEAD);
-    let composition = Composition::load(&default).expect("loads");
+    let composition = Composition::load_with_home(&default, None).expect("loads");
     assert_eq!(
         composition.slice_dir(&slice),
         default.join(".zaf/workspaces/feature/0.1.1-37-46")
     );
     let custom = scratch_dir("slice-dir-custom");
     write_manifest(&custom, &format!("{HEAD}[workspaces]\npath = \"slices\"\n"));
-    let composition = Composition::load(&custom).expect("loads");
+    let composition = Composition::load_with_home(&custom, None).expect("loads");
     assert_eq!(
         composition.slice_dir(&slice),
         custom.join("slices/feature/0.1.1-37-46")
@@ -297,7 +429,61 @@ fn a_manifest_outside_the_workspaces_path_is_its_own_root() {
     let inner = parent.join("vendor/inner");
     fs::create_dir_all(&inner).expect("inner dir");
     write_manifest(&inner, HEAD);
-    let found = Composition::discover(&inner).expect("finds the nearest");
+    let found = Composition::discover_with_home(&inner, None).expect("finds the nearest");
+    assert_eq!(found.root(), inner.as_path());
+    fs::remove_dir_all(&parent).expect("clean up");
+}
+
+#[test]
+fn a_broken_root_manifest_is_an_error_from_a_workspace() {
+    // Not TOML at all, and TOML the typed manifest refuses: the default and a custom workspaces
+    // path. The root's error comes from the root and from every directory of a workspace below it,
+    // never the workspace copy's own healthy manifest standing in for the project.
+    let cases = [
+        (
+            "broken-toml",
+            ".zaf/workspaces",
+            "[project\nname = \n".to_owned(),
+        ),
+        (
+            "broken-type",
+            ".zaf/workspaces",
+            "[project]\nname = 7\n".to_owned(),
+        ),
+        (
+            "broken-custom",
+            "slices",
+            "[project]\nname = 7\n[workspaces]\npath = \"slices\"\n".to_owned(),
+        ),
+    ];
+    for (name, workspaces, broken) in cases {
+        let root = scratch_dir(name);
+        write_manifest(&root, &broken);
+        let slice = root.join(workspaces).join("feature/0.2.0-1-2");
+        let nested = slice.join("src/inner");
+        fs::create_dir_all(&nested).expect("slice dirs");
+        write_manifest(&slice, HEAD);
+        for start in [&root, &slice, &nested] {
+            let found = Composition::discover_with_home(start, None);
+            assert!(
+                matches!(found, Err(CompositionError::Manifest(_))),
+                "{name} from {}: {:?}",
+                start.display(),
+                found.map(|found| found.root().to_owned())
+            );
+        }
+        fs::remove_dir_all(&root).expect("clean up");
+    }
+}
+
+#[test]
+fn a_broken_manifest_outside_the_workspaces_path_does_not_break_the_project_below() {
+    let parent = scratch_dir("broken-outer");
+    write_manifest(&parent, "[project\nname = \n");
+    let inner = parent.join("vendor/inner");
+    fs::create_dir_all(&inner).expect("inner dir");
+    write_manifest(&inner, HEAD);
+    let found = Composition::discover_with_home(&inner, None).expect("the inner project");
     assert_eq!(found.root(), inner.as_path());
     fs::remove_dir_all(&parent).expect("clean up");
 }
@@ -314,7 +500,7 @@ fn a_role_runner_carries_its_profile_dir_its_model_and_its_effort() {
              [roles.team]\nmodel = \"opus\"\neffort = \"xhigh\"\nprofile = \"build\"\nturns = 5\n"
         ),
     );
-    let composition = Composition::load(&root).expect("loads");
+    let composition = Composition::load_with_home(&root, None).expect("loads");
     let team = RoleName::from("team");
     let home = root.join(".zaf/profiles/build");
     assert_eq!(composition.profile_dir(Profile::Build), home);
@@ -348,7 +534,7 @@ fn a_role_runner_carries_its_profile_dir_its_model_and_its_effort() {
 fn a_role_without_the_claude_runner_has_no_runner() {
     let root = scratch_dir("role-no-runner");
     write_manifest(&root, HEAD);
-    let composition = Composition::load(&root).expect("loads");
+    let composition = Composition::load_with_home(&root, None).expect("loads");
     assert!(matches!(
         composition.runner_for_role(&RoleName::from("team")),
         Err(CompositionError::NoRunner(name)) if name.as_ref() == ROLE_RUNNER
@@ -365,7 +551,7 @@ fn a_runner_command_carries_the_project_root_single_quoted() {
     );
     let run_dir = root.join("run");
     fs::create_dir_all(&run_dir).expect("run dir");
-    let composition = Composition::load(&root).expect("loads");
+    let composition = Composition::load_with_home(&root, None).expect("loads");
     let runner = composition
         .runner(&RunnerName::from("claude"))
         .expect("builds");
@@ -373,4 +559,23 @@ fn a_runner_command_carries_the_project_root_single_quoted() {
         runner.run(&request(&run_dir)).expect("runs").transcript,
         format!("{}|{}", composition.root().display(), run_dir.display())
     );
+}
+
+#[test]
+fn a_legacy_manifest_has_a_notice_that_says_to_run_setup_and_a_new_one_has_none() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let legacy = temp.path().join("legacy");
+    write_at(&legacy, "ZAF.toml", FULL);
+    let composition = Composition::load_with_home(&legacy, None).expect("loads");
+    let notice = composition.legacy_notice().expect("a notice");
+    assert!(
+        notice.contains("zaf setup") && notice.contains("ZAF.toml") && !notice.contains('\n'),
+        "{notice}"
+    );
+    assert!(legacy.join("ZAF.toml").is_file(), "reading never moves it");
+
+    let current = temp.path().join("current");
+    write_at(&current, ".zaf.toml", FULL);
+    let composition = Composition::load_with_home(&current, None).expect("loads");
+    assert_eq!(composition.legacy_notice(), None);
 }

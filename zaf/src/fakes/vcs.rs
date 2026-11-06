@@ -1,6 +1,7 @@
 //! The in-memory VCS.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::ports::{
@@ -18,12 +19,15 @@ struct Change {
 #[derive(Debug, Clone)]
 struct Slice {
     base: BaseName,
+    workspace: Option<PathBuf>,
     behind_base: bool,
     conflicts: Vec<String>,
     changes: BTreeMap<String, Change>,
     uncommitted: BTreeSet<String>,
     commits: u32,
     published: u32,
+    /// The last commit made; a new slice stands on its base.
+    latest: CommitId,
 }
 
 #[derive(Debug, Default)]
@@ -58,6 +62,12 @@ impl FakeVcs {
         };
         slice.changes.insert(path.to_owned(), change);
         slice.uncommitted.insert(path.to_owned());
+        Ok(())
+    }
+
+    /// Records where an open slice's workspace is, the way a slice record would name it.
+    pub fn place(&self, slice: &SliceName, workspace: &Path) -> Result<(), PortError> {
+        self.state().slice_mut(slice)?.workspace = Some(workspace.to_owned());
         Ok(())
     }
 
@@ -96,6 +106,16 @@ impl State {
             .get_mut(name)
             .ok_or_else(|| PortError::NotFound(format!("slice {name}")))
     }
+
+    /// The slice placed at a workspace on a base; any other workspace or base is not found.
+    fn slice_at(&self, workspace: &Path, base: &BaseName) -> Result<&Slice, PortError> {
+        self.slices
+            .values()
+            .find(|slice| slice.workspace.as_deref() == Some(workspace) && slice.base == *base)
+            .ok_or_else(|| {
+                PortError::NotFound(format!("workspace {} on {base}", workspace.display()))
+            })
+    }
 }
 
 impl Vcs for FakeVcs {
@@ -112,12 +132,14 @@ impl Vcs for FakeVcs {
         }
         let opened = Slice {
             base: base.clone(),
+            workspace: None,
             behind_base: false,
             conflicts: Vec::new(),
             changes: BTreeMap::new(),
             uncommitted: BTreeSet::new(),
             commits: 0,
             published: 0,
+            latest: CommitId::from(format!("fake-base-{base}")),
         };
         state.slices.insert(slice.clone(), opened);
         Ok(SliceOpening::Opened)
@@ -141,16 +163,18 @@ impl Vcs for FakeVcs {
 
     fn commit(&self, slice: &SliceName, message: &str) -> Result<CommitId, PortError> {
         let mut state = self.state();
+        let next_commit = state.next_commit + 1;
         let slice = state.slice_mut(slice)?;
         if slice.uncommitted.is_empty() {
             return Err(PortError::Rejected(format!(
                 "nothing to commit for `{message}`"
             )));
         }
+        let commit_id = CommitId::from(format!("fake-{next_commit}"));
         slice.uncommitted.clear();
         slice.commits += 1;
-        state.next_commit += 1;
-        let commit_id = CommitId::from(format!("fake-{}", state.next_commit));
+        slice.latest = commit_id.clone();
+        state.next_commit = next_commit;
         Ok(commit_id)
     }
 
@@ -169,10 +193,19 @@ impl Vcs for FakeVcs {
         Ok(state.slice_mut(slice)?.uncommitted.is_empty())
     }
 
-    fn diff_stat(&self, slice: &SliceName) -> Result<DiffStat, PortError> {
-        let mut state = self.state();
+    fn latest_commit(&self, workspace: &Path) -> Result<CommitId, PortError> {
+        self.state()
+            .slices
+            .values()
+            .find(|slice| slice.workspace.as_deref() == Some(workspace))
+            .map(|slice| slice.latest.clone())
+            .ok_or_else(|| PortError::NotFound(format!("workspace {}", workspace.display())))
+    }
+
+    fn diff_stat(&self, workspace: &Path, base: &BaseName) -> Result<DiffStat, PortError> {
+        let state = self.state();
         let files = state
-            .slice_mut(slice)?
+            .slice_at(workspace, base)?
             .changes
             .iter()
             .map(|(path, change)| FileStat {
@@ -184,10 +217,15 @@ impl Vcs for FakeVcs {
         Ok(DiffStat { files })
     }
 
-    fn diff_hunks(&self, slice: &SliceName, path: &str) -> Result<String, PortError> {
-        let mut state = self.state();
+    fn diff_hunks(
+        &self,
+        workspace: &Path,
+        base: &BaseName,
+        path: &str,
+    ) -> Result<String, PortError> {
+        let state = self.state();
         state
-            .slice_mut(slice)?
+            .slice_at(workspace, base)?
             .changes
             .get(path)
             .map(|change| change.hunks.clone())

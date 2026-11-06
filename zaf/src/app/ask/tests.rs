@@ -1,5 +1,5 @@
 use super::*;
-use crate::domain::{PageStatus, TaskLabel};
+use crate::domain::{AskKind, PageStatus, TaskLabel};
 use crate::fakes::{FakeBoard, FakeDesign, FakeRunner};
 use crate::ports::{RunOutput, Ticket};
 
@@ -441,6 +441,7 @@ fn a_run_cut_off_before_it_answered_leaves_a_failed_line() {
         answer: INTERRUPTED.to_owned(),
         rung: None,
         check: CheckResult::Failed(vec![INTERRUPTED.to_owned()]),
+        read: Read::default(),
     };
     let json = serde_json::to_string(&marker).expect("json");
     fs::write(scene.state.path().join(ASK_LOG), format!("{json}\n")).expect("log");
@@ -449,7 +450,7 @@ fn a_run_cut_off_before_it_answered_leaves_a_failed_line() {
 }
 
 #[test]
-fn a_missing_runner_or_design_source_fails_only_its_rung() {
+fn a_missing_runner_fails_only_its_rung() {
     let scene = Scene::new();
     Scene::record(&scene.haiku, GOOD);
     let mut ports = scene.ports();
@@ -468,17 +469,36 @@ fn a_missing_runner_or_design_source_fails_only_its_rung() {
 
     let outcome = ask(&query, &ports).expect("ask");
     assert_eq!(outcome.lines[0].rung.as_deref(), Some("haiku"));
+}
 
-    Scene::record(&scene.haiku, GOOD);
+#[test]
+fn ask_refuses_without_a_design_source() {
+    let scene = Scene::new();
+    Scene::record(&scene.local, GOOD);
+    let mut ports = scene.ports();
     ports.design = None;
-    let later = AskQuery {
-        now: noon() + Duration::from_secs(7200),
-        ..query
+    let questions = vec![ONE_QUESTION[0].to_owned()];
+    let query = AskQuery {
+        task: task(),
+        from: "programmer-3",
+        questions: &questions,
+        max: 5,
+        root: Path::new("/project"),
+        state_dir: scene.state.path(),
+        cache_window: Duration::from_secs(3600),
+        now: noon(),
     };
-    let Err(AskFailure::Exhausted(reasons)) = ask(&later, &ports) else {
-        panic!("a quote cannot be checked without a design source");
+
+    let Err(error @ AskFailure::NoDesignSource) = ask(&query, &ports) else {
+        panic!("an ask with no design source is refused");
     };
-    assert!(reasons[1].contains("no design source"), "{reasons:?}");
+
+    assert!(error.to_string().contains("[design]"), "{error}");
+    assert!(scene.log().is_empty(), "no answer is logged");
+    assert!(
+        scene.local.requests().is_empty() && scene.haiku.requests().is_empty(),
+        "no keeper runs"
+    );
 }
 
 #[test]
@@ -649,6 +669,9 @@ q1: settled
 const CHECK_FAILED_LINE: &str =
     "q1: check failed — page 1003 could not be read (design dir or index misconfigured)\n";
 
+/// The `read:` line of a question asked of a task that names page 1001.
+const READ_NAMED: &str = "    read: pages named on the task: 1001\n";
+
 /// A design source whose index lists page 1003 but cannot read it: the misconfigured
 /// design dir of the 2026-11-01 report. With `index_fails`, the index itself errors.
 struct Unreadable<'a> {
@@ -679,6 +702,10 @@ impl Design for Unreadable<'_> {
             return Err(PortError::Unavailable("design source: index".to_owned()));
         }
         self.inner.status(id)
+    }
+
+    fn index(&self) -> Result<Vec<(PageId, PageStatus, String)>, PortError> {
+        self.inner.index()
     }
 }
 
@@ -728,7 +755,7 @@ fn a_cited_page_that_cannot_be_read_is_a_check_failure_not_a_not_settled() {
         ask_through(&scene, &design, ONE_QUESTION).expect("a check failure is an outcome");
 
     assert!(outcome.has_check_failure());
-    assert_eq!(outcome.render(), CHECK_FAILED_LINE);
+    assert_eq!(outcome.render(), format!("{CHECK_FAILED_LINE}{READ_NAMED}"));
     assert_eq!(scene.local.requests().len(), 1, "the ladder was climbed");
     assert_eq!(scene.haiku.requests().len(), 1);
     let line = &outcome.lines[0];
@@ -753,7 +780,7 @@ fn an_index_that_cannot_be_read_is_a_check_failure_too() {
 
     let outcome = ask_through(&scene, &design, ONE_QUESTION).expect("outcome");
 
-    assert_eq!(outcome.render(), CHECK_FAILED_LINE);
+    assert_eq!(outcome.render(), format!("{CHECK_FAILED_LINE}{READ_NAMED}"));
 }
 
 #[test]
@@ -794,7 +821,7 @@ fn a_not_settled_with_no_citations_is_printed_as_before_and_is_no_failure() {
     let outcome = scene.ask(ONE_QUESTION);
 
     assert!(!outcome.has_check_failure());
-    assert_eq!(outcome.render(), silent);
+    assert_eq!(outcome.render(), format!("{silent}{READ_NAMED}"));
     assert_eq!(outcome.lines[0].verdict, "not settled");
     assert_eq!(outcome.lines[0].check, CheckResult::Passed);
 }
@@ -822,8 +849,189 @@ fn a_question_with_sound_citations_in_a_discarded_answer_names_the_asks_unreadab
     assert_eq!(
         outcome.render(),
         format!(
-            "{CHECK_FAILED_LINE}{}",
+            "{CHECK_FAILED_LINE}{READ_NAMED}{}{READ_NAMED}",
             CHECK_FAILED_LINE.replace("q1", "q2")
         )
+    );
+}
+
+fn titled(id: &str, title: &str, text: &str) -> Page {
+    Page {
+        title: title.to_owned(),
+        ..page(id, PageStatus::Decided, text)
+    }
+}
+
+/// The scene's task with its `Design pages` field set to `none`, and an index of three
+/// pages: two with a title that holds a keyword of `ONE_QUESTION`, one with none.
+fn scene_naming_no_pages() -> Scene {
+    let scene = Scene::new();
+    scene.board.add_ticket(Ticket {
+        number: task(),
+        epic: Some(IssueNumber::from(10)),
+        title: "Export a reading list".to_owned(),
+        body: BODY.replace("Design pages: 1001 (decided)", "Design pages: none"),
+        label: Some(TaskLabel::Claimed),
+    });
+    let design = FakeDesign::default();
+    design.add_page(titled(
+        "1001",
+        "Header row of an exported list",
+        EXPORT_PAGE,
+    ));
+    design.add_page(titled("1004", "Sorting a LIST", "Lists sort by title."));
+    design.add_page(titled("1005", "Billing cycles", "Invoices go out monthly."));
+    Scene { design, ..scene }
+}
+
+#[test]
+fn no_pages_named_reads_the_index_by_keyword() {
+    let scene = scene_naming_no_pages();
+    Scene::record(&scene.local, GOOD);
+
+    let outcome = scene.ask(ONE_QUESTION);
+
+    let note = "no pages named on the task; the index was searched for \
+                empty, list, exported, header: index titles and pages 1001, 1004";
+    assert_eq!(outcome.render(), format!("{GOOD}    read: {note}\n"));
+    assert_eq!(outcome.lines[0].read.note, note);
+    assert_eq!(outcome.lines[0].read.pages, ["1001", "1004"]);
+
+    let prompt = &scene.local.requests()[0].prompt;
+    assert!(prompt.contains("## The index"), "{prompt}");
+    for title in [
+        "Header row of an exported list",
+        "Sorting a LIST",
+        "Billing cycles",
+    ] {
+        assert!(prompt.contains(title), "the index lists {title}");
+    }
+    assert!(prompt.contains(EXPORT_PAGE), "a matching page in full");
+    assert!(
+        prompt.contains("Lists sort by title."),
+        "a matching page in full"
+    );
+    assert!(
+        !prompt.contains("Invoices go out monthly."),
+        "a page whose title matches no keyword is not preloaded"
+    );
+
+    let logged = scene.log();
+    assert_eq!(logged[0].read.pages, ["1001", "1004"]);
+    assert_eq!(logged[0].read, outcome.lines[0].read);
+}
+
+#[test]
+fn a_task_naming_no_pages_with_no_title_match_says_so() {
+    let scene = scene_naming_no_pages();
+    Scene::record(&scene.local, GOOD);
+
+    let outcome = scene.ask(&["term: Why do refunds spiral nightly?"]);
+
+    assert_eq!(
+        outcome.lines[0].read.note,
+        "no pages named on the task; the index was searched for \
+         refunds, spiral, nightly: index titles only"
+    );
+    assert!(outcome.lines[0].read.pages.is_empty());
+}
+
+#[test]
+fn named_pages_still_go_first() {
+    let scene = Scene::new();
+    Scene::record(&scene.local, GOOD);
+
+    let outcome = scene.ask(ONE_QUESTION);
+
+    let prompt = &scene.local.requests()[0].prompt;
+    assert!(!prompt.contains("## The index"), "named pages: no index");
+    assert!(prompt.contains("## The task's pages"));
+    assert!(prompt.find("## The ask").expect("ask") < prompt.find("### 1001").expect("page"));
+    assert!(prompt.contains(EXPORT_PAGE));
+    assert!(!prompt.contains("1002"), "only the named pages");
+    assert_eq!(outcome.lines[0].read.note, "pages named on the task: 1001");
+    assert_eq!(outcome.lines[0].read.pages, ["1001"]);
+    assert_eq!(
+        outcome.render(),
+        format!("{GOOD}    read: pages named on the task: 1001\n")
+    );
+    assert_eq!(scene.log()[0].read.pages, ["1001"]);
+}
+
+#[test]
+fn a_task_with_no_design_source_says_so() {
+    let open = [Question {
+        id: QuestionId::from(1),
+        kind: AskKind::Rule,
+        text: "Is it so?".to_owned(),
+    }];
+
+    let chosen = choose_pages(None, None, &open).expect("chosen");
+
+    assert_eq!(chosen.reads[0].note, "no design source");
+    assert!(chosen.reads[0].pages.is_empty());
+    assert!(chosen.index.is_empty() && chosen.pages.is_empty());
+}
+
+#[test]
+fn a_cached_answer_keeps_the_read_it_was_given() {
+    let scene = scene_naming_no_pages();
+    Scene::record(&scene.local, GOOD);
+    let first = scene.ask(ONE_QUESTION);
+
+    let second = scene.ask(ONE_QUESTION);
+
+    assert_eq!(second.lines[0].check, CheckResult::Cached);
+    assert_eq!(second.lines[0].read, first.lines[0].read);
+    assert_eq!(second.render(), first.render());
+}
+
+#[test]
+fn a_log_line_written_before_reads_were_recorded_still_parses() {
+    let old = r#"{"time":1800000000,"task":12,"from":"programmer-3","kind":"rule","question":"Is it so?","verdict":"settled","pages":["1001"],"answer":"q1: not settled\n","rung":"local","check":"passed"}"#;
+    let scene = Scene::new();
+    fs::write(scene.state.path().join(ASK_LOG), format!("{old}\n")).expect("log");
+
+    let lines = scene.log();
+
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].read, Read::default());
+}
+
+#[test]
+fn keywords_are_the_words_over_three_letters_that_are_not_stop_words() {
+    assert_eq!(
+        keywords("Is the Retry window DOCUMENTED, and what does a retry do?"),
+        ["retry", "window", "documented"]
+    );
+    assert!(keywords("Is it so? What is that, then?").is_empty());
+}
+
+#[test]
+fn a_title_matches_ignoring_case_and_at_most_five_pages_come_back() {
+    let entry = |id: &str, title: &str| -> IndexEntry {
+        (
+            id.parse().expect("page id"),
+            PageStatus::Decided,
+            title.to_owned(),
+        )
+    };
+    let index = vec![
+        entry("2001", "Retry"),
+        entry("2002", "RETRY window"),
+        entry("2003", "Retry budget"),
+        entry("2004", "Retry jitter"),
+        entry("2005", "Retry on timeout"),
+        entry("2006", "Retry and the window"),
+        entry("2007", "Unrelated"),
+    ];
+
+    let chosen = pages_by_keyword(&index, &["retry".to_owned(), "window".to_owned()]);
+
+    let ids: Vec<String> = chosen.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        ids,
+        ["2002", "2006", "2001", "2003", "2004"],
+        "two keywords first, then id order, five at most"
     );
 }

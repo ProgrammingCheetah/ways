@@ -243,6 +243,126 @@ fn a_launch_marks_its_start_in_the_state() {
     assert_eq!(state.instances(), ["team instance 1 on #2"]);
 }
 
+/// A runner whose every run fails with the given error.
+struct FailingRunner(PortError);
+
+impl Runner for FailingRunner {
+    fn run(&self, _request: &RunRequest) -> Result<RunOutput, PortError> {
+        Err(self.0.clone())
+    }
+}
+
+fn timeout() -> FailingRunner {
+    FailingRunner(PortError::TimedOut {
+        bound: std::time::Duration::from_secs(60),
+        command: "claude -p".to_owned(),
+    })
+}
+
+#[test]
+fn timeout_text_in_another_error_is_not_a_timeout() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let board = board();
+    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, OWN_PID).expect("prepares");
+    let first = &prepared.plan.launches[0];
+    let task = IssueNumber::from(3);
+    board.claim(task, &first.instance).expect("claims #3");
+
+    let lookalike = FailingRunner(PortError::Unavailable(
+        "run timed out after 60s: claude -p".to_owned(),
+    ));
+    let done = launch(&board, &lookalike, &context(&state_dir), first).expect("records the run");
+
+    assert!(!done.exit.timed_out());
+    assert_eq!(done.exit.status(), "error");
+    assert!(matches!(done.exit, LaunchExit::Error(_)));
+    assert_eq!(board.claims().expect("claims").len(), 1, "claims are kept");
+}
+
+#[test]
+fn timed_out_launch_releases_its_claims() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let board = board();
+    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, OWN_PID).expect("prepares");
+    let first = &prepared.plan.launches[0];
+    let (stuck, waiting, other) = (
+        IssueNumber::from(3),
+        IssueNumber::from(4),
+        IssueNumber::from(13),
+    );
+    board.claim(stuck, &first.instance).expect("claims #3");
+    board.claim(waiting, &first.instance).expect("claims #4");
+    board
+        .label(waiting, TaskLabel::Question)
+        .expect("#4 waits on a question");
+    // Held by another instance: stays held.
+    board.claim(other, &instance(2, 12)).expect("claims #13");
+
+    let done = launch(&board, &timeout(), &context(&state_dir), first).expect("records the run");
+
+    assert!(done.exit.timed_out());
+    assert_eq!(done.exit.status(), "timeout");
+    let epic_comments = board.comments(IssueNumber::from(2));
+    assert!(
+        epic_comments.contains(&"<!-- zaf:exit team instance 1 on #2 timeout -->".to_owned()),
+        "{epic_comments:?}"
+    );
+    let label = |task| board.task(task).expect("task").label;
+    assert_eq!(label(stuck), Some(TaskLabel::Ready));
+    assert_eq!(label(waiting), Some(TaskLabel::Question));
+    assert_eq!(label(other), Some(TaskLabel::Claimed));
+    for task in [stuck, waiting] {
+        let comments = board.comments(task);
+        assert_eq!(comments.len(), 1, "{comments:?}");
+        assert!(
+            comments[0].starts_with("released from team instance 1 on #2 at "),
+            "{comments:?}"
+        );
+    }
+    assert!(board.comments(other).is_empty());
+    let claims = board.claims().expect("claims");
+    assert_eq!(claims.len(), 1);
+    assert_eq!(claims[0].task, other);
+    assert_eq!(
+        load(&state_dir).expect("loads").instances(),
+        ["team instance 2 on #12"],
+        "the slot is freed"
+    );
+}
+
+#[test]
+fn a_launch_that_did_not_time_out_keeps_its_claims() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let board = board();
+    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, OWN_PID).expect("prepares");
+    let first = &prepared.plan.launches[0];
+    let task = IssueNumber::from(3);
+    board.claim(task, &first.instance).expect("claims #3");
+
+    let exited = FakeRunner::default();
+    exited.record(
+        team(),
+        RunOutput {
+            exit_code: 1,
+            transcript: String::new(),
+        },
+    );
+    let done = launch(&board, &exited, &context(&state_dir), first).expect("launches");
+    assert_eq!(done.exit, LaunchExit::Code(1));
+    assert!(!done.exit.timed_out());
+
+    // A runner that could not run is an `error`, not a timeout.
+    let missing = FailingRunner(PortError::Unavailable("no claude".to_owned()));
+    let done = launch(&board, &missing, &context(&state_dir), first).expect("records the run");
+    assert_eq!(done.exit.status(), "error");
+
+    assert_eq!(board.claims().expect("claims").len(), 1);
+    assert!(board.comments(task).is_empty());
+}
+
 #[test]
 fn the_projects_own_brief_wins_over_the_pack() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -503,6 +623,52 @@ fn a_launch_puts_its_environment_on_the_request() {
     let requests = runner.requests();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].env, context.env);
+}
+
+#[test]
+fn spawn_launches_with_env() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let manifest: Manifest = format!(
+        "{MANIFEST}\n[env]\nCARGO_TARGET_DIR = \"{{root}}/.zaf/target\"\nGATE_BASE = \"feature/release-{{version}}@origin\"\nHOME = \"/from/manifest\"\n"
+    )
+    .parse()
+    .expect("manifest parses");
+    let root = Path::new("/work/bookshelf");
+    let board = board();
+    let runner = FakeRunner::default();
+    let prepared = prepare(&board, &state_dir, &manifest, &|_| true, OWN_PID).expect("prepares");
+    let context = LaunchContext {
+        env: manifest_env(&manifest, root, "0-3").expect("resolves"),
+        ..context(&state_dir)
+    };
+    launch(&board, &runner, &context, &prepared.plan.launches[0]).expect("records the run");
+    let requests = runner.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].env,
+        BTreeMap::from([
+            (
+                "CARGO_TARGET_DIR".to_owned(),
+                "/work/bookshelf/.zaf/target".to_owned()
+            ),
+            (
+                "GATE_BASE".to_owned(),
+                "feature/release-0-3@origin".to_owned()
+            ),
+            ("HOME".to_owned(), "/from/manifest".to_owned()),
+        ])
+    );
+}
+
+#[test]
+fn a_table_that_needs_a_version_resolves_with_the_one_given() {
+    let manifest: Manifest = format!("{MANIFEST}\n[env]\nBASE = \"release-{{version}}\"\n")
+        .parse()
+        .expect("manifest parses");
+    let env = manifest_env(&manifest, Path::new("/p"), "0.2.0").expect("resolves");
+    assert_eq!(env["BASE"], "release-0.2.0");
+    assert!(manifest_env(&self::manifest(), Path::new("/p"), "0.2.0").is_ok_and(|e| e.is_empty()));
 }
 
 #[test]
