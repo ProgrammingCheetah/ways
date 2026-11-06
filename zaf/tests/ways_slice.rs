@@ -389,7 +389,9 @@ fn slice_merge_runs_the_steps_in_order() {
     let calls = project.gh_calls();
     let merge = calls
         .iter()
-        .position(|call| call == &format!("pr merge 7 --merge --repo {REPO}"))
+        .position(|call| {
+            call == &format!("pr merge 7 --merge --match-head-commit {head} --repo {REPO}")
+        })
         .unwrap_or_else(|| panic!("{calls:?}"));
     let done = calls
         .iter()
@@ -402,6 +404,42 @@ fn slice_merge_runs_the_steps_in_order() {
     assert_eq!(record(&project, "2.pr"), None);
     // The branch with the merged work stays.
     assert_eq!(bookmark_at(&project.root, SLICE), head);
+}
+
+#[test]
+fn slice_merge_pins_the_checked_head() {
+    let (project, _dir, head) = landing();
+
+    // The merge names the head the slice stands on, the commit CI passed.
+    let (code, text) = action(&project, &["slice-merge", "2"]);
+    assert_eq!(code, 0, "{text}");
+    assert!(project.gh_calls().contains(&format!(
+        "pr merge 7 --merge --match-head-commit {head} --repo {REPO}"
+    )));
+
+    // A push after CI moves the pull request's head: the forge refuses the pinned merge, so the
+    // run ends 1, the task is not marked done and the workspace stays.
+    let (mut other, dir_other, _) = landing();
+    other.fail_first(
+        "pr merge *",
+        "X Pull request #7 Head branch was modified. Review and try the merge again.",
+    );
+    let (code, text) = action(&other, &["slice-merge", "2"]);
+    assert_eq!(code, 1, "{text}");
+    assert!(text.contains("Head branch was modified"), "{text}");
+    assert!(!called(&other, "issue edit"), "{text}");
+    assert!(!text.contains("zaf do workspace-drop"), "{text}");
+    assert!(dir_other.is_dir());
+    assert!(record(&other, "2").is_some());
+    // Nor is it retried: only a moved base is waited for.
+    assert_eq!(
+        other
+            .gh_calls()
+            .iter()
+            .filter(|call| call.starts_with("pr merge"))
+            .count(),
+        1
+    );
 }
 
 #[test]

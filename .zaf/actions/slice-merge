@@ -53,6 +53,8 @@ if [ "$before" != "$after" ]; then
     exit 1
 fi
 
-zaf do pr-merge "$ZAF_PR" || stop $?
+# The merge names the head compared above, so a push after CI makes the forge refuse it, and the
+# task is then not marked done.
+zaf do pr-merge "$ZAF_PR" --match-head-commit "$after" || stop $?
 zaf board done "$1" || stop $?
 zaf do workspace-drop "$ZAF_SLICE" || stop $?

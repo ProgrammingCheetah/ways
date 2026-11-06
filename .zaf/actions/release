@@ -1,5 +1,5 @@
 #!/bin/sh
-# zaf description: release a finished version: check zaf/Cargo.toml is at it, squash-merge the integration branch's pull request, sync main, and tag zaf-v<version>
+# zaf description: release a finished version: check zaf/Cargo.toml is at it, squash-merge the integration branch's pull request into main at the head it listed, sync main, and tag zaf-v<version>
 # zaf 1: refused, nothing changed by this action: the argument is not <version>, zaf/Cargo.toml is not at it, or ZAF_BASE is unset or has no open pull request; or a step it ran refused (the merge, the sync or the tag)
 # zaf 2: a backend failed (gh refused, or a step it ran failed)
 # zaf mode: 750
@@ -72,10 +72,13 @@ else
     set --
 fi
 
-open=$(gh pr list --head "$ZAF_BASE" --state open --json number --jq '.[].number' "$@") || exit 2
+# Only the integration branch's pull request into main is released: `--base main` leaves out any
+# other pull request from the branch. The list names each one's head commit, which the merge pins.
+open=$(gh pr list --head "$ZAF_BASE" --base main --state open --json number,headRefOid --jq '.[] | "\(.number) \(.headRefOid)"' "$@") || exit 2
 pr=$(printf '%s\n' "$open" | awk 'NF { print $1; exit }')
+head=$(printf '%s\n' "$open" | awk 'NF { print $2; exit }')
 if [ -z "$pr" ]; then
-    echo "$ZAF_BASE has no open pull request" >&2
+    echo "$ZAF_BASE has no open pull request into main" >&2
     exit 1
 fi
 case $pr in
@@ -84,8 +87,14 @@ case $pr in
         exit 2
         ;;
 esac
+case $head in
+    "" | *[!0-9a-f]*)
+        echo "gh listed no head commit for pull request #$pr" >&2
+        exit 2
+        ;;
+esac
 
 # Each step stops the release at its first failure, and its code passes through.
-zaf do pr-merge "$pr" --squash || exit $?
+zaf do pr-merge "$pr" --squash --match-head-commit "$head" || exit $?
 zaf do sync main || exit $?
 zaf do tag "zaf-v$version" || exit $?
