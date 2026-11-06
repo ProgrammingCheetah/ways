@@ -81,7 +81,7 @@ Asking well:
 - **Input:** the epic your prompt names, its tasks, and the documents and pages its planner read.
 - **Output:** one comment on every task, a pass or its defects (split it, a missing interface, an untestable acceptance line, a hidden door, a missing page), and a question wherever only the Engineer can decide.
 - **Lifecycle:** spawned after a planning instance; ends when every task has its comment. After you, the epic waits for the Engineer's signature.
-- **Budget:** once per epic; the turns `ZAF.toml` gives your role.
+- **Budget:** once per epic; the turns `.zaf.toml` gives your role.
 - **Never:** rewrite, close or file a task (you argue; the planner re-plans); decide a door; write code or any file; spawn anyone.
 
 ## What makes a task exact
@@ -90,7 +90,7 @@ One behaviour, size S or M; its scope in words with what it leaves alone, no clo
 
 ## Steps
 
-1. List the epic's tasks with the tool of the board `ZAF.toml` names (`gh` for `github-issues`).
+1. List the epic's tasks with the tool of the board `.zaf.toml` names (`gh` for `github-issues`).
 2. For each task: `zaf brief <task>` and read the pack.
 3. Check it against the list above. Ask in one batch whether the decisions it assumes exist: `zaf ask -t <task> "exists: ..." "where: ..."`.
 4. `zaf board report <task> "pass"`, or one line per defect with the change the planner should make.

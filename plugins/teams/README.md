@@ -1,11 +1,11 @@
 # teams
 
-The standing briefs of the instances that build a project, one per role, plus the routines the Engineer runs in the design session. The work itself runs through `zaf`, the project-blind binary of verbs: the board is the queue, the spawner launches the instances, and every project word comes from the project's `ZAF.toml` or the ticket. Nothing in this pack names a project.
+The standing briefs of the instances that build a project, one per role, plus the routines the Engineer runs in the design session. The work itself runs through `zaf`, the project-blind binary of verbs: the board is the queue, the spawner launches the instances, and every project word comes from the project's `.zaf.toml` or the ticket. Nothing in this pack names a project.
 
 | Part | What it is |
 |---|---|
 | `agents/` | Six role briefs: `teams:team`, `teams:programmer`, `teams:keeper`, `teams:planning`, `teams:challenger`, `teams:release`; plus `teams:designer`, the design session's judgment lane |
-| `hooks/hooks.json` | At session start in a project with a `ZAF.toml`, runs `zaf doctor` and prints its table; elsewhere it does nothing |
+| `hooks/hooks.json` | At session start in a project with a `.zaf.toml`, runs `zaf doctor` and prints its table; elsewhere it does nothing |
 | `skills/` | `/teams:objectives`, `/teams:my-queue`, `/teams:catch-me-up`, `/teams:document`, `/teams:retrospective` |
 
 ## The role briefs
@@ -29,7 +29,7 @@ for r in team programmer keeper planning challenger release; do f=agents/$r.md; 
 
 ## Launching an instance
 
-**The spawner.** `zaf spawn --once` runs one tick and exits; a timer runs it over and over. Each tick launches, within the slots and the budget guard, a team instance for an epic with ready, unclaimed, unblocked tasks. It sets `ZAF_INSTANCE` and `ZAF_VERSION` and starts the role's agent, `teams:<role>`, with the model, effort, turns and profile `ZAF.toml` gives that role. The other launches are not built yet, and the tick names them as `not built`: a planning instance for a signed epic with no tasks (or a ruling newer than its plan), a challenger for a planned epic, and a release instance for a milestone whose epics are all done. Until they are, the Engineer launches those roles by hand, below.
+**The spawner.** `zaf spawn --once` runs one tick and exits; a timer runs it over and over. Each tick launches, within the slots and the budget guard, a team instance for an epic with ready, unclaimed, unblocked tasks. It sets `ZAF_INSTANCE` and `ZAF_VERSION` and starts the role's agent, `teams:<role>`, with the model, effort, turns and profile `.zaf.toml` gives that role. The other launches are not built yet, and the tick names them as `not built`: a planning instance for a signed epic with no tasks (or a ruling newer than its plan), a challenger for a planned epic, and a release instance for a milestone whose epics are all done. Until they are, the Engineer launches those roles by hand, below.
 
 **By hand.** The Engineer runs one the same way, from the project root, with the two variables set:
 
@@ -41,7 +41,7 @@ claude --agent teams:team "Epic #<epic>."
 
 Swap the role and the prompt for the others: `teams:planning` or `teams:challenger` with `"Epic #<epic>."`, `teams:release` with the milestone, its issue and its `objectives.md`. Add `-p` to run it unattended. A programmer by hand needs its task opened first: `zaf slice open <task>`, `zaf brief <task>`, then `claude --agent teams:programmer "Task #<task>, round 1. Pack: <pack path>. Workspace: <workspace path>."`. `zaf board claim` and `zaf board report` refuse to run without `ZAF_INSTANCE`.
 
-**Before the first launch:** `zaf` on PATH, a `ZAF.toml` (`zaf init`), `zaf setup`, and a clean `zaf doctor`, which this pack's hook prints at every session start in the project. Claude Code 2.1.296 or later (the team brief sets `autoCompactWindow`).
+**Before the first launch:** `zaf` on PATH, a `.zaf.toml` (`zaf init`), `zaf setup`, and a clean `zaf doctor`, which this pack's hook prints at every session start in the project. Claude Code 2.1.296 or later (the team brief sets `autoCompactWindow`).
 
 ## The design session's routines
 

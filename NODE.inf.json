@@ -14,12 +14,12 @@
   "conventions": [
     "One plugin per way of working; no plugin requires another (an optional integration is detected or offered, never required).",
     "main is the release channel for the plugins: every commit on main is a new plugin version, so main stays shippable.",
-    "Branches (ZAF.toml): integration feature/{version}, task feature/{version}-{epic}-{task}; VCS is jj colocated with git.",
-    "The repo runs zaf on itself: ZAF.toml is its manifest; the full gate is `cd zaf && cargo fmt --check && cargo build && cargo clippy --all-targets -- -D warnings && cargo test`."
+    "Branches (.zaf.toml): integration feature/{version}, task feature/{version}-{epic}-{task}; VCS is jj colocated with git.",
+    "The repo runs zaf on itself: .zaf.toml is its manifest and .zaf/actions holds its own actions; the full gate is `cd zaf && cargo fmt --check && cargo build && cargo clippy --all-targets -- -D warnings && cargo test`."
   ],
   "entry_points": [
     "README.md",
-    "ZAF.toml"
+    ".zaf.toml"
   ],
   "fs": [
     {
@@ -43,8 +43,13 @@
       "node": false
     },
     {
-      "name": "ZAF.toml",
-      "role": "zaf's manifest for this repo: board, vcs, forge, gate, roles, runners",
+      "name": ".zaf.toml",
+      "role": "zaf's manifest for this repo: board, vcs, forge, gate, roles, runners, [forbidden] and [check.pr]",
+      "node": false
+    },
+    {
+      "name": ".zaf/",
+      "role": "actions/ (this repo's own actions, the project tier) and .gitignore are committed; the rest is machine-local state",
       "node": false
     },
     {
@@ -65,9 +70,9 @@
   ],
   "notes": [
     "To understand a path, load `nodes chain <path>`; `node: false` entries are fully described by their `fs` line.",
-    "The design page is docs/zuri-ai-framework.md (draft v0, 2026-10-27); ZAF.toml sets [design] kind = \"none\" because it is not an id-indexed page set, so briefs carry only a ticket's named pages.",
-    ".zaf/ (git-ignored) is zaf's machine-local state: asklog, guard, profiles, runs, slices, spawn state and workspaces.",
-    "Board and forge are GitHub issues and PRs on ProgrammingCheetah/ways (ZAF.toml).",
+    "The design page is docs/zuri-ai-framework.md (draft v0, 2026-10-27); .zaf.toml sets [design] kind = \"repo-dir\" over docs/, so `zaf ask` checks the keeper's quotes against those pages.",
+    ".zaf/'s machine-local state (asklog, guard, profiles, runs, slices, spawn state and workspaces) is git-ignored by .zaf/.gitignore, which allows only its own file, config.toml, actions/ and roles/.",
+    "Board and forge are GitHub issues and PRs on ProgrammingCheetah/ways (.zaf.toml).",
     "Binary releases are tagged zaf-vX.Y.Z: zaf-release.yml checks zaf/Cargo.toml's version matches the tag, builds x86_64 musl Linux and aarch64 macOS, and uploads archives plus sha256 sums to a GitHub release.",
     "The CI gate zaf.yml runs only when zaf/ or the workflow changes, on Ubuntu and macOS, after installing jj v0.46.0 because the Vcs adapter's tests drive a real jj."
   ]

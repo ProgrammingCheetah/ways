@@ -57,7 +57,7 @@
   ],
   "notes": [
     "in this repo the interface page is `zaf/assets/interface.md`; all six briefs matched it byte for byte on 2026-11-03",
-    "frontmatter model and effort are the by-hand defaults; the spawner passes ZAF.toml's `[roles.<role>]` model, effort, turns and profile instead",
+    "frontmatter model and effort are the by-hand defaults; the spawner passes .zaf.toml's `[roles.<role>]` model, effort, turns and profile instead",
     "keeper.md points to zaf's own keeper prompt (`zaf/assets/keeper.md`) and never restates it",
     "planning.md reads `nodes chain <path>` only when `nodes` is on PATH, its one optional tie to the nodes pack"
   ]
