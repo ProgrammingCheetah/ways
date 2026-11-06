@@ -21,6 +21,7 @@ use crate::domain::{Profile, RoleName};
 use crate::manifest::{
     BoardKind, CommandLine, DesignKind, Effort, FOLDER_FILE, ForgeKind, LEGACY_FILE, Manifest,
     ManifestError, ModelName, ProjectFiles, ROOT_FILE, RunnerName, VcsKind,
+    workspaces_path_lenient,
 };
 use crate::ports::{Board, Design, Forge, Gate, RunRequest, Runner, Shell, SliceName, Vcs};
 
@@ -146,16 +147,25 @@ impl Composition {
         }
         // Nearest first; the loop below tries the topmost first.
         for (index, candidate) in candidates.iter().enumerate().rev() {
-            let Ok(composition) = Self::load_with_home(candidate, home) else {
-                continue;
-            };
-            let workspaces = normalized(&candidate.join(&composition.manifest.workspaces.path));
             let below = &candidates[..index];
-            if below
-                .iter()
-                .all(|lower| normalized(lower).starts_with(&workspaces))
-            {
-                return Ok(composition);
+            let holds_below = |workspaces: &Path| {
+                let workspaces = normalized(&candidate.join(workspaces));
+                below
+                    .iter()
+                    .all(|lower| normalized(lower).starts_with(&workspaces))
+            };
+            match Self::load_with_home(candidate, home) {
+                Ok(composition) if holds_below(&composition.manifest.workspaces.path) => {
+                    return Ok(composition);
+                }
+                Ok(_) => {}
+                // A root whose manifest does not load is that error, never a fall-through
+                // to the copy in a workspace below it. Its workspaces path is read without
+                // the typed parse, so a copy below it is still recognised as its workspace.
+                Err(error) if holds_below(&workspaces_path_lenient(candidate, home)) => {
+                    return Err(error.into());
+                }
+                Err(_) => {}
             }
         }
         match candidates.first() {

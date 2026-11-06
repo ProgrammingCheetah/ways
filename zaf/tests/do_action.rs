@@ -1062,6 +1062,76 @@ fn assert_refused(project: &Project, name: &str, run: &Output, role: &str) {
     assert_nothing_started(project, name);
 }
 
+/// The refusal `[forbidden]` gives: the one line, exit 125 and nothing started.
+fn assert_forbidden(project: &Project, name: &str, run: &Output, role: &str) {
+    let (code, stdout, stderr) = outcome(run);
+    assert_eq!(code, 125, "{name}: {stdout}{stderr}");
+    assert_eq!(stdout, "", "{name}");
+    assert_eq!(stderr, format!("NOT_RUN {name}: forbidden for {role}\n"));
+    assert_nothing_started(project, name);
+}
+
+#[test]
+fn do_refuses_a_forbidden_name_outside_nesting() {
+    let project = Project::new(&format!(
+        "{MANIFEST}\n[forbidden]\ncommands = [\"gh pr merge\", \"zaf do land\", \
+         \"zaf do --tier machine pr-merge\"]\n"
+    ));
+    set_up(&project);
+    for name in ["land", "pr-merge", "tidy", "ship"] {
+        gated(&project, name, "");
+    }
+
+    // An instance is refused each forbidden name, with flags or without, and nothing starts.
+    for role in [PROGRAMMER, TEAM, RELEASE] {
+        for args in [
+            vec!["do", "land"],
+            vec!["do", "land", "12"],
+            vec!["--more", "do", "land", "12"],
+            vec!["do", "--tier", "machine", "pr-merge", "12"],
+            vec!["do", "pr-merge"],
+        ] {
+            let name = args
+                .iter()
+                .find(|word| ["land", "pr-merge"].contains(word))
+                .expect("a name");
+            let run = zaf_in(&project, &project.root, &args, &[("ZAF_INSTANCE", role)]);
+            let shown = role.split(' ').next().expect("a role");
+            assert_forbidden(&project, name, &run, shown);
+        }
+    }
+
+    // A name that is not forbidden still runs for an instance.
+    for name in ["tidy", "ship"] {
+        let run = run_as(&project, name, Some(RELEASE));
+        assert_ran(&project, name, &run);
+    }
+
+    // The Engineer's hand run is under no profile.
+    let run = run_as(&project, "land", None);
+    assert_ran(&project, "land", &run);
+
+    // A call from inside another action's body is nested, and runs: this is how `slice-merge`
+    // and `release` reach the merge paths. (`outer` stands for either.)
+    action(
+        &project,
+        "outer",
+        "",
+        "zaf do land && zaf do --tier machine pr-merge",
+    );
+    machine_action(&project, "pr-merge", "touch \"$ZAF_ROOT/pr-merge.ran\"");
+    let run = run_as(&project, "outer", Some(RELEASE));
+    assert_eq!(outcome(&run).0, 0, "{}", said(&run));
+    assert!(project.root.join("land.ran").exists(), "nested land ran");
+    assert!(
+        project.root.join("pr-merge.ran").exists(),
+        "nested pr-merge ran"
+    );
+    // The outer call itself is not forbidden, only the names are.
+    let run = run_as(&project, "outer", Some(PROGRAMMER));
+    assert_eq!(outcome(&run).0, 0, "{}", said(&run));
+}
+
 #[test]
 fn engineer_digit_applies() {
     let project = project();

@@ -33,6 +33,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value, json};
 
+use crate::app::actions::forbidden_action;
 use crate::app::brief::INTERFACE_PAGE;
 use crate::composition::HOME_VAR;
 use crate::domain::Profile;
@@ -811,7 +812,14 @@ fn tool_rules(command: &CommandLine) -> Vec<String> {
         .collect()
 }
 
-/// Each forbidden command, bare and with any arguments, sorted.
+/// Where flags may stand in a `zaf do <name>` line: before `do`, after it, both or neither.
+/// A permission pattern's `*` matches any text, spaces included, so `-*` is a flag and whatever
+/// it takes (`--tier machine`, `--tier=machine`, `--json`).
+const DO_FORMS: [&str; 4] = ["zaf do", "zaf -* do", "zaf do -*", "zaf -* do -*"];
+
+/// Each forbidden command, bare and with any arguments, sorted. A forbidden `zaf do <name>`
+/// is denied again with flags before `do` or before the name (`zaf --more do land 12`,
+/// `zaf do --json land 12`, `zaf do --tier=machine land 12`), so a flag cannot walk round it.
 fn deny_rules(manifest: &Manifest) -> Vec<String> {
     let mut rules: Vec<String> = Vec::new();
     for command in &manifest.forbidden.commands {
@@ -819,6 +827,12 @@ fn deny_rules(manifest: &Manifest) -> Vec<String> {
         let with_args = format!("{} *)", bare.trim_end_matches(')'));
         rules.push(bare);
         rules.push(with_args);
+        if let Some(name) = forbidden_action(command.as_ref()) {
+            for form in DO_FORMS {
+                rules.push(format!("Bash({form} {name})"));
+                rules.push(format!("Bash({form} {name} *)"));
+            }
+        }
     }
     rules.sort();
     rules.dedup();

@@ -15,7 +15,9 @@ mod sections;
 
 pub use document::Manifest;
 pub use errors::ManifestError;
-pub use layers::{FOLDER_FILE, HOME_FILE, LEGACY_FILE, ProjectFiles, ROOT_FILE};
+pub use layers::{
+    FOLDER_FILE, HOME_FILE, LEGACY_FILE, ProjectFiles, ROOT_FILE, workspaces_path_lenient,
+};
 pub use requirement::{Requirement, RequirementError};
 pub use sections::{
     ActionsSection, AskSection, BoardKind, BoardSection, BranchPattern, BranchesSection,
