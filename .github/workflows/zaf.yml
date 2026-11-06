@@ -4,11 +4,15 @@ on:
   pull_request:
     paths:
       - "zaf/**"
+      - ".zaf/**"
+      - ".zaf.toml"
       - ".github/workflows/zaf.yml"
   push:
     branches: [main]
     paths:
       - "zaf/**"
+      - ".zaf/**"
+      - ".zaf.toml"
       - ".github/workflows/zaf.yml"
 
 permissions:

@@ -16,6 +16,14 @@ const VERSION: &str = "0.2.0";
 const BASE: &str = "feature/0.2.0";
 const RELEASE_INSTANCE: &str = "release instance 1 on #103";
 
+/// The integration branch's pull request into main, as `gh pr list` prints it: its number and head.
+const HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
+const LISTED: &str = "7 0123456789abcdef0123456789abcdef01234567\n";
+
+/// The merge the release runs: squashed, and pinned to the head it listed.
+const PINNED_MERGE: &str =
+    "pr-merge 7 --squash --match-head-commit 0123456789abcdef0123456789abcdef01234567";
+
 const MANIFEST: &str = r#"[project]
 name = "example"
 
@@ -122,13 +130,43 @@ fn steps(project: &Project) -> Vec<String> {
 }
 
 fn list_call() -> String {
-    format!("pr list --head {BASE} --state open --json number --jq .[].number --repo {REPO}")
+    format!(
+        "pr list --head {BASE} --base main --state open --json number,headRefOid \
+         --jq .[] | \"\\(.number) \\(.headRefOid)\" --repo {REPO}"
+    )
+}
+
+#[test]
+fn release_pins_the_head_and_lists_only_prs_into_main() {
+    let mut project = project();
+    project
+        .on("pr list *", LISTED)
+        .env("ZAF_INSTANCE", RELEASE_INSTANCE);
+
+    let (code, text) = release(&project, &[VERSION]);
+
+    assert_eq!(code, 0, "{text}");
+    // Only pull requests into main are listed, so a pull request from the base into another
+    // branch is never the release.
+    let calls = project.gh_calls();
+    assert_eq!(calls, [list_call()]);
+    assert!(calls[0].contains(" --base main "), "{calls:?}");
+    // The merge names the head that was listed, the commit CI passed.
+    assert_eq!(steps(&project)[0], PINNED_MERGE);
+    assert!(steps(&project)[0].ends_with(HEAD));
+
+    // A list with no head commit is a backend failure: nothing merges.
+    let mut project = self::project();
+    project.on("pr list *", "7\n");
+    let (code, text) = release(&project, &[VERSION]);
+    assert_eq!(code, 2, "{text}");
+    assert_eq!(steps(&project), Vec::<String>::new());
 }
 
 #[test]
 fn release_checks_the_version() {
     let mut project = project();
-    project.on("pr list *", "7\n");
+    project.on("pr list *", LISTED);
 
     // The crate is at another version: refused before gh is called, and nothing changes.
     write(&project.root, "zaf/Cargo.toml", &cargo_toml("0.1.9"));
@@ -177,7 +215,7 @@ fn release_checks_the_version() {
 fn release_without_a_pr_changes_nothing() {
     // ZAF_BASE unset: with no version in the environment zaf sets none. Nothing is asked of gh.
     let mut project = unversioned_project();
-    project.on("pr list *", "7\n");
+    project.on("pr list *", LISTED);
     let (code, text) = release(&project, &[VERSION]);
     assert_eq!(code, 1, "{text}");
     assert!(text.contains("ZAF_BASE"), "{text}");
@@ -205,7 +243,7 @@ fn release_without_a_pr_changes_nothing() {
 fn release_merges_syncs_tags_in_order() {
     let mut project = project();
     project
-        .on("pr list *", "7\n")
+        .on("pr list *", LISTED)
         .env("ZAF_INSTANCE", RELEASE_INSTANCE);
 
     let (code, text) = release(&project, &[VERSION]);
@@ -214,11 +252,7 @@ fn release_merges_syncs_tags_in_order() {
     assert_eq!(project.gh_calls(), [list_call()]);
     assert_eq!(
         steps(&project),
-        [
-            "pr-merge 7 --squash",
-            "sync main",
-            &format!("tag zaf-v{VERSION}")
-        ]
+        [PINNED_MERGE, "sync main", &format!("tag zaf-v{VERSION}")]
     );
 }
 
@@ -226,23 +260,23 @@ fn release_merges_syncs_tags_in_order() {
 fn release_stops_on_a_refused_merge() {
     // The merge is refused: nothing after it runs, and its code is the release's.
     let mut project = project();
-    project.on("pr list *", "7\n");
+    project.on("pr list *", LISTED);
     write(&project.root, "fail-pr-merge", "1");
     let (code, text) = release(&project, &[VERSION]);
     assert_eq!(code, 1, "{text}");
-    assert_eq!(steps(&project), ["pr-merge 7 --squash"]);
+    assert_eq!(steps(&project), [PINNED_MERGE]);
 
     // The sync fails: the merge ran, the tag does not.
     let mut project = self::project();
-    project.on("pr list *", "7\n");
+    project.on("pr list *", LISTED);
     write(&project.root, "fail-sync", "2");
     let (code, text) = release(&project, &[VERSION]);
     assert_eq!(code, 2, "{text}");
-    assert_eq!(steps(&project), ["pr-merge 7 --squash", "sync main"]);
+    assert_eq!(steps(&project), [PINNED_MERGE, "sync main"]);
 
     // The tag is refused: all three ran, and the release says so.
     let mut project = self::project();
-    project.on("pr list *", "7\n");
+    project.on("pr list *", LISTED);
     write(&project.root, "fail-tag", "1");
     let (code, text) = release(&project, &[VERSION]);
     assert_eq!(code, 1, "{text}");
@@ -253,7 +287,9 @@ fn release_stops_on_a_refused_merge() {
 fn release_is_refused_for_a_programmer() {
     for instance in ["programmer instance 1 on #9", "team instance 1 on #9"] {
         let mut project = project();
-        project.on("pr list *", "7\n").env("ZAF_INSTANCE", instance);
+        project
+            .on("pr list *", LISTED)
+            .env("ZAF_INSTANCE", instance);
         let role = instance.split(' ').next().expect("a role");
 
         let (code, stdout, stderr) = outcome(&project.zaf(&["do", "release", VERSION]));

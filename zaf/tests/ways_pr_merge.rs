@@ -74,6 +74,49 @@ fn pr_merge_merges_with_a_merge_commit() {
 }
 
 #[test]
+fn pr_merge_pins_the_head_it_is_given() {
+    let sha = "0123456789abcdef0123456789abcdef01234567";
+    for (args, strategy) in [
+        (vec!["7", "--match-head-commit", sha], "--merge"),
+        (
+            vec!["7", "--squash", "--match-head-commit", sha],
+            "--squash",
+        ),
+        (
+            vec!["7", "--match-head-commit", sha, "--squash"],
+            "--squash",
+        ),
+    ] {
+        let mut project = project();
+        project.on("pr view *", "OPEN\n").on("pr merge *", "");
+
+        let (code, text) = merge(&project, &args);
+
+        assert_eq!(code, 0, "{args:?}: {text}");
+        assert_eq!(
+            project.gh_calls(),
+            [
+                view_call("7"),
+                format!("pr merge 7 {strategy} --match-head-commit {sha} --repo {REPO}")
+            ]
+        );
+    }
+
+    // A commit that is not one, or none at all, is refused before gh is called.
+    let project = project();
+    for args in [
+        &["7", "--match-head-commit"][..],
+        &["7", "--match-head-commit", ""][..],
+        &["7", "--match-head-commit", "main"][..],
+        &["7", "--match-head-commit", "abc;1"][..],
+    ] {
+        let (code, text) = merge(&project, args);
+        assert_eq!(code, 1, "{args:?}: {text}");
+    }
+    assert_eq!(project.gh_calls(), Vec::<String>::new());
+}
+
+#[test]
 fn pr_merge_squash_squashes() {
     let mut project = project();
     project.on("pr view *", "OPEN\n").on("pr merge *", "");
