@@ -27,7 +27,7 @@ In a repo the Engineer doesn't own (the push remote's owner is neither their for
 
 ## Install on a new computer
 
-**Goal:** your work project has a `ZAF.toml` and Claude starts there with a clean `zaf doctor`.
+**Goal:** your work project has a `.zaf.toml` and Claude starts there with a clean `zaf doctor`.
 
 1. **Check** Claude Code's version.
    `claude --version`
@@ -49,7 +49,7 @@ In a repo the Engineer doesn't own (the push remote's owner is neither their for
    Done when: it prints a version number.
 7. **Run** `zaf init` at your work project's root folder and answer its four questions (project name, board repo, forge repo, gate command).
    `cd <your project root> && zaf init`
-   Done when: the output ends with `wrote ZAF.toml`.
+   Done when: the output ends with `wrote .zaf.toml`.
 8. **Run** `zaf setup`, do the steps it prints, and run it again until nothing is left.
    `cd <your project root> && zaf setup`
    Done when: it exits 0.
@@ -76,5 +76,5 @@ plugins/handoff/                  /handoff:how-to
 plugins/nodes/                    the nodes pack
 zaf/                              the zaf crate: the binary the teams pack drives, released from tags zaf-vX.Y.Z
 docs/                             zuri-ai-framework.md, the method's design draft, and the 2026-10-27 baseline
-ZAF.toml                          zaf's manifest for this repo, which runs the framework on itself
+ZAF.toml                          zaf's manifest for this repo, which runs the framework on itself (the old name, retired for .zaf.toml; this repo moves last)
 ```
