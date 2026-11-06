@@ -1,5 +1,5 @@
 {
-  "description": "At session start in a project with a .zaf.toml, run `zaf doctor` and print its table; elsewhere, do nothing.",
+  "description": "At session start in a zaf project (a .zaf.toml, a .zaf/config.toml or the retired ZAF.toml), run `zaf doctor` and print its table; elsewhere, do nothing.",
   "hooks": {
     "SessionStart": [
       {
@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -f \"$CLAUDE_PROJECT_DIR/.zaf.toml\" ] || [ -f \"$CLAUDE_PROJECT_DIR/.zaf/config.toml\" ] || exit 0; if command -v zaf >/dev/null 2>&1; then echo 'zaf doctor:'; cd \"$CLAUDE_PROJECT_DIR\" && zaf doctor 2>&1; else echo 'zaf doctor: this project has a .zaf.toml but zaf is not on PATH'; fi; exit 0",
+            "command": "[ -f \"$CLAUDE_PROJECT_DIR/.zaf.toml\" ] || [ -f \"$CLAUDE_PROJECT_DIR/.zaf/config.toml\" ] || [ -f \"$CLAUDE_PROJECT_DIR/ZAF.toml\" ] || exit 0; if command -v zaf >/dev/null 2>&1; then echo 'zaf doctor:'; cd \"$CLAUDE_PROJECT_DIR\" && zaf doctor 2>&1; else echo 'zaf doctor: this project has a zaf manifest but zaf is not on PATH'; fi; exit 0",
             "timeout": 30
           }
         ]

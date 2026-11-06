@@ -18,7 +18,7 @@ No teams file: say so in one line and brief from the project's CLAUDE.md, its de
 
 Skip anything already loaded this session. Never read whole source files or whole documents, only the parts that explain the current work.
 
-1. **The board:** in a project with a `.zaf.toml`, `zaf status` (epics and tasks, running instances, open questions) and the newest instance status comments on the epics in flight are "what we were just doing"; its open questions and ready epics are "what's next". Without one, `<docs>/queue.md`: its latest status note (the newest entry under its `## Status` heading) and its top items.
+1. **The board:** in a zaf project (a `.zaf.toml` or `.zaf/config.toml`), `zaf status` (epics and tasks, running instances, open questions) and the newest instance status comments on the epics in flight are "what we were just doing"; its open questions and ready epics are "what's next". Without one, `<docs>/queue.md`: its latest status note (the newest entry under its `## Status` heading) and its top items.
 2. **The current release folder,** `<docs>/releases/<version>/`. Current = the release the latest status note names, else the most recently modified folder. Read `objectives.md` (a small release, or one begun before objectives, has `scope.md`), then name the phase by the last of these that holds:
    - `objectives.md` not yet in `signoff.md`: objectives (interview, QA or signature);
    - `scope.md`, or `objectives.md` in `signoff.md`, and no release documents: design next;

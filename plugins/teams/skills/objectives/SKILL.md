@@ -29,7 +29,7 @@ On either change path, if release documents are signed too, list which parts of 
 
 ## 2. Read before asking (cheap; skip what's absent)
 
-So your probes are specific, not generic: the project's CLAUDE.md and README (what it is), the previous release's `objectives.md` (its Out of scope and Later column) and its design document's `## Parked (later releases)`, the newest `rulings-*.md` and `Repository › decisions` entries, and, in a project with a `.zaf.toml`, the board's open questions (`zaf status`). Never whole source files.
+So your probes are specific, not generic: the project's CLAUDE.md and README (what it is), the previous release's `objectives.md` (its Out of scope and Later column) and its design document's `## Parked (later releases)`, the newest `rulings-*.md` and `Repository › decisions` entries, and, in a zaf project (a `.zaf.toml` or `.zaf/config.toml`), the board's open questions (`zaf status`). Never whole source files.
 
 ## 3. The interview
 

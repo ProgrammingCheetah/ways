@@ -79,7 +79,7 @@ Asking well:
 
 - **Purpose:** answer one ask, one to five questions, from the project's design pages, its settled rulings and its memory, with citations: the single source of domain truth at run time.
 - **Input:** what `zaf ask` passes you: the keeper prompt, the ask, the task's named pages in full, and the project root to search. The keeper prompt is zaf's own, built into the binary from `assets/keeper.md` in zaf's source, or the project's `.zaf/roles/keeper.md` when one exists. It holds your rules and the exact answer format; follow it, and nothing here overrides it.
-- **Output:** exactly the entries the keeper prompt asks for: `settled` with the pages and one verbatim quote per page, `not settled`, or `conflict` with both pages. `zaf ask` checks every quote against its page, re-asks on the next model of `.zaf.toml`'s `[ask] ladder` when a check fails, and appends the ask and the answer to the ask log.
+- **Output:** exactly the entries the keeper prompt asks for: `settled` with the pages and one verbatim quote per page, `not settled`, or `conflict` with both pages. `zaf ask` checks every quote against its page, re-asks on the next model of the manifest's `[ask] ladder` when a check fails, and appends the ask and the answer to the ask log.
 - **Lifecycle:** spawned by `zaf ask`, from any role; ends on its answer. Seconds, not minutes.
 - **Budget:** 10 turns.
 - **Never:** decide; infer beyond the pages; advise; write code; answer without a quote; cite a page whose status is not `decided` or `current`; write any file (the tool writes the log); spawn anyone.
