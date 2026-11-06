@@ -1022,6 +1022,91 @@ fn profile_init_leaves_what_is_already_at_the_path_alone() {
     assert!(!links_to_claude_home(&foreign, &claude_home));
 }
 
+/// Whether the permission pattern `pattern` matches `line`: `*` matches any text, spaces included.
+fn pattern_matches(pattern: &str, line: &str) -> bool {
+    let parts: Vec<&str> = pattern.split('*').collect();
+    let (first, rest) = parts.split_first().expect("a split has a part");
+    let Some(mut tail) = line.strip_prefix(first) else {
+        return false;
+    };
+    let Some((last, middle)) = rest.split_last() else {
+        return tail.is_empty();
+    };
+    for part in middle {
+        match tail.find(part) {
+            Some(at) => tail = &tail[at + part.len()..],
+            None => return false,
+        }
+    }
+    tail.ends_with(last) && tail.len() >= last.len()
+}
+
+#[test]
+fn forbidden_denies_match_flags_before_the_name() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    let manifest = manifest(
+        "[forbidden]\ncommands = [\"gh pr merge\", \"zaf do pr-merge\", \"zaf do land\", \
+         \"zaf do --tier machine land\"]\n",
+    );
+    init_here(&state, &manifest).expect("generates");
+    for profile in ["lean", "build"] {
+        let settings = settings(&state, profile);
+        let deny = strings(&settings["permissions"]["deny"]);
+        let denied = |line: &str| {
+            deny.iter().any(|rule| {
+                let pattern = rule
+                    .strip_prefix("Bash(")
+                    .and_then(|rest| rest.strip_suffix(')'))
+                    .expect("a Bash rule");
+                pattern_matches(pattern, line)
+            })
+        };
+        for line in [
+            "zaf do land",
+            "zaf do land 12",
+            "zaf do pr-merge 12",
+            "zaf --more do land 12",
+            "zaf --json do pr-merge 12",
+            "zaf do --json pr-merge 12",
+            "zaf do --tier=machine land 12",
+            "zaf do --tier machine land 12",
+            "zaf --more do --tier machine pr-merge 12",
+            "gh pr merge 12",
+        ] {
+            assert!(denied(line), "{profile} lets `{line}` through: {deny:?}");
+        }
+        // What is not forbidden stays allowed: other actions, other verbs, the merge actions.
+        for line in [
+            "zaf do slice-merge 12",
+            "zaf --more do slice-merge 12",
+            "zaf do release",
+            "zaf do --tier machine release",
+            "zaf do landing",
+            "zaf board ready",
+            "zaf --more check 12",
+        ] {
+            assert!(!denied(line), "{profile} denies `{line}`: {deny:?}");
+        }
+    }
+}
+
+#[test]
+fn a_forbidden_line_names_its_action_whatever_its_flags() {
+    for (line, name) in [
+        ("zaf do land", Some("land")),
+        ("zaf do --tier machine land", Some("land")),
+        ("zaf do --tier=machine land", Some("land")),
+        ("zaf --more do land 12", Some("land")),
+        ("gh pr merge", None),
+        ("zaf do", None),
+        ("zaf board ready", None),
+        ("zaf do --tier machine", None),
+    ] {
+        assert_eq!(forbidden_action(line), name, "{line}");
+    }
+}
+
 #[test]
 fn the_claude_home_is_only_ever_under_an_absolute_home() {
     assert_eq!(

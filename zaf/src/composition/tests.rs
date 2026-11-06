@@ -435,6 +435,60 @@ fn a_manifest_outside_the_workspaces_path_is_its_own_root() {
 }
 
 #[test]
+fn a_broken_root_manifest_is_an_error_from_a_workspace() {
+    // Not TOML at all, and TOML the typed manifest refuses: the default and a custom workspaces
+    // path. The root's error comes from the root and from every directory of a workspace below it,
+    // never the workspace copy's own healthy manifest standing in for the project.
+    let cases = [
+        (
+            "broken-toml",
+            ".zaf/workspaces",
+            "[project\nname = \n".to_owned(),
+        ),
+        (
+            "broken-type",
+            ".zaf/workspaces",
+            "[project]\nname = 7\n".to_owned(),
+        ),
+        (
+            "broken-custom",
+            "slices",
+            "[project]\nname = 7\n[workspaces]\npath = \"slices\"\n".to_owned(),
+        ),
+    ];
+    for (name, workspaces, broken) in cases {
+        let root = scratch_dir(name);
+        write_manifest(&root, &broken);
+        let slice = root.join(workspaces).join("feature/0.2.0-1-2");
+        let nested = slice.join("src/inner");
+        fs::create_dir_all(&nested).expect("slice dirs");
+        write_manifest(&slice, HEAD);
+        for start in [&root, &slice, &nested] {
+            let found = Composition::discover_with_home(start, None);
+            assert!(
+                matches!(found, Err(CompositionError::Manifest(_))),
+                "{name} from {}: {:?}",
+                start.display(),
+                found.map(|found| found.root().to_owned())
+            );
+        }
+        fs::remove_dir_all(&root).expect("clean up");
+    }
+}
+
+#[test]
+fn a_broken_manifest_outside_the_workspaces_path_does_not_break_the_project_below() {
+    let parent = scratch_dir("broken-outer");
+    write_manifest(&parent, "[project\nname = \n");
+    let inner = parent.join("vendor/inner");
+    fs::create_dir_all(&inner).expect("inner dir");
+    write_manifest(&inner, HEAD);
+    let found = Composition::discover_with_home(&inner, None).expect("the inner project");
+    assert_eq!(found.root(), inner.as_path());
+    fs::remove_dir_all(&parent).expect("clean up");
+}
+
+#[test]
 fn a_role_runner_carries_its_profile_dir_its_model_and_its_effort() {
     let root = scratch_dir("role");
     // A stand-in for the model CLI: it prints what it was given and where its home is.

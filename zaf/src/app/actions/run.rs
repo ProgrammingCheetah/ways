@@ -122,6 +122,54 @@ impl Nesting {
     }
 }
 
+/// The action a `[forbidden]` command names, when it is a `zaf do` line: `zaf do land`,
+/// `zaf do --tier machine land` and `zaf --more do land 12` all name `land`. Flags anywhere
+/// before the name are skipped (`--tier` takes a value); `None` for any other command, and for a
+/// bare `zaf do`, which names no action.
+pub fn forbidden_action(command: &str) -> Option<&str> {
+    let mut words = command.split_whitespace();
+    if words.next()? != "zaf" {
+        return None;
+    }
+    let mut after_do = false;
+    while let Some(word) = words.next() {
+        match word {
+            "--tier" => {
+                words.next();
+            }
+            flag if flag.starts_with('-') => {}
+            "do" if !after_do => after_do = true,
+            _ if !after_do => return None,
+            name => return Some(name),
+        }
+    }
+    None
+}
+
+/// The refusal of a forbidden name (docs/zaf-actions.md §5): an instance calling `name` when no
+/// `zaf do` is above the call. The merge paths are forbidden to every profile, yet their action
+/// bodies still run nested inside `slice-merge` and `release`, where the permission layer does
+/// not see them. The Engineer is under no profile and is never refused. Returns the words of
+/// the `NOT_RUN` line.
+pub fn refuse_forbidden<'a>(
+    name: &str,
+    forbidden: impl IntoIterator<Item = &'a str>,
+    caller: &Caller,
+    nesting: &Nesting,
+) -> Option<String> {
+    let Caller::Role(_) = caller else {
+        return None;
+    };
+    if nesting.above > 0 {
+        return None;
+    }
+    forbidden
+        .into_iter()
+        .filter_map(forbidden_action)
+        .any(|forbidden| forbidden == name)
+        .then(|| format!("forbidden for {caller}"))
+}
+
 /// One run to make.
 #[derive(Debug, Clone)]
 pub struct RunRequest<'a> {

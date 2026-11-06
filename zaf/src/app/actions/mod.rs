@@ -28,8 +28,8 @@ pub use resolve::{
 };
 pub use run::{
     ACTION_VAR, CHAIN_VAR, DEPTH_VAR, LOG_VAR, ListedAction, MAX_DEPTH, MINUTE, NOT_RUN_EXIT,
-    Nesting, ROOT_VAR, Refused, RunOutcome, RunRequest, RunResult, TIMEOUT_EXIT, last_lines,
-    list_actions, read_action, run_action,
+    Nesting, ROOT_VAR, Refused, RunOutcome, RunRequest, RunResult, TIMEOUT_EXIT, forbidden_action,
+    last_lines, list_actions, read_action, refuse_forbidden, run_action,
 };
 pub use slice_env::{BASE_VAR, PR_VAR, SLICE_VAR, SliceContext, TASK_TITLE_VAR};
 

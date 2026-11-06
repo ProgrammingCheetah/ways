@@ -14,7 +14,7 @@ use super::exit::{BACKEND, OK};
 use super::slice::VERSION_VAR;
 use crate::app::actions::{
     Caller, MINUTE, Nesting, Refused, RunOutcome, RunRequest, RunResult, SliceContext, Tier,
-    last_lines, list_actions, read_action, run_action,
+    last_lines, list_actions, read_action, refuse_forbidden, run_action,
 };
 use crate::composition::{Composition, CompositionError, zaf_home};
 use crate::manifest::{ActionsSection, HOME_FILE};
@@ -158,6 +158,18 @@ pub(super) fn run_named(name: &str, args: &[OsString], only: Option<Tier>) -> Ru
         Ok(caller) => caller,
         Err(reason) => return not_run(reason),
     };
+    // Before any file is read: a name `[forbidden]` holds back is refused whatever it resolves
+    // to, unless this call runs inside another action's body.
+    let forbidden = place
+        .project
+        .as_ref()
+        .map(|project| &project.manifest().forbidden.commands[..])
+        .unwrap_or_default();
+    if let Some(reason) =
+        refuse_forbidden(name, forbidden.iter().map(AsRef::as_ref), &caller, &nesting)
+    {
+        return not_run(reason);
+    }
     // Built here and not asked of the board: a run without a target never reads it, and a board
     // that cannot be built stops only the runs that need it.
     let board = place

@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use toml::{Table, Value};
 
-use super::{Manifest, ManifestError};
+use super::{Manifest, ManifestError, WorkspacesSection};
 
 /// The manifest at the project root; it wins over [`FOLDER_FILE`].
 pub const ROOT_FILE: &str = ".zaf.toml";
@@ -105,6 +105,29 @@ pub(super) fn load(root: &Path, home: Option<&Path>) -> Result<Manifest, Manifes
     // Named highest layer first, the order a reader checks them in.
     let named: Vec<&Path> = files.iter().rev().copied().collect();
     Manifest::from_table(merged).map_err(|error| error.in_files(&named))
+}
+
+/// The `[workspaces] path` of the project at `root`, read without loading the manifest: the
+/// files that parse are merged, and a path that is missing or not a string is the default.
+/// Discovery uses it to place a root whose manifest does not load.
+pub fn workspaces_path_lenient(root: &Path, home: Option<&Path>) -> PathBuf {
+    let found = ProjectFiles::find(root, home);
+    let machine = home
+        .map(|home| home.join(HOME_FILE))
+        .filter(|file| file.is_file());
+    let mut merged = Table::new();
+    for file in machine.iter().chain(found.layers()) {
+        if let Ok(table) = read_table(file) {
+            merge(&mut merged, table);
+        }
+    }
+    merged
+        .get("workspaces")
+        .and_then(Value::as_table)
+        .and_then(|workspaces| workspaces.get("path"))
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| WorkspacesSection::default().path)
 }
 
 /// Reads one file as a TOML table; an error names the file.
