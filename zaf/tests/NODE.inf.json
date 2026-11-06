@@ -9,7 +9,7 @@
     "integration"
   ],
   "conventions": [
-    "Each test crate does `mod common;` and builds a Project (temp root, ZAF.toml, gh scene) from common/mod.rs"
+    "Each test crate does `mod common;` and builds a Project (temp root, .zaf.toml, gh scene) from common/mod.rs"
   ],
   "entry_points": [
     "common/mod.rs"
@@ -28,6 +28,11 @@
     {
       "name": "common/",
       "role": "shared Project harness and jj helper",
+      "node": false
+    },
+    {
+      "name": "ways_manifest.rs",
+      "role": "the ways repo's own .zaf.toml loads, ZAF.toml is gone, and doctor finds every needed action in the project tier with no machine dependency",
       "node": false
     },
     {

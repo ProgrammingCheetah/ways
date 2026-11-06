@@ -65,7 +65,7 @@ To get worksheets like this one from Claude in every project, also run `claude p
 
 ## Updating
 
-`claude plugin marketplace update ways`, then `claude plugin update teams@ways` (and each other pack you use), then start a new session. Or turn on auto-update: `/plugin` → **Marketplaces** → `ways` → **Enable auto-update**. `main` is the release channel and stays shippable: every commit on it is a new version of the plugins. Only `teams` carries a version number in its `plugin.json` (2.0.0), which `zaf doctor` reports; the other packs carry none. The `zaf` binary is released separately, from tags `zaf-vX.Y.Z`.
+`claude plugin marketplace update ways`, then `claude plugin update teams@ways` (and each other pack you use), then start a new session. Or turn on auto-update: `/plugin` → **Marketplaces** → `ways` → **Enable auto-update**. `main` is the release channel and stays shippable: every commit on it is a new version of the plugins. Only `teams` carries a version number in its `plugin.json` (2.1.0), which `zaf doctor` reports; the other packs carry none. The `zaf` binary is released separately, from tags `zaf-vX.Y.Z`.
 
 ## Layout
 
@@ -76,5 +76,6 @@ plugins/handoff/                  /handoff:how-to
 plugins/nodes/                    the nodes pack
 zaf/                              the zaf crate: the binary the teams pack drives, released from tags zaf-vX.Y.Z
 docs/                             zuri-ai-framework.md, the method's design draft, and the 2026-10-27 baseline
-ZAF.toml                          zaf's manifest for this repo, which runs the framework on itself (the old name, retired for .zaf.toml; this repo moves last)
+.zaf.toml                         zaf's manifest for this repo, which runs the framework on itself
+.zaf/actions/                     this repo's own actions (slice steps, merge, release), the project tier
 ```
