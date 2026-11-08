@@ -813,25 +813,90 @@ fn tool_rules(command: &CommandLine) -> Vec<String> {
 }
 
 /// Where flags may stand in a `zaf do <name>` line: before `do`, after it, both or neither.
+/// Every other forbidden entry gets the same forms between its tool and its subcommand.
 /// A permission pattern's `*` matches any text, spaces included, so `-*` is a flag and whatever
 /// it takes (`--tier machine`, `--tier=machine`, `--json`).
 const DO_FORMS: [&str; 4] = ["zaf do", "zaf -* do", "zaf do -*", "zaf -* do -*"];
 
-/// Each forbidden command, bare and with any arguments, sorted. A forbidden `zaf do <name>`
-/// is denied again with flags before `do` or before the name (`zaf --more do land 12`,
-/// `zaf do --json land 12`, `zaf do --tier=machine land 12`), so a flag cannot walk round it.
+/// Each tool's escape hatches: subcommands of a tool the profile allows with `Bash(<tool> *)`
+/// that run any program or rewrite the tool's own config. Denied whenever the tool is allowed,
+/// from `[requires]` or from a gate line; a tool the profile does not allow adds none.
+const HATCHES: [(&str, &[&str]); 3] = [
+    ("jj", &["util", "config set", "config edit"]),
+    ("gh", &["alias", "extension"]),
+    ("yarn", &["exec", "node", "dlx"]),
+];
+
+/// The tools whose config flag can define an alias, so the flag is denied anywhere on the line.
+const CONFIG_FLAG_TOOLS: [&str; 1] = ["jj"];
+
+/// The four deny rules of `<tool> <sub...>`: bare, with arguments, and each with flags between
+/// the tool and the subcommand (`jj --no-pager git push`, `gh -R owner/repo pr merge 12`).
+fn flag_forms(tool: &str, sub: &str) -> [String; 4] {
+    [
+        format!("Bash({tool} {sub})"),
+        format!("Bash({tool} {sub} *)"),
+        format!("Bash({tool} -* {sub})"),
+        format!("Bash({tool} -* {sub} *)"),
+    ]
+}
+
+/// The tools the profile allows with a `Bash(<tool> *)` rule: every `[requires]` tool and every
+/// tool a gate line invokes.
+fn allowed_tools(manifest: &Manifest) -> Vec<String> {
+    let mut tools: Vec<String> = manifest.requires.keys().map(ToString::to_string).collect();
+    for command in gate_commands(manifest) {
+        for rule in tool_rules(command) {
+            if let Some(tool) = rule
+                .strip_prefix("Bash(")
+                .and_then(|rest| rest.strip_suffix(" *)"))
+            {
+                tools.push(tool.to_owned());
+            }
+        }
+    }
+    tools
+}
+
+/// Each forbidden command, bare and with any arguments, and again with flags between its tool
+/// and its subcommand, plus the escape hatches ([`HATCHES`]) of every allowed tool, sorted. A
+/// forbidden `zaf do <name>` is denied again with flags before `do` or before the name
+/// (`zaf --more do land 12`, `zaf do --json land 12`, `zaf do --tier=machine land 12`), so a
+/// flag cannot walk round it.
 fn deny_rules(manifest: &Manifest) -> Vec<String> {
     let mut rules: Vec<String> = Vec::new();
     for command in &manifest.forbidden.commands {
         let bare = allow_rule(command);
         let with_args = format!("{} *)", bare.trim_end_matches(')'));
+        let line = bare
+            .strip_prefix("Bash(")
+            .and_then(|rest| rest.strip_suffix(')'))
+            .unwrap_or_default()
+            .to_owned();
         rules.push(bare);
         rules.push(with_args);
+        if let Some((tool, sub)) = line.split_once(' ')
+            && !sub.trim().is_empty()
+        {
+            rules.extend(flag_forms(tool, sub.trim()));
+        }
         if let Some(name) = forbidden_action(command.as_ref()) {
             for form in DO_FORMS {
                 rules.push(format!("Bash({form} {name})"));
                 rules.push(format!("Bash({form} {name} *)"));
             }
+        }
+    }
+    let allowed = allowed_tools(manifest);
+    for (tool, subs) in HATCHES {
+        if !allowed.iter().any(|allowed| allowed == tool) {
+            continue;
+        }
+        for sub in subs {
+            rules.extend(flag_forms(tool, sub));
+        }
+        if CONFIG_FLAG_TOOLS.contains(&tool) {
+            rules.push(format!("Bash({tool} *--config*)"));
         }
     }
     rules.sort();
