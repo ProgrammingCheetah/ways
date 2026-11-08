@@ -274,6 +274,84 @@ fn task_reads_one_issue_and_a_failure_carries_stderr() {
     assert_eq!(fake.calls(), [view("3"), view("9"), view("10")]);
 }
 
+/// An issue as `gh issue view --json number,state,labels,url` prints it.
+fn standing(number: u64, labels: &[&str], state: &str, kind: &str) -> String {
+    let labels: Vec<_> = labels
+        .iter()
+        .map(|name| serde_json::json!({ "name": name }))
+        .collect();
+    serde_json::json!({
+        "number": number,
+        "state": state,
+        "labels": labels,
+        "url": format!("https://github.com/{REPO}/{kind}/{number}"),
+    })
+    .to_string()
+}
+
+#[test]
+fn issue_state_tells_open_done_closed_and_missing_apart() {
+    use crate::ports::IssueState;
+
+    let fake = FakeGh::new();
+    fake.on(
+        "issue view 3 *",
+        &standing(3, &["task", "blocked"], "OPEN", "issues"),
+    )
+    .on(
+        "issue view 4 *",
+        &standing(4, &["task", "done"], "CLOSED", "issues"),
+    )
+    .on(
+        "issue view 5 *",
+        &standing(5, &["task", "done"], "OPEN", "issues"),
+    )
+    .on(
+        "issue view 6 *",
+        &standing(6, &["task"], "CLOSED", "issues"),
+    )
+    .on("issue view 7 *", &standing(7, &[], "OPEN", "pull"))
+    .fail_on(
+        "issue view 9 *",
+        "GraphQL: Could not resolve to an Issue with the number of 9.",
+    )
+    .fail_on("issue view 10 *", "HTTP 502: bad gateway");
+    let board = fake.board();
+    let state = |number: u64| board.issue_state(IssueNumber::from(number));
+
+    assert_eq!(state(3), Ok(IssueState::Open));
+    assert_eq!(state(4), Ok(IssueState::Done));
+    assert_eq!(state(5), Ok(IssueState::Done));
+    assert_eq!(state(6), Ok(IssueState::ClosedNotDone));
+    assert_eq!(
+        state(7),
+        Ok(IssueState::Missing),
+        "a pull request is no issue"
+    );
+    assert_eq!(state(9), Ok(IssueState::Missing));
+    assert_eq!(
+        state(10),
+        Err(PortError::Backend(
+            "gh issue view: HTTP 502: bad gateway".to_owned()
+        ))
+    );
+    let standing_view = |number: &str| {
+        argv(&[
+            "issue",
+            "view",
+            number,
+            "--json",
+            "number,state,labels,url",
+            "--repo",
+            REPO,
+        ])
+    };
+    assert_eq!(
+        fake.calls(),
+        ["3", "4", "5", "6", "7", "9", "10"].map(standing_view)
+    );
+}
+
 #[test]
 fn every_call_on_a_missing_issue_is_not_found() {
     let fake = FakeGh::new();

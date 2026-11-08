@@ -22,6 +22,21 @@ pub(super) struct IssueRow {
     pub comments: Vec<IssueCommentRow>,
 }
 
+/// The fields a blocker's standing is read from.
+pub(super) const STANDING_FIELDS: &str = "number,state,labels,url";
+
+/// An issue read only for where it stands as a blocker.
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct StandingRow {
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub labels: Vec<NameRow>,
+    /// Holds `/pull/` for a pull request.
+    #[serde(default)]
+    pub url: String,
+}
+
 /// A label, or anything else read only by name.
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct NameRow {
