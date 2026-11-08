@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use super::guard::{self, GuardError, GuardState};
+use super::profile::StaleProfile;
 use super::spawn;
 use crate::ports::{Board, PortError, Ticket};
 
@@ -102,6 +103,9 @@ pub struct Status {
     pub guard: Option<GuardState>,
     /// Questions still waiting for the Engineer.
     pub questions: Vec<TicketLine>,
+    /// Generated profiles older than the manifest or zaf, or with no stamp; `zaf spawn`
+    /// refuses them. [`status`] leaves it empty, [`Status::with_stale`] fills it.
+    pub stale: Vec<StaleProfile>,
 }
 
 /// Reads `spawn.state` through the spawner's own reader, so the state owns the count.
@@ -154,6 +158,7 @@ pub fn status(board: &dyn Board, state_dir: &Path, slots: u32) -> Result<Status,
         running: state.launches,
         guard: guard::read(state_dir)?,
         questions,
+        stale: Vec::new(),
     })
 }
 
@@ -174,6 +179,13 @@ fn numbers(lines: impl Iterator<Item = u64>) -> String {
 }
 
 impl Status {
+    /// The screen with the profiles `profile::stale` names.
+    #[must_use]
+    pub fn with_stale(mut self, stale: Vec<StaleProfile>) -> Self {
+        self.stale = stale;
+        self
+    }
+
     /// The screen as text.
     pub fn render_text(&self) -> String {
         let mut out = String::new();
@@ -216,6 +228,9 @@ impl Status {
                 GuardState::line
             )
         ));
+        for stale in &self.stale {
+            line(stale.line());
+        }
         for question in &self.questions {
             line(format!("question  #{} {}", question.number, question.title));
         }

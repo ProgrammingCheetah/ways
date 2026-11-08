@@ -109,7 +109,11 @@ fn each_named_profile_gets_its_files_and_folders() {
             assert_eq!(fs::read_dir(&folder).expect("reads").count(), 0);
         }
     }
-    assert_eq!(report.written.len(), 4);
+    assert_eq!(
+        report.written.len(),
+        6,
+        "settings, CLAUDE.md and the stamp each"
+    );
     assert!(
         report
             .written
@@ -284,7 +288,11 @@ fn claude_md_is_the_interface_then_the_project_rules_when_present() {
     fs::create_dir_all(state.join("roles")).expect("roles");
     fs::write(state.join(PROJECT_RULES), "Rule one.\n").expect("rules");
     let report = init_here(&state, &manifest("")).expect("again");
-    assert_eq!(report.written.len(), 2);
+    assert_eq!(
+        report.written.len(),
+        4,
+        "CLAUDE.md and the stamp, per profile"
+    );
     let with = fs::read_to_string(&path).expect("reads");
     assert_eq!(with, format!("{without}\nRule one.\n"));
 }
@@ -978,7 +986,7 @@ fn profile_init_writes_no_credentials_when_the_home_has_none() {
     let state = dir.path().join(".zaf");
     let claude_home = a_claude_home(dir.path(), None);
     let report = init_against(&state, &claude_home);
-    assert_eq!(report.written.len(), 4, "{:?}", report.written);
+    assert_eq!(report.written.len(), 6, "{:?}", report.written);
     let link = state.join("profiles/build").join(CREDENTIALS_FILE);
     assert!(fs::symlink_metadata(&link).is_err());
 
@@ -1357,4 +1365,142 @@ fn a_link_through_another_spelling_of_the_home_still_leads_to_it() {
         links_to_claude_home(&waiting, &logged_out),
         "the home's file is the target even while the home is logged out"
     );
+}
+
+const FORBIDDEN_PUSH: &str = "[forbidden]\ncommands = [\"git push\"]\n";
+const FORBIDDEN_MERGE: &str = "[forbidden]\ncommands = [\"gh pr merge\"]\n";
+
+#[test]
+fn profile_init_writes_a_stamp() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    let manifest = manifest(FORBIDDEN_PUSH);
+    let first = init_here(&state, &manifest).expect("first");
+    for profile in ["lean", "build"] {
+        let text = fs::read_to_string(state.join("profiles").join(profile).join(STAMP_FILE))
+            .expect("the stamp");
+        let stamp: Value = serde_json::from_str(&text).expect("the stamp parses");
+        assert_eq!(stamp["zaf"], env!("CARGO_PKG_VERSION"));
+        let parts: Vec<&str> = stamp["parts"]
+            .as_object()
+            .expect("parts")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        let mut named = PARTS.to_vec();
+        named.sort_unstable();
+        assert_eq!(parts, named);
+    }
+    assert!(
+        first
+            .written
+            .iter()
+            .any(|file| file.path.ends_with(STAMP_FILE))
+    );
+    assert!(stale(&state, &manifest).is_empty());
+
+    let second = init_here(&state, &manifest).expect("second");
+    assert!(
+        second.unchanged(),
+        "a rerun writes no file, the stamp included"
+    );
+    assert_eq!(second.lines(), ["nothing changed"]);
+}
+
+#[test]
+fn editing_forbidden_makes_a_profile_stale() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    init_here(&state, &manifest(FORBIDDEN_PUSH)).expect("init");
+    let edited = manifest(FORBIDDEN_MERGE);
+    let named = stale(&state, &edited);
+    assert_eq!(named.len(), 2, "lean and build");
+    for profile in &named {
+        assert_eq!(profile.reasons, [Reason::Changed("forbidden".to_owned())]);
+    }
+    assert_eq!(
+        named[1].line(),
+        "profile build is older than the manifest (forbidden changed)"
+    );
+
+    init_here(&state, &edited).expect("init again");
+    assert!(stale(&state, &edited).is_empty());
+}
+
+#[test]
+fn a_changed_gate_and_changed_project_rules_are_named_too() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    init_here(&state, &manifest("")).expect("init");
+    let gated = manifest("[gate]\nfull = \"just gate\"\n");
+    assert_eq!(
+        stale(&state, &gated)[0].reasons,
+        [Reason::Changed("gate".to_owned())]
+    );
+
+    init_here(&state, &gated).expect("init again");
+    fs::create_dir_all(state.join("roles")).expect("roles");
+    fs::write(state.join("roles/project.md"), "Be brief.\n").expect("rules");
+    assert_eq!(
+        stale(&state, &gated)[0].reasons,
+        [Reason::Changed("roles/project.md".to_owned())]
+    );
+}
+
+#[test]
+fn a_profile_without_a_stamp_is_stale() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    let manifest = manifest("");
+    init_here(&state, &manifest).expect("init");
+    fs::remove_file(state.join("profiles/build").join(STAMP_FILE)).expect("remove");
+    let named = stale(&state, &manifest);
+    assert_eq!(named.len(), 1);
+    assert_eq!(named[0].reasons, [Reason::NoStamp]);
+    assert_eq!(
+        named[0].line(),
+        "profile build has no stamp: run zaf profile init"
+    );
+
+    fs::write(state.join("profiles/build").join(STAMP_FILE), "not json").expect("garbage");
+    assert_eq!(stale(&state, &manifest)[0].reasons, [Reason::NoStamp]);
+}
+
+#[test]
+fn a_stamp_from_another_zaf_is_older_than_zaf() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    let manifest = manifest(FORBIDDEN_PUSH);
+    init_here(&state, &manifest).expect("init");
+    let file = state.join("profiles/build").join(STAMP_FILE);
+    let text = fs::read_to_string(&file).expect("stamp");
+    let mut stamp: Value = serde_json::from_str(&text).expect("parses");
+    stamp["zaf"] = Value::from("0.0.1");
+    fs::write(&file, stamp.to_string()).expect("rewrite");
+    let named = stale(&state, &manifest);
+    assert_eq!(named.len(), 1);
+    assert_eq!(named[0].reasons, [Reason::Zaf("0.0.1".to_owned())]);
+    assert_eq!(
+        named[0].line(),
+        "profile build is older than zaf (written by zaf 0.0.1)"
+    );
+}
+
+#[test]
+fn a_missing_home_is_stale_for_the_spawner_and_unnamed_by_doctor_and_status() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    let manifest = manifest("");
+    let all = stale(&state, &manifest);
+    assert_eq!(all.len(), 2);
+    assert!(
+        all.iter()
+            .all(|profile| profile.reasons == [Reason::NoStamp])
+    );
+    assert!(stale_homes(&state, &manifest).is_empty());
+
+    fs::create_dir_all(state.join("profiles/build")).expect("a home");
+    let named = stale_homes(&state, &manifest);
+    assert_eq!(named.len(), 1);
+    assert_eq!(named[0].profile.to_string(), "build");
 }

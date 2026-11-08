@@ -15,7 +15,17 @@ fn manifest(extra: &str) -> Manifest {
 
 /// [`super::doctor`] with no zaf home, so no test reads the machine's own actions, over a project
 /// that provides the four `slice-*` names every project needs.
+///
+/// Every generated profile is stamped current first (which makes its home), so a test gets no
+/// stale-profile failure it did not ask for; see [`doctor_unstamped`] for the profiles not made.
 fn doctor(root: &Path, manifest: &Manifest, commands: &dyn Commands) -> Report {
+    profile::write_stamps(&root.join(STATE_DIR), manifest);
+    doctor_unstamped(root, manifest, commands)
+}
+
+/// [`doctor`] over profiles nobody generated: no homes, so none is named stale (a profile never
+/// generated is the pack check's and the worksheet's to say).
+fn doctor_unstamped(root: &Path, manifest: &Manifest, commands: &dyn Commands) -> Report {
     provide_slice_actions(root);
     super::doctor(root, None, manifest, commands)
 }
@@ -48,6 +58,38 @@ fn status_of(report: &Report, tool: &str) -> ToolStatus {
 }
 
 #[test]
+fn doctor_names_a_stale_profile() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(STATE_DIR);
+    profile::write_stamps(
+        &state,
+        &manifest("[forbidden]\ncommands = [\"git push\"]\n"),
+    );
+    let edited = manifest("[forbidden]\ncommands = [\"gh pr merge\"]\n");
+    provide_slice_actions(dir.path());
+    let report = super::doctor(dir.path(), None, &edited, &logged_in());
+    assert!(!report.passed());
+    let lines = report.lines();
+    assert!(
+        lines.contains(&"profile build is older than the manifest (forbidden changed)".to_owned()),
+        "{lines:?}"
+    );
+
+    fs::remove_file(state.join("profiles/build").join(profile::STAMP_FILE)).expect("remove");
+    let report = super::doctor(dir.path(), None, &edited, &logged_in());
+    assert!(!report.passed());
+    assert!(
+        report
+            .lines()
+            .contains(&"profile build has no stamp: run zaf profile init".to_owned())
+    );
+
+    profile::write_stamps(&state, &edited);
+    let report = super::doctor(dir.path(), None, &edited, &logged_in());
+    assert!(report.passed(), "{:?}", report.lines());
+}
+
+#[test]
 fn a_tool_that_satisfies_its_requirement_is_ok() {
     let dir = tempfile::tempdir().expect("temp dir");
     let manifest = manifest("[requires]\njj = \">=0.20\"\n");
@@ -60,7 +102,11 @@ fn a_tool_that_satisfies_its_requirement_is_ok() {
         }
     );
     assert!(report.passed());
-    assert_eq!(commands.calls(), [["jj", "--version"]]);
+    assert_eq!(
+        commands.calls()[0],
+        ["jj", "--version"],
+        "the tool is asked first; the stamped profiles' logins after"
+    );
 }
 
 #[test]
@@ -370,7 +416,7 @@ fn a_profile_without_a_login_is_missing_with_its_fix_and_the_doctor_still_passes
 fn a_profile_not_generated_yet_is_missing_without_asking() {
     let dir = tempfile::tempdir().expect("temp dir");
     let commands = FakeCommands::new().with("env", "ok");
-    let report = doctor(dir.path(), &manifest(""), &commands);
+    let report = doctor_unstamped(dir.path(), &manifest(""), &commands);
     assert_eq!(report.logins.len(), 2);
     assert!(report.logins.iter().all(|check| !check.ok));
     assert!(commands.calls().is_empty());
@@ -438,6 +484,7 @@ fn doctor_reports_a_stale_copy() {
     );
 
     provide_slice_actions(dir.path());
+    profile::write_stamps(&dir.path().join(STATE_DIR), &manifest(""));
     let report = doctor_with(
         dir.path(),
         None,
@@ -686,7 +733,7 @@ fn a_profile_not_generated_yet_has_its_pack_missing_without_asking() {
     let dir = tempfile::tempdir().expect("temp dir");
     write_marketplace(dir.path());
     let commands = FakeCommands::new();
-    let report = doctor(dir.path(), &manifest(PACK), &commands);
+    let report = doctor_unstamped(dir.path(), &manifest(PACK), &commands);
     assert!(
         report.lines().contains(
             &"profile build: pack missing (fix: zaf profile init installs it)".to_owned()

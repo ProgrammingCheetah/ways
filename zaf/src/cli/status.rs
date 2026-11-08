@@ -2,6 +2,7 @@
 
 use super::Cli;
 use super::exit::{self, BACKEND, OK};
+use crate::app::profile;
 use crate::app::status::{self, StatusError};
 use crate::composition::Composition;
 use crate::ports::Board;
@@ -24,8 +25,11 @@ pub fn run(cli: &Cli) -> u8 {
 fn print_status(cli: &Cli, composition: &Composition, board: &dyn Board) -> u8 {
     let path = cli.verb.path();
     let slots = composition.manifest().spawn.slots;
-    match status::status(board, &composition.state_dir(), slots) {
+    let state_dir = composition.state_dir();
+    match status::status(board, &state_dir, slots) {
         Ok(screen) => {
+            let screen =
+                screen.with_stale(profile::stale_homes(&state_dir, composition.manifest()));
             if cli.json {
                 println!("{}", screen.to_json());
             } else {

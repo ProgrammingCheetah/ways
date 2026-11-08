@@ -113,6 +113,40 @@ fn json_carries_the_whole_screen() {
 }
 
 #[test]
+fn status_names_a_stale_profile() {
+    use crate::app::profile;
+
+    const HEAD: &str = "[project]\nname = \"bookshelf\"\n[board]\nkind = \"github-issues\"\nrepo = \"example/b\"\n";
+    let dir = tempfile::tempdir().expect("tempdir");
+    let before: crate::manifest::Manifest =
+        format!("{HEAD}[forbidden]\ncommands = [\"git push\"]\n")
+            .parse()
+            .expect("manifest");
+    let after: crate::manifest::Manifest =
+        format!("{HEAD}[forbidden]\ncommands = [\"gh pr merge\"]\n")
+            .parse()
+            .expect("manifest");
+    profile::write_stamps(dir.path(), &before);
+
+    let current = status(&board(), dir.path(), 1)
+        .expect("status")
+        .with_stale(profile::stale(dir.path(), &before));
+    assert!(!current.render_text().contains("older than"));
+
+    let screen = status(&board(), dir.path(), 1)
+        .expect("status")
+        .with_stale(profile::stale(dir.path(), &after));
+    let text = screen.render_text();
+    assert!(
+        text.contains("profile build is older than the manifest (forbidden changed)"),
+        "{text}"
+    );
+    let json: serde_json::Value = serde_json::from_str(&screen.to_json()).expect("json");
+    assert_eq!(json["stale"][1]["profile"], "build");
+    assert_eq!(json["stale"][1]["reasons"][0], "forbidden changed");
+}
+
+#[test]
 fn without_state_files_nothing_runs_and_the_guard_is_not_computed() {
     let dir = tempfile::tempdir().expect("tempdir");
     let status = status(&board(), dir.path(), 1).expect("status");
