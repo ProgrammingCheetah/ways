@@ -95,6 +95,49 @@ fn setup_makes_both_homes() {
 }
 
 #[test]
+fn setup_from_a_task_workspace_acts_on_the_root() {
+    let manifest =
+        format!("{MANIFEST}\n[design]\nkind = \"git-sibling\"\nrepo = \"example/b-design\"\n");
+    let project = Project::new(&manifest);
+    project.provide_slice_actions();
+    let root = project.root.canonicalize().expect("root");
+    // The design repo is already beside the root; setup run from a workspace must not look
+    // for it, or clone it, beside the workspace.
+    let sibling = root.parent().expect("parent").join("b-design");
+    write(&sibling, "index.md", "");
+    let workspaces = root.join(".zaf/workspaces");
+    let workspace = workspaces.join("slice-1");
+    write(&workspace, ".zaf.toml", &manifest);
+    let before = tree(&workspaces);
+
+    let (code, stdout, stderr) = outcome(&project.zaf_in(&workspace, &["setup"]));
+
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    for dir in ["actions", "roles", "logs"] {
+        assert!(root.join(".zaf").join(dir).is_dir(), "{dir} on the root");
+    }
+    assert!(root.join(".zaf/.gitignore").is_file());
+    assert!(
+        !workspace.join(".zaf").exists(),
+        "no .zaf/ is made inside the workspace"
+    );
+    assert_eq!(
+        tree(&workspaces),
+        before,
+        "nothing is made beside the workspace"
+    );
+    assert!(!workspaces.join("b-design").exists());
+    assert!(
+        project
+            .gh_calls()
+            .iter()
+            .all(|call| !call.contains("clone")),
+        "{:?}",
+        project.gh_calls()
+    );
+}
+
+#[test]
 fn setup_is_idempotent() {
     let project = project();
     let (code, ..) = outcome(&project.zaf(&["setup"]));

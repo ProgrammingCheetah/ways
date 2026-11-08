@@ -60,9 +60,11 @@ pub enum ManifestError {
     /// A root `ZAF.toml` beside `.zaf.toml` or `.zaf/config.toml`: the retired name and the
     /// new ones never mix.
     #[error(
-        "{} sits beside {}: ZAF.toml is retired, so move its content into one of them and delete it",
+        "{} sits beside {}: ZAF.toml is retired and the new file is the one to keep, \
+         so move what ZAF.toml adds into it, then delete {}",
         .legacy.display(),
-        paths(.beside)
+        paths(.beside),
+        .legacy.display()
     )]
     LegacyBesideNew {
         /// The retired `ZAF.toml`.
