@@ -169,15 +169,19 @@ fn settings_carry_the_forbidden_commands_as_denies_and_the_gate_as_allows() {
     for profile in ["lean", "build"] {
         let settings = settings(&state, profile);
         let permissions = &settings["permissions"];
-        assert_eq!(
-            strings(&permissions["deny"]),
-            [
-                "Bash(git push *)",
-                "Bash(git push)",
-                "Bash(rm -rf *)",
-                "Bash(rm -rf)"
-            ]
-        );
+        let deny = strings(&permissions["deny"]);
+        for wanted in [
+            "Bash(git push *)",
+            "Bash(git push)",
+            "Bash(git -* push *)",
+            "Bash(git -* push)",
+            "Bash(rm -rf *)",
+            "Bash(rm -rf)",
+            "Bash(rm -* -rf *)",
+            "Bash(rm -* -rf)",
+        ] {
+            assert!(deny.contains(&wanted), "{profile} denies {wanted}");
+        }
         let allow = strings(&permissions["allow"]);
         for wanted in [
             "Bash(zaf *)",
@@ -1088,6 +1092,223 @@ fn forbidden_denies_match_flags_before_the_name() {
         ] {
             assert!(!denied(line), "{profile} denies `{line}`: {deny:?}");
         }
+    }
+}
+
+/// The deny patterns of `manifest`'s generated profiles, per profile.
+fn denies_of(manifest: &Manifest) -> Vec<(&'static str, Vec<String>)> {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    init_here(&state, manifest).expect("generates");
+    ["lean", "build"]
+        .into_iter()
+        .map(|profile| {
+            let settings = settings(&state, profile);
+            let patterns = strings(&settings["permissions"]["deny"])
+                .into_iter()
+                .map(|rule| {
+                    rule.strip_prefix("Bash(")
+                        .and_then(|rest| rest.strip_suffix(')'))
+                        .expect("a Bash rule")
+                        .to_owned()
+                })
+                .collect();
+            (profile, patterns)
+        })
+        .collect()
+}
+
+/// Asserts every line matches a deny in every profile, naming the profile and line when not.
+fn assert_denied(manifest: &Manifest, lines: &[&str]) {
+    for (profile, patterns) in denies_of(manifest) {
+        for line in lines {
+            assert!(
+                patterns
+                    .iter()
+                    .any(|pattern| pattern_matches(pattern, line)),
+                "{profile} lets `{line}` through: {patterns:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn forbidden_entries_get_flag_forms() {
+    let forbidding = manifest("[forbidden]\ncommands = [\"jj git push\", \"gh pr merge\"]\n");
+    for (profile, patterns) in denies_of(&forbidding) {
+        for wanted in [
+            "jj git push",
+            "jj git push *",
+            "jj -* git push",
+            "jj -* git push *",
+            "gh pr merge",
+            "gh pr merge *",
+            "gh -* pr merge",
+            "gh -* pr merge *",
+        ] {
+            assert!(patterns.iter().any(|p| p == wanted), "{profile}: {wanted}");
+        }
+    }
+    assert_denied(
+        &forbidding,
+        &[
+            "jj git push",
+            "jj git push --bookmark x",
+            "jj --no-pager git push",
+            "jj --color=never git push",
+            "jj --no-pager git push -b x",
+            "gh -R owner/repo pr merge 12",
+            "gh pr merge 12",
+        ],
+    );
+    // A tool alone is denied by its bare and with-arguments forms; it gets no flag form.
+    let whole = manifest("[forbidden]\ncommands = [\"rm\"]\n");
+    for (_, patterns) in denies_of(&whole) {
+        assert_eq!(patterns, ["rm *", "rm"]);
+    }
+}
+
+#[test]
+fn required_jj_denies_its_hatches() {
+    let jj = manifest("[requires]\njj = \"*\"\n");
+    for (profile, patterns) in denies_of(&jj) {
+        for sub in ["util", "config set", "config edit"] {
+            for wanted in [
+                format!("jj {sub}"),
+                format!("jj {sub} *"),
+                format!("jj -* {sub}"),
+                format!("jj -* {sub} *"),
+            ] {
+                assert!(patterns.contains(&wanted), "{profile}: {wanted}");
+            }
+        }
+    }
+    assert_denied(
+        &jj,
+        &[
+            "jj util exec -- sh x.sh",
+            "jj --no-pager util exec -- sh x.sh",
+            "jj config set --user x y",
+            "jj config edit --user",
+            "jj --config aliases.x=x x",
+            "jj --config=aliases.x=x x",
+            "jj log --config-file x.toml",
+            "jj log --config aliases.x=x",
+        ],
+    );
+    // The rest of jj stays out of the denies.
+    for (profile, patterns) in denies_of(&jj) {
+        for line in [
+            "jj log",
+            "jj --no-pager log -r x",
+            "jj config list",
+            "jj diff",
+        ] {
+            assert!(
+                !patterns
+                    .iter()
+                    .any(|pattern| pattern_matches(pattern, line)),
+                "{profile} denies `{line}`: {patterns:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn required_gh_denies_its_hatches() {
+    let gh = manifest("[requires]\ngh = \"*\"\n");
+    for (profile, patterns) in denies_of(&gh) {
+        for sub in ["alias", "extension"] {
+            for wanted in [
+                format!("gh {sub}"),
+                format!("gh {sub} *"),
+                format!("gh -* {sub}"),
+                format!("gh -* {sub} *"),
+            ] {
+                assert!(patterns.contains(&wanted), "{profile}: {wanted}");
+            }
+        }
+    }
+    assert_denied(
+        &gh,
+        &[
+            "gh alias set --shell x sh",
+            "gh extension install o/r",
+            "gh -R o/r alias list",
+            "gh --repo o/r extension list",
+        ],
+    );
+    for (profile, patterns) in denies_of(&gh) {
+        for line in ["gh pr view 12", "gh -R o/r issue list", "gh api repos/o/r"] {
+            assert!(
+                !patterns
+                    .iter()
+                    .any(|pattern| pattern_matches(pattern, line)),
+                "{profile} denies `{line}`: {patterns:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn required_yarn_denies_its_hatches() {
+    let yarn = manifest("[requires]\nyarn = \"*\"\n");
+    for (profile, patterns) in denies_of(&yarn) {
+        for sub in ["exec", "node", "dlx"] {
+            for wanted in [
+                format!("yarn {sub}"),
+                format!("yarn {sub} *"),
+                format!("yarn -* {sub}"),
+                format!("yarn -* {sub} *"),
+            ] {
+                assert!(patterns.contains(&wanted), "{profile}: {wanted}");
+            }
+        }
+    }
+    assert_denied(
+        &yarn,
+        &[
+            "yarn dlx x",
+            "yarn exec sh",
+            "yarn node x.js",
+            "yarn --cwd web dlx x",
+        ],
+    );
+    for (profile, patterns) in denies_of(&yarn) {
+        for line in ["yarn install", "yarn test", "yarn --cwd web build"] {
+            assert!(
+                !patterns
+                    .iter()
+                    .any(|pattern| pattern_matches(pattern, line)),
+                "{profile} denies `{line}`: {patterns:?}"
+            );
+        }
+    }
+    // A gate line that runs yarn allows it, so its hatches are denied too.
+    let gated = manifest("[gate]\nfull = \"cd web && yarn test\"\n");
+    assert_denied(&gated, &["yarn dlx x", "yarn --cwd web exec sh"]);
+}
+
+#[test]
+fn a_tool_not_allowed_adds_no_hatch() {
+    let without_yarn = manifest("[requires]\njj = \"*\"\ngh = \"*\"\n");
+    for (profile, patterns) in denies_of(&without_yarn) {
+        assert!(
+            !patterns.iter().any(|pattern| pattern.starts_with("yarn")),
+            "{profile} denies yarn: {patterns:?}"
+        );
+    }
+    let bare = manifest("");
+    for (profile, patterns) in denies_of(&bare) {
+        assert!(patterns.is_empty(), "{profile} denies {patterns:?}");
+    }
+    // Forbidding a command does not allow its tool, so it brings no hatch either.
+    let forbidding = manifest("[forbidden]\ncommands = [\"yarn publish\"]\n");
+    for (profile, patterns) in denies_of(&forbidding) {
+        assert!(
+            !patterns.iter().any(|pattern| pattern.contains("dlx")),
+            "{profile}: {patterns:?}"
+        );
     }
 }
 
