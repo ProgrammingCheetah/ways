@@ -1,14 +1,15 @@
 //! `zaf profile init`: generate the hermetic Claude profiles under `.zaf/profiles/`.
 
-use super::exit::{self, BACKEND, OK};
+use super::exit::{self, BACKEND, OK, REFUSED};
 use super::{Cli, ProfileAction};
 
 use crate::app::profile;
 use crate::composition::Composition;
 
 /// Generates the profiles and prints each file written, or `nothing changed`; with
-/// `--json` prints the report. Exits 2 when a file cannot be written or the pack
-/// cannot be vendored.
+/// `--json` prints the report. Exits 1 when the installed pack is not the version the
+/// manifest's tag asks for, and 2 when a file cannot be written or the pack cannot be
+/// installed.
 pub fn run(cli: &Cli, action: &ProfileAction) -> u8 {
     let path = cli.verb.path();
     let composition = match Composition::discover_here() {
@@ -26,7 +27,7 @@ pub fn run(cli: &Cli, action: &ProfileAction) -> u8 {
         Ok(report) => report,
         Err(error) => {
             eprintln!("zaf {path}: {error}");
-            return BACKEND;
+            return if error.is_refusal() { REFUSED } else { BACKEND };
         }
     };
     if cli.json {
