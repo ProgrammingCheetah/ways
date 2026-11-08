@@ -34,6 +34,10 @@ pub const NOT_RUN_EXIT: u8 = 125;
 /// The exit code of a run past its time bound.
 pub const TIMEOUT_EXIT: u8 = 2;
 
+/// The reason of a `NOT_RUN` for a name no tier provides. A verb that names the action it needs
+/// tells this reason from every other by comparing against it.
+pub const NO_SUCH_ACTION: &str = "no such action";
+
 /// A call this deep starts nothing: a body calling itself stops here.
 pub const MAX_DEPTH: u32 = 8;
 
@@ -346,7 +350,7 @@ pub fn read_action(
 ) -> Result<Vec<u8>, Refused> {
     let found = find_action(project_root, home, name, only)
         .map_err(|error| Refused::before_the_file(error.to_string()))?
-        .ok_or_else(|| Refused::before_the_file("no such action".to_owned()))?;
+        .ok_or_else(|| Refused::before_the_file(NO_SUCH_ACTION.to_owned()))?;
     let refused = |reason: String| Refused {
         tier: Some(found.tier),
         reason,
@@ -464,7 +468,7 @@ fn start(request: &RunRequest<'_>) -> Result<Started, Refused> {
     }
     let found = find_action(request.project_root, request.home, name, request.only)
         .map_err(|error| Refused::before_the_file(error.to_string()))?
-        .ok_or_else(|| Refused::before_the_file("no such action".to_owned()))?;
+        .ok_or_else(|| Refused::before_the_file(NO_SUCH_ACTION.to_owned()))?;
     let refused = |reason: String| Refused {
         tier: Some(found.tier),
         reason,

@@ -13,7 +13,7 @@ mod vcs;
 
 pub use board::FakeBoard;
 pub use design::FakeDesign;
-pub use forge::FakeForge;
+pub use forge::{FakeForge, PrMerge, PrRequest};
 pub use gate::FakeGate;
 pub use runner::FakeRunner;
 pub use vcs::FakeVcs;

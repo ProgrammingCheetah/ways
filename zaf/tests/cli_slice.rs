@@ -1,15 +1,15 @@
-//! `zaf slice open` → `zaf changes` → `zaf slice pr` → `zaf slice merge`, end to end:
-//! the built binary on a temp manifest, a throwaway jj repository with a bare
-//! remote, and the fake `gh` standing in for the board and the forge.
+//! `zaf slice open|pr|merge|drop` are aliases of `zaf do slice-open|slice-pr|slice-merge|
+//! slice-drop`; `zaf check` and `zaf changes` name a missing `slice-open` the same way. The built
+//! binary on a temp manifest, the fake `gh` standing in for the board, and actions written by the
+//! test: zaf ships none.
 
 mod common;
 
-use std::path::{Path, PathBuf};
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
 
-use common::{Project, REPO, jj, outcome, run, write};
-
-const BASE: &str = "feature/v1";
-const SLICE: &str = "feature/v1-1-2";
+use common::{Project, outcome, write};
 
 const MANIFEST: &str = r#"[project]
 name = "example"
@@ -27,214 +27,126 @@ repo = "example/tracker"
 
 [gate]
 full = "true"
-light = "test -f src/export.txt"
+light = "true"
 "#;
 
 /// Task 2 of epic 1, claimed, as `gh issue view` prints it.
 const TASK: &str = r#"{"number":2,"title":"Export the list","body":"","labels":[{"name":"task"},{"name":"claimed"}],"parent":{"number":1},"state":"OPEN","comments":[]}"#;
 
-/// A project whose root is a jj repository with its base bookmark pushed to a bare remote,
-/// and a fake `gh` that knows task 2 and opens pull request 7.
-fn project() -> (Project, PathBuf) {
-    let mut project = Project::new(MANIFEST);
-    let temp = project.temp.path().to_owned();
-    let root = project.root.clone();
-    run(&temp, "git", &["init", "-q", "--bare", "remote.git"]);
-    jj(&temp, &["git", "init", "repo"]);
-    jj(
-        &root,
-        &["config", "set", "--repo", "user.name", "Test Author"],
-    );
-    jj(
-        &root,
-        &[
-            "config",
-            "set",
-            "--repo",
-            "user.email",
-            "author@example.com",
-        ],
-    );
-    let remote = temp.join("remote.git");
-    jj(
-        &root,
-        &["git", "remote", "add", "origin", &remote.to_string_lossy()],
-    );
-    write(&root, ".gitignore", ".zaf/\n");
-    write(&root, "notes.txt", "one\ntwo\n");
-    jj(&root, &["commit", "-m", "Start the project"]);
-    jj(&root, &["bookmark", "create", BASE, "-r", "@-"]);
-    jj(&root, &["git", "push", "--bookmark", BASE]);
-    project
-        .on("issue view 2 *", TASK)
-        .on(&format!("pr list --head {SLICE} *"), "[]")
-        .on(
-            "pr create *",
-            &format!("https://github.com/{REPO}/pull/7\n"),
-        )
-        .on("pr view 7 *", r#"{"state":"OPEN"}"#)
-        .on("pr merge 7 *", "")
-        .on("issue edit 2 *", "")
-        .env("ZAF_VERSION", "v1");
-    (project, remote)
-}
-
-fn workspace(project: &Project) -> PathBuf {
-    project.root.join(".zaf/workspaces").join(SLICE)
-}
-
-/// The commit a ref points at in the bare remote.
-fn remote_ref(remote: &Path, name: &str) -> String {
-    let git_dir = remote.to_string_lossy();
-    let reference = format!("refs/heads/{name}");
-    run(
-        remote,
-        "git",
-        &["--git-dir", &git_dir, "rev-parse", &reference],
+/// The line every verb prints for a missing action `name`.
+fn missing(name: &str) -> String {
+    format!(
+        "missing action {name}: no {name} action in .zaf/actions or the machine's actions \
+         (zaf ships none; see docs/zaf-actions.md §4)"
     )
-    .trim()
-    .to_owned()
 }
 
-/// Moves the base one commit ahead from the root's own working copy and pushes it:
-/// a merge takes the base as the remote has it.
-fn advance_base(root: &Path) -> String {
-    let base = format!("bookmarks(exact:\"{BASE}\")");
-    jj(root, &["new", &base]);
-    write(root, "later.txt", "later\n");
-    jj(root, &["commit", "-m", "Advance the base"]);
-    jj(root, &["bookmark", "set", BASE, "-r", "@-"]);
-    jj(root, &["git", "push", "--bookmark", BASE]);
-    jj(root, &["log", "--no-graph", "-r", &base, "-T", "commit_id"])
+/// A project with no actions, and a fake `gh` that knows task 2.
+fn project() -> Project {
+    let mut project = Project::new(MANIFEST);
+    project.on("issue view 2 *", TASK).env("ZAF_VERSION", "v1");
+    project
+}
+
+/// Writes an executable action into the project's `.zaf/actions`.
+fn provide(project: &Project, name: &str, body: &str) {
+    let actions = project.root.join(".zaf/actions");
+    write(
+        &actions,
+        name,
+        &format!("#!/bin/sh\n# zaf description: a test action\n# zaf 1: failed\n{body}\n"),
+    );
+    fs::set_permissions(actions.join(name), fs::Permissions::from_mode(0o755)).expect("mode");
+}
+
+/// The workspace a test `slice-open` hands back.
+fn workspace(project: &Project) -> PathBuf {
+    project.root.join(".zaf/workspaces/feature/v1-1-2")
 }
 
 #[test]
-fn a_slice_goes_from_open_to_merged() {
-    let (project, remote) = project();
+fn slice_open_names_the_missing_action() {
+    let project = project();
+    for (verb, name) in [
+        ("open", "slice-open"),
+        ("pr", "slice-pr"),
+        ("merge", "slice-merge"),
+        ("drop", "slice-drop"),
+    ] {
+        let (code, stdout, stderr) = outcome(&project.zaf(&["slice", verb, "2"]));
+        assert_eq!(code, 2, "slice {verb}: {stderr}");
+        assert_eq!(stdout, "", "slice {verb}");
+        assert!(
+            stderr.contains(&missing(name)),
+            "slice {verb} names {name}: {stderr}"
+        );
+    }
+
+    let (code, stdout, _) = outcome(&project.zaf(&["--json", "slice", "open", "2"]));
+    assert_eq!(code, 2);
+    let error: serde_json::Value = serde_json::from_str(&stdout).expect("json");
+    assert_eq!(error["error"], missing("slice-open"));
+}
+
+#[test]
+fn check_and_changes_name_the_missing_action() {
+    let project = project();
+    for verb in ["check", "changes"] {
+        let (code, _, stderr) = outcome(&project.zaf(&[verb, "2"]));
+        assert_eq!(code, 2, "{verb}: {stderr}");
+        assert!(
+            stderr.contains(&missing("slice-open")),
+            "{verb} names slice-open: {stderr}"
+        );
+    }
+
+    // With `slice-open` provided, the task is merely not open yet.
+    provide(&project, "slice-open", "true");
+    for verb in ["check", "changes"] {
+        let (code, _, stderr) = outcome(&project.zaf(&[verb, "2"]));
+        assert_eq!(code, 1, "{verb}: {stderr}");
+        assert!(
+            stderr.contains("slice for #2 is not open; run zaf do slice-open 2"),
+            "{verb}: {stderr}"
+        );
+        assert!(!stderr.contains("missing action"), "{verb}: {stderr}");
+    }
+}
+
+#[test]
+fn slice_open_alias_writes_the_record() {
+    let project = project();
+    let dir = workspace(&project);
+    fs::create_dir_all(&dir).expect("workspace");
+    provide(
+        &project,
+        "slice-open",
+        &format!("echo opening\necho '{}'", dir.display()),
+    );
 
     let (code, stdout, stderr) = outcome(&project.zaf(&["slice", "open", "2"]));
-    assert_eq!(code, 0, "{stderr}");
-    assert!(
-        stdout.starts_with(&format!("{SLICE} opened on {BASE}")),
-        "{stdout}"
-    );
-    let dir = workspace(&project);
-    assert!(
-        dir.join("notes.txt").is_file(),
-        "the workspace holds the base"
-    );
-    let (code, stdout, _) = outcome(&project.zaf(&["slice", "open", "2"]));
-    assert_eq!(code, 0);
-    assert!(stdout.contains("already open"), "{stdout}");
 
-    write(&dir, "src/export.txt", "title\nauthor\nyear\n");
-    let (code, _, stderr) = outcome(&project.zaf(&["changes", "2"]));
-    assert_eq!(code, 1, "no slice record, nothing to read");
-    assert!(stderr.contains("is not open"), "{stderr}");
-    // `slice-open` leaves the record: the workspace path, alone.
-    write(&project.root, ".zaf/slices/2", &dir.to_string_lossy());
-    let (code, stdout, stderr) = outcome(&project.zaf(&["changes", "2"]));
     assert_eq!(code, 0, "{stderr}");
-    assert_eq!(stdout, "src/export.txt +3 -0\n1 files +3 -0\n");
-    let (code, stdout, _) = outcome(&project.zaf(&["--json", "changes", "2"]));
-    assert_eq!(code, 0);
-    let stat: serde_json::Value = serde_json::from_str(&stdout).expect("json");
-    assert_eq!(stat["files"][0]["path"], "src/export.txt");
-    assert_eq!(stat["added"], 3);
-    let (code, stdout, _) = outcome(&project.zaf(&["changes", "2", "--path", "src/export.txt"]));
-    assert_eq!(code, 0);
-    assert!(stdout.contains("+author"), "{stdout}");
-    let (code, _, _) = outcome(&project.zaf(&["changes", "2", "--path", "README.md"]));
-    assert_eq!(code, 1, "a file the slice did not change is not found");
+    assert_eq!(stdout, format!("{}\n", dir.display()));
+    let record = fs::read_to_string(project.root.join(".zaf/slices/2")).expect("the record");
+    assert_eq!(record.trim(), dir.to_string_lossy());
 
-    let (code, stdout, stderr) = outcome(&project.zaf(&["slice", "pr", "2"]));
-    assert_eq!(code, 0, "{stderr}");
-    assert_eq!(stdout, format!("#7 for {SLICE} into {BASE}\n"));
-    let published = remote_ref(&remote, SLICE);
-    assert!(!published.is_empty());
-    let create = project
-        .gh_calls()
-        .into_iter()
-        .find(|call| call.starts_with("pr create"))
-        .expect("a pr create call");
+    // The slice is found: neither the missing action nor the not-open refusal.
+    let (code, _, stderr) = outcome(&project.zaf(&["check", "2"]));
     assert!(
-        create.contains(&format!(
-            "--head {SLICE} --base {BASE} --title Export the list (#2)"
-        )),
-        "{create}"
+        !stderr.contains("is not open") && !stderr.contains("missing action"),
+        "{stderr}"
     );
-
-    let base_tip = advance_base(&project.root);
-    let (code, stdout, stderr) = outcome(&project.zaf(&["slice", "merge", "2"]));
-    assert_eq!(code, 0, "{stderr}");
-    assert_eq!(stdout, format!("#7 merged into {BASE}; #2 done\n"));
-    let calls = project.gh_calls();
-    assert!(
-        calls
-            .iter()
-            .any(|call| call.starts_with("pr merge 7 --merge"))
-    );
-    assert!(
-        calls
-            .iter()
-            .any(|call| call.starts_with("issue edit 2 --add-label done --remove-label claimed")),
-        "{calls:?}"
-    );
-    assert!(!dir.exists(), "the workspace is dropped");
-    let merged = remote_ref(&remote, SLICE);
-    let git_dir = remote.to_string_lossy();
-    run(
-        &remote,
-        "git",
-        &[
-            "--git-dir",
-            &git_dir,
-            "merge-base",
-            "--is-ancestor",
-            &base_tip,
-            &merged,
-        ],
-    );
+    assert_ne!(code, 2, "{stderr}");
 }
 
 #[test]
-fn merge_stops_at_the_failing_gate_and_says_so() {
-    let (project, _remote) = project();
-    assert_eq!(outcome(&project.zaf(&["slice", "open", "2"])).0, 0);
-    write(&workspace(&project), "src/other.txt", "not the export\n");
-    assert_eq!(outcome(&project.zaf(&["slice", "pr", "2"])).0, 0);
+fn a_slice_alias_exits_with_the_actions_own_code() {
+    let project = project();
+    provide(&project, "slice-drop", "echo gone\nexit 1");
 
-    let (code, stdout, stderr) = outcome(&project.zaf(&["--json", "slice", "merge", "2"]));
+    let (code, _, stderr) = outcome(&project.zaf(&["slice", "drop", "2"]));
+
     assert_eq!(code, 1, "{stderr}");
-    assert!(stderr.contains("gate: the light gate failed"), "{stderr}");
-    let failure: serde_json::Value = serde_json::from_str(&stdout).expect("json");
-    assert_eq!(failure["step"], "gate");
-    let calls = project.gh_calls();
-    assert!(!calls.iter().any(|call| call.starts_with("pr merge")));
-    assert!(!calls.iter().any(|call| call.starts_with("issue edit")));
-    assert!(
-        workspace(&project).exists(),
-        "the workspace stays for the fix"
-    );
-
-    let (code, stdout, stderr) = outcome(&project.zaf(&["slice", "drop", "2"]));
-    assert_eq!(code, 0, "{stderr}");
-    assert_eq!(stdout, format!("{SLICE} dropped\n"));
-    assert!(!workspace(&project).exists());
-    assert_eq!(outcome(&project.zaf(&["slice", "drop", "2"])).0, 0);
-}
-
-#[test]
-fn a_missing_version_or_backend_exits_two() {
-    let (mut project, _remote) = project();
-    project.env("ZAF_VERSION", "");
-    let (code, _, stderr) = outcome(&project.zaf(&["slice", "open", "2"]));
-    assert_eq!(code, 2);
-    assert!(stderr.contains("ZAF_VERSION"), "{stderr}");
-    project
-        .env("ZAF_VERSION", "v1")
-        .fail_on("issue view 3 *", "HTTP 502");
-    let (code, _, stderr) = outcome(&project.zaf(&["slice", "open", "3"]));
-    assert_eq!(code, 2);
-    assert!(stderr.contains("ticket:"), "{stderr}");
+    assert!(stderr.contains("FAIL slice-drop: exit 1"), "{stderr}");
 }

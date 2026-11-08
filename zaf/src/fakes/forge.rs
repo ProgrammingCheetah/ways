@@ -4,8 +4,30 @@ use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::ports::{
-    Check, Forge, PortError, PrMerge, PrNumber, PrRequest, ReviewComment, ScanningAlert,
+    BaseName, Check, Forge, PortError, PrNumber, ReviewComment, ScanningAlert, SliceName,
 };
+
+/// What a pull request is opened from and into.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrRequest {
+    /// The slice it carries.
+    pub slice: SliceName,
+    /// The line it targets.
+    pub base: BaseName,
+    /// Its title.
+    pub title: String,
+    /// Its body.
+    pub body: String,
+}
+
+/// What merging a pull request did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrMerge {
+    /// It merged now.
+    Merged,
+    /// It had merged before; nothing changed.
+    AlreadyMerged,
+}
 
 #[derive(Debug, Clone)]
 struct PullRequest {
@@ -99,8 +121,10 @@ impl State {
     }
 }
 
-impl Forge for FakeForge {
-    fn open_pr(&self, request: &PrRequest) -> Result<PrNumber, PortError> {
+impl FakeForge {
+    /// Opens a pull request for a slice; a slice with an open one gets that one back. Opening
+    /// is an action's work in zaf, so the port has no such call; this arranges the scene.
+    pub fn open_pr(&self, request: &PrRequest) -> Result<PrNumber, PortError> {
         let mut state = self.state();
         let existing = state
             .pulls
@@ -125,6 +149,19 @@ impl Forge for FakeForge {
         Ok(number)
     }
 
+    /// Merges the pull request; one already merged is [`PrMerge::AlreadyMerged`].
+    pub fn merge(&self, pr: PrNumber) -> Result<PrMerge, PortError> {
+        let mut state = self.state();
+        let pull = state.pull_mut(pr)?;
+        if pull.merged {
+            return Ok(PrMerge::AlreadyMerged);
+        }
+        pull.merged = true;
+        Ok(PrMerge::Merged)
+    }
+}
+
+impl Forge for FakeForge {
     fn checks(&self, pr: PrNumber) -> Result<Vec<Check>, PortError> {
         let mut state = self.state();
         Ok(state.pull_mut(pr)?.checks.clone())
@@ -156,15 +193,5 @@ impl Forge for FakeForge {
     fn scanning_alerts(&self, pr: PrNumber) -> Result<Vec<ScanningAlert>, PortError> {
         let mut state = self.state();
         Ok(state.pull_mut(pr)?.alerts.clone())
-    }
-
-    fn merge(&self, pr: PrNumber) -> Result<PrMerge, PortError> {
-        let mut state = self.state();
-        let pull = state.pull_mut(pr)?;
-        if pull.merged {
-            return Ok(PrMerge::AlreadyMerged);
-        }
-        pull.merged = true;
-        Ok(PrMerge::Merged)
     }
 }

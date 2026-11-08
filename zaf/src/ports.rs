@@ -20,12 +20,9 @@ pub use board::{
 pub use design::{Design, Page};
 pub use errors::PortError;
 pub use forge::{
-    Author, Check, CheckName, CheckState, Forge, PrMerge, PrNumber, PrRequest, ReviewComment,
-    RuleId, ScanningAlert,
+    Author, Check, CheckName, CheckState, Forge, PrNumber, ReviewComment, RuleId, ScanningAlert,
 };
 pub use gate::{Gate, GateLevel, GateRun, GateVerdict};
 pub use runner::{RunOutput, RunRequest, Runner};
 pub use shell::Shell;
-pub use vcs::{
-    BaseMerge, BaseName, CommitId, DiffStat, FileStat, Publication, SliceName, SliceOpening, Vcs,
-};
+pub use vcs::{BaseName, CommitId, DiffStat, FileStat, SliceName, Vcs};

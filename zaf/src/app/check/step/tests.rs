@@ -4,11 +4,11 @@ use std::sync::Arc;
 use super::*;
 use crate::app::check::{Engine, EngineSettings, Shell, StepPorts, Verdict};
 use crate::domain::{Location, Severity};
-use crate::fakes::{FakeForge, FakeRunner};
+use crate::fakes::{FakeForge, FakeRunner, PrRequest};
 use crate::manifest::RunnerName;
 use crate::ports::{
-    Author, BaseName, Check, Forge, GateRun, GateVerdict, PrMerge, PrRequest, ReviewComment,
-    RuleId, RunOutput, RunRequest, Runner, ScanningAlert, SliceName,
+    Author, BaseName, Check, Forge, GateRun, GateVerdict, ReviewComment, RuleId, RunOutput,
+    RunRequest, Runner, ScanningAlert, SliceName,
 };
 
 #[test]
@@ -112,10 +112,6 @@ fn bare_action_step_is_an_error() {
 pub(super) struct SharedForge(pub Arc<FakeForge>);
 
 impl Forge for SharedForge {
-    fn open_pr(&self, request: &PrRequest) -> Result<PrNumber, PortError> {
-        self.0.open_pr(request)
-    }
-
     fn checks(&self, pr: PrNumber) -> Result<Vec<Check>, PortError> {
         self.0.checks(pr)
     }
@@ -138,10 +134,6 @@ impl Forge for SharedForge {
 
     fn scanning_alerts(&self, pr: PrNumber) -> Result<Vec<ScanningAlert>, PortError> {
         self.0.scanning_alerts(pr)
-    }
-
-    fn merge(&self, pr: PrNumber) -> Result<PrMerge, PortError> {
-        self.0.merge(pr)
     }
 }
 

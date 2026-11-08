@@ -111,8 +111,8 @@ fn every_unbuilt_verb_exits_not_implemented() {
 fn board_done_exit(pr: &str, forge_down: bool) -> u8 {
     use crate::app::actions::SliceRecords;
     use crate::domain::{IssueNumber, TaskLabel};
-    use crate::fakes::{FakeBoard, FakeForge, FakeVcs};
-    use crate::ports::{BaseName, Board, Forge, PrRequest, SliceName, Ticket};
+    use crate::fakes::{FakeBoard, FakeForge, FakeVcs, PrRequest};
+    use crate::ports::{BaseName, Board, SliceName, Ticket};
 
     let dir = tempfile::tempdir().expect("tempdir");
     let task = IssueNumber::from(319);

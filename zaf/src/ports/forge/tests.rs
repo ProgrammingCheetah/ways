@@ -1,5 +1,6 @@
 use super::*;
-use crate::fakes::FakeForge;
+use crate::fakes::{FakeForge, PrMerge, PrRequest};
+use crate::ports::{BaseName, SliceName};
 
 fn request(slice: &str) -> PrRequest {
     PrRequest {
@@ -13,12 +14,13 @@ fn request(slice: &str) -> PrRequest {
 #[test]
 fn a_slice_has_one_open_pull_request() {
     let forge = FakeForge::default();
-    let port: &dyn Forge = &forge;
-    let first = port.open_pr(&request("feature/v1-export-2")).expect("open");
-    let again = port
+    let first = forge
+        .open_pr(&request("feature/v1-export-2"))
+        .expect("open");
+    let again = forge
         .open_pr(&request("feature/v1-export-2"))
         .expect("open again");
-    let other = port
+    let other = forge
         .open_pr(&request("feature/v1-export-3"))
         .expect("open other");
     assert_eq!(first, again);
@@ -30,7 +32,9 @@ fn a_slice_has_one_open_pull_request() {
 fn checks_and_review_comments_read_back() {
     let forge = FakeForge::default();
     let port: &dyn Forge = &forge;
-    let pr = port.open_pr(&request("feature/v1-export-2")).expect("open");
+    let pr = forge
+        .open_pr(&request("feature/v1-export-2"))
+        .expect("open");
     assert_eq!(port.checks(pr), Ok(Vec::new()));
     let checks = vec![
         Check {
@@ -69,7 +73,9 @@ fn checks_and_review_comments_read_back() {
 fn scanning_alerts_read_back_per_pull_request() {
     let forge = FakeForge::default();
     let port: &dyn Forge = &forge;
-    let pr = port.open_pr(&request("feature/v1-export-2")).expect("open");
+    let pr = forge
+        .open_pr(&request("feature/v1-export-2"))
+        .expect("open");
     assert_eq!(port.scanning_alerts(pr), Ok(Vec::new()));
     let alerts = vec![
         ScanningAlert {
@@ -97,11 +103,12 @@ fn scanning_alerts_read_back_per_pull_request() {
 #[test]
 fn merge_is_idempotent() {
     let forge = FakeForge::default();
-    let port: &dyn Forge = &forge;
-    let pr = port.open_pr(&request("feature/v1-export-2")).expect("open");
-    assert_eq!(port.merge(pr), Ok(PrMerge::Merged));
-    assert_eq!(port.merge(pr), Ok(PrMerge::AlreadyMerged));
-    let reopened = port
+    let pr = forge
+        .open_pr(&request("feature/v1-export-2"))
+        .expect("open");
+    assert_eq!(forge.merge(pr), Ok(PrMerge::Merged));
+    assert_eq!(forge.merge(pr), Ok(PrMerge::AlreadyMerged));
+    let reopened = forge
         .open_pr(&request("feature/v1-export-2"))
         .expect("a merged slice opens anew");
     assert_ne!(reopened, pr);

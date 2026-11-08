@@ -251,7 +251,7 @@ impl Composition {
             section: "vcs",
         })?;
         match section.kind {
-            VcsKind::Jj => Ok(Box::new(JjVcs::new(&self.root, &self.manifest.workspaces))),
+            VcsKind::Jj => Ok(Box::new(JjVcs)),
         }
     }
 

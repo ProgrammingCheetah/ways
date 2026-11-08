@@ -12,10 +12,10 @@ use crate::app::actions::{
 };
 use crate::app::check::{CheckRecord, Verdict};
 use crate::domain::Instance;
-use crate::fakes::{FakeBoard, FakeForge, FakeVcs};
+use crate::fakes::{FakeBoard, FakeForge, FakeVcs, PrRequest};
 use crate::ports::{
-    BaseName, Check, ClaimOutcome, ClaimRecord, NewQuestion, PrMerge, PrNumber, PrRequest,
-    ReviewComment, ScanningAlert, SliceName, Ticket,
+    BaseName, Check, ClaimOutcome, ClaimRecord, NewQuestion, PrNumber, ReviewComment,
+    ScanningAlert, SliceName, Ticket,
 };
 
 const TASK: u64 = 203;
@@ -92,9 +92,7 @@ impl Scene {
     fn open_slice(&self) {
         self.record_workspace();
         let slice = SliceName::from(SLICE);
-        self.vcs
-            .open_slice(&slice, &BaseName::from(BASE))
-            .expect("open");
+        self.vcs.open(&slice, &BaseName::from(BASE));
         self.vcs.place(&slice, &self.workspace).expect("place");
     }
 
@@ -524,10 +522,6 @@ impl Board for BrokenBoard<'_> {
 struct BrokenForge<'a>(&'a FakeForge);
 
 impl Forge for BrokenForge<'_> {
-    fn open_pr(&self, request: &PrRequest) -> Result<PrNumber, PortError> {
-        self.0.open_pr(request)
-    }
-
     fn checks(&self, pr: PrNumber) -> Result<Vec<Check>, PortError> {
         self.0.checks(pr)
     }
@@ -550,10 +544,6 @@ impl Forge for BrokenForge<'_> {
 
     fn scanning_alerts(&self, pr: PrNumber) -> Result<Vec<ScanningAlert>, PortError> {
         self.0.scanning_alerts(pr)
-    }
-
-    fn merge(&self, pr: PrNumber) -> Result<PrMerge, PortError> {
-        self.0.merge(pr)
     }
 }
 
