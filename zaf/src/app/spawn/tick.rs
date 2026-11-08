@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::blockers::{self, DeadBlocker, DeadReason, Graph, blockers};
 use super::state::SpawnState;
 use crate::app::guard::Level;
 use crate::domain::{Instance, InstanceNumber, IssueNumber, RoleName};
@@ -14,9 +15,6 @@ pub const TEAM_ROLE: &str = "team";
 
 /// The branches of the tick that are not built yet; each is skipped as `not built`.
 pub const NOT_BUILT: [&str; 3] = ["planning", "challenger", "release"];
-
-/// The field of a task body that names its blockers.
-const BLOCKED_BY: &str = "Blocked by:";
 
 /// How many tasks an instance takes when its role sets no batch.
 const UNBATCHED: u32 = 1;
@@ -30,6 +28,11 @@ pub struct Snapshot {
     pub claimed: BTreeSet<IssueNumber>,
     /// Blockers that are closed.
     pub closed: BTreeSet<IssueNumber>,
+    /// The open tasks the blockers lead to that are not ready, with the blockers each names;
+    /// the ready tasks' own bodies are read from `ready`.
+    pub open: Graph,
+    /// Blockers that can never be seen closed, and why.
+    pub dead: BTreeMap<IssueNumber, DeadReason>,
 }
 
 /// What the tick reads from the manifest.
@@ -96,6 +99,8 @@ pub enum EpicSkip {
 pub enum TaskSkip {
     /// A `Blocked by:` issue is still open; the open ones are named.
     Blocked(Vec<IssueNumber>),
+    /// It is on a blocker cycle, each task waiting for the next; the cycle, from its lowest task.
+    InCycle(Vec<IssueNumber>),
     /// Another instance holds a claim on it.
     Claimed,
     /// A running instance already carries it.
@@ -115,17 +120,10 @@ pub struct Plan {
     pub epics: Vec<(IssueNumber, EpicSkip)>,
     /// The ready tasks left out, and why.
     pub tasks: Vec<(IssueNumber, TaskSkip)>,
-}
-
-/// The issues a task body names on its `Blocked by:` line; `—` or `none` name none.
-pub fn blockers(body: &str) -> Vec<IssueNumber> {
-    body.lines()
-        .filter_map(|line| line.trim().strip_prefix(BLOCKED_BY))
-        .flat_map(|rest| {
-            rest.split(|character: char| character.is_whitespace() || character == ',')
-        })
-        .filter_map(|word| word.parse::<IssueNumber>().ok())
-        .collect()
+    /// Every blocker cycle among the open tasks reached, each from its lowest task.
+    pub cycles: Vec<Vec<IssueNumber>>,
+    /// Every dead blocker the open tasks reached name.
+    pub dead: Vec<DeadBlocker>,
 }
 
 /// The slots the guard allows: yellow halves them (at least one), orange allows one, red none.
@@ -155,6 +153,13 @@ pub fn plan(snapshot: &Snapshot, state: &SpawnState, level: Level, settings: Set
         .map(|launch| (launch.task, launch.instance.as_str()))
         .collect();
 
+    let mut graph = snapshot.open.clone();
+    for ticket in &snapshot.ready {
+        graph.insert(ticket.number, blockers(&ticket.body));
+    }
+    let cycles = blockers::cycles(&graph);
+    let dead = blockers::dead(&graph, &snapshot.dead);
+
     let mut tasks = Vec::new();
     let mut epics: BTreeMap<IssueNumber, Vec<IssueNumber>> = BTreeMap::new();
     for ticket in &snapshot.ready {
@@ -171,6 +176,8 @@ pub fn plan(snapshot: &Snapshot, state: &SpawnState, level: Level, settings: Set
             tasks.push((ticket.number, TaskSkip::Claimed));
         } else if let Some(instance) = carried.get(&ticket.number.get()) {
             tasks.push((ticket.number, TaskSkip::Running((*instance).to_owned())));
+        } else if let Some(cycle) = cycles.iter().find(|cycle| cycle.contains(&ticket.number)) {
+            tasks.push((ticket.number, TaskSkip::InCycle(cycle.clone())));
         } else if !open.is_empty() {
             tasks.push((ticket.number, TaskSkip::Blocked(open)));
         } else {
@@ -208,6 +215,8 @@ pub fn plan(snapshot: &Snapshot, state: &SpawnState, level: Level, settings: Set
         launches,
         epics: skipped,
         tasks,
+        cycles,
+        dead,
     }
 }
 

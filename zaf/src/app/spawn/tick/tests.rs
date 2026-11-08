@@ -219,12 +219,105 @@ fn a_task_without_an_epic_is_skipped() {
 }
 
 #[test]
-fn blockers_are_read_from_the_blocked_by_line() {
-    assert_eq!(
-        blockers("Goal: x\nBlocked by: #24 #25, 26"),
-        numbers(&[24, 25, 26])
+fn tick_says_in_a_blocker_cycle() {
+    let plan = plan(
+        &snapshot(vec![
+            task(3, 2, "Blocked by: #4"),
+            task(4, 2, "Blocked by: #3"),
+            task(5, 2, "Blocked by: —"),
+        ]),
+        &SpawnState::default(),
+        Level::Green,
+        settings(2),
     );
-    assert!(blockers("Blocked by: —").is_empty());
-    assert!(blockers("Blocked by: none").is_empty());
-    assert!(blockers("Goal: no blockers here").is_empty());
+    assert_eq!(
+        plan.tasks,
+        [
+            (IssueNumber::from(3), TaskSkip::InCycle(numbers(&[3, 4]))),
+            (IssueNumber::from(4), TaskSkip::InCycle(numbers(&[3, 4]))),
+        ]
+    );
+    assert_eq!(
+        plan.launches[0].tasks,
+        numbers(&[5]),
+        "the rest still launch"
+    );
+    let text = plan.render_text();
+    assert!(text.contains("#3 skipped: in a blocker cycle (#3 → #4 → #3)\n"));
+    assert!(text.contains("#4 skipped: in a blocker cycle (#3 → #4 → #3)\n"));
+    assert!(
+        !text.contains("blocker cycle: "),
+        "a cycle whose tasks are skipped is named once, on them"
+    );
+}
+
+#[test]
+fn a_task_whose_blocker_is_in_a_cycle_says_so() {
+    let mut board = snapshot(vec![task(3, 2, "Blocked by: #7 #9")]);
+    board.open.insert(IssueNumber::from(7), numbers(&[8]));
+    board.open.insert(IssueNumber::from(8), numbers(&[7]));
+    board.open.insert(IssueNumber::from(9), Vec::new());
+    let plan = plan(&board, &SpawnState::default(), Level::Green, settings(2));
+    assert_eq!(
+        plan.tasks,
+        [(IssueNumber::from(3), TaskSkip::Blocked(numbers(&[7, 9])))]
+    );
+    assert_eq!(plan.cycles, [numbers(&[7, 8])]);
+    let text = plan.render_text();
+    assert!(text.contains("#3 skipped: blocked by #7 (in a blocker cycle) #9\n"));
+    assert!(text.contains("blocker cycle: #7 → #8 → #7\n"));
+}
+
+#[test]
+fn a_plain_open_blocker_reads_blocked_by_alone() {
+    let mut board = snapshot(vec![task(3, 2, "Blocked by: #7")]);
+    board.open.insert(IssueNumber::from(7), Vec::new());
+    let plan = plan(&board, &SpawnState::default(), Level::Green, settings(2));
+    assert!(plan.cycles.is_empty());
+    assert!(plan.dead.is_empty());
+    assert!(plan.render_text().contains("#3 skipped: blocked by #7\n"));
+}
+
+#[test]
+fn the_plan_names_dead_blockers_in_text_and_json() {
+    let mut board = snapshot(vec![task(3, 2, "Blocked by: #7 #8")]);
+    board
+        .dead
+        .insert(IssueNumber::from(7), DeadReason::NotAnIssue);
+    board
+        .dead
+        .insert(IssueNumber::from(8), DeadReason::ClosedWithoutDone);
+    let plan = plan(&board, &SpawnState::default(), Level::Green, settings(2));
+    let text = plan.render_text();
+    assert!(text.contains("dead blocker #7 on #3: not an issue\n"));
+    assert!(text.contains("dead blocker #8 on #3: closed without done\n"));
+    let json = plan.to_json(&[], &[]);
+    assert_eq!(
+        json["dead_blockers"],
+        serde_json::json!([
+            { "blocker": 7, "on": 3, "reason": "not an issue" },
+            { "blocker": 8, "on": 3, "reason": "closed without done" },
+        ])
+    );
+    assert_eq!(json["cycles"], serde_json::json!([]));
+}
+
+#[test]
+fn the_json_carries_the_cycles_and_marks_a_task_in_one() {
+    let plan = plan(
+        &snapshot(vec![
+            task(3, 2, "Blocked by: #4"),
+            task(4, 2, "Blocked by: #5"),
+            task(5, 2, "Blocked by: #3"),
+        ]),
+        &SpawnState::default(),
+        Level::Green,
+        settings(2),
+    );
+    let json = plan.to_json(&[], &[]);
+    assert_eq!(json["cycles"], serde_json::json!([[3, 4, 5]]));
+    assert_eq!(
+        json["skipped"]["tasks"][0],
+        serde_json::json!({ "task": 3, "reason": "in_cycle", "detail": [3, 4, 5] })
+    );
 }

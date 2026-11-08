@@ -299,3 +299,105 @@ fn open_questions_list_in_order_and_leave_the_waiting_task_out() {
     let same_text_elsewhere = ask(3, "Which quoting?");
     assert!(!same_text_elsewhere.is_asked_by(&remaining[0]));
 }
+
+#[test]
+fn the_fake_tells_the_four_issue_states_apart() {
+    let board = seeded();
+    board.add_ticket(ticket(5, TaskLabel::Done));
+    board.add_ticket(ticket(6, TaskLabel::Blocked));
+    board.close(IssueNumber::from(6));
+    let port: &dyn Board = &board;
+    let state = |number: u64| port.issue_state(IssueNumber::from(number));
+
+    assert_eq!(state(3), Ok(IssueState::Open));
+    assert_eq!(state(5), Ok(IssueState::Done));
+    assert_eq!(state(6), Ok(IssueState::ClosedNotDone));
+    assert_eq!(state(99), Ok(IssueState::Missing));
+}
+
+/// A board that implements only what [`Board::issue_state`]'s default reads: `task`.
+struct TaskOnly(Vec<Ticket>);
+
+impl Board for TaskOnly {
+    fn task(&self, number: IssueNumber) -> Result<Ticket, PortError> {
+        match number.get() {
+            13 => Err(PortError::Backend("gh: 502".to_owned())),
+            _ => self
+                .0
+                .iter()
+                .find(|ticket| ticket.number == number)
+                .cloned()
+                .ok_or_else(|| PortError::NotFound(number.to_string())),
+        }
+    }
+
+    fn ready(&self) -> Result<Vec<Ticket>, PortError> {
+        unreachable!("not read")
+    }
+
+    fn claim(&self, _: IssueNumber, _: &Instance) -> Result<ClaimOutcome, PortError> {
+        unreachable!("not read")
+    }
+
+    fn heartbeat(&self, _: IssueNumber, _: &Instance) -> Result<(), PortError> {
+        unreachable!("not read")
+    }
+
+    fn claims(&self) -> Result<Vec<ClaimRecord>, PortError> {
+        unreachable!("not read")
+    }
+
+    fn release(&self, _: IssueNumber, _: &Instance) -> Result<(), PortError> {
+        unreachable!("not read")
+    }
+
+    fn label(&self, _: IssueNumber, _: TaskLabel) -> Result<(), PortError> {
+        unreachable!("not read")
+    }
+
+    fn comment(&self, _: IssueNumber, _: &str) -> Result<(), PortError> {
+        unreachable!("not read")
+    }
+
+    fn report(&self, _: IssueNumber, _: &Instance, _: &str) -> Result<(), PortError> {
+        unreachable!("not read")
+    }
+
+    fn questions(&self) -> Result<Vec<Ticket>, PortError> {
+        unreachable!("not read")
+    }
+
+    fn open_question(&self, _: &NewQuestion) -> Result<IssueNumber, PortError> {
+        unreachable!("not read")
+    }
+
+    fn record_ruling(&self, _: IssueNumber, _: &str) -> Result<Option<IssueNumber>, PortError> {
+        unreachable!("not read")
+    }
+}
+
+#[test]
+fn the_default_issue_state_reads_the_task_and_never_calls_a_missing_one_closed() {
+    let board = TaskOnly(vec![
+        ticket(3, TaskLabel::Blocked),
+        ticket(4, TaskLabel::Done),
+    ]);
+
+    assert_eq!(
+        board.issue_state(IssueNumber::from(3)),
+        Ok(IssueState::Open)
+    );
+    assert_eq!(
+        board.issue_state(IssueNumber::from(4)),
+        Ok(IssueState::Done)
+    );
+    assert_eq!(
+        board.issue_state(IssueNumber::from(9)),
+        Ok(IssueState::Missing)
+    );
+    assert_eq!(
+        board.issue_state(IssueNumber::from(13)),
+        Err(PortError::Backend("gh: 502".to_owned())),
+        "a backend failure is not a dead blocker"
+    );
+}

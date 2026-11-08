@@ -135,8 +135,37 @@ pub struct EpicTree {
     pub tasks: Vec<EpicTask>,
 }
 
+/// Where an issue stands as a blocker: whether it can still close, and how.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IssueState {
+    /// The issue is open and not labelled `done`: it may still close.
+    Open,
+    /// The issue is labelled `done`.
+    Done,
+    /// The issue is closed without `done`: not planned, or folded into a unit.
+    ClosedNotDone,
+    /// There is no such issue, or the number is a pull request.
+    Missing,
+}
+
 /// The board the spawner and every instance read and write.
 pub trait Board {
+    /// Where one issue stands as a blocker (see [`IssueState`]).
+    ///
+    /// Interface: `Board::issue_state(number) -> Result<IssueState, PortError>`.
+    ///
+    /// An issue with no such number is [`IssueState::Missing`], not an error. A board that
+    /// does not override this answers from [`Board::task`]: `done` when the ticket is labelled
+    /// so, `missing` when there is no such ticket, else `open`; it cannot see a closed issue.
+    fn issue_state(&self, number: IssueNumber) -> Result<IssueState, PortError> {
+        match self.task(number) {
+            Ok(ticket) if ticket.label == Some(TaskLabel::Done) => Ok(IssueState::Done),
+            Ok(_) => Ok(IssueState::Open),
+            Err(PortError::NotFound(_)) => Ok(IssueState::Missing),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Every open epic with its sub-issues, open and closed, in issue order.
     ///
     /// A board that cannot list them answers [`PortError::Rejected`] unless it overrides this.

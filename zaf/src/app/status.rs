@@ -7,7 +7,8 @@
 use std::path::{Path, PathBuf};
 
 use super::guard::{self, GuardError, GuardState};
-use super::spawn;
+use super::spawn::{self, blockers, blockers::DeadLine};
+use crate::domain::IssueNumber;
 use crate::ports::{Board, PortError, Ticket};
 
 /// The spawner's state file under the state folder.
@@ -102,6 +103,11 @@ pub struct Status {
     pub guard: Option<GuardState>,
     /// Questions still waiting for the Engineer.
     pub questions: Vec<TicketLine>,
+    /// Blocker cycles among the open tasks reached from the ready ones, each from its
+    /// lowest task: the first waits for the second, the last for the first.
+    pub cycles: Vec<Vec<u64>>,
+    /// Blockers those tasks name that never close.
+    pub dead_blockers: Vec<DeadLine>,
 }
 
 /// Reads `spawn.state` through the spawner's own reader, so the state owns the count.
@@ -122,7 +128,17 @@ fn read_spawn_state(state_dir: &Path) -> Result<spawn::SpawnState, StatusError> 
 /// The open questions come from the board, not from `spawn.state`.
 pub fn status(board: &dyn Board, state_dir: &Path, slots: u32) -> Result<Status, StatusError> {
     let state = read_spawn_state(state_dir)?;
-    let ready = board.ready()?.into_iter().map(ticket_line).collect();
+    let ready_tickets = board.ready()?;
+    let found = blockers::read(board, &ready_tickets)?;
+    let cycles = blockers::cycles(&found.graph)
+        .iter()
+        .map(|cycle| blockers::cycle_numbers(cycle))
+        .collect();
+    let dead_blockers = blockers::dead(&found.graph, &found.dead)
+        .iter()
+        .map(blockers::DeadLine::from)
+        .collect();
+    let ready = ready_tickets.into_iter().map(ticket_line).collect();
     let claimed = board
         .claims()?
         .into_iter()
@@ -154,6 +170,8 @@ pub fn status(board: &dyn Board, state_dir: &Path, slots: u32) -> Result<Status,
         running: state.launches,
         guard: guard::read(state_dir)?,
         questions,
+        cycles,
+        dead_blockers,
     })
 }
 
@@ -216,6 +234,16 @@ impl Status {
                 GuardState::line
             )
         ));
+        for cycle in &self.cycles {
+            let tasks: Vec<IssueNumber> = cycle.iter().copied().map(IssueNumber::from).collect();
+            line(format!("blocker cycle: {}", blockers::render_cycle(&tasks)));
+        }
+        for dead in &self.dead_blockers {
+            line(format!(
+                "dead blocker #{} on #{}: {}",
+                dead.blocker, dead.on, dead.reason
+            ));
+        }
         for question in &self.questions {
             line(format!("question  #{} {}", question.number, question.title));
         }

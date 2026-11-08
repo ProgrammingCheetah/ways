@@ -6,7 +6,8 @@ use std::time::SystemTime;
 
 use crate::domain::{Instance, IssueNumber, TaskLabel};
 use crate::ports::{
-    Board, ClaimOutcome, ClaimRecord, EpicTask, EpicTree, NewQuestion, PortError, Ticket,
+    Board, ClaimOutcome, ClaimRecord, EpicTask, EpicTree, IssueState, NewQuestion, PortError,
+    Ticket,
 };
 
 /// One issue and everything written on it.
@@ -168,6 +169,20 @@ impl Board for FakeBoard {
             })
             .collect();
         Ok(trees)
+    }
+
+    fn issue_state(&self, number: IssueNumber) -> Result<IssueState, PortError> {
+        let state = self.state();
+        let Some(issue) = state.issues.get(&number) else {
+            return Ok(IssueState::Missing);
+        };
+        Ok(if issue.ticket.label == Some(TaskLabel::Done) {
+            IssueState::Done
+        } else if issue.closed {
+            IssueState::ClosedNotDone
+        } else {
+            IssueState::Open
+        })
     }
 
     fn ready(&self) -> Result<Vec<Ticket>, PortError> {
