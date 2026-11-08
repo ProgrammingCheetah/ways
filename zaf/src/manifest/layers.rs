@@ -63,9 +63,11 @@ impl ProjectFiles {
         if beside.is_empty() {
             return Ok(());
         }
+        // Absolute, so the message names the files whatever the directory the verb ran in.
+        let absolute = |path: &PathBuf| std::path::absolute(path).unwrap_or_else(|_| path.clone());
         Err(ManifestError::LegacyBesideNew {
-            legacy: legacy.clone(),
-            beside,
+            legacy: absolute(legacy),
+            beside: beside.iter().map(absolute).collect(),
         })
     }
 
