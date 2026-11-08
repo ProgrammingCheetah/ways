@@ -139,6 +139,9 @@ pub struct DesignSection {
     pub index: Option<PathBuf>,
 }
 
+/// The design index's file name when `[design] index` names none.
+pub const DEFAULT_DESIGN_INDEX: &str = "index.md";
+
 impl DesignSection {
     /// Where the design pages are on disk, for a project rooted at `root`; `None` for kind `none`.
     ///
@@ -159,6 +162,17 @@ impl DesignSection {
                 }
             },
         }
+    }
+
+    /// Where the design index is on disk, for a project rooted at `root`: `[design] index`
+    /// (default [`DEFAULT_DESIGN_INDEX`]) inside [`dir`](Self::dir); `None` for kind `none`.
+    /// `doctor`, the design adapter, `ask` and `brief` all take the index from here.
+    pub fn index_path(&self, root: &Path) -> Option<PathBuf> {
+        let index = self
+            .index
+            .as_deref()
+            .unwrap_or(Path::new(DEFAULT_DESIGN_INDEX));
+        self.dir(root).map(|dir| dir.join(index))
     }
 }
 

@@ -7,10 +7,13 @@ use crate::ports::{GateRun, PortError};
 /// A shell that records each line and answers with a fixed verdict; it never runs anything.
 ///
 /// `claude plugin list` and `claude plugin marketplace list` answer with the listings it was given.
+/// With [`RecordingShell::recording`], `claude plugin install` records the plugin in the
+/// profile's `plugins/installed_plugins.json`, as Claude does.
 struct RecordingShell {
     verdict: GateVerdict,
     plugins: String,
     marketplaces: String,
+    records: Option<String>,
     lines: Mutex<Vec<String>>,
 }
 
@@ -20,8 +23,26 @@ impl RecordingShell {
             verdict,
             plugins: NO_PLUGINS.to_owned(),
             marketplaces: NO_MARKETPLACES.to_owned(),
+            records: None,
             lines: Mutex::new(Vec::new()),
         }
+    }
+
+    /// A shell whose installs record the plugin at `version`.
+    fn recording(self, version: &str) -> Self {
+        Self {
+            records: Some(version.to_owned()),
+            ..self
+        }
+    }
+
+    /// Writes the record of an install line: `CLAUDE_CONFIG_DIR='<home>' claude plugin install '<id>'`.
+    fn record(&self, line: &str, version: &str) {
+        let mut quoted = line.split('\'');
+        let (Some(home), Some(id)) = (quoted.nth(1), quoted.nth(1)) else {
+            return;
+        };
+        write_installed(Path::new(home), id, Some(version));
     }
 
     /// A passing shell whose profile already shows `plugins` and `marketplaces`.
@@ -41,6 +62,12 @@ impl RecordingShell {
 impl Shell for RecordingShell {
     fn run(&self, line: &CommandLine) -> Result<GateRun, PortError> {
         self.lines.lock().expect("lock").push(line.to_string());
+        if let Some(version) = &self.records
+            && self.verdict == GateVerdict::Passed
+            && line.as_ref().contains(" claude plugin install ")
+        {
+            self.record(line.as_ref(), version);
+        }
         let output = if line.as_ref().ends_with("claude plugin list") {
             self.plugins.clone()
         } else if line.as_ref().ends_with("claude plugin marketplace list") {
@@ -61,6 +88,23 @@ const NO_MARKETPLACES: &str = "No marketplaces configured\n";
 const KIT_LISTED: &str = "Installed plugins:\n\n  \u{276f} other@shelf\n    Version: 9.9.9\n    Scope: user\n    Status: enabled\n\n  \u{276f} kit@shelf\n    Version: 1.2.3\n    Scope: user\n    Status: enabled\n";
 const SHELF_ADDED: &str =
     "Configured marketplaces:\n\n  \u{276f} shelf\n    Source: Directory (/somewhere)\n";
+
+/// What Claude records in `<home>/plugins/installed_plugins.json` for an install of `id`:
+/// `version` of `None` is an entry without one.
+fn write_installed(home: &Path, id: &str, version: Option<&str>) {
+    let entry = match version {
+        Some(version) => json!({ "scope": "user", "version": version }),
+        None => json!({ "scope": "user" }),
+    };
+    let record = json!({ "version": 2, "plugins": { id: [entry] } });
+    fs::create_dir_all(home.join("plugins")).expect("plugins dir");
+    fs::write(home.join(INSTALLED_PLUGINS_FILE), record.to_string()).expect("writes");
+}
+
+/// The `build` profile of `state` already has `id` installed at `version`.
+fn installed(state: &Path, id: &str, version: Option<&str>) {
+    write_installed(&state.join("profiles/build"), id, version);
+}
 
 /// `init` for a project rooted at the state folder's parent, with a shell that must stay unused.
 fn init_here(state: &Path, manifest: &Manifest) -> Result<Report, ProfileError> {
@@ -169,15 +213,19 @@ fn settings_carry_the_forbidden_commands_as_denies_and_the_gate_as_allows() {
     for profile in ["lean", "build"] {
         let settings = settings(&state, profile);
         let permissions = &settings["permissions"];
-        assert_eq!(
-            strings(&permissions["deny"]),
-            [
-                "Bash(git push *)",
-                "Bash(git push)",
-                "Bash(rm -rf *)",
-                "Bash(rm -rf)"
-            ]
-        );
+        let deny = strings(&permissions["deny"]);
+        for wanted in [
+            "Bash(git push *)",
+            "Bash(git push)",
+            "Bash(git -* push *)",
+            "Bash(git -* push)",
+            "Bash(rm -rf *)",
+            "Bash(rm -rf)",
+            "Bash(rm -* -rf *)",
+            "Bash(rm -* -rf)",
+        ] {
+            assert!(deny.contains(&wanted), "{profile} denies {wanted}");
+        }
         let allow = strings(&permissions["allow"]);
         for wanted in [
             "Bash(zaf *)",
@@ -620,7 +668,6 @@ fn a_pack_from_a_path_is_registered_through_claude_under_the_profile_home() {
     assert_eq!(
         shell.lines(),
         [
-            format!("{env} list"),
             format!("{env} marketplace list"),
             format!("{env} marketplace add '{}'", dir.path().display()),
             format!("{env} install 'kit@shelf'"),
@@ -643,22 +690,20 @@ fn a_pack_from_a_path_is_registered_through_claude_under_the_profile_home() {
 }
 
 #[test]
-fn a_rerun_whose_plugin_list_already_shows_the_pack_installs_nothing_and_changes_nothing() {
+fn a_rerun_whose_installed_record_shows_the_pack_installs_nothing_and_changes_nothing() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state = dir.path().join(".zaf");
     write_marketplace(dir.path(), "./vendor/kit");
-    let shell = RecordingShell::listing(KIT_LISTED, SHELF_ADDED);
+    installed(&state, "kit@shelf", Some("1.2.3"));
+    let shell = RecordingShell::listing(NO_PLUGINS, NO_MARKETPLACES);
     let manifest = manifest(PATH_PACK);
     init_through(&state, &manifest, &shell).expect("first");
     let second = init_through(&state, &manifest, &shell).expect("again");
     assert!(second.unchanged(), "{:?}", second.lines());
     assert_eq!(second.lines(), ["nothing changed"]);
     assert!(
-        shell
-            .lines()
-            .iter()
-            .all(|line| line.ends_with("claude plugin list")),
-        "only the listing is asked: {:?}",
+        shell.lines().is_empty(),
+        "no plugin command at all: {:?}",
         shell.lines()
     );
 }
@@ -677,15 +722,15 @@ fn profile_init_updates_a_changed_pack() {
     let state = dir.path().join(".zaf");
     write_marketplace(dir.path(), "./vendor/kit");
     write_plugin(dir.path(), "1.3.0");
-    // The profile holds 1.2.3 (KIT_LISTED); the pack now declares 1.3.0.
-    let shell = RecordingShell::listing(KIT_LISTED, SHELF_ADDED);
+    // The profile holds 1.2.3; the pack now declares 1.3.0.
+    installed(&state, "kit@shelf", Some("1.2.3"));
+    let shell = RecordingShell::listing(NO_PLUGINS, SHELF_ADDED);
     let report = init_through(&state, &manifest(PATH_PACK), &shell).expect("updates");
     let home = state.join("profiles/build").display().to_string();
     let env = format!("CLAUDE_CONFIG_DIR='{home}' claude plugin");
     assert_eq!(
         shell.lines(),
         [
-            format!("{env} list"),
             format!("{env} marketplace update 'shelf'"),
             format!("{env} update 'kit@shelf'"),
         ],
@@ -707,14 +752,12 @@ fn a_rerun_with_the_same_pack_version_issues_no_plugin_command() {
     let state = dir.path().join(".zaf");
     write_marketplace(dir.path(), "./vendor/kit");
     write_plugin(dir.path(), "1.2.3");
-    let shell = RecordingShell::listing(KIT_LISTED, SHELF_ADDED);
+    installed(&state, "kit@shelf", Some("1.2.3"));
+    let shell = RecordingShell::listing(NO_PLUGINS, SHELF_ADDED);
     let report = init_through(&state, &manifest(PATH_PACK), &shell).expect("generates");
     assert!(
-        shell
-            .lines()
-            .iter()
-            .all(|line| line.ends_with("claude plugin list")),
-        "only the listing is asked: {:?}",
+        shell.lines().is_empty(),
+        "no plugin command: {:?}",
         shell.lines()
     );
     assert!(report.installed.is_empty());
@@ -726,7 +769,8 @@ fn a_failed_pack_update_is_an_error_naming_the_line() {
     let state = dir.path().join(".zaf");
     write_marketplace(dir.path(), "./vendor/kit");
     write_plugin(dir.path(), "2.0.0");
-    let shell = FailingUpdate(RecordingShell::listing(KIT_LISTED, SHELF_ADDED));
+    installed(&state, "kit@shelf", Some("1.2.3"));
+    let shell = FailingUpdate(RecordingShell::listing(NO_PLUGINS, SHELF_ADDED));
     let root = state.parent().expect("a parent");
     let result = init_with(root, &state, &manifest(PATH_PACK), &shell, None);
     let Err(ProfileError::Install { line, .. }) = result else {
@@ -756,8 +800,9 @@ fn a_marketplace_already_added_is_not_added_again() {
     let shell = RecordingShell::listing(NO_PLUGINS, SHELF_ADDED);
     init_through(&state, &manifest(PATH_PACK), &shell).expect("generates");
     let lines = shell.lines();
-    assert_eq!(lines.len(), 3, "{lines:?}");
-    assert!(lines[2].ends_with("claude plugin install 'kit@shelf'"));
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(lines[0].ends_with("claude plugin marketplace list"));
+    assert!(lines[1].ends_with("claude plugin install 'kit@shelf'"));
     assert!(lines.iter().all(|line| !line.contains("marketplace add")));
 }
 
@@ -794,32 +839,8 @@ fn a_failed_claude_command_is_an_error_naming_the_line() {
     let Err(ProfileError::Install { line, output }) = result else {
         panic!("an install error");
     };
-    assert!(line.ends_with("claude plugin list"), "{line}");
-    assert_eq!(output, NO_PLUGINS.trim());
-}
-
-#[test]
-fn the_listing_gives_the_version_of_the_asked_plugin_only() {
-    assert_eq!(
-        listed_version(KIT_LISTED, "kit@shelf"),
-        Some("1.2.3".to_owned())
-    );
-    assert_eq!(
-        listed_version(KIT_LISTED, "other@shelf"),
-        Some("9.9.9".to_owned())
-    );
-    assert_eq!(listed_version(KIT_LISTED, "kit@elsewhere"), None);
-    assert_eq!(listed_version(NO_PLUGINS, "kit@shelf"), None);
-    assert_eq!(
-        listed_version("  kit@shelf\n    Scope: user\n", "kit@shelf"),
-        Some("unknown".to_owned()),
-        "listed without a version"
-    );
-    assert_eq!(
-        listed_version("kit@shelf\n\nVersion: 3.0.0\n", "kit@shelf"),
-        Some("unknown".to_owned()),
-        "a blank line ends the entry"
-    );
+    assert!(line.ends_with("claude plugin marketplace list"), "{line}");
+    assert_eq!(output, NO_MARKETPLACES.trim());
 }
 
 #[test]
@@ -839,7 +860,7 @@ fn settings_enable_the_pack_and_never_wait_on_a_prompt() {
         &manifest(&format!(
             "{PATH_PACK}[forbidden]\ncommands = [\"git push\"]\n"
         )),
-        &RecordingShell::listing(KIT_LISTED, SHELF_ADDED),
+        &RecordingShell::listing(NO_PLUGINS, SHELF_ADDED),
     )
     .expect("generates");
     let build = settings(&state, "build");
@@ -854,40 +875,100 @@ fn settings_enable_the_pack_and_never_wait_on_a_prompt() {
     assert!(settings(&state, "build").get("enabledPlugins").is_none());
 }
 
+/// The version the fake `claude plugin install` records for what it installs.
+const TEAMS_RECORDED: &str = "2.1.0";
+
+fn manifest_with_tag(tag: &str) -> Manifest {
+    manifest(&format!("[pack]\ntag = \"{tag}\"\n"))
+}
+
 #[test]
-fn a_pack_tag_is_installed_from_the_marketplace_into_the_profile_once() {
+fn tag_mode_adds_the_marketplace_then_installs_teams_at_ways() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state = dir.path().join(".zaf");
-    let manifest = manifest("[pack]\ntag = \"kit--v1.0.0\"\n");
-    let shell = RecordingShell::answering(GateVerdict::Passed);
+    let manifest = manifest_with_tag("teams-v2.1.0");
+    let shell = RecordingShell::answering(GateVerdict::Passed).recording(TEAMS_RECORDED);
     let report = init_through(&state, &manifest, &shell).expect("generates");
     let home = state.join("profiles/build");
+    let env = format!("CLAUDE_CONFIG_DIR='{}' claude plugin", home.display());
     assert_eq!(
         shell.lines(),
-        [format!(
-            "CLAUDE_CONFIG_DIR='{}' claude plugin install 'teams@kit--v1.0.0' --marketplace 'ProgrammingCheetah/ways'",
-            home.display()
-        )]
+        [
+            format!("{env} marketplace list"),
+            format!("{env} marketplace add 'ProgrammingCheetah/ways'"),
+            format!("{env} install 'teams@ways'"),
+        ],
+        "no `--marketplace`, no `teams@<tag>`"
     );
     assert!(
         report
             .lines()
-            .contains(&"installed teams@kit--v1.0.0 into profiles/build".to_owned())
+            .contains(&"installed teams@ways into profiles/build".to_owned())
+    );
+    assert_eq!(
+        fs::read_to_string(home.join("plugins").join(INSTALLED_TAG_FILE)).expect("marker"),
+        "2.1.0\n",
+        "the marker holds the version installed_version read"
     );
     assert_eq!(
         settings(&state, "build")["enabledPlugins"]["teams@ways"],
         true
     );
     let again = init_through(&state, &manifest, &shell).expect("again");
-    assert_eq!(shell.lines().len(), 1, "the same tag installs nothing");
+    assert_eq!(
+        shell.lines().len(),
+        3,
+        "a rerun whose marker matches issues no plugin command"
+    );
     assert!(again.unchanged());
-    let newer = manifest_with_tag("kit--v1.1.0");
-    init_through(&state, &newer, &shell).expect("a new tag");
-    assert_eq!(shell.lines().len(), 2, "a new tag installs again");
+    let newer = RecordingShell::answering(GateVerdict::Passed).recording("2.2.0");
+    init_through(&state, &manifest_with_tag("v2.2.0"), &newer).expect("a new tag");
+    assert!(
+        newer.lines().iter().any(|line| line.contains(" install ")),
+        "a new tag installs again"
+    );
 }
 
-fn manifest_with_tag(tag: &str) -> Manifest {
-    manifest(&format!("[pack]\ntag = \"{tag}\"\n"))
+#[test]
+fn tag_mode_skips_a_marketplace_already_added() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    let ways = "Configured marketplaces:\n\n  \u{276f} ways\n    Source: GitHub (ProgrammingCheetah/ways)\n";
+    let shell = RecordingShell::listing(NO_PLUGINS, ways).recording(TEAMS_RECORDED);
+    init_through(&state, &manifest_with_tag("2.1.0"), &shell).expect("generates");
+    let lines = shell.lines();
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert!(lines[0].ends_with("claude plugin marketplace list"));
+    assert!(lines[1].ends_with("claude plugin install 'teams@ways'"));
+}
+
+#[test]
+fn tag_mode_version_mismatch_exits_1() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    let shell = RecordingShell::answering(GateVerdict::Passed).recording("2.0.3");
+    let result = init_through(&state, &manifest_with_tag("teams-v2.1.0"), &shell);
+    let error = result.expect_err("a version mismatch");
+    assert_eq!(
+        error.to_string(),
+        "pack teams is 2.0.3, manifest asks teams-v2.1.0"
+    );
+    assert!(error.is_refusal(), "exit 1, not a failed backend");
+    assert!(
+        !state
+            .join("profiles/build/plugins")
+            .join(INSTALLED_TAG_FILE)
+            .exists(),
+        "no marker for a version the manifest did not ask for"
+    );
+    assert!(state.join("profiles/build/settings.json").is_file());
+}
+
+#[test]
+fn a_tag_names_its_version_without_a_leading_v_or_teams_v() {
+    assert_eq!(tag_version("2.1.0"), "2.1.0");
+    assert_eq!(tag_version("v2.1.0"), "2.1.0");
+    assert_eq!(tag_version("teams-v2.1.0"), "2.1.0");
 }
 
 #[test]
@@ -895,17 +976,112 @@ fn a_failed_install_is_an_error_naming_the_line() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state = dir.path().join(".zaf");
     let shell = RecordingShell::answering(GateVerdict::Failed);
-    let result = init_through(&state, &manifest_with_tag("kit--v1.0.0"), &shell);
+    let result = init_through(&state, &manifest_with_tag("teams-v2.1.0"), &shell);
     let Err(ProfileError::Install { line, output }) = result else {
         panic!("an install error");
     };
-    assert!(line.contains("claude plugin install"), "{line}");
-    assert_eq!(output, "said no");
+    assert!(line.ends_with("claude plugin marketplace list"), "{line}");
+    assert_eq!(output, NO_MARKETPLACES.trim());
     assert!(
         !state
             .join("profiles/build/plugins")
             .join(INSTALLED_TAG_FILE)
             .exists()
+    );
+}
+
+/// A shell that answers like [`RecordingShell`] but fails every `install`.
+struct FailingInstall(RecordingShell);
+
+impl Shell for FailingInstall {
+    fn run(&self, line: &CommandLine) -> Result<GateRun, PortError> {
+        let mut ran = self.0.run(line)?;
+        if line.as_ref().contains(" install ") {
+            ran.verdict = GateVerdict::Failed;
+        }
+        Ok(ran)
+    }
+}
+
+#[test]
+fn a_failed_pack_install_leaves_the_settings_written() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    let manifest =
+        manifest("[pack]\ntag = \"teams-v2.1.0\"\n[forbidden]\ncommands = [\"git push\"]\n");
+    let shell = FailingInstall(RecordingShell::answering(GateVerdict::Passed));
+    let root = state.parent().expect("a parent");
+    let result = init_with(root, &state, &manifest, &shell, None);
+    let Err(ProfileError::Install { line, .. }) = result else {
+        panic!("an install error naming the failed line");
+    };
+    assert!(
+        line.ends_with("claude plugin install 'teams@ways'"),
+        "{line}"
+    );
+    let build = settings(&state, "build");
+    assert!(strings(&build["permissions"]["deny"]).contains(&"Bash(git push)"));
+    assert_eq!(build["enabledPlugins"]["teams@ways"], true);
+    assert!(state.join("profiles/build/CLAUDE.md").is_file());
+}
+
+#[test]
+fn init_and_doctor_read_one_installed_version() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    write_marketplace(dir.path(), "./vendor/kit");
+    write_plugin(dir.path(), "2.1.0");
+    installed(&state, "kit@shelf", Some("2.0.3"));
+    // `claude plugin list` would say 2.1.0; nothing reads it.
+    let listing = KIT_LISTED.replace("1.2.3", "2.1.0");
+    let shell = RecordingShell::listing(&listing, SHELF_ADDED);
+    let manifest = manifest(PATH_PACK);
+    let home = state.join("profiles/build");
+    assert_eq!(
+        installed_version(&home, "kit@shelf"),
+        Some("2.0.3".to_owned())
+    );
+    let checks = crate::app::doctor::packs(dir.path(), &manifest);
+    let [build] = &checks[..] else {
+        panic!("one profile carries the pack");
+    };
+    assert_eq!(build.version.as_deref(), Some("2.0.3"));
+    assert!(build.stale(), "doctor sees the stale pack init sees");
+    assert!(build.line().contains("zaf profile init updates it"));
+    let report = init_through(&state, &manifest, &shell).expect("updates");
+    let env = format!("CLAUDE_CONFIG_DIR='{}' claude plugin", home.display());
+    assert_eq!(
+        shell.lines(),
+        [
+            format!("{env} marketplace update 'shelf'"),
+            format!("{env} update 'kit@shelf'"),
+        ],
+        "init no longer reads `claude plugin list`"
+    );
+    assert!(
+        report
+            .lines()
+            .contains(&"updated kit@shelf to 2.1.0 in profiles/build".to_owned())
+    );
+}
+
+#[test]
+fn the_installed_version_is_what_installed_plugins_records() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    let home = state.join("profiles/build");
+    assert_eq!(installed_version(&home, "kit@shelf"), None, "no file");
+    installed(&state, "kit@shelf", Some("1.2.3"));
+    assert_eq!(
+        installed_version(&home, "kit@shelf"),
+        Some("1.2.3".to_owned())
+    );
+    assert_eq!(installed_version(&home, "kit@elsewhere"), None);
+    installed(&state, "kit@shelf", None);
+    assert_eq!(
+        installed_version(&home, "kit@shelf"),
+        Some("unknown".to_owned()),
+        "installed with no version"
     );
 }
 
@@ -1088,6 +1264,223 @@ fn forbidden_denies_match_flags_before_the_name() {
         ] {
             assert!(!denied(line), "{profile} denies `{line}`: {deny:?}");
         }
+    }
+}
+
+/// The deny patterns of `manifest`'s generated profiles, per profile.
+fn denies_of(manifest: &Manifest) -> Vec<(&'static str, Vec<String>)> {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    init_here(&state, manifest).expect("generates");
+    ["lean", "build"]
+        .into_iter()
+        .map(|profile| {
+            let settings = settings(&state, profile);
+            let patterns = strings(&settings["permissions"]["deny"])
+                .into_iter()
+                .map(|rule| {
+                    rule.strip_prefix("Bash(")
+                        .and_then(|rest| rest.strip_suffix(')'))
+                        .expect("a Bash rule")
+                        .to_owned()
+                })
+                .collect();
+            (profile, patterns)
+        })
+        .collect()
+}
+
+/// Asserts every line matches a deny in every profile, naming the profile and line when not.
+fn assert_denied(manifest: &Manifest, lines: &[&str]) {
+    for (profile, patterns) in denies_of(manifest) {
+        for line in lines {
+            assert!(
+                patterns
+                    .iter()
+                    .any(|pattern| pattern_matches(pattern, line)),
+                "{profile} lets `{line}` through: {patterns:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn forbidden_entries_get_flag_forms() {
+    let forbidding = manifest("[forbidden]\ncommands = [\"jj git push\", \"gh pr merge\"]\n");
+    for (profile, patterns) in denies_of(&forbidding) {
+        for wanted in [
+            "jj git push",
+            "jj git push *",
+            "jj -* git push",
+            "jj -* git push *",
+            "gh pr merge",
+            "gh pr merge *",
+            "gh -* pr merge",
+            "gh -* pr merge *",
+        ] {
+            assert!(patterns.iter().any(|p| p == wanted), "{profile}: {wanted}");
+        }
+    }
+    assert_denied(
+        &forbidding,
+        &[
+            "jj git push",
+            "jj git push --bookmark x",
+            "jj --no-pager git push",
+            "jj --color=never git push",
+            "jj --no-pager git push -b x",
+            "gh -R owner/repo pr merge 12",
+            "gh pr merge 12",
+        ],
+    );
+    // A tool alone is denied by its bare and with-arguments forms; it gets no flag form.
+    let whole = manifest("[forbidden]\ncommands = [\"rm\"]\n");
+    for (_, patterns) in denies_of(&whole) {
+        assert_eq!(patterns, ["rm *", "rm"]);
+    }
+}
+
+#[test]
+fn required_jj_denies_its_hatches() {
+    let jj = manifest("[requires]\njj = \"*\"\n");
+    for (profile, patterns) in denies_of(&jj) {
+        for sub in ["util", "config set", "config edit"] {
+            for wanted in [
+                format!("jj {sub}"),
+                format!("jj {sub} *"),
+                format!("jj -* {sub}"),
+                format!("jj -* {sub} *"),
+            ] {
+                assert!(patterns.contains(&wanted), "{profile}: {wanted}");
+            }
+        }
+    }
+    assert_denied(
+        &jj,
+        &[
+            "jj util exec -- sh x.sh",
+            "jj --no-pager util exec -- sh x.sh",
+            "jj config set --user x y",
+            "jj config edit --user",
+            "jj --config aliases.x=x x",
+            "jj --config=aliases.x=x x",
+            "jj log --config-file x.toml",
+            "jj log --config aliases.x=x",
+        ],
+    );
+    // The rest of jj stays out of the denies.
+    for (profile, patterns) in denies_of(&jj) {
+        for line in [
+            "jj log",
+            "jj --no-pager log -r x",
+            "jj config list",
+            "jj diff",
+        ] {
+            assert!(
+                !patterns
+                    .iter()
+                    .any(|pattern| pattern_matches(pattern, line)),
+                "{profile} denies `{line}`: {patterns:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn required_gh_denies_its_hatches() {
+    let gh = manifest("[requires]\ngh = \"*\"\n");
+    for (profile, patterns) in denies_of(&gh) {
+        for sub in ["alias", "extension"] {
+            for wanted in [
+                format!("gh {sub}"),
+                format!("gh {sub} *"),
+                format!("gh -* {sub}"),
+                format!("gh -* {sub} *"),
+            ] {
+                assert!(patterns.contains(&wanted), "{profile}: {wanted}");
+            }
+        }
+    }
+    assert_denied(
+        &gh,
+        &[
+            "gh alias set --shell x sh",
+            "gh extension install o/r",
+            "gh -R o/r alias list",
+            "gh --repo o/r extension list",
+        ],
+    );
+    for (profile, patterns) in denies_of(&gh) {
+        for line in ["gh pr view 12", "gh -R o/r issue list", "gh api repos/o/r"] {
+            assert!(
+                !patterns
+                    .iter()
+                    .any(|pattern| pattern_matches(pattern, line)),
+                "{profile} denies `{line}`: {patterns:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn required_yarn_denies_its_hatches() {
+    let yarn = manifest("[requires]\nyarn = \"*\"\n");
+    for (profile, patterns) in denies_of(&yarn) {
+        for sub in ["exec", "node", "dlx"] {
+            for wanted in [
+                format!("yarn {sub}"),
+                format!("yarn {sub} *"),
+                format!("yarn -* {sub}"),
+                format!("yarn -* {sub} *"),
+            ] {
+                assert!(patterns.contains(&wanted), "{profile}: {wanted}");
+            }
+        }
+    }
+    assert_denied(
+        &yarn,
+        &[
+            "yarn dlx x",
+            "yarn exec sh",
+            "yarn node x.js",
+            "yarn --cwd web dlx x",
+        ],
+    );
+    for (profile, patterns) in denies_of(&yarn) {
+        for line in ["yarn install", "yarn test", "yarn --cwd web build"] {
+            assert!(
+                !patterns
+                    .iter()
+                    .any(|pattern| pattern_matches(pattern, line)),
+                "{profile} denies `{line}`: {patterns:?}"
+            );
+        }
+    }
+    // A gate line that runs yarn allows it, so its hatches are denied too.
+    let gated = manifest("[gate]\nfull = \"cd web && yarn test\"\n");
+    assert_denied(&gated, &["yarn dlx x", "yarn --cwd web exec sh"]);
+}
+
+#[test]
+fn a_tool_not_allowed_adds_no_hatch() {
+    let without_yarn = manifest("[requires]\njj = \"*\"\ngh = \"*\"\n");
+    for (profile, patterns) in denies_of(&without_yarn) {
+        assert!(
+            !patterns.iter().any(|pattern| pattern.starts_with("yarn")),
+            "{profile} denies yarn: {patterns:?}"
+        );
+    }
+    let bare = manifest("");
+    for (profile, patterns) in denies_of(&bare) {
+        assert!(patterns.is_empty(), "{profile} denies {patterns:?}");
+    }
+    // Forbidding a command does not allow its tool, so it brings no hatch either.
+    let forbidding = manifest("[forbidden]\ncommands = [\"yarn publish\"]\n");
+    for (profile, patterns) in denies_of(&forbidding) {
+        assert!(
+            !patterns.iter().any(|pattern| pattern.contains("dlx")),
+            "{profile}: {patterns:?}"
+        );
     }
 }
 
