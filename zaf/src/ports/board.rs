@@ -152,6 +152,8 @@ pub enum IssueState {
 pub trait Board {
     /// Where one issue stands as a blocker (see [`IssueState`]).
     ///
+    /// Interface: `Board::issue_state(number) -> Result<IssueState, PortError>`.
+    ///
     /// An issue with no such number is [`IssueState::Missing`], not an error. A board that
     /// does not override this answers from [`Board::task`]: `done` when the ticket is labelled
     /// so, `missing` when there is no such ticket, else `open`; it cannot see a closed issue.
