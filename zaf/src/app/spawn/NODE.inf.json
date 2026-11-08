@@ -18,6 +18,16 @@
   ],
   "fs": [
     {
+      "name": "blockers.rs",
+      "role": "Blocked by: parsing, the blocker graph, its cycles and dead blockers",
+      "node": false
+    },
+    {
+      "name": "blockers/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
       "name": "mod.rs",
       "role": "prepare, launch, launch_all, dry run",
       "node": false

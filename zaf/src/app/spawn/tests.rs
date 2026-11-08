@@ -429,6 +429,78 @@ fn prepare_skips_blocked_and_claimed_tasks_read_from_the_board() {
 }
 
 #[test]
+fn a_missing_blocker_is_dead() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let board = FakeBoard::default();
+    board.add_ticket(epic(2));
+    board.add_ticket(ticket(3, Some(2), "Blocked by: #99", TaskLabel::Ready));
+
+    let prepared = plan_only(&board, &state_dir, &manifest(), &|_| true).expect("plans");
+    let text = prepared.plan.render_text();
+    assert!(text.contains("dead blocker #99 on #3: not an issue\n"));
+    assert!(text.contains("#3 skipped: blocked by #99\n"));
+
+    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, OWN_PID).expect("prepares");
+    assert!(
+        prepared
+            .plan
+            .render_text()
+            .contains("dead blocker #99 on #3: not an issue\n")
+    );
+    assert_eq!(
+        prepared.plan.to_json(&[], &[])["dead_blockers"],
+        serde_json::json!([{ "blocker": 99, "on": 3, "reason": "not an issue" }])
+    );
+}
+
+#[test]
+fn a_blocker_closed_without_done_is_dead() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let board = FakeBoard::default();
+    board.add_ticket(epic(2));
+    board.add_ticket(ticket(3, Some(2), "Blocked by: #6 #7", TaskLabel::Ready));
+    board.add_ticket(ticket(6, Some(2), "", TaskLabel::Blocked));
+    board.close(IssueNumber::from(6));
+    board.add_ticket(ticket(7, Some(2), "", TaskLabel::Done));
+    board.close(IssueNumber::from(7));
+
+    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, OWN_PID).expect("prepares");
+    let text = prepared.plan.render_text();
+    assert!(text.contains("dead blocker #6 on #3: closed without done\n"));
+    assert!(
+        !text.contains("dead blocker #7"),
+        "a closed issue labelled done is closed for good"
+    );
+    assert!(text.contains("#3 skipped: blocked by #6\n"));
+}
+
+#[test]
+fn the_snapshot_reads_a_cycle_through_open_tasks_that_are_not_ready() {
+    let board = FakeBoard::default();
+    board.add_ticket(epic(2));
+    board.add_ticket(ticket(3, Some(2), "Blocked by: #4", TaskLabel::Ready));
+    board.add_ticket(ticket(4, Some(2), "Blocked by: #5", TaskLabel::Blocked));
+    board.add_ticket(ticket(5, Some(2), "Blocked by: #4", TaskLabel::Blocked));
+
+    let read = snapshot(&board).expect("snapshot");
+    assert_eq!(
+        read.open.keys().copied().collect::<Vec<_>>(),
+        [IssueNumber::from(4), IssueNumber::from(5)]
+    );
+    let text = tick::plan(
+        &read,
+        &SpawnState::default(),
+        Level::Green,
+        Settings::from(&manifest()),
+    )
+    .render_text();
+    assert!(text.contains("#3 skipped: blocked by #4 (in a blocker cycle)\n"));
+    assert!(text.contains("blocker cycle: #4 → #5 → #4\n"));
+}
+
+#[test]
 fn a_second_tick_sees_the_reserved_slots_taken() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state_dir = dir.path().join(".zaf");

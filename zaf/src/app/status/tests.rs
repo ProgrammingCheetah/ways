@@ -197,3 +197,79 @@ fn the_running_line_counts_instances_and_each_is_listed_once_with_its_tasks() {
         "{text}"
     );
 }
+
+fn blocked(number: u64, by: &str) -> Ticket {
+    Ticket {
+        body: format!("Blocked by: {by}"),
+        ..ticket(number, &format!("Task {number}"), TaskLabel::Ready)
+    }
+}
+
+#[test]
+fn status_names_a_two_task_cycle() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let board = FakeBoard::default();
+    board.add_ticket(blocked(12, "#11"));
+    board.add_ticket(blocked(11, "#12"));
+
+    let status = status(&board, dir.path(), 2).expect("status");
+
+    assert_eq!(status.cycles, [[11, 12]]);
+    assert!(
+        status
+            .render_text()
+            .contains("blocker cycle: #11 → #12 → #11\n")
+    );
+}
+
+#[test]
+fn status_names_a_three_task_cycle() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let board = FakeBoard::default();
+    board.add_ticket(blocked(22, "#20"));
+    board.add_ticket(blocked(20, "#21"));
+    board.add_ticket(blocked(21, "#22"));
+    board.add_ticket(blocked(11, "#12"));
+    board.add_ticket(blocked(12, "#11"));
+
+    let status = status(&board, dir.path(), 2).expect("status");
+
+    assert_eq!(status.cycles, [vec![11, 12], vec![20, 21, 22]]);
+    let text = status.render_text();
+    assert!(
+        text.contains("blocker cycle: #20 → #21 → #22 → #20\n"),
+        "{text}"
+    );
+    assert!(text.contains("blocker cycle: #11 → #12 → #11\n"), "{text}");
+    let json: serde_json::Value = serde_json::from_str(&status.to_json()).expect("json");
+    assert_eq!(json["cycles"], serde_json::json!([[11, 12], [20, 21, 22]]));
+}
+
+#[test]
+fn status_names_dead_blockers_and_keeps_a_plain_open_blocker_quiet() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let board = FakeBoard::default();
+    board.add_ticket(blocked(3, "#4 #5 #99"));
+    board.add_ticket(ticket(4, "Open blocker", TaskLabel::Blocked));
+    board.add_ticket(ticket(5, "Dropped blocker", TaskLabel::Blocked));
+    board.close(IssueNumber::from(5));
+
+    let status = status(&board, dir.path(), 2).expect("status");
+
+    assert!(status.cycles.is_empty());
+    let text = status.render_text();
+    assert!(
+        text.contains("dead blocker #5 on #3: closed without done\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("dead blocker #99 on #3: not an issue\n"),
+        "{text}"
+    );
+    assert!(!text.contains("dead blocker #4"), "{text}");
+    let json: serde_json::Value = serde_json::from_str(&status.to_json()).expect("json");
+    assert_eq!(
+        json["dead_blockers"][1],
+        serde_json::json!({ "blocker": 99, "on": 3, "reason": "not an issue" })
+    );
+}

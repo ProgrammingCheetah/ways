@@ -17,10 +17,11 @@
 //! A dry run ([`plan_only`] and [`dry_run`]) plans the same tick and describes
 //! each launch it would make, writing nothing: no state, no run folder, no comment.
 
+pub mod blockers;
 mod state;
 pub mod tick;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 use std::time::SystemTime;
@@ -31,7 +32,7 @@ pub use tick::{
 };
 
 use super::guard::{GUARD_FILE, Level};
-use crate::domain::{Instance, IssueNumber, Profile, RoleName, TaskLabel};
+use crate::domain::{Instance, IssueNumber, Profile, RoleName};
 use crate::manifest::{Manifest, ManifestError};
 use crate::ports::{Board, ClaimRecord, PortError, RunRequest, Runner};
 
@@ -111,8 +112,9 @@ pub fn read_guard(state_dir: &Path) -> Result<Level, SpawnError> {
         })
 }
 
-/// Reads what the tick needs from the board: the ready tasks, the live claims,
-/// and which of the ready tasks' blockers are closed (labelled `done`).
+/// Reads what the tick needs from the board: the ready tasks, the live claims, which of
+/// their blockers are closed (labelled `done`), the open tasks the blockers lead to, and
+/// the blockers that can never close (see [`blockers`]).
 pub fn snapshot(board: &dyn Board) -> Result<Snapshot, PortError> {
     let ready = board.ready()?;
     let claimed = board
@@ -120,24 +122,17 @@ pub fn snapshot(board: &dyn Board) -> Result<Snapshot, PortError> {
         .into_iter()
         .map(|claim| claim.task)
         .collect();
-    let named: BTreeSet<IssueNumber> = ready
-        .iter()
-        .flat_map(|ticket| tick::blockers(&ticket.body))
-        .collect();
-    let mut closed = BTreeSet::new();
-    for blocker in named {
-        match board.task(blocker) {
-            Ok(ticket) if ticket.label == Some(TaskLabel::Done) => {
-                closed.insert(blocker);
-            }
-            Ok(_) | Err(PortError::NotFound(_)) => {}
-            Err(error) => return Err(error),
-        }
+    let found = blockers::read(board, &ready)?;
+    let mut open = found.graph;
+    for ticket in &ready {
+        open.remove(&ticket.number);
     }
     Ok(Snapshot {
         ready,
         claimed,
-        closed,
+        closed: found.closed,
+        open,
+        dead: found.dead,
     })
 }
 
@@ -601,8 +596,13 @@ impl Plan {
             lines.push(format!("{epic} skipped: {}", epic_reason(*skip)));
         }
         for (task, skip) in &self.tasks {
-            lines.push(format!("{task} skipped: {}", task_reason(skip)));
+            lines.push(format!("{task} skipped: {}", self.task_reason(skip)));
         }
+        // A cycle with a ready task is named by that task's skip line; the others only here.
+        for cycle in self.cycles.iter().filter(|cycle| !self.has_skipped(cycle)) {
+            lines.push(format!("blocker cycle: {}", blockers::render_cycle(cycle)));
+        }
+        lines.extend(self.dead.iter().map(ToString::to_string));
         for launch in &self.launches {
             let tasks: Vec<String> = launch.tasks.iter().map(ToString::to_string).collect();
             lines.push(format!(
@@ -647,6 +647,7 @@ impl Plan {
             .map(|(task, skip)| {
                 let (reason, detail) = match skip {
                     TaskSkip::Blocked(by) => ("blocked", serde_json::json!(numbers(by))),
+                    TaskSkip::InCycle(cycle) => ("in_cycle", serde_json::json!(numbers(cycle))),
                     TaskSkip::Claimed => ("claimed", serde_json::Value::Null),
                     TaskSkip::Running(instance) => ("running", serde_json::json!(instance)),
                     TaskSkip::NoEpic => ("no_epic", serde_json::Value::Null),
@@ -658,6 +659,13 @@ impl Plan {
             .iter()
             .map(|branch| serde_json::json!({ "branch": branch, "reason": "not built" }))
             .collect();
+        let cycles: Vec<Vec<u64>> = self
+            .cycles
+            .iter()
+            .map(|cycle| blockers::cycle_numbers(cycle))
+            .collect();
+        let dead: Vec<blockers::DeadLine> =
+            self.dead.iter().map(blockers::DeadLine::from).collect();
         let slots = &self.slots;
         serde_json::json!({
             "slots": {
@@ -670,7 +678,41 @@ impl Plan {
             "launched": launched,
             "lost": lost,
             "skipped": { "epics": epics, "tasks": tasks, "branches": branches },
+            "cycles": cycles,
+            "dead_blockers": dead,
         })
+    }
+
+    /// Whether a task of `cycle` is among the skipped tasks, so its skip line names the cycle.
+    fn has_skipped(&self, cycle: &[IssueNumber]) -> bool {
+        self.tasks
+            .iter()
+            .any(|(task, skip)| matches!(skip, TaskSkip::InCycle(_)) && cycle.contains(task))
+    }
+
+    /// Why a ready task was left out, in words.
+    fn task_reason(&self, skip: &TaskSkip) -> String {
+        match skip {
+            TaskSkip::Blocked(by) => {
+                let by: Vec<String> = by
+                    .iter()
+                    .map(|blocker| {
+                        if self.cycles.iter().any(|cycle| cycle.contains(blocker)) {
+                            format!("{blocker} (in a blocker cycle)")
+                        } else {
+                            blocker.to_string()
+                        }
+                    })
+                    .collect();
+                format!("blocked by {}", by.join(" "))
+            }
+            TaskSkip::InCycle(cycle) => {
+                format!("in a blocker cycle ({})", blockers::render_cycle(cycle))
+            }
+            TaskSkip::Claimed => "claimed".to_owned(),
+            TaskSkip::Running(instance) => format!("carried by {instance}"),
+            TaskSkip::NoEpic => "no epic".to_owned(),
+        }
     }
 }
 
@@ -679,18 +721,6 @@ fn epic_reason(skip: EpicSkip) -> &'static str {
         EpicSkip::NothingLaunchable => "no ready, unblocked, unclaimed task",
         EpicSkip::NoFreeSlot => "no free slot",
         EpicSkip::GuardRed => "guard red",
-    }
-}
-
-fn task_reason(skip: &TaskSkip) -> String {
-    match skip {
-        TaskSkip::Blocked(by) => {
-            let by: Vec<String> = by.iter().map(ToString::to_string).collect();
-            format!("blocked by {}", by.join(" "))
-        }
-        TaskSkip::Claimed => "claimed".to_owned(),
-        TaskSkip::Running(instance) => format!("carried by {instance}"),
-        TaskSkip::NoEpic => "no epic".to_owned(),
     }
 }
 
