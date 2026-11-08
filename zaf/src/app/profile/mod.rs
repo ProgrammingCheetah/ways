@@ -629,6 +629,7 @@ fn single_quote(text: &str) -> String {
 /// file is missing or unreadable or does not list `id` (the pack is not installed).
 ///
 /// The one reader of the installed version: `profile init` and `zaf doctor` both ask it.
+/// Its interface: `profile::installed_version(home, id) -> Option<String>`.
 pub fn installed_version(home: &Path, id: &str) -> Option<String> {
     let text = fs::read_to_string(home.join(INSTALLED_PLUGINS_FILE)).ok()?;
     let installed: Value = serde_json::from_str(&text).ok()?;
