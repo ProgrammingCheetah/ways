@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::Cli;
-use super::exit::{BACKEND, OK, REFUSED, fail, fail_composition};
+use super::exit::{BACKEND, OK, REFUSED, fail, fail_composition, note_design_paths};
 
 use crate::app::actions::Caller;
 use crate::app::brief::{
@@ -84,7 +84,7 @@ pub fn run(cli: &Cli, task: IssueNumber) -> u8 {
             println!("~{} tokens", brief.tokens);
             OK
         }
-        Err(BriefActionsError::Brief(error)) => fail_brief(&path, error),
+        Err(BriefActionsError::Brief(error)) => fail_brief(&path, error, &composition),
         Err(error @ BriefActionsError::Actions(_)) => {
             eprintln!("zaf {path}: {error}");
             BACKEND
@@ -93,9 +93,13 @@ pub fn run(cli: &Cli, task: IssueNumber) -> u8 {
 }
 
 /// Reports why no pack was written and returns the exit code.
-fn fail_brief(path: &str, error: BriefError) -> u8 {
+fn fail_brief(path: &str, error: BriefError, composition: &Composition) -> u8 {
     match error {
-        BriefError::Board(error) | BriefError::Design(error) => fail(path, &error),
+        BriefError::Board(error) => fail(path, &error),
+        BriefError::Design(error) => {
+            note_design_paths(path, composition);
+            fail(path, &error)
+        }
         BriefError::Instance(_) => {
             eprintln!("zaf {path}: {error}");
             REFUSED

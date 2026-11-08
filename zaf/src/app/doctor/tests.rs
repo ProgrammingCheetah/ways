@@ -147,7 +147,7 @@ fn a_declared_design_dir_must_exist() {
     let before = doctor(&root, &manifest, &FakeCommands::new());
     assert_eq!(before.design.as_ref().map(|check| check.ok), Some(false));
     assert!(!before.passed());
-    assert!(before.lines()[0].starts_with("design dir: missing"));
+    assert!(before.lines()[0].starts_with("design dir not found: "));
     fs::create_dir(parent.path().join("b-design")).expect("design dir");
     fs::write(parent.path().join("b-design/index.md"), "").expect("index");
     assert!(doctor(&root, &manifest, &FakeCommands::new()).passed());
@@ -161,7 +161,7 @@ fn a_missing_design_index_fails_and_names_the_path() {
     let report = doctor(dir.path(), &manifest, &FakeCommands::new());
     assert!(!report.passed());
     let missing = format!(
-        "design index: missing ({})",
+        "design index not found: {}",
         dir.path().join("docs/index.md").display()
     );
     assert!(report.lines().contains(&missing), "{:?}", report.lines());
@@ -208,11 +208,35 @@ fn a_design_index_that_is_a_folder_is_missing() {
 }
 
 #[test]
-fn the_default_index_name_is_the_design_adapters() {
+fn the_design_index_is_the_manifests_own_path() {
+    let root = Path::new("/project");
+    let named = manifest("[design]\nkind = \"repo-dir\"\npath = \"docs\"\nindex = \"meta/p.md\"\n");
+    let default = manifest("[design]\nkind = \"repo-dir\"\npath = \"docs\"\n");
     assert_eq!(
-        DEFAULT_DESIGN_INDEX,
-        crate::adapters::design::DEFAULT_INDEX_FILE
+        named.design.index_path(root),
+        Some(PathBuf::from("/project/docs/meta/p.md"))
     );
+    assert_eq!(
+        default.design.index_path(root),
+        Some(
+            root.join("docs")
+                .join(crate::manifest::DEFAULT_DESIGN_INDEX)
+        )
+    );
+    assert_eq!(manifest("").design.index_path(root), None);
+}
+
+#[test]
+fn a_missing_actions_dir_fails_and_names_the_path() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    // The `doctor` helper provides the actions; the bare one does not.
+    let report = super::doctor(dir.path(), None, &manifest(""), &FakeCommands::new());
+    assert!(!report.passed());
+    let missing = format!(
+        "actions dir not found: {}",
+        dir.path().join(".zaf/actions").display()
+    );
+    assert!(report.lines().contains(&missing), "{:?}", report.lines());
 }
 
 #[test]
