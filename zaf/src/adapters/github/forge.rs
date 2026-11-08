@@ -5,15 +5,13 @@ use std::time::SystemTime;
 use serde::Deserialize;
 
 use super::GhCommand;
-use super::command::number_from_url;
 use super::rows::{
-    CheckBucket, CheckRow, FileRow, LineCommentRow, NumberRow, PrHeadRow, PrStateRow, ReviewRow,
-    UserRow,
+    CheckBucket, CheckRow, FileRow, LineCommentRow, PrHeadRow, PrStateRow, ReviewRow, UserRow,
 };
 use crate::domain::Location;
 use crate::ports::{
-    Author, Check, CheckName, CheckState, Forge, PortError, PrMerge, PrNumber, PrRequest,
-    ReviewComment, RuleId, ScanningAlert,
+    Author, Check, CheckName, CheckState, Forge, PortError, PrNumber, ReviewComment, RuleId,
+    ScanningAlert,
 };
 
 /// The author shown for a comment whose account was deleted, as GitHub shows it.
@@ -98,35 +96,6 @@ impl From<AlertRow> for ScanningAlert {
 }
 
 impl Forge for GithubForge {
-    fn open_pr(&self, request: &PrRequest) -> Result<PrNumber, PortError> {
-        let open: Vec<NumberRow> = self.gh.json(&[
-            "pr",
-            "list",
-            "--head",
-            request.slice.as_ref(),
-            "--state",
-            "open",
-            "--json",
-            "number",
-        ])?;
-        if let Some(existing) = open.first() {
-            return Ok(PrNumber::from(existing.number));
-        }
-        let stdout = self.gh.text(&[
-            "pr",
-            "create",
-            "--head",
-            request.slice.as_ref(),
-            "--base",
-            request.base.as_ref(),
-            "--title",
-            &request.title,
-            "--body",
-            &request.body,
-        ])?;
-        number_from_url(&stdout).map(PrNumber::from)
-    }
-
     fn checks(&self, pr: PrNumber) -> Result<Vec<Check>, PortError> {
         let number = bare(pr);
         let rows: Vec<CheckRow> =
@@ -209,18 +178,5 @@ impl Forge for GithubForge {
         let endpoint = format!("code-scanning/alerts?ref=refs/pull/{number}/head&state=open");
         let rows: Vec<AlertRow> = self.gh.api_list(&endpoint)?;
         Ok(rows.into_iter().map(ScanningAlert::from).collect())
-    }
-
-    fn merge(&self, pr: PrNumber) -> Result<PrMerge, PortError> {
-        let number = bare(pr);
-        let pull: PrStateRow = self.gh.json(&["pr", "view", &number, "--json", "state"])?;
-        match pull.state.as_str() {
-            "MERGED" => Ok(PrMerge::AlreadyMerged),
-            "CLOSED" => Err(PortError::Rejected(format!("{pr} is closed unmerged"))),
-            _ => {
-                self.gh.text(&["pr", "merge", &number, "--merge"])?;
-                Ok(PrMerge::Merged)
-            }
-        }
     }
 }

@@ -227,7 +227,7 @@ pub(super) fn run_named(name: &str, args: &[OsString], only: Option<Tier>) -> Ru
 }
 
 /// Prints a run's outcome and returns its code.
-fn print_outcome(cli: &Cli, outcome: &RunOutcome) -> u8 {
+pub(super) fn print_outcome(cli: &Cli, outcome: &RunOutcome) -> u8 {
     if cli.json {
         println!(
             "{}",

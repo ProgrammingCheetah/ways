@@ -9,9 +9,8 @@ use super::*;
 use crate::domain::{Instance, InstanceNumber, IssueNumber, Location, RoleName, TaskLabel};
 use crate::manifest::RepoName;
 use crate::ports::{
-    Author, BaseName, Board, Check, CheckName, CheckState, ClaimOutcome, ClaimRecord, Forge,
-    NewQuestion, PortError, PrMerge, PrNumber, PrRequest, QUESTION_TITLE_LIMIT, ReviewComment,
-    RuleId, ScanningAlert, SliceName, Ticket,
+    Author, Board, Check, CheckName, CheckState, ClaimOutcome, ClaimRecord, Forge, NewQuestion,
+    PortError, PrNumber, QUESTION_TITLE_LIMIT, ReviewComment, RuleId, ScanningAlert, Ticket,
 };
 
 const REPO: &str = "example/tracker";
@@ -1162,57 +1161,6 @@ fn questions_and_rulings_on_an_epic_and_unsigned_tasks_change_no_label() {
     assert_eq!(edits(&fake), Vec::<Vec<String>>::new());
 }
 
-fn request() -> PrRequest {
-    PrRequest {
-        slice: SliceName::from("feature/v1-export-2"),
-        base: BaseName::from("feature/v1"),
-        title: "Add the CSV writer".to_owned(),
-        body: "Closes #2".to_owned(),
-    }
-}
-
-#[test]
-fn open_pr_creates_one_or_returns_the_open_one() {
-    let fake = FakeGh::new();
-    fake.on("pr list *", "[]").on(
-        "pr create *",
-        &format!("https://github.com/{REPO}/pull/7\n"),
-    );
-    assert_eq!(fake.forge().open_pr(&request()), Ok(PrNumber::from(7)));
-    let list_call = argv(&[
-        "pr",
-        "list",
-        "--head",
-        "feature/v1-export-2",
-        "--state",
-        "open",
-        "--json",
-        "number",
-        "--repo",
-        REPO,
-    ]);
-    let create_call = argv(&[
-        "pr",
-        "create",
-        "--head",
-        "feature/v1-export-2",
-        "--base",
-        "feature/v1",
-        "--title",
-        "Add the CSV writer",
-        "--body",
-        "Closes #2",
-        "--repo",
-        REPO,
-    ]);
-    assert_eq!(fake.calls(), [list_call.clone(), create_call]);
-
-    let existing = FakeGh::new();
-    existing.on("pr list *", r#"[{"number":5}]"#);
-    assert_eq!(existing.forge().open_pr(&request()), Ok(PrNumber::from(5)));
-    assert_eq!(existing.calls(), [list_call]);
-}
-
 #[test]
 fn checks_map_gh_buckets_and_none_reported_is_empty() {
     let fake = FakeGh::new();
@@ -1389,23 +1337,6 @@ fn last_changed_file_reads_the_diff() {
         broken.forge().last_changed_file(PrNumber::from(7)),
         Err(PortError::Backend(_))
     ));
-}
-
-#[test]
-fn merge_merges_once_and_a_merged_pr_is_quiet() {
-    let fake = FakeGh::new();
-    fake.on("pr view 7 *", r#"{"state":"OPEN"}"#)
-        .on("pr view 8 *", r#"{"state":"MERGED"}"#)
-        .on("pr merge *", "");
-    let forge = fake.forge();
-    assert_eq!(forge.merge(PrNumber::from(7)), Ok(PrMerge::Merged));
-    assert_eq!(forge.merge(PrNumber::from(8)), Ok(PrMerge::AlreadyMerged));
-    let expected_calls = vec![
-        argv(&["pr", "view", "7", "--json", "state", "--repo", REPO]),
-        argv(&["pr", "merge", "7", "--merge", "--repo", REPO]),
-        argv(&["pr", "view", "8", "--json", "state", "--repo", REPO]),
-    ];
-    assert_eq!(fake.calls(), expected_calls);
 }
 
 #[test]

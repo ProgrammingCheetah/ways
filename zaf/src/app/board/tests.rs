@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use super::*;
 use crate::app::check::{CheckRecord, Verdict};
 use crate::domain::{InstanceNumber, RoleName};
-use crate::fakes::{FakeBoard, FakeForge, FakeVcs};
-use crate::ports::{BaseName, PrNumber, PrRequest, SliceName};
+use crate::fakes::{FakeBoard, FakeForge, FakeVcs, PrRequest};
+use crate::ports::{BaseName, PrNumber, SliceName};
 
 fn ticket(number: u64, label: TaskLabel) -> Ticket {
     Ticket {
@@ -317,10 +317,7 @@ impl Scene {
         let workspace = scene.workspace.display().to_string();
         put(&scene.root.join(".zaf/slices/319"), &workspace);
         let slice = SliceName::from(SLICE);
-        scene
-            .vcs
-            .open_slice(&slice, &BaseName::from(BASE))
-            .expect("open");
+        scene.vcs.open(&slice, &BaseName::from(BASE));
         scene.vcs.place(&slice, &scene.workspace).expect("place");
         let head = scene.commit();
         let pr = scene.open_pr(&head);

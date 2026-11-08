@@ -3,21 +3,17 @@ use std::sync::Mutex;
 use super::*;
 use crate::app::check::{CheckRecord, Target};
 use crate::domain::{Location, Profile, RoleName};
-use crate::fakes::{FakeForge, FakeRunner};
+use crate::fakes::{FakeForge, FakeRunner, PrRequest};
 use crate::manifest::CommandLine;
 use crate::ports::{
-    BaseName, Check, CheckName, CheckState, GateRun, GateVerdict, PrMerge, PrRequest,
-    ReviewComment, RunOutput, RunRequest, ScanningAlert, SliceName,
+    BaseName, Check, CheckName, CheckState, GateRun, GateVerdict, ReviewComment, RunOutput,
+    RunRequest, ScanningAlert, SliceName,
 };
 
 /// Lends a shared fake forge to a step's thread.
 struct SharedForge(Arc<FakeForge>);
 
 impl Forge for SharedForge {
-    fn open_pr(&self, request: &PrRequest) -> Result<PrNumber, PortError> {
-        self.0.open_pr(request)
-    }
-
     fn checks(&self, pr: PrNumber) -> Result<Vec<Check>, PortError> {
         self.0.checks(pr)
     }
@@ -40,10 +36,6 @@ impl Forge for SharedForge {
 
     fn scanning_alerts(&self, pr: PrNumber) -> Result<Vec<ScanningAlert>, PortError> {
         self.0.scanning_alerts(pr)
-    }
-
-    fn merge(&self, pr: PrNumber) -> Result<PrMerge, PortError> {
-        self.0.merge(pr)
     }
 }
 

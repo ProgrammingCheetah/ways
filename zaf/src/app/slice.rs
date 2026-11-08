@@ -1,16 +1,11 @@
-//! `zaf slice open|pr|merge|drop`: a task's slice from workspace to merge, each one call.
+//! A task's slice, resolved: its name and base from the board and the manifest's branch patterns.
 //!
-//! Every slice verb first resolves its [`SliceTarget`] from the board and the
-//! manifest's branch patterns ([`resolve`]), then runs on that target. The two
-//! steps are apart because the caller needs the slice's name in between (the
-//! light gate runs inside the slice's workspace).
+//! The slice's own work (open, pull request, merge, drop) is the project's `slice-*` actions;
+//! `zaf changes` and the slice environment of an action read the target from here.
 
-use crate::domain::{IssueNumber, TaskLabel};
+use crate::domain::IssueNumber;
 use crate::manifest::{BranchPattern, BranchesSection};
-use crate::ports::{
-    BaseMerge, BaseName, Board, CommitId, Forge, Gate, GateLevel, GateVerdict, PortError, PrMerge,
-    PrNumber, PrRequest, Publication, SliceName, SliceOpening, Ticket, Vcs,
-};
+use crate::ports::{BaseName, Board, PortError, SliceName, Ticket};
 
 /// The placeholder for the task's bare number in a branch pattern.
 const TASK_PLACEHOLDER: &str = "{task}";
@@ -19,35 +14,17 @@ const EPIC_PLACEHOLDER: &str = "{epic}";
 /// The placeholder for the release version in a branch pattern.
 const VERSION_PLACEHOLDER: &str = "{version}";
 
-/// The step of a slice verb a port call failed in, so the caller can say which.
+/// The step a port call failed in, so the caller can say which.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, strum::IntoStaticStr)]
 #[strum(serialize_all = "kebab-case")]
 pub enum Step {
     /// Reading the task's ticket.
     Ticket,
-    /// Opening the slice and its workspace.
-    Open,
     /// Reading the slice's change.
     Diff,
-    /// Checking for and committing uncommitted work.
-    Commit,
-    /// Merging the base into the slice.
-    MergeBase,
-    /// Running the light gate.
-    Gate,
-    /// Publishing the slice.
-    Publish,
-    /// Opening or finding the pull request.
-    PullRequest,
-    /// Merging the pull request.
-    Merge,
-    /// Labelling the task done.
-    Label,
-    /// Removing the slice's workspace.
-    Drop,
 }
 
-/// Why a slice verb stopped.
+/// Why resolving a task's slice, or reading its change, stopped.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SliceError {
     /// The task pattern names `{epic}` and the ticket belongs to no epic.
@@ -59,18 +36,6 @@ pub enum SliceError {
     /// A branch pattern names `{version}` and the call gave none.
     #[error("the branch pattern names `{{version}}`, and no version was given")]
     NoVersion,
-    /// Merging the base in stopped on conflicts; the slice is unchanged.
-    #[error("merge-base: the base conflicts with the slice in {}", paths.join(", "))]
-    Conflicted {
-        /// The conflicting paths.
-        paths: Vec<String>,
-    },
-    /// The light gate ran and failed.
-    #[error("gate: the light gate failed")]
-    GateFailed {
-        /// What the gate printed.
-        output: String,
-    },
     /// A port call failed in a step.
     #[error("{step}: {error}")]
     Port {
@@ -87,8 +52,6 @@ impl SliceError {
     pub fn step(&self) -> Option<Step> {
         match self {
             Self::NoEpic { .. } | Self::NoVersion => None,
-            Self::Conflicted { .. } => Some(Step::MergeBase),
-            Self::GateFailed { .. } => Some(Step::Gate),
             Self::Port { step, .. } => Some(*step),
         }
     }
@@ -161,179 +124,6 @@ fn fill(
 /// An issue number without its `#`, as a branch name carries it.
 fn bare(number: IssueNumber) -> String {
     number.get().to_string()
-}
-
-/// `zaf slice open`: opens the task's slice and workspace at its base.
-pub fn open(vcs: &dyn Vcs, target: &SliceTarget) -> Result<SliceOpening, SliceError> {
-    vcs.open_slice(&target.slice, &target.base)
-        .map_err(at(Step::Open))
-}
-
-/// What `zaf slice pr` did.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PrReport {
-    /// The pull request, new or the one already open.
-    pub pr: PrNumber,
-    /// The commit made from uncommitted work, if there was any.
-    pub commit: Option<CommitId>,
-    /// What publishing did.
-    pub publication: Publication,
-}
-
-/// The pull request's title and the commit message: the ticket's title and its number.
-pub fn pr_title(ticket: &Ticket) -> String {
-    format!("{} ({})", ticket.title, ticket.number)
-}
-
-/// The pull request a slice opens: from the slice into its base, the task in its title.
-fn pr_request(target: &SliceTarget) -> PrRequest {
-    PrRequest {
-        slice: target.slice.clone(),
-        base: target.base.clone(),
-        title: pr_title(&target.ticket),
-        body: format!("Refs {}.", target.ticket.number),
-    }
-}
-
-/// `zaf slice pr`: commits uncommitted work, publishes the slice, and opens its pull request.
-///
-/// Repeating it on a published slice with an open pull request changes nothing
-/// and returns that pull request.
-pub fn pr(vcs: &dyn Vcs, forge: &dyn Forge, target: &SliceTarget) -> Result<PrReport, SliceError> {
-    let request = pr_request(target);
-    let clean = vcs.is_clean(&target.slice).map_err(at(Step::Commit))?;
-    let commit = if clean {
-        None
-    } else {
-        let commit = vcs
-            .commit(&target.slice, &request.title)
-            .map_err(at(Step::Commit))?;
-        Some(commit)
-    };
-    let publication = vcs.publish(&target.slice).map_err(at(Step::Publish))?;
-    let pr = forge.open_pr(&request).map_err(at(Step::PullRequest))?;
-    let report = PrReport {
-        pr,
-        commit,
-        publication,
-    };
-    Ok(report)
-}
-
-/// The ports `zaf slice merge` drives. A project without a gate passes `None`
-/// and the gate step is skipped.
-#[derive(Clone, Copy)]
-pub struct MergePorts<'a> {
-    /// The board, to label the task done.
-    pub board: &'a dyn Board,
-    /// The VCS, to merge the base in, publish and drop.
-    pub vcs: &'a dyn Vcs,
-    /// The forge, to merge the pull request.
-    pub forge: &'a dyn Forge,
-    /// The gate, run in the slice's workspace; `None` when the project declares none.
-    pub gate: Option<&'a dyn Gate>,
-}
-
-/// The command `zaf slice merge` runs.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MergeCommand {
-    /// The resolved slice.
-    pub target: SliceTarget,
-    /// The pull request `zaf slice pr` recorded, if the caller has it; otherwise
-    /// the slice's open pull request is looked up.
-    pub pr: Option<PrNumber>,
-}
-
-/// What a merge that ran did, step by step.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MergeReport {
-    /// What merging the base in did.
-    pub base_merge: BaseMerge,
-    /// The light gate's verdict; `None` when the project declares no gate.
-    pub gate: Option<GateVerdict>,
-    /// What publishing did.
-    pub publication: Publication,
-    /// The pull request merged.
-    pub pr: PrNumber,
-    /// What merging it did.
-    pub merge: PrMerge,
-}
-
-/// What `zaf slice merge` did.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MergeOutcome {
-    /// The steps ran to the end.
-    Merged(MergeReport),
-    /// The task was already done; only its workspace was dropped, if it was still there.
-    AlreadyDone,
-}
-
-/// `zaf slice merge`: merges the base in, runs the light gate, publishes, merges
-/// the pull request, labels the task done and drops the workspace.
-///
-/// It stops at the first failing step, and the error names it. A task already
-/// labelled done succeeds quietly.
-pub fn merge(ports: MergePorts<'_>, command: &MergeCommand) -> Result<MergeOutcome, SliceError> {
-    let target = &command.target;
-    if target.ticket.label == Some(TaskLabel::Done) {
-        ports
-            .vcs
-            .drop_slice(&target.slice)
-            .map_err(at(Step::Drop))?;
-        return Ok(MergeOutcome::AlreadyDone);
-    }
-    let base_merge = ports
-        .vcs
-        .merge_base(&target.slice)
-        .map_err(at(Step::MergeBase))?;
-    if let BaseMerge::Conflicted { paths } = &base_merge {
-        return Err(SliceError::Conflicted {
-            paths: paths.clone(),
-        });
-    }
-    let gate = match ports.gate {
-        Some(gate) => {
-            let run = gate.run(GateLevel::Light).map_err(at(Step::Gate))?;
-            if run.verdict == GateVerdict::Failed {
-                return Err(SliceError::GateFailed { output: run.output });
-            }
-            Some(run.verdict)
-        }
-        None => None,
-    };
-    let publication = ports
-        .vcs
-        .publish(&target.slice)
-        .map_err(at(Step::Publish))?;
-    let pr = match command.pr {
-        Some(pr) => pr,
-        None => ports
-            .forge
-            .open_pr(&pr_request(target))
-            .map_err(at(Step::PullRequest))?,
-    };
-    let merge = ports.forge.merge(pr).map_err(at(Step::Merge))?;
-    ports
-        .board
-        .label(target.ticket.number, TaskLabel::Done)
-        .map_err(at(Step::Label))?;
-    ports
-        .vcs
-        .drop_slice(&target.slice)
-        .map_err(at(Step::Drop))?;
-    let report = MergeReport {
-        base_merge,
-        gate,
-        publication,
-        pr,
-        merge,
-    };
-    Ok(MergeOutcome::Merged(report))
-}
-
-/// `zaf slice drop`: removes the slice's workspace; a slice already gone succeeds quietly.
-pub fn drop(vcs: &dyn Vcs, target: &SliceTarget) -> Result<(), SliceError> {
-    vcs.drop_slice(&target.slice).map_err(at(Step::Drop))
 }
 
 #[cfg(test)]
