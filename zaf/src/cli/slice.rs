@@ -28,7 +28,8 @@ pub const VERSION_VAR: &str = "ZAF_VERSION";
 /// The action that opens a task's slice.
 const SLICE_OPEN: &str = "slice-open";
 
-/// Runs a slice alias: `zaf do slice-<x> <task>`, with the action's exit. A missing action is
+/// Runs the interface `zaf slice <x> <task>` (x is open, pr, merge or drop) as
+/// `zaf do slice-<x> <task>`, with the action's exit. A missing action is
 /// exit 2 rather than the 125 of `zaf do`. On exit 0 the value `slice-open` or `slice-pr` handed
 /// back (the workspace, the pull request number) is printed on one line.
 pub fn run(cli: &Cli, action: &SliceAction) -> u8 {
