@@ -293,11 +293,23 @@ impl Composition {
                 key,
                 kind: kind.to_string(),
             })?;
-        let design = DirDesign::new(dir);
-        Ok(Some(Box::new(match &section.index {
-            Some(index) => design.with_index(index.clone()),
-            None => design,
-        })))
+        let index = section
+            .index_path(&self.root)
+            .unwrap_or_else(|| dir.clone());
+        Ok(Some(Box::new(DirDesign::at(dir, index))))
+    }
+
+    /// The absolute design folder and index the design source reads, as one line for a
+    /// failure message; `None` for a project without a design source.
+    pub fn design_paths_tried(&self) -> Option<String> {
+        let section = &self.manifest.design;
+        let dir = section.dir(&self.root)?;
+        let index = section.index_path(&self.root)?;
+        Some(format!(
+            "design dir {}, design index {}",
+            dir.display(),
+            index.display()
+        ))
     }
 
     /// The gate the manifest names, run at the project root.

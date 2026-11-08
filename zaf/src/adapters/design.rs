@@ -23,7 +23,7 @@ use crate::domain::{PageId, PageStatus};
 use crate::ports::{Design, Page, PortError};
 
 /// The index file's name when the manifest names none.
-pub const DEFAULT_INDEX_FILE: &str = "index.md";
+pub const DEFAULT_INDEX_FILE: &str = crate::manifest::DEFAULT_DESIGN_INDEX;
 
 /// The page files' extension.
 const PAGE_EXTENSION: &str = "md";
@@ -69,22 +69,31 @@ pub struct SearchHit {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirDesign {
     dir: PathBuf,
+    /// The index file as a path of its own, not relative to `dir`.
     index: PathBuf,
 }
 
 impl DirDesign {
     /// A source over `dir`, with the index at [`DEFAULT_INDEX_FILE`] inside it.
     pub fn new(dir: impl Into<PathBuf>) -> Self {
+        let dir = dir.into();
+        let index = dir.join(DEFAULT_INDEX_FILE);
+        Self { dir, index }
+    }
+
+    /// A source over `dir` with its index at `index`, the two paths the manifest gives
+    /// (`DesignSection::dir` and `DesignSection::index_path`).
+    pub fn at(dir: impl Into<PathBuf>, index: impl Into<PathBuf>) -> Self {
         Self {
             dir: dir.into(),
-            index: PathBuf::from(DEFAULT_INDEX_FILE),
+            index: index.into(),
         }
     }
 
     /// Names the index file, relative to the pages' directory.
     #[must_use]
-    pub fn with_index(mut self, index: impl Into<PathBuf>) -> Self {
-        self.index = index.into();
+    pub fn with_index(mut self, index: impl AsRef<Path>) -> Self {
+        self.index = self.dir.join(index);
         self
     }
 
@@ -116,7 +125,7 @@ impl DirDesign {
     /// Walks the design folder and its subfolders. When two files claim one id, the one
     /// whose path sorts first wins, so the answer does not depend on the disk's order.
     fn page_files(&self) -> Result<BTreeMap<PageId, PathBuf>, PortError> {
-        let index_path = self.dir.join(&self.index);
+        let index_path = &self.index;
         let mut files = BTreeMap::new();
         let mut pending = vec![self.dir.clone()];
         while let Some(folder) = pending.pop() {
@@ -133,7 +142,7 @@ impl DirDesign {
                     }
                     continue;
                 }
-                if path == index_path || !is_page_file(&path) {
+                if path == *index_path || !is_page_file(&path) {
                     continue;
                 }
                 let id = path
@@ -159,8 +168,7 @@ impl DirDesign {
 
     /// The index entry for a page, or `NotFound`.
     fn index_entry(&self, id: &PageId) -> Result<IndexEntry, PortError> {
-        let index_path = self.dir.join(&self.index);
-        let text = self.read(&index_path)?;
+        let text = self.read(&self.index)?;
         text.lines()
             .filter_map(IndexEntry::parse)
             .find(|entry| entry.id == id.as_ref())
@@ -226,7 +234,7 @@ impl Design for DirDesign {
     /// Every entry of the index file, in id order. An id that is not a page id is skipped;
     /// when the index lists one id twice, the first line wins, as for [`Design::page`].
     fn index(&self) -> Result<Vec<(PageId, PageStatus, String)>, PortError> {
-        let text = self.read(&self.dir.join(&self.index))?;
+        let text = self.read(&self.index)?;
         let mut entries = BTreeMap::new();
         for entry in text.lines().filter_map(IndexEntry::parse) {
             let Ok(id) = PageId::from_str(&entry.id) else {

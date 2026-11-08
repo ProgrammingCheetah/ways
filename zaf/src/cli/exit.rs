@@ -4,7 +4,7 @@
 //! `2` a backend failure, `64` listed but not built. Clap keeps its own `2` for
 //! usage errors.
 
-use crate::composition::CompositionError;
+use crate::composition::{Composition, CompositionError};
 use crate::ports::PortError;
 
 /// The verb did what it said.
@@ -39,6 +39,14 @@ pub fn not_built(path: &str) -> u8 {
 pub fn fail(path: &str, error: &PortError) -> u8 {
     eprintln!("zaf {path}: {error}");
     code_for(error)
+}
+
+/// Says which absolute design folder and index the project's design source was read from, after
+/// it could not be read; says nothing for a project without a design source.
+pub fn note_design_paths(path: &str, composition: &Composition) {
+    if let Some(tried) = composition.design_paths_tried() {
+        eprintln!("zaf {path}: the design source could not be read; tried {tried}");
+    }
 }
 
 /// Prints a composition error the way every verb does and returns its code.
