@@ -1,0 +1,117 @@
+#!/bin/sh
+# zaf description: file an issue under an epic on the board: the body from a file, the labels given, the epic's milestone, linked as the epic's sub-issue, handing back its number; a sub-issue of the epic with the same title is handed back and nothing is filed
+# zaf 1: refused: the arguments are not <epic> <title> <body-file> [<label>...], or the body file cannot be read
+# zaf 2: a backend failed (gh is missing or refused, or printed no issue number); nothing was filed
+# zaf 3: the issue was filed but not linked under the epic; its number is the last line
+# zaf mode: 755
+if [ -z "$ZAF_ROOT" ] || [ "$#" -lt 3 ]; then
+    echo "usage: issue-file <epic> <title> <body-file> [<label>...], with ZAF_ROOT set" >&2
+    exit 1
+fi
+
+epic=${1#\#}
+title=$2
+body_file=$3
+shift 3
+case $epic in
+    "" | *[!0-9]*)
+        echo "epic $epic is not an issue number" >&2
+        exit 1
+        ;;
+esac
+if [ -z "$title" ]; then
+    echo "an issue needs a title" >&2
+    exit 1
+fi
+# A relative body file is the caller's: zaf runs the action in the caller's directory.
+case $body_file in
+    /*) ;;
+    *) body_file=$(pwd)/$body_file ;;
+esac
+if [ ! -r "$body_file" ] || [ -d "$body_file" ]; then
+    echo "cannot read the body file $body_file" >&2
+    exit 1
+fi
+
+for label in "$@"; do
+    if [ -z "$label" ]; then
+        echo "a label cannot be empty" >&2
+        exit 1
+    fi
+done
+
+# The board's repository: the first manifest that names one, in the order zaf reads them.
+# With none, gh works the repository out from the root's remotes, as it does by hand.
+board_repo() {
+    for manifest in "$ZAF_ROOT/.zaf.toml" "$ZAF_ROOT/.zaf/config.toml" "$ZAF_ROOT/ZAF.toml"; do
+        [ -f "$manifest" ] || continue
+        found=$(awk '
+            /^[ \t]*\[/ { in_board = ($0 ~ /^[ \t]*\[board\][ \t]*(#.*)?$/); next }
+            in_board && /^[ \t]*repo[ \t]*=/ {
+                line = $0
+                sub(/^[^=]*=[ \t]*"/, "", line)
+                sub(/".*$/, "", line)
+                print line
+                exit
+            }
+        ' "$manifest")
+        if [ -n "$found" ]; then
+            echo "$found"
+            return
+        fi
+    done
+}
+
+cd "$ZAF_ROOT" || exit 2
+
+repo=$(board_repo)
+if [ -z "$repo" ]; then
+    repo=$(gh repo view --json nameWithOwner --jq .nameWithOwner) || exit 2
+fi
+
+# Filed already (a retry after a timeout, say): the epic's sub-issue with this exact title.
+# The title is printed as it is (`@tsv` would escape a backslash) and compared through the
+# environment (`awk -v` would read escapes in it), so a title with a backslash still matches.
+existing=$(gh api "repos/$repo/issues/$epic/sub_issues" --paginate \
+    --jq '.[] | "\(.number)\t\(.title)"') || exit 2
+number=$(printf '%s\n' "$existing" | ISSUE_TITLE=$title awk -F '\t' '$2 == ENVIRON["ISSUE_TITLE"] { print $1; exit }')
+if [ -n "$number" ]; then
+    echo "#$number is already the epic's sub-issue titled $title" >&2
+    echo "$number"
+    exit 0
+fi
+
+milestone=$(gh issue view "$epic" --repo "$repo" --json milestone --jq '.milestone.title // ""') || exit 2
+
+# The labels become flags, after the fixed arguments.
+for label in "$@"; do
+    set -- "$@" --label "$label"
+    shift
+done
+if [ -n "$milestone" ]; then
+    set -- "$@" --milestone "$milestone"
+fi
+
+created=$(gh issue create --repo "$repo" --title "$title" --body-file "$body_file" "$@") || exit 2
+# gh prints the new issue's URL as its last line.
+url=$(printf '%s\n' "$created" | awk 'NF { line = $0 } END { print line }')
+number=${url##*/}
+case $number in
+    "" | *[!0-9]*)
+        echo "gh printed no issue number: $created" >&2
+        exit 2
+        ;;
+esac
+
+# The sub-issue link takes the issue's database id, not its number.
+if ! id=$(gh api "repos/$repo/issues/$number" --jq .id) || [ -z "$id" ]; then
+    echo "#$number was filed but its id could not be read, so it is not under #$epic" >&2
+    echo "$number"
+    exit 3
+fi
+if ! gh api "repos/$repo/issues/$epic/sub_issues" --method POST -F "sub_issue_id=$id" --silent; then
+    echo "#$number was filed but could not be linked under #$epic" >&2
+    echo "$number"
+    exit 3
+fi
+echo "$number"
