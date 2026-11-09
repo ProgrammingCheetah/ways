@@ -99,6 +99,8 @@ commands = [
   "gh pr merge",
   "zaf do pr-merge",
   "zaf do land",
+  "zaf do ship",
   "zaf do --tier machine pr-merge",
   "zaf do --tier machine land",
+  "zaf do --tier machine ship",
 ]

@@ -11,12 +11,14 @@ use zaf::manifest::{CommandLine, Manifest};
 use zaf::ports::{GateRun, PortError, Shell};
 
 /// The merge paths no instance may take.
-const MERGE_PATHS: [&str; 5] = [
+const MERGE_PATHS: [&str; 7] = [
     "gh pr merge",
     "zaf do pr-merge",
     "zaf do land",
+    "zaf do ship",
     "zaf do --tier machine pr-merge",
     "zaf do --tier machine land",
+    "zaf do --tier machine ship",
 ];
 
 /// The two actions that are allowed to merge, so the list must never name them.
