@@ -7,7 +7,7 @@
 use std::time::SystemTime;
 
 use super::PortError;
-use crate::domain::{Instance, Ticket, TicketId, TicketState, TicketTitle};
+use crate::domain::{Epic, Instance, Signature, Standing, Ticket, TicketId, TicketState};
 
 /// What a claim did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,47 +104,6 @@ impl NewQuestion {
     }
 }
 
-/// A sub-issue of an epic as the hub reads it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EpicTask {
-    /// Its issue.
-    pub number: TicketId,
-    /// Its state label, if it has one.
-    pub state: Option<TicketState>,
-    /// Whether the issue is closed.
-    pub closed: bool,
-    /// The name in its `group:<name>` label, if it has one.
-    pub group: Option<String>,
-}
-
-/// An open epic and its sub-issues, closed ones included.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EpicTree {
-    /// Its issue.
-    pub number: TicketId,
-    /// Its title.
-    pub title: TicketTitle,
-    /// Its tasks, in issue order.
-    pub tasks: Vec<EpicTask>,
-}
-
-/// Where an issue stands as a blocker: whether it can still close, and how.
-///
-/// Read from the issue itself, so a blocker counts as done the moment its issue closes, with
-/// no label to add by hand.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Standing {
-    /// The issue is open and not labelled `done`: it may still close.
-    Open,
-    /// The issue is labelled `done`, or closed as completed.
-    Done,
-    /// The issue is closed as not planned or as a duplicate (a task folded into a unit is
-    /// closed so): its work will never be done here.
-    ClosedNotPlanned,
-    /// There is no such issue, or the number is a pull request.
-    Missing,
-}
-
 /// The board the spawner and every instance read and write.
 pub trait Board {
     /// Where one issue stands as a blocker (see [`Standing`]).
@@ -164,13 +123,35 @@ pub trait Board {
         }
     }
 
-    /// Every open epic with its sub-issues, open and closed, in issue order.
+    /// Every open epic, in id order, with its tasks (open and closed, in id order), its body,
+    /// its latest signature and whether the challenger's report is on it: everything its
+    /// [`stage`](Epic::stage) is derived from.
     ///
     /// A board that cannot list them answers [`PortError::Rejected`] unless it overrides this.
-    fn epic_trees(&self) -> Result<Vec<EpicTree>, PortError> {
+    fn epics(&self) -> Result<Vec<Epic>, PortError> {
         Err(PortError::Rejected(
             "this board cannot list its epics".to_owned(),
         ))
+    }
+
+    /// One open epic, as [`Board::epics`] lists it; [`PortError::NotFound`] when no open epic
+    /// has that id.
+    fn epic(&self, id: TicketId) -> Result<Epic, PortError> {
+        self.epics()?
+            .into_iter()
+            .find(|epic| epic.id == id)
+            .ok_or_else(|| PortError::NotFound(format!("{id} is not an open epic")))
+    }
+
+    /// Records the Engineer's signature on an epic. A later signature replaces an earlier one
+    /// as the one [`Board::epics`] reads.
+    ///
+    /// A board that cannot hold one answers [`PortError::Rejected`] unless it overrides this.
+    fn sign(&self, epic: TicketId, signature: &Signature) -> Result<(), PortError> {
+        let _ = signature;
+        Err(PortError::Rejected(format!(
+            "this board cannot sign {epic}"
+        )))
     }
 
     /// Tasks labelled `ready`, in issue order.

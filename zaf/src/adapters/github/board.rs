@@ -4,13 +4,16 @@ use std::time::SystemTime;
 
 use super::GhCommand;
 use super::command::number_from_url;
-use super::notes::{LeaseNote, RULING_MARKER, marked, release_line, report_marker, unmarked};
-use super::rows::{ISSUE_FIELDS, IssueRow, NumberRow, STANDING_FIELDS, StandingRow};
-use crate::domain::{Instance, Ticket, TicketId, TicketState};
-use crate::manifest::RepoName;
-use crate::ports::{
-    Board, ClaimOutcome, ClaimRecord, EpicTask, EpicTree, NewQuestion, PortError, Standing,
+use super::notes::{
+    LeaseNote, RULING_MARKER, SIGNATURE_TEXT, marked, read_signature, release_line, report_author,
+    report_marker, signature_marker, unmarked,
 };
+use super::rows::{ISSUE_FIELDS, IssueRow, NameRow, NumberRow, STANDING_FIELDS, StandingRow};
+use crate::domain::{
+    CHALLENGER_ROLE, Epic, EpicTask, Instance, Signature, Standing, Ticket, TicketId, TicketState,
+};
+use crate::manifest::RepoName;
+use crate::ports::{Board, ClaimOutcome, ClaimRecord, NewQuestion, PortError};
 
 /// The label every task carries.
 const TASK_LABEL: &str = "task";
@@ -106,6 +109,22 @@ impl GithubBoard {
     }
 }
 
+/// Where an issue stands from its state, close reason and labels: `done` by its label;
+/// else open; else closed as not planned or as a duplicate; else closed as completed, so done.
+fn standing_of(state: &str, reason: Option<&str>, labels: &[NameRow]) -> Standing {
+    let done = TicketState::Done.to_string();
+    let never_done = matches!(reason, Some(NOT_PLANNED | DUPLICATE));
+    if labels.iter().any(|label| label.name == done) {
+        Standing::Done
+    } else if state == OPEN {
+        Standing::Open
+    } else if never_done {
+        Standing::ClosedNotPlanned
+    } else {
+        Standing::Done
+    }
+}
+
 impl IssueRow {
     fn has_label(&self, name: &str) -> bool {
         self.labels.iter().any(|label| label.name == name)
@@ -194,8 +213,10 @@ impl IssueRow {
 }
 
 impl Board for GithubBoard {
-    /// Two list calls: the open epics, then every task, open and closed, filed under its parent.
-    fn epic_trees(&self) -> Result<Vec<EpicTree>, PortError> {
+    /// Two list calls: the open epics with their bodies and comments, then every task, open
+    /// and closed, filed under its parent. The latest signature comment is the signature; a
+    /// status report by a challenger instance means the epic was challenged.
+    fn epics(&self) -> Result<Vec<Epic>, PortError> {
         let mut epics: Vec<IssueRow> = self.gh.json(&[
             "issue",
             "list",
@@ -206,7 +227,7 @@ impl Board for GithubBoard {
             "--limit",
             LIST_LIMIT,
             "--json",
-            "number,title,labels",
+            "number,title,body,labels,comments",
         ])?;
         epics.sort_by_key(|row| row.number);
         let mut tasks: Vec<IssueRow> = self.gh.json(&[
@@ -219,14 +240,15 @@ impl Board for GithubBoard {
             "--limit",
             LIST_LIMIT,
             "--json",
-            "number,title,labels,parent,state",
+            "number,title,labels,parent,state,stateReason",
         ])?;
         tasks.sort_by_key(|row| row.number);
-        let trees = epics
+        let epics = epics
             .iter()
-            .map(|epic| EpicTree {
-                number: TicketId::from(epic.number),
+            .map(|epic| Epic {
+                id: TicketId::from(epic.number),
                 title: epic.title.clone().into(),
+                body: epic.body.clone().into(),
                 tasks: tasks
                     .iter()
                     .filter(|task| {
@@ -236,13 +258,32 @@ impl Board for GithubBoard {
                     .map(|task| EpicTask {
                         number: TicketId::from(task.number),
                         state: task.task_labels().next(),
-                        closed: task.state != OPEN,
-                        group: task.group(),
+                        standing: standing_of(
+                            &task.state,
+                            task.state_reason.as_deref(),
+                            &task.labels,
+                        ),
+                        group: task.group().map(Into::into),
                     })
                     .collect(),
+                signature: epic
+                    .comments
+                    .iter()
+                    .filter_map(|comment| read_signature(&comment.body))
+                    .next_back(),
+                challenged: epic.comments.iter().any(|comment| {
+                    report_author(&comment.body)
+                        .is_some_and(|author| author.role.as_str() == CHALLENGER_ROLE)
+                }),
             })
             .collect();
-        Ok(trees)
+        Ok(epics)
+    }
+
+    /// One comment on the epic: the signature's marker over a line a person reads.
+    fn sign(&self, epic: TicketId, signature: &Signature) -> Result<(), PortError> {
+        let body = marked(&signature_marker(signature), SIGNATURE_TEXT);
+        self.comment(epic, &body)
     }
 
     /// One `gh issue view`: an issue that is not there, or is a pull request, is missing;
@@ -257,19 +298,10 @@ impl Board for GithubBoard {
             Err(PortError::NotFound(_)) => return Ok(Standing::Missing),
             Err(error) => return Err(error),
         };
-        let done = TicketState::Done.to_string();
-        // A closed issue is done unless it was closed as not planned or as a duplicate.
-        let never_done = matches!(row.state_reason.as_deref(), Some(NOT_PLANNED | DUPLICATE));
         Ok(if row.url.contains(PULL_PATH) {
             Standing::Missing
-        } else if row.labels.iter().any(|label| label.name == done) {
-            Standing::Done
-        } else if row.state == OPEN {
-            Standing::Open
-        } else if never_done {
-            Standing::ClosedNotPlanned
         } else {
-            Standing::Done
+            standing_of(&row.state, row.state_reason.as_deref(), &row.labels)
         })
     }
 

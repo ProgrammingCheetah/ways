@@ -11,8 +11,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use crate::domain::{Ticket, TicketId};
-use crate::ports::{Board, PortError, Standing};
+use crate::domain::{Standing, Ticket, TicketId};
+use crate::ports::{Board, PortError};
 
 /// The field of a task body that names its blockers.
 const BLOCKED_BY: &str = "Blocked by:";

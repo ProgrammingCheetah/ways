@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use super::*;
+use crate::domain::EpicStage;
 
 fn ticket(number: u64, phase: Phase) -> TicketRow {
     TicketRow {
@@ -16,6 +17,7 @@ fn ticket(number: u64, phase: Phase) -> TicketRow {
 fn epic() -> EpicRow {
     EpicRow {
         number: 103,
+        stage: EpicStage::Challenged,
         done: 17,
         total: 82,
         dollars: 39.83,
@@ -45,6 +47,10 @@ fn frame_shows_epic_group_and_ticket_rows() {
     assert!(lines[0].contains("17 of 82"), "{frame}");
     assert!(lines[0].contains("$39.83"), "{frame}");
     assert!(lines[0].contains('['), "a bar: {frame}");
+    assert!(
+        lines[1].starts_with("  challenged · "),
+        "the stage: {frame}"
+    );
     assert!(lines[1].contains("1 of 2 slots free"), "{frame}");
     assert!(lines[1].contains("63 ready"), "{frame}");
     assert!(lines[1].contains("no questions"), "{frame}");

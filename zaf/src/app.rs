@@ -12,6 +12,7 @@ pub mod brief;
 pub mod changes;
 pub mod check;
 pub mod doctor;
+pub mod epic;
 pub mod guard;
 pub mod hub;
 pub mod init;

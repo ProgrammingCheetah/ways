@@ -9,6 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
+use super::epic::EpicLine;
 use super::guard::{self, GuardError, GuardState};
 use super::spawn::{self, blockers, blockers::DeadLine};
 use crate::domain::{Ticket, TicketId, TicketSummary};
@@ -81,6 +82,8 @@ pub struct Slots {
 /// The whole screen.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Status {
+    /// The open epics, each with its stage; none on a board that cannot list them.
+    pub epics: Vec<EpicLine>,
     /// Tasks open for a claim.
     pub ready: Vec<TicketSummary>,
     /// Claims held now by an instance that runs, or by one this machine did not launch.
@@ -131,6 +134,11 @@ pub fn status(
     alive: &dyn Fn(&Holder) -> bool,
 ) -> Result<Status, StatusError> {
     let (state, runs) = read_spawn_state(state_dir, alive)?;
+    let epics = match board.epics() {
+        Ok(epics) => epics.iter().map(EpicLine::from).collect(),
+        Err(PortError::Rejected(_)) => Vec::new(),
+        Err(error) => return Err(error.into()),
+    };
     let ready_tickets = board.ready()?;
     let found = blockers::read(board, &ready_tickets)?;
     let cycles = blockers::cycles(&found.graph)
@@ -166,6 +174,7 @@ pub fn status(
         })
         .collect();
     Ok(Status {
+        epics,
         ready,
         claimed,
         orphaned,
@@ -200,6 +209,9 @@ impl Status {
             out.push_str(&text);
             out.push('\n');
         };
+        for epic in &self.epics {
+            line(format!("epic      {}", epic.render()));
+        }
         line(format!(
             "ready     {}{}",
             self.ready.len(),

@@ -11,11 +11,15 @@
 use std::cell::{Cell, RefCell};
 use std::process::Command;
 
+use std::time::SystemTime;
 use zaf::adapters::github::{GhCommand, GithubBoard};
-use zaf::domain::{Instance, Ticket, TicketId, TicketState};
+
+use zaf::domain::{
+    BodyHash, EpicStage, Instance, Signature, Standing, Ticket, TicketId, TicketState,
+};
 use zaf::fakes::FakeBoard;
 use zaf::manifest::RepoName;
-use zaf::ports::{Board, ClaimOutcome, NewQuestion, PortError, Standing};
+use zaf::ports::{Board, ClaimOutcome, NewQuestion, PortError};
 
 /// The environment variable naming the scratch repository the GitHub checks write to.
 const REPO_VAR: &str = "ZAF_CONTRACT_REPO";
@@ -30,13 +34,20 @@ trait Arrange {
     fn task(&self, epic: TicketId, title: &str, body: &str, state: TicketState) -> TicketId;
     /// Closes a ticket, as completed or as not planned.
     fn close(&self, id: TicketId, completed: bool);
+    /// Replaces a ticket's body, as a person editing it would.
+    fn edit_body(&self, id: TicketId, body: &str);
     /// An id no ticket has.
     fn missing(&self) -> TicketId;
 }
 
-/// An instance for the checks, on `epic`.
+/// A team instance for the checks, on `epic`.
 fn instance(n: u32, epic: TicketId) -> Instance {
-    format!("team instance {n} on {epic}")
+    role_instance("team", n, epic)
+}
+
+/// An instance of `role` for the checks, on `epic`.
+fn role_instance(role: &str, n: u32, epic: TicketId) -> Instance {
+    format!("{role} instance {n} on {epic}")
         .parse()
         .expect("an instance")
 }
@@ -184,26 +195,80 @@ fn standing_follows_how_a_ticket_closed(arrange: &dyn Arrange) {
 fn an_open_epic_lists_its_tasks_closed_ones_too(arrange: &dyn Arrange) {
     let epic = arrange.epic("contract epic with tasks");
     let open = arrange.task(epic, "open", BODY, TicketState::Ready);
-    let closed = arrange.task(epic, "closed", BODY, TicketState::Done);
-    arrange.close(closed, true);
-    let trees = arrange.board().epic_trees().expect("epics read");
-    let tree = trees
-        .iter()
-        .find(|tree| tree.number == epic)
-        .expect("the epic is listed");
-    assert_eq!(tree.title.as_str(), "contract epic with tasks");
-    let tasks: Vec<(TicketId, Option<TicketState>, bool)> = tree
+    let completed = arrange.task(epic, "completed", BODY, TicketState::Ready);
+    let dropped = arrange.task(epic, "dropped", BODY, TicketState::Ready);
+    arrange.close(completed, true);
+    arrange.close(dropped, false);
+    let read = arrange.board().epic(epic).expect("the epic reads");
+    assert_eq!(read.title.as_str(), "contract epic with tasks");
+    let tasks: Vec<(TicketId, Standing)> = read
         .tasks
         .iter()
-        .map(|task| (task.number, task.state, task.closed))
+        .map(|task| (task.number, task.standing))
         .collect();
     assert_eq!(
         tasks,
         [
-            (open, Some(TicketState::Ready), false),
-            (closed, Some(TicketState::Done), true)
+            (open, Standing::Open),
+            (completed, Standing::Done),
+            (dropped, Standing::ClosedNotPlanned)
         ]
     );
+    assert_eq!(read.tally(), (1, 2), "a dropped task counts for nothing");
+    let listed = arrange.board().epics().expect("epics read");
+    assert!(listed.iter().any(|listed| listed.id == epic));
+}
+
+fn a_signature_holds_until_the_body_changes(arrange: &dyn Arrange) {
+    let epic = arrange.epic("contract epic to sign");
+    let board = arrange.board();
+    let before = board.epic(epic).expect("the epic reads");
+    assert_eq!(before.signature, None);
+    assert_eq!(before.stage(), EpicStage::Unsigned);
+
+    let signature = Signature::of(&before.body, SystemTime::now());
+    board.sign(epic, &signature).expect("the epic is signed");
+    let signed = board.epic(epic).expect("the epic reads");
+    assert_eq!(
+        signed.signature.as_ref().map(|signature| &signature.hash),
+        Some(&BodyHash::of(&before.body))
+    );
+    assert!(signed.signed());
+    assert_eq!(signed.stage(), EpicStage::Signed);
+
+    arrange.edit_body(
+        epic,
+        "An epic of the contract checks, edited after signing.",
+    );
+    let edited = board.epic(epic).expect("the epic reads");
+    assert!(edited.signature_void(), "an edit voids the signature");
+    assert_eq!(edited.stage(), EpicStage::Unsigned);
+}
+
+fn a_challengers_report_challenges_its_epic(arrange: &dyn Arrange) {
+    let epic = arrange.epic("contract epic to challenge");
+    arrange.task(epic, "planned", BODY, TicketState::Ready);
+    let board = arrange.board();
+    board
+        .report(
+            epic,
+            &instance(904, epic),
+            "A team's report is no challenge.",
+        )
+        .expect("the team reports");
+    assert!(!board.epic(epic).expect("the epic reads").challenged);
+    let challenger = role_instance("challenger", 905, epic);
+    board
+        .report(epic, &challenger, "Every task is exact.")
+        .expect("the challenger reports");
+    assert!(board.epic(epic).expect("the epic reads").challenged);
+}
+
+fn a_ticket_that_is_no_open_epic_is_not_one(arrange: &dyn Arrange) {
+    let epic = arrange.epic("contract epic");
+    let task = arrange.task(epic, "a task", BODY, TicketState::Ready);
+    let read = arrange.board().epic(task);
+    assert!(matches!(read, Err(PortError::NotFound(_))), "got {read:?}");
 }
 
 // The backends.
@@ -259,6 +324,10 @@ impl Arrange for FakeArrange {
         } else {
             self.board.close_not_planned(id);
         }
+    }
+
+    fn edit_body(&self, id: TicketId, body: &str) {
+        self.board.set_body(id, body);
     }
 
     fn missing(&self) -> TicketId {
@@ -357,6 +426,13 @@ impl Arrange for GithubArrange {
         ]);
     }
 
+    fn edit_body(&self, id: TicketId, body: &str) {
+        let number = id.get().to_string();
+        gh(&[
+            "issue", "edit", &number, "--repo", &self.repo, "--body", body,
+        ]);
+    }
+
     fn missing(&self) -> TicketId {
         TicketId::from(999_999_999)
     }
@@ -426,4 +502,7 @@ contract![
     a_ruling_closes_its_question_and_frees_the_task,
     standing_follows_how_a_ticket_closed,
     an_open_epic_lists_its_tasks_closed_ones_too,
+    a_signature_holds_until_the_body_changes,
+    a_challengers_report_challenges_its_epic,
+    a_ticket_that_is_no_open_epic_is_not_one,
 ];

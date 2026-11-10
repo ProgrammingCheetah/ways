@@ -23,7 +23,9 @@ pub use ask::{
     Ask, AskError, AskKind, Asker, MAX_CONTEXT_LINES, MAX_QUESTIONS, QUESTION_WORD_LIMIT, Question,
     QuestionId,
 };
-pub use epic::Epic;
+pub use epic::{
+    BodyHash, CHALLENGER_ROLE, Epic, EpicStage, EpicTask, GroupName, Signature, SignatureError,
+};
 pub use finding::{Finding, FindingSource, Location, Severity};
 pub use ids::{IdError, PageId, TicketId};
 pub use instance::{Instance, InstanceNumber, RoleName};
@@ -31,4 +33,4 @@ pub use labels::{PageStatus, TicketState};
 pub use profile::Profile;
 pub use quote::Quote;
 pub use task::{SecurityTrigger, TaskField, TaskModel, TaskSize, TaskTemplate, TaskTemplateError};
-pub use ticket::{Ticket, TicketBody, TicketSummary, TicketTitle, TicketUrl};
+pub use ticket::{Standing, Ticket, TicketBody, TicketSummary, TicketTitle, TicketUrl};

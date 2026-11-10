@@ -18,6 +18,9 @@ pub(super) struct IssueRow {
     pub parent: Option<NumberRow>,
     #[serde(default)]
     pub state: String,
+    /// Why a closed issue was closed; read only where the list asks for `stateReason`.
+    #[serde(default, rename = "stateReason")]
+    pub state_reason: Option<String>,
     #[serde(default)]
     pub comments: Vec<IssueCommentRow>,
 }

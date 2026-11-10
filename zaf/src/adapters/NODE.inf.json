@@ -62,7 +62,7 @@
     },
     {
       "name": "process.rs",
-      "role": "the process table: a Holder (pid plus start time) and whether it still runs, from /proc or ps",
+      "role": "the process table: a Holder (pid plus start time), whether it still runs, and this process's ancestors, from /proc or ps",
       "node": false
     },
     {

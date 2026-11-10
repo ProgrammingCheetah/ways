@@ -20,6 +20,7 @@ pub mod changes;
 pub mod check;
 pub mod do_action;
 pub mod doctor;
+pub mod epic;
 pub mod exit;
 pub mod guard;
 pub mod hub;
@@ -166,6 +167,25 @@ pub enum Verb {
         #[arg(long)]
         check: bool,
     },
+    /// The open epics and where each stands; the Engineer's signature on one.
+    Epic {
+        /// What to do with the epics.
+        #[command(subcommand)]
+        action: EpicAction,
+    },
+}
+
+/// `zaf epic …`.
+#[derive(Debug, clap::Subcommand, strum::IntoStaticStr)]
+#[strum(serialize_all = "kebab-case")]
+pub enum EpicAction {
+    /// List the open epics, each with its stage and its tasks done.
+    List,
+    /// Sign an epic as its body reads now; an edit voids it. Refused inside an instance.
+    Sign {
+        /// The epic.
+        epic: TicketId,
+    },
 }
 
 /// `zaf progress …`.
@@ -290,6 +310,7 @@ impl Verb {
             Self::Profile { action } => Some(action.into()),
             Self::Hub { action, .. } => action.as_ref().map(Into::into),
             Self::Progress { action } => Some(action.into()),
+            Self::Epic { action } => Some(action.into()),
             _ => None,
         };
         action.map_or_else(|| verb.to_owned(), |action| format!("{verb} {action}"))
@@ -400,6 +421,7 @@ fn run_verb(cli: &Cli) -> u8 {
         Verb::Hub { action, port } => hub::run(cli, action.as_ref(), *port),
         Verb::Progress { action } => progress::run(cli, action),
         Verb::Update { check } => update::run(cli, *check),
+        Verb::Epic { action } => epic::run(cli, action),
     }
 }
 

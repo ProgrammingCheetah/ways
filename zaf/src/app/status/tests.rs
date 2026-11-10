@@ -344,3 +344,23 @@ fn status_names_dead_blockers_and_keeps_a_plain_open_blocker_quiet() {
         serde_json::json!({ "blocker": 99, "on": 3, "reason": "not an issue" })
     );
 }
+
+#[test]
+fn each_open_epic_shows_with_its_stage() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let board = board();
+    board.add_epic(TicketId::from(90), "tickets over backends");
+    let status = status(&board, dir.path(), 2, &all_alive).expect("status");
+    let epic = status
+        .epics
+        .iter()
+        .find(|epic| epic.number == TicketId::from(90))
+        .expect("the epic is listed");
+    assert_eq!(epic.stage, crate::domain::EpicStage::Unsigned);
+    let text = status.render_text();
+    assert!(
+        text.contains("epic      #90 unsigned 0 of 0  tickets over backends"),
+        "{text}"
+    );
+    assert!(status.to_json().contains("\"stage\": \"unsigned\""));
+}
