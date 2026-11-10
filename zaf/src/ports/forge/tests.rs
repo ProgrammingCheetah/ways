@@ -1,6 +1,11 @@
 use super::*;
 use crate::fakes::{FakeForge, PrMerge, PrRequest};
-use crate::ports::{BaseName, SliceName};
+use crate::ports::{BaseName, CommitId, SliceName};
+use std::time::{Duration, SystemTime};
+
+fn at(seconds: u64) -> SystemTime {
+    SystemTime::UNIX_EPOCH + Duration::from_secs(seconds)
+}
 
 fn request(slice: &str) -> PrRequest {
     PrRequest {
@@ -40,10 +45,12 @@ fn checks_and_review_comments_read_back() {
         Check {
             name: CheckName::from("ci"),
             state: CheckState::Passed,
+            finished_at: Some(at(60)),
         },
         Check {
             name: CheckName::from("scanner"),
             state: CheckState::Pending,
+            finished_at: None,
         },
     ];
     forge
@@ -57,7 +64,8 @@ fn checks_and_review_comments_read_back() {
             path: "src/export.rs".to_owned(),
             line: Some(40),
         }),
-        head: Some("abc123".to_owned()),
+        head: Some(CommitId::from("abc123")),
+        posted_at: at(90),
     };
     forge
         .add_review_comment(pr, comment.clone())
@@ -96,6 +104,36 @@ fn scanning_alerts_read_back_per_pull_request() {
     assert_eq!(port.scanning_alerts(pr), Ok(alerts));
     assert!(matches!(
         port.scanning_alerts(PrNumber::from(99)),
+        Err(PortError::NotFound(_))
+    ));
+}
+
+#[test]
+fn a_pull_request_reads_back_its_open_and_merge_times() {
+    let forge = FakeForge::default();
+    let port: &dyn Forge = &forge;
+    let pr = forge
+        .open_pr(&request("feature/v1-export-2"))
+        .expect("open");
+    forge.set_opened_at(pr, at(10)).expect("arrange opening");
+    assert_eq!(
+        port.pull_request(pr),
+        Ok(PullRequest {
+            opened_at: at(10),
+            merged_at: None,
+        })
+    );
+    forge.set_merged_at(pr, at(500)).expect("arrange merge");
+    forge.merge(pr).expect("merge");
+    assert_eq!(
+        port.pull_request(pr),
+        Ok(PullRequest {
+            opened_at: at(10),
+            merged_at: Some(at(500)),
+        })
+    );
+    assert!(matches!(
+        port.pull_request(PrNumber::from(99)),
         Err(PortError::NotFound(_))
     ));
 }

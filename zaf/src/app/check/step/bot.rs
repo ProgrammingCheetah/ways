@@ -17,7 +17,7 @@ use std::time::Instant;
 use super::StepContext;
 use crate::app::check::StepPorts;
 use crate::domain::{Finding, FindingSource, Severity};
-use crate::ports::{Author, PortError, ReviewComment};
+use crate::ports::{Author, CommitId, PortError, ReviewComment};
 
 /// The phrases that mark a bot comment as a must-fix.
 const MARKERS: [&str; 2] = ["potential issue", "security"];
@@ -38,7 +38,7 @@ pub(super) fn run(
             .filter(|comment| comment.author.as_ref().eq_ignore_ascii_case(login.as_ref()))
             .filter(|comment| {
                 head.as_ref()
-                    .is_none_or(|head| comment.head.as_ref() == Some(head))
+                    .is_none_or(|head| comment.head.as_ref().map(CommitId::as_str) == Some(head))
             })
             .collect();
         if !comments.is_empty() {
