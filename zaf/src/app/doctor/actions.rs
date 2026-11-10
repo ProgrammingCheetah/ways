@@ -6,6 +6,9 @@
 //! `group` names a role the manifest does not have. An invalid file fails the report and the
 //! problem names the file, and the line when there is one.
 //!
+//! A file in a tier's `hooks` folder is checked as an action is, under the name `hooks/<file>`, and
+//! is invalid when `<file>` is none of the hook events (`pre-tick`, `post-tick`, `post-phase`).
+//!
 //! A project file that shadows a machine file is listed with the file it shadows. That does not
 //! fail the report; a shadow whose declared run bits are wider than the shadowed file's gets a note
 //! that the extra bits have no effect. A shadow of a file whose mode has no owner `w`, or whose
@@ -21,8 +24,8 @@ use std::path::{Path, PathBuf};
 
 use super::needed::machine_dependents;
 use crate::app::actions::{
-    ActionMetadata, ActionMode, ResolveError, Resolved, Tier, can_shadow, list, parse, resolve_in,
-    same_file,
+    ActionMetadata, ActionMode, HOOK_EVENTS, HOOKS_DIR, ResolveError, Resolved, Tier, can_shadow,
+    hook_file_in, list, list_hooks, parse, resolve_in, same_file,
 };
 use crate::composition::STATE_DIR;
 use crate::manifest::Manifest;
@@ -99,7 +102,9 @@ pub(super) fn check_actions(
     let state_dir = root.join(STATE_DIR);
     let machine_home = zaf_home.unwrap_or(&state_dir);
     let mut dependents = machine_dependents(root, zaf_home, manifest);
-    match list(root, machine_home) {
+    let found = list(root, machine_home)
+        .and_then(|actions| list_hooks(root, machine_home).map(|hooks| [actions, hooks].concat()));
+    match found {
         Ok(found) => (
             found
                 .iter()
@@ -143,6 +148,7 @@ fn check_action(
     if let Some(problem) = not_executable(file) {
         problems.push(problem);
     }
+    problems.extend(unknown_event(found));
     let shadows = shadowed_file(found, root, machine_home);
     let mut notes = Vec::new();
     if let Some(over) = &shadows {
@@ -168,10 +174,30 @@ fn check_action(
 /// project and a machine whose two tiers are one folder.
 fn shadowed_file(found: &Resolved, root: &Path, machine_home: &Path) -> Option<PathBuf> {
     found.shadows?;
-    let over = resolve_in(Tier::Machine, root, machine_home, &found.name)
-        .ok()??
-        .path;
+    let over = match hook_name(&found.name) {
+        Some(file) => hook_file_in(Tier::Machine, root, machine_home, file),
+        None => resolve_in(Tier::Machine, root, machine_home, &found.name),
+    }
+    .ok()??
+    .path;
     (!same_file(&found.path, &over)).then_some(over)
+}
+
+/// The file name of a hook, from its name `hooks/<file>`; none for an action.
+fn hook_name(name: &str) -> Option<&str> {
+    name.strip_prefix(HOOKS_DIR)?.strip_prefix('/')
+}
+
+/// A problem when a hook's file name is no hook event.
+fn unknown_event(found: &Resolved) -> Option<String> {
+    let file = hook_name(&found.name)?;
+    (!HOOK_EVENTS.contains(&file)).then(|| {
+        format!(
+            "{}:1: unknown hook event {file} (the events are {})",
+            found.path.display(),
+            HOOK_EVENTS.join(", ")
+        )
+    })
 }
 
 /// What a shadow of `over` comes to: a note when its run bits are wider than those of `over`, a

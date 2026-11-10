@@ -7,6 +7,11 @@
 //! never found: an edit to an action runs only once it has merged and reached
 //! the root.
 //!
+//! A file in a tier's `hooks` folder is a hook, never an action: a name under `hooks/` resolves to
+//! nothing and is refused by name ([`ResolveError::Hook`]; `zaf do hooks/pre-tick` exits 125 and
+//! its body never runs), the listing leaves the folder out, and
+//! [`hook`] finds one by its event under the same precedence as an action.
+//!
 //! Finding the file reads no metadata: [`can_shadow`] is what a run holds the shadowed file's mode
 //! against.
 
@@ -17,6 +22,12 @@ use crate::composition::STATE_DIR;
 
 /// The folder under a tier's home that holds its actions.
 pub const ACTIONS_DIR: &str = "actions";
+
+/// The folder under a tier's actions folder that holds its hooks.
+pub const HOOKS_DIR: &str = "hooks";
+
+/// The events a hook runs on, which name its file.
+pub const HOOK_EVENTS: [&str; 3] = ["pre-tick", "post-tick", "post-phase"];
 
 /// Where an action file lives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, strum::Display)]
@@ -53,6 +64,9 @@ pub enum ResolveError {
         /// What is wrong.
         reason: &'static str,
     },
+    /// The name is under the `hooks` folder: a hook runs on its event, not as an action.
+    #[error("a hook runs on its event, not as an action")]
+    Hook,
     /// An actions folder or a file in it could not be read.
     #[error("cannot read {path}: {source}")]
     Read {
@@ -67,6 +81,9 @@ pub enum ResolveError {
 /// `.` or `..`. Hyphens, dots and underscores are fine and no extension is
 /// dropped.
 pub fn check_name(name: &str) -> Result<(), ResolveError> {
+    if is_hook_name(name) {
+        return Err(ResolveError::Hook);
+    }
     let bad = |reason| ResolveError::BadName {
         name: name.to_owned(),
         reason,
@@ -84,6 +101,12 @@ pub fn check_name(name: &str) -> Result<(), ResolveError> {
         return Err(bad("it is a directory reference"));
     }
     Ok(())
+}
+
+/// Whether `name` is under the `hooks` folder, `hooks/<event>`.
+fn is_hook_name(name: &str) -> bool {
+    name.strip_prefix(HOOKS_DIR)
+        .is_some_and(|rest| rest.starts_with(['/', '\\']))
 }
 
 /// The actions folder of a tier: the project root's `.zaf/actions` or the
@@ -107,6 +130,41 @@ fn is_file(path: &Path) -> Result<bool, ResolveError> {
     }
 }
 
+/// The file at `relative` under one tier's actions folder; none when that tier has no such file.
+/// The name it carries is `relative` as given.
+fn file_in(
+    tier: Tier,
+    project_root: &Path,
+    machine_home: &Path,
+    relative: &str,
+) -> Result<Option<Resolved>, ResolveError> {
+    let path = tier_dir(tier, project_root, machine_home).join(relative);
+    Ok(is_file(&path)?.then(|| Resolved {
+        name: relative.to_owned(),
+        tier,
+        path,
+        shadows: None,
+    }))
+}
+
+/// The file at `relative` as the two tiers have it: the project's, which shadows the machine's.
+fn file_in_tiers(
+    project_root: &Path,
+    machine_home: &Path,
+    relative: &str,
+) -> Result<Option<Resolved>, ResolveError> {
+    let project = file_in(Tier::Project, project_root, machine_home, relative)?;
+    let machine = file_in(Tier::Machine, project_root, machine_home, relative)?;
+    Ok(match (project, machine) {
+        (Some(project), Some(_)) => Some(Resolved {
+            shadows: Some(Tier::Machine),
+            ..project
+        }),
+        (Some(only), None) | (None, Some(only)) => Some(only),
+        (None, None) => None,
+    })
+}
+
 /// The file `name` is in one tier; none when that tier has no such file.
 pub fn resolve_in(
     tier: Tier,
@@ -115,13 +173,7 @@ pub fn resolve_in(
     name: &str,
 ) -> Result<Option<Resolved>, ResolveError> {
     check_name(name)?;
-    let path = tier_dir(tier, project_root, machine_home).join(name);
-    Ok(is_file(&path)?.then(|| Resolved {
-        name: name.to_owned(),
-        tier,
-        path,
-        shadows: None,
-    }))
+    file_in(tier, project_root, machine_home, name)
 }
 
 /// The file `name` resolves to: the project's, else the machine's; none when
@@ -131,16 +183,47 @@ pub fn resolve(
     machine_home: &Path,
     name: &str,
 ) -> Result<Option<Resolved>, ResolveError> {
-    let project = resolve_in(Tier::Project, project_root, machine_home, name)?;
-    let machine = resolve_in(Tier::Machine, project_root, machine_home, name)?;
-    Ok(match (project, machine) {
-        (Some(project), Some(_)) => Some(Resolved {
-            shadows: Some(Tier::Machine),
-            ..project
-        }),
-        (Some(only), None) | (None, Some(only)) => Some(only),
-        (None, None) => None,
-    })
+    check_name(name)?;
+    file_in_tiers(project_root, machine_home, name)
+}
+
+/// `hook(root, home, event) -> Option<ResolvedAction>`, where the ticket's `ResolvedAction` is
+/// [`Resolved`]: the hook of `event`, the project's `hooks/<event>`, else the machine's, under the precedence and
+/// the shadowing of an action. None when neither tier has one, when `event` is not one of
+/// [`HOOK_EVENTS`], and when a folder cannot be read: a hook that cannot be found is not run. The
+/// tick and the launcher find a hook through this alone.
+pub fn hook(project_root: &Path, machine_home: &Path, event: &str) -> Option<Resolved> {
+    if !HOOK_EVENTS.contains(&event) {
+        return None;
+    }
+    hook_file(project_root, machine_home, event).ok().flatten()
+}
+
+/// The hook file `file` as the two tiers have it, whatever its name: [`hook`] for an event, and the
+/// doctor for a name that is none. The name it carries is `hooks/<file>`.
+pub fn hook_file(
+    project_root: &Path,
+    machine_home: &Path,
+    file: &str,
+) -> Result<Option<Resolved>, ResolveError> {
+    check_name(file)?;
+    file_in_tiers(project_root, machine_home, &format!("{HOOKS_DIR}/{file}"))
+}
+
+/// The hook file `file` in one tier alone, the way [`resolve_in`] reads an action's.
+pub fn hook_file_in(
+    tier: Tier,
+    project_root: &Path,
+    machine_home: &Path,
+    file: &str,
+) -> Result<Option<Resolved>, ResolveError> {
+    check_name(file)?;
+    file_in(
+        tier,
+        project_root,
+        machine_home,
+        &format!("{HOOKS_DIR}/{file}"),
+    )
 }
 
 /// Whether a file in a higher tier may override a file of `mode`: the `w` of the owner digit, the
@@ -162,12 +245,49 @@ pub fn same_file(one: &Path, other: &Path) -> bool {
 /// shadows. Entries whose names `check_name` refuses, and anything that is not
 /// a file, are skipped: they cannot be named.
 pub fn list(project_root: &Path, machine_home: &Path) -> Result<Vec<Resolved>, ResolveError> {
+    let mut resolved = Vec::new();
+    for name in entry_names(project_root, machine_home, None)? {
+        if let Some(found) = resolve(project_root, machine_home, &name)? {
+            resolved.push(found);
+        }
+    }
+    Ok(resolved)
+}
+
+/// Every file in the tiers' `hooks` folders once, sorted, named `hooks/<file>`, whatever the file's
+/// name: a name that is no event is for the doctor to say. An entry whose name `check_name`
+/// refuses, and anything that is not a file, is skipped.
+pub fn list_hooks(project_root: &Path, machine_home: &Path) -> Result<Vec<Resolved>, ResolveError> {
+    let mut resolved = Vec::new();
+    for file in entry_names(project_root, machine_home, Some(HOOKS_DIR))? {
+        if let Some(found) = hook_file(project_root, machine_home, &file)? {
+            resolved.push(found);
+        }
+    }
+    Ok(resolved)
+}
+
+/// The names of the entries of both tiers' actions folders, or of the folder `sub` in them, once and
+/// sorted. A name `check_name` refuses is left out.
+fn entry_names(
+    project_root: &Path,
+    machine_home: &Path,
+    sub: Option<&str>,
+) -> Result<std::collections::BTreeSet<String>, ResolveError> {
     let mut names = std::collections::BTreeSet::new();
     for tier in [Tier::Project, Tier::Machine] {
-        let dir = tier_dir(tier, project_root, machine_home);
+        let mut dir = tier_dir(tier, project_root, machine_home);
+        dir.extend(sub);
         let entries = match std::fs::read_dir(&dir) {
             Ok(entries) => entries,
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(source)
+                if matches!(
+                    source.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                continue;
+            }
             Err(source) => return Err(ResolveError::Read { path: dir, source }),
         };
         for entry in entries {
@@ -182,11 +302,5 @@ pub fn list(project_root: &Path, machine_home: &Path) -> Result<Vec<Resolved>, R
             }
         }
     }
-    let mut resolved = Vec::new();
-    for name in names {
-        if let Some(found) = resolve(project_root, machine_home, &name)? {
-            resolved.push(found);
-        }
-    }
-    Ok(resolved)
+    Ok(names)
 }
