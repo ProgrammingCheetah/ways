@@ -150,7 +150,8 @@ fn kept_of_environ(environ: &[u8]) -> Kept {
     kept
 }
 
-/// The pid and kept variables of one line of `ps -Aeww -o pid=,command=`: the pid, then the
+/// The pid and kept variables of one line of `ps` with the environment
+/// ([`PS_ENVIRONMENT_FLAGS`], `-o pid=,command=`): the pid, then the
 /// command and its environment as words, the environment last, so a later entry wins. `ps`
 /// joins entries with spaces, so a kept value runs on to the next `NAME=` word.
 fn kept_of_ps_line(line: &[u8]) -> Option<(u32, Kept)> {
@@ -217,10 +218,18 @@ fn proc_environments() -> Vec<(u32, Kept)> {
         .collect()
 }
 
+/// The `ps` flags that list every process, unclipped, with its environment after its
+/// command. macOS's `ps` takes `-e` as `-A` and shows the environment with `-E`; the other
+/// BSDs show it with `-e`.
+#[cfg(target_os = "macos")]
+const PS_ENVIRONMENT_FLAGS: &str = "-AEww";
+#[cfg(not(target_os = "macos"))]
+const PS_ENVIRONMENT_FLAGS: &str = "-Aeww";
+
 /// Elsewhere: `ps` with the environment of every process it may show.
 fn ps_environments() -> Vec<(u32, Kept)> {
     let Ok(output) = Command::new("ps")
-        .args(["-Aeww", "-o", "pid=,command="])
+        .args([PS_ENVIRONMENT_FLAGS, "-o", "pid=,command="])
         .env("LC_ALL", "C")
         .stdin(Stdio::null())
         .stderr(Stdio::null())
