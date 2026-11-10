@@ -123,7 +123,7 @@ fn every_kind_parses() {
         ("wait", ActionKind::Wait),
         ("zaf", ActionKind::Zaf),
     ] {
-        let action = parsed(&block(&format!("# zaf kind: {value}\n")));
+        let action = parsed(&block(&format!("# zaf kind: {value}\n# zaf ends: exit\n")));
         assert_eq!(action.metadata.kind, Some(kind), "kind {value}");
         assert_eq!(kind.to_string(), value);
     }
@@ -153,6 +153,99 @@ fn an_unknown_kind_is_refused() {
 #[test]
 fn kind_is_optional() {
     assert_eq!(parsed(&block("")).metadata.kind, None);
+}
+
+#[test]
+fn every_end_parses() {
+    for (value, end) in [
+        ("pr-open", PhaseEnd::PrOpen),
+        ("review-posted", PhaseEnd::ReviewPosted),
+        ("ci-done", PhaseEnd::CiDone),
+        ("merged", PhaseEnd::Merged),
+        ("exit", PhaseEnd::Exit),
+    ] {
+        let action = parsed(&block(&format!("# zaf kind: wait\n# zaf ends: {value}\n")));
+        assert_eq!(action.metadata.ends, Some(end), "ends {value}");
+        assert_eq!(end.to_string(), value);
+    }
+    assert_eq!(parsed(&block("")).metadata.ends, None);
+}
+
+#[test]
+fn an_unknown_end_is_refused() {
+    for value in ["done", "", "Exit", "pr-open, merged", "pr_open"] {
+        let error = refusal(&block(&format!("# zaf kind: wait\n# zaf ends: {value}\n")));
+        assert_eq!(error.line, 4, "ends {value:?}");
+        for word in [
+            "ends",
+            "pr-open",
+            "review-posted",
+            "ci-done",
+            "merged",
+            "exit",
+        ] {
+            assert!(error.reason.contains(word), "ends {value:?}: {error}");
+        }
+    }
+    let error = refusal(&block(
+        "# zaf kind: wait\n# zaf ends: exit\n# zaf ends: merged\n",
+    ));
+    assert_eq!(error.line, 5);
+    assert!(error.reason.contains("twice"), "{error}");
+}
+
+#[test]
+fn every_kind_needs_an_end() {
+    for kind in ["model", "wait", "zaf"] {
+        let error = refusal(&block(&format!("# zaf kind: {kind}\n")));
+        assert!(
+            error.reason.contains("`land`"),
+            "kind {kind} names the action: {error}"
+        );
+        assert!(error.reason.contains("ends"), "kind {kind}: {error}");
+    }
+}
+
+#[test]
+fn an_end_needs_a_kind() {
+    let error = refusal(&block("# zaf ends: merged\n"));
+    assert_eq!(error.line, 3);
+    assert!(error.reason.contains("`land`"), "{error}");
+    assert!(error.reason.contains("without a `kind`"), "{error}");
+}
+
+#[test]
+fn on_fail_is_for_waits() {
+    let wait = parsed(&block(
+        "# zaf kind: wait\n# zaf ends: ci-done\n# zaf on-fail: fix\n",
+    ));
+    assert_eq!(
+        wait.metadata.on_fail,
+        Some(ActionName::from("fix")),
+        "a wait names its fix"
+    );
+    for kind in ["model", "zaf"] {
+        let error = refusal(&block(&format!(
+            "# zaf kind: {kind}\n# zaf ends: exit\n# zaf on-fail: fix\n"
+        )));
+        assert_eq!(error.line, 5, "kind {kind}");
+        assert!(error.reason.contains("on-fail"), "kind {kind}: {error}");
+        assert!(error.reason.contains("wait"), "kind {kind}: {error}");
+    }
+    let error = refusal(&block("# zaf on-fail: fix\n"));
+    assert_eq!(error.line, 3);
+    assert!(error.reason.contains("on-fail"), "{error}");
+    let error = refusal(&block(
+        "# zaf kind: wait\n# zaf ends: exit\n# zaf on-fail:\n",
+    ));
+    assert_eq!(error.line, 5);
+}
+
+#[test]
+fn a_wait_may_omit_on_fail() {
+    let action = parsed(&block("# zaf kind: wait\n# zaf ends: review-posted\n"));
+    assert_eq!(action.metadata.kind, Some(ActionKind::Wait));
+    assert_eq!(action.metadata.on_fail, None);
 }
 
 #[test]

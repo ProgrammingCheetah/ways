@@ -2,8 +2,9 @@
 //! provides, with its validity and its mode.
 //!
 //! A file is invalid when its metadata does not hold (a bad `mode`, `target` or `phases`, a
-//! declared code `125`, a missing description or code `1`), when it is not executable, or when its
-//! `group` names a role the manifest does not have. An invalid file fails the report and the
+//! declared code `125`, a missing description or code `1`), when it is not executable, when its
+//! `group` names a role the manifest does not have, or when its `on-fail` names no action or one
+//! whose kind is not `model`. An invalid file fails the report and the
 //! problem names the file, and the line when there is one.
 //!
 //! A file in a tier's `hooks` folder is checked as an action is, under the name `hooks/<file>`, and
@@ -24,8 +25,8 @@ use std::path::{Path, PathBuf};
 
 use super::needed::machine_dependents;
 use crate::app::actions::{
-    ActionMetadata, ActionMode, HOOK_EVENTS, HOOKS_DIR, ResolveError, Resolved, Tier, can_shadow,
-    hook_file_in, list, list_hooks, parse, resolve_in, same_file,
+    ActionKind, ActionMetadata, ActionMode, HOOK_EVENTS, HOOKS_DIR, ResolveError, Resolved, Tier,
+    can_shadow, hook_file_in, list, list_hooks, parse, resolve, resolve_in, same_file,
 };
 use crate::composition::STATE_DIR;
 use crate::manifest::Manifest;
@@ -141,6 +142,7 @@ fn check_action(
             Ok(parsed) => {
                 mode = Some(parsed.metadata.mode.to_string());
                 problems.extend(unknown_roles(file, &parsed.metadata, manifest));
+                problems.extend(bad_on_fail(file, &parsed.metadata, root, machine_home));
                 own = Some(parsed.metadata);
             }
         },
@@ -272,6 +274,35 @@ fn unknown_roles(file: &Path, metadata: &ActionMetadata, manifest: &Manifest) ->
         unknown.join(", "),
         roles.join(", ")
     ))
+}
+
+/// One problem when `on-fail` names no action either tier provides, or one whose kind is not
+/// `model` (docs/zaf-actions.md §5.1): what a failed wait starts must be a model.
+fn bad_on_fail(
+    file: &Path,
+    metadata: &ActionMetadata,
+    root: &Path,
+    machine_home: &Path,
+) -> Option<String> {
+    let name = metadata.on_fail.as_ref()?.as_str();
+    let head = format!("{}: on-fail `{name}`", file.display());
+    let found = match resolve(root, machine_home, name) {
+        Ok(Some(found)) => found,
+        Ok(None) => return Some(format!("{head} names no action")),
+        Err(error) => return Some(format!("{head} names no action: {error}")),
+    };
+    let kind = match fs::read_to_string(&found.path)
+        .map_err(|error| error.to_string())
+        .and_then(|text| parse(&found.path, &text).map_err(|error| error.to_string()))
+    {
+        Ok(parsed) => parsed.metadata.kind,
+        Err(reason) => return Some(format!("{head} names an action that is invalid: {reason}")),
+    };
+    match kind {
+        Some(ActionKind::Model) => None,
+        Some(kind) => Some(format!("{head} names an action of kind {kind}, not model")),
+        None => Some(format!("{head} names an action with no kind, not model")),
+    }
 }
 
 /// A problem when the file has no execute bit. A file as a whole has no line of its own, so the
