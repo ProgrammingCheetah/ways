@@ -29,7 +29,9 @@ fn every_verb_is_listed() {
         .collect();
     assert_eq!(
         board_actions,
-        ["ready", "claim", "report", "question", "ruling", "done", "lint"]
+        [
+            "ready", "claim", "report", "question", "ruling", "done", "lint"
+        ]
     );
     let slice = command.find_subcommand("slice").expect("slice");
     let slice_actions: Vec<&str> = slice

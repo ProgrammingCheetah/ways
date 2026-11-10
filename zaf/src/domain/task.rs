@@ -256,7 +256,11 @@ impl fmt::Display for TaskProblem {
                 accepts,
             } => {
                 let written: Vec<&str> = value.lines().collect();
-                write!(formatter, "{field}: {} (accepts: {accepts})", written.join(" "))
+                write!(
+                    formatter,
+                    "{field}: {} (accepts: {accepts})",
+                    written.join(" ")
+                )
             }
             Self::Missing(_) | Self::MissingScope => write!(formatter, "{}: missing", self.name()),
             Self::Unknown { line, label } => {

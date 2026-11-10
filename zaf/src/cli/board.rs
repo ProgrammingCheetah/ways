@@ -134,6 +134,9 @@ pub fn run(cli: &Cli, action: &BoardAction) -> u8 {
                 print(cli, &json, format!("{task} {terse}"))
             })
         }
+        // One line per problem: `<field>: <value as written> (accepts: <forms>)` for a bad
+        // value, `<field>: missing` for a missing one, `line <n>: unknown field <label>` for an
+        // unknown one. `--json` prints `{"issue": <n>, "problems": [{"field", "value", "accepts"}]}`.
         BoardAction::Lint { issue } => board::lint(board, *issue).map(|problems| {
             let json = json!({
                 "issue": issue.get(),

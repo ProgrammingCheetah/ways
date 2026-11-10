@@ -4,12 +4,26 @@ use crate::app::spawn::tick::PlannedLaunch;
 use crate::domain::{Instance, InstanceNumber, IssueNumber, RoleName, TaskLabel};
 use crate::fakes::FakeBoard;
 
+/// A task body that follows the template, its security trigger line reading `trigger`.
+fn task_body(trigger: &str) -> String {
+    format!(
+        "Goal: do it\nOwned paths: src/\nInterfaces: none\nDesign pages: none\n\
+         Acceptance:\n  - it works\nTests: it_works\nSecurity trigger: {trigger}\n\
+         Model: sonnet\nSize: S\nBlocked by: —\n"
+    )
+}
+
+/// A ticket; a ready one gets a body that follows the template.
 fn ticket(number: u64, title: &str, label: TaskLabel) -> Ticket {
+    let body = match label {
+        TaskLabel::Ready => task_body("no"),
+        _ => String::new(),
+    };
     Ticket {
         number: IssueNumber::from(number),
         epic: None,
         title: title.to_owned(),
-        body: String::new(),
+        body,
         label: Some(label),
     }
 }
@@ -260,6 +274,38 @@ fn the_running_line_counts_instances_and_each_is_listed_once_with_its_tasks() {
         ),
         "{text}"
     );
+}
+
+#[test]
+fn status_lists_ready_tasks_that_do_not_parse() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let board = FakeBoard::default();
+    board.add_ticket(ticket(3, "Export rows", TaskLabel::Ready));
+    board.add_ticket(Ticket {
+        body: task_body("no, it removes x"),
+        ..ticket(4, "Export header", TaskLabel::Ready)
+    });
+
+    let status = status(&board, dir.path(), 2, &all_alive).expect("status");
+
+    let ready: Vec<u64> = status.ready.iter().map(|t| t.number).collect();
+    assert_eq!(ready, [3], "a task that does not parse is not runnable");
+    assert_eq!(status.unparsed.len(), 1);
+    assert_eq!(status.unparsed[0].number, 4);
+    assert_eq!(
+        status.unparsed[0].problems,
+        ["Security trigger: no, it removes x (accepts: no | yes <which>)"]
+    );
+    let text = status.render_text();
+    assert!(
+        text.contains(
+            "Ready, does not parse:\n  #4 Export header\n    \
+             Security trigger: no, it removes x (accepts: no | yes <which>)\n"
+        ),
+        "{text}"
+    );
+    let json: serde_json::Value = serde_json::from_str(&status.to_json()).expect("json");
+    assert_eq!(json["unparsed"][0]["number"], 4);
 }
 
 fn blocked(number: u64, by: &str) -> Ticket {
