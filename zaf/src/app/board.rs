@@ -1,7 +1,7 @@
-//! `zaf board ready|claim|report|question|ruling|done`: reading and writing the board.
+//! `zaf board ready|claim|report|question|ruling|done|file`: reading and writing the board.
 
 use crate::app::actions::{Phase, PhaseUnreadable, SliceRecords, derive_phase, gather_phase_facts};
-use crate::domain::{Instance, Ticket, TicketId, TicketState};
+use crate::domain::{Instance, NewTask, TaskTemplateError, Ticket, TicketId, TicketState};
 use crate::ports::{Board, ClaimOutcome, Forge, NewQuestion, PortError, Vcs};
 
 /// Why a board verb stopped.
@@ -28,6 +28,12 @@ pub enum BoardError {
     /// The task's phase could not be read, so nothing was changed.
     #[error(transparent)]
     Unreadable(#[from] PhaseUnreadable),
+    /// `board file` was given a body outside the task template; nothing was filed.
+    #[error("the body is not a task: {0}")]
+    NotATask(#[from] TaskTemplateError),
+    /// `board file` was given a state a task does not open in.
+    #[error("a task opens ready or blocked, not {0}")]
+    NotAnOpeningState(TicketState),
     /// The board refused or failed.
     #[error(transparent)]
     Port(#[from] PortError),
@@ -189,3 +195,42 @@ pub fn done(
 
 #[cfg(test)]
 mod tests;
+
+/// What `zaf board file` did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileOutcome {
+    /// The task was opened under its epic.
+    Filed(TicketId),
+    /// The epic already has an open or done task with that title; nothing was opened.
+    AlreadyFiled(TicketId),
+}
+
+impl FileOutcome {
+    /// The task, filed now or before.
+    pub fn task(self) -> TicketId {
+        match self {
+            Self::Filed(task) | Self::AlreadyFiled(task) => task,
+        }
+    }
+}
+
+/// `zaf board file`: opens a task under an open epic, in the task template, ready or blocked.
+///
+/// A body outside the template is refused before anything is written. Filing a title the epic
+/// already counts (open or done) returns that task, so a planning instance run again files
+/// nothing twice.
+pub fn file(board: &dyn Board, task: &NewTask) -> Result<FileOutcome, BoardError> {
+    if !matches!(task.state, TicketState::Ready | TicketState::Blocked) {
+        return Err(BoardError::NotAnOpeningState(task.state));
+    }
+    task.body.as_str().parse::<crate::domain::TaskTemplate>()?;
+    let epic = board.epic(task.epic)?;
+    if let Some(filed) = epic
+        .tasks
+        .iter()
+        .find(|filed| filed.counts() && filed.title == task.title)
+    {
+        return Ok(FileOutcome::AlreadyFiled(filed.number));
+    }
+    Ok(FileOutcome::Filed(board.file_task(task)?))
+}

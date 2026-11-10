@@ -775,3 +775,24 @@ fn env_table_cannot_set_any_zaf_name() {
     let manifest = load(&with("[env]\nMY_ZAF_CACHE = \"x\"\nZAFFER = \"y\"\n")).expect("loads");
     assert_eq!(manifest.env.vars().len(), 2);
 }
+
+#[test]
+fn a_projects_board_needs_its_project_and_reads_its_optional_keys() {
+    let without_project =
+        "[project]\nname = \"b\"\n[board]\nkind = \"github-projects\"\nrepo = \"example/b\"\n";
+    assert!(matches!(
+        load(without_project),
+        Err(ManifestError::MissingKey {
+            section: "board",
+            key: "project",
+            ..
+        })
+    ));
+    let full = "[project]\nname = \"b\"\n[board]\nkind = \"github-projects\"\nrepo = \"example/b\"\n\
+                project = 4\nowner = \"example-org\"\nstate_field = \"Stage\"\n";
+    let manifest = load(full).expect("a projects board loads");
+    assert_eq!(manifest.board.kind, BoardKind::GithubProjects);
+    assert_eq!(manifest.board.project, Some(4));
+    assert_eq!(manifest.board.owner.as_deref(), Some("example-org"));
+    assert_eq!(manifest.board.state_field.as_deref(), Some("Stage"));
+}

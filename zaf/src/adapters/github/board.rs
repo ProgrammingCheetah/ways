@@ -1,5 +1,10 @@
-//! The board on GitHub Issues: board kind `github-issues`.
+//! The board on GitHub: board kinds `github-issues` and `github-projects`.
+//!
+//! Both keep tickets as the issues of one repository, with their comments, claims, questions,
+//! sub-issues and kind labels. They differ only in where a task's state lives, which a
+//! [`StateStore`] decides: labels on the issue, or a field of a GitHub Project.
 
+use std::collections::BTreeMap;
 use std::time::SystemTime;
 
 use super::GhCommand;
@@ -8,9 +13,11 @@ use super::notes::{
     LeaseNote, RULING_MARKER, SIGNATURE_TEXT, marked, read_signature, release_line, report_author,
     report_marker, signature_marker, unmarked,
 };
-use super::rows::{ISSUE_FIELDS, IssueRow, NameRow, NumberRow, STANDING_FIELDS, StandingRow};
+use super::rows::{ISSUE_FIELDS, IssueRow, NameRow, STANDING_FIELDS, StandingRow};
+use super::state::{LabelState, ProjectRef, ProjectState, StateStore};
 use crate::domain::{
-    CHALLENGER_ROLE, Epic, EpicTask, Instance, Signature, Standing, Ticket, TicketId, TicketState,
+    CHALLENGER_ROLE, Epic, EpicTask, Instance, NewTask, Signature, Standing, Ticket, TicketId,
+    TicketState,
 };
 use crate::manifest::RepoName;
 use crate::ports::{Board, ClaimOutcome, ClaimRecord, NewQuestion, PortError};
@@ -23,6 +30,8 @@ const EPIC_LABEL: &str = "epic";
 const DOOR_LABEL: &str = "door";
 /// The most issues one list call reads.
 const LIST_LIMIT: &str = "1000";
+/// The label every question ticket carries, beside the state it holds.
+const QUESTION_LABEL: &str = "question";
 /// The state gh prints for an open issue.
 const OPEN: &str = "OPEN";
 /// What a pull request's URL holds and an issue's does not.
@@ -35,41 +44,83 @@ const NOT_PLANNED: &str = "NOT_PLANNED";
 const DUPLICATE: &str = "DUPLICATE";
 /// The prefix of the label that puts a task in a group.
 const GROUP_PREFIX: &str = "group:";
+/// The colour a group label is created in.
+const GROUP_COLOR: &str = "ededed";
 
 /// A board kept as the issues of one GitHub repository.
 ///
 /// A task is an issue labelled `task`, its epic the issue it is a sub-issue of;
-/// its state is one [`TicketState`]. A claim is the `claimed` label plus a
-/// `claimed by …` comment; a heartbeat is a new `heartbeat …` comment.
-#[derive(Debug, Clone, PartialEq, Eq, derive_more::From)]
-pub struct GithubBoard {
+/// its state is one [`TicketState`], kept where `S` keeps it. A claim is the `claimed`
+/// state plus a `claimed by …` comment; a heartbeat is a new `heartbeat …` comment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GithubBoard<S = LabelState> {
     gh: GhCommand,
+    store: S,
 }
 
-impl GithubBoard {
+/// The board on GitHub Projects: the issues of one repository, each task's state in a
+/// single-select field of a Project.
+pub type GithubProjectBoard = GithubBoard<ProjectState>;
+
+impl From<GhCommand> for GithubBoard<LabelState> {
+    /// The issues board: state as labels.
+    fn from(gh: GhCommand) -> Self {
+        Self {
+            gh,
+            store: LabelState,
+        }
+    }
+}
+
+impl GithubBoard<ProjectState> {
+    /// The Projects board: the issues of `gh`'s repository, their states in `project`.
+    pub fn on_project(gh: GhCommand, project: ProjectRef) -> Self {
+        Self {
+            gh,
+            store: ProjectState::new(project),
+        }
+    }
+}
+
+impl<S: StateStore> GithubBoard<S> {
+    /// The states the issue read as `row` has.
+    fn states(&self, row: &IssueRow) -> Result<Vec<TicketState>, PortError> {
+        self.store.states(&self.gh, row.number, &row.labels)
+    }
+
+    /// The state of each issue in `rows`, read at once.
+    fn states_of(&self, rows: &[IssueRow]) -> Result<BTreeMap<u64, TicketState>, PortError> {
+        let issues: Vec<(u64, &[NameRow])> = rows
+            .iter()
+            .map(|row| (row.number, row.labels.as_slice()))
+            .collect();
+        self.store.states_of(&self.gh, &issues)
+    }
+
+    /// Adds `add` and drops `remove` on the issue read as `row`.
+    fn change(
+        &self,
+        row: &IssueRow,
+        add: Option<TicketState>,
+        remove: &[TicketState],
+    ) -> Result<(), PortError> {
+        self.store
+            .change(&self.gh, row.number, &row.labels, add, remove)
+    }
+
+    /// The tickets of `rows`, each with its state.
+    fn tickets(&self, rows: &[IssueRow]) -> Result<Vec<Ticket>, PortError> {
+        let states = self.states_of(rows)?;
+        Ok(rows
+            .iter()
+            .map(|row| row.ticket(self.gh.repo(), states.get(&row.number).copied()))
+            .collect())
+    }
+
     fn issue(&self, number: TicketId) -> Result<IssueRow, PortError> {
         let number = number.get().to_string();
         self.gh
             .json(&["issue", "view", &number, "--json", ISSUE_FIELDS])
-    }
-
-    fn edit_labels(
-        &self,
-        number: TicketId,
-        add: &[&str],
-        remove: &[&str],
-    ) -> Result<(), PortError> {
-        let number = number.get().to_string();
-        let mut args = vec!["issue", "edit", number.as_str()];
-        let added = add.join(",");
-        let removed = remove.join(",");
-        if !add.is_empty() {
-            args.extend(["--add-label", added.as_str()]);
-        }
-        if !remove.is_empty() {
-            args.extend(["--remove-label", removed.as_str()]);
-        }
-        self.gh.text(&args).map(drop)
     }
 
     fn post_comment(&self, number: TicketId, body: &str) -> Result<(), PortError> {
@@ -86,14 +137,28 @@ impl GithubBoard {
             return Ok(None);
         };
         let row = self.issue(task)?;
-        let waiting = TicketState::Question.to_string();
-        let done = TicketState::Done.to_string();
-        if row.has_label(EPIC_LABEL) || row.has_label(&done) || !row.has_label(&waiting) {
+        let states = self.states(&row)?;
+        if row.has_label(EPIC_LABEL)
+            || states.contains(&TicketState::Done)
+            || !states.contains(&TicketState::Question)
+        {
             return Ok(None);
         }
-        let ready = TicketState::Ready.to_string();
-        self.edit_labels(task, &[&ready], &[&waiting])?;
+        self.change(&row, Some(TicketState::Ready), &[TicketState::Question])?;
         Ok(Some(task))
+    }
+
+    /// Creates the label when the repository has none by that name; one already there is
+    /// left as it is.
+    fn ensure_label(&self, name: &str) -> Result<(), PortError> {
+        match self
+            .gh
+            .text(&["label", "create", name, "--color", GROUP_COLOR])
+        {
+            Ok(_) => Ok(()),
+            Err(PortError::Backend(message)) if message.contains("already exists") => Ok(()),
+            Err(error) => Err(error),
+        }
     }
 
     fn edit_comment(&self, url: &str, body: &str) -> Result<(), PortError> {
@@ -109,12 +174,12 @@ impl GithubBoard {
     }
 }
 
-/// Where an issue stands from its state, close reason and labels: `done` by its label;
-/// else open; else closed as not planned or as a duplicate; else closed as completed, so done.
-fn standing_of(state: &str, reason: Option<&str>, labels: &[NameRow]) -> Standing {
-    let done = TicketState::Done.to_string();
+/// Where an issue stands from its state, close reason and whether it is in the `done`
+/// state: done so; else open; else closed as not planned or as a duplicate; else closed as
+/// completed, so done.
+fn standing_of(state: &str, reason: Option<&str>, done: bool) -> Standing {
     let never_done = matches!(reason, Some(NOT_PLANNED | DUPLICATE));
-    if labels.iter().any(|label| label.name == done) {
+    if done {
         Standing::Done
     } else if state == OPEN {
         Standing::Open
@@ -130,13 +195,14 @@ impl IssueRow {
         self.labels.iter().any(|label| label.name == name)
     }
 
-    /// Whether a question raised on this issue makes it wait: a task that is `claimed` or
-    /// `ready`. An epic and a task that was never ready carry no state a ruling could restore.
-    fn can_wait(&self) -> bool {
+    /// Whether a question raised on this issue, in `states`, makes it wait: a task that is
+    /// `claimed` or `ready`. An epic and a task that was never ready carry no state a ruling
+    /// could restore.
+    fn can_wait(&self, states: &[TicketState]) -> bool {
         !self.has_label(EPIC_LABEL)
             && [TicketState::Claimed, TicketState::Ready]
                 .iter()
-                .any(|label| self.has_label(&label.to_string()))
+                .any(|state| states.contains(state))
     }
 
     /// The name in the first `group:<name>` label.
@@ -147,28 +213,22 @@ impl IssueRow {
             .map(str::to_owned)
     }
 
-    fn task_labels(&self) -> impl Iterator<Item = TicketState> + '_ {
-        self.labels
-            .iter()
-            .filter_map(|label| label.name.parse::<TicketState>().ok())
-    }
-
-    /// The ticket, its link the issue's page on `repo`.
-    fn ticket(&self, repo: &RepoName) -> Ticket {
+    /// The ticket in `state`, its link the issue's page on `repo`.
+    fn ticket(&self, repo: &RepoName, state: Option<TicketState>) -> Ticket {
         Ticket {
             id: TicketId::from(self.number),
             epic: self.parent.map(|parent| TicketId::from(parent.number)),
             title: self.title.clone().into(),
             body: self.body.clone().into(),
-            state: self.task_labels().next(),
+            state,
             url: format!("https://github.com/{repo}/issues/{}", self.number).into(),
         }
     }
 
-    /// The live claim: the latest claim comment, while the issue is labelled
-    /// `claimed`, touched by the holder's later heartbeats.
-    fn claim(&self) -> Option<ClaimRecord> {
-        if !self.has_label(&TicketState::Claimed.to_string()) {
+    /// The live claim, while the issue is `claimed`: the latest claim comment, touched by
+    /// the holder's later heartbeats.
+    fn claim(&self, claimed: bool) -> Option<ClaimRecord> {
+        if !claimed {
             return None;
         }
         let notes: Vec<LeaseNote> = self
@@ -197,11 +257,11 @@ impl IssueRow {
         Some(record)
     }
 
-    /// The claim, which must belong to `instance`.
-    fn claim_by(&self, instance: &Instance) -> Result<ClaimRecord, PortError> {
+    /// The claim, while the issue is `claimed`, which must belong to `instance`.
+    fn claim_by(&self, claimed: bool, instance: &Instance) -> Result<ClaimRecord, PortError> {
         let task = TicketId::from(self.number);
         let claim = self
-            .claim()
+            .claim(claimed)
             .ok_or_else(|| PortError::Conflict(format!("{task} has no claim")))?;
         if claim.instance != *instance {
             let held_by_other_error =
@@ -212,7 +272,7 @@ impl IssueRow {
     }
 }
 
-impl Board for GithubBoard {
+impl<S: StateStore> Board for GithubBoard<S> {
     /// Two list calls: the open epics with their bodies and comments, then every task, open
     /// and closed, filed under its parent. The latest signature comment is the signature; a
     /// status report by a challenger instance means the epic was challenged.
@@ -243,6 +303,7 @@ impl Board for GithubBoard {
             "number,title,labels,parent,state,stateReason",
         ])?;
         tasks.sort_by_key(|row| row.number);
+        let states = self.states_of(&tasks)?;
         let epics = epics
             .iter()
             .map(|epic| Epic {
@@ -255,15 +316,19 @@ impl Board for GithubBoard {
                         task.parent
                             .is_some_and(|parent| parent.number == epic.number)
                     })
-                    .map(|task| EpicTask {
-                        number: TicketId::from(task.number),
-                        state: task.task_labels().next(),
-                        standing: standing_of(
-                            &task.state,
-                            task.state_reason.as_deref(),
-                            &task.labels,
-                        ),
-                        group: task.group().map(Into::into),
+                    .map(|task| {
+                        let state = states.get(&task.number).copied();
+                        EpicTask {
+                            number: TicketId::from(task.number),
+                            title: task.title.clone().into(),
+                            state,
+                            standing: standing_of(
+                                &task.state,
+                                task.state_reason.as_deref(),
+                                state == Some(TicketState::Done),
+                            ),
+                            group: task.group().map(Into::into),
+                        }
                     })
                     .collect(),
                 signature: epic
@@ -278,6 +343,42 @@ impl Board for GithubBoard {
             })
             .collect();
         Ok(epics)
+    }
+
+    /// Opens the issue labelled `task` (and `group:<name>`, created when the repository lacks
+    /// it), files it as a sub-issue of its epic, then gives it its state where the board keeps
+    /// states.
+    fn file_task(&self, task: &NewTask) -> Result<TicketId, PortError> {
+        let mut labels = vec![TASK_LABEL.to_owned()];
+        if let Some(group) = &task.group {
+            let label = format!("{GROUP_PREFIX}{group}");
+            self.ensure_label(&label)?;
+            labels.push(label);
+        }
+        let joined = labels.join(",");
+        let stdout = self.gh.text(&[
+            "issue",
+            "create",
+            "--title",
+            task.title.as_str(),
+            "--body",
+            task.body.as_str(),
+            "--label",
+            &joined,
+        ])?;
+        let number = number_from_url(&stdout)?;
+        let database_id = self
+            .gh
+            .api_text(&format!("issues/{number}"), &["--jq", ".id"])?;
+        let field = format!("sub_issue_id={}", database_id.trim());
+        self.gh.api_text(
+            &format!("issues/{}/sub_issues", task.epic.get()),
+            &["--method", "POST", "-F", &field],
+        )?;
+        let rows: Vec<NameRow> = labels.into_iter().map(|name| NameRow { name }).collect();
+        self.store
+            .change(&self.gh, number, &rows, Some(task.state), &[])?;
+        Ok(TicketId::from(number))
     }
 
     /// One comment on the epic: the signature's marker over a line a person reads.
@@ -298,43 +399,46 @@ impl Board for GithubBoard {
             Err(PortError::NotFound(_)) => return Ok(Standing::Missing),
             Err(error) => return Err(error),
         };
-        Ok(if row.url.contains(PULL_PATH) {
-            Standing::Missing
-        } else {
-            standing_of(&row.state, row.state_reason.as_deref(), &row.labels)
-        })
+        if row.url.contains(PULL_PATH) {
+            return Ok(Standing::Missing);
+        }
+        let states = self.store.states(&self.gh, row.number, &row.labels)?;
+        Ok(standing_of(
+            &row.state,
+            row.state_reason.as_deref(),
+            states.contains(&TicketState::Done),
+        ))
     }
 
     fn ready(&self) -> Result<Vec<Ticket>, PortError> {
-        let ready = TicketState::Ready.to_string();
-        let mut rows: Vec<IssueRow> = self.gh.json(&[
-            "issue",
-            "list",
-            "--label",
-            TASK_LABEL,
-            "--label",
-            &ready,
-            "--state",
-            "open",
-            "--limit",
-            LIST_LIMIT,
-            "--json",
+        let mut rows = self.store.in_state(
+            &self.gh,
+            TicketState::Ready,
+            Some(TASK_LABEL),
             "number,title,body,labels,parent",
-        ])?;
+        )?;
         rows.sort_by_key(|row| row.number);
-        Ok(rows.iter().map(|row| row.ticket(self.gh.repo())).collect())
+        Ok(rows
+            .iter()
+            .map(|row| row.ticket(self.gh.repo(), Some(TicketState::Ready)))
+            .collect())
     }
 
     fn task(&self, number: TicketId) -> Result<Ticket, PortError> {
-        Ok(self.issue(number)?.ticket(self.gh.repo()))
+        let row = self.issue(number)?;
+        let state = self.states(&row)?.first().copied();
+        Ok(row.ticket(self.gh.repo(), state))
     }
 
     fn claim(&self, task: TicketId, instance: &Instance) -> Result<ClaimOutcome, PortError> {
         let row = self.issue(task)?;
-        if row.has_label(&TicketState::Claimed.to_string()) {
-            return row.claim_by(instance).map(|_| ClaimOutcome::AlreadyHeld);
+        let states = self.states(&row)?;
+        if states.contains(&TicketState::Claimed) {
+            return row
+                .claim_by(true, instance)
+                .map(|_| ClaimOutcome::AlreadyHeld);
         }
-        if !row.has_label(&TicketState::Ready.to_string()) {
+        if !states.contains(&TicketState::Ready) {
             return Err(PortError::Rejected(format!("{task} is not ready")));
         }
         let note = LeaseNote::Claim {
@@ -342,14 +446,14 @@ impl Board for GithubBoard {
             at: SystemTime::now(),
         };
         self.post_comment(task, &note.to_string())?;
-        let claimed = TicketState::Claimed.to_string();
-        let ready = TicketState::Ready.to_string();
-        self.edit_labels(task, &[&claimed], &[&ready])?;
+        self.change(&row, Some(TicketState::Claimed), &[TicketState::Ready])?;
         Ok(ClaimOutcome::Claimed)
     }
 
     fn heartbeat(&self, task: TicketId, instance: &Instance) -> Result<(), PortError> {
-        self.issue(task)?.claim_by(instance)?;
+        let row = self.issue(task)?;
+        let claimed = self.states(&row)?.contains(&TicketState::Claimed);
+        row.claim_by(claimed, instance)?;
         let note = LeaseNote::Heartbeat {
             instance: instance.clone(),
             at: SystemTime::now(),
@@ -358,61 +462,50 @@ impl Board for GithubBoard {
     }
 
     fn claims(&self) -> Result<Vec<ClaimRecord>, PortError> {
-        let claimed = TicketState::Claimed.to_string();
-        let mut numbers: Vec<NumberRow> = self.gh.json(&[
-            "issue", "list", "--label", &claimed, "--state", "open", "--limit", LIST_LIMIT,
-            "--json", "number",
-        ])?;
-        numbers.sort_by_key(|row| row.number);
+        let mut numbers: Vec<u64> = self
+            .store
+            .in_state(&self.gh, TicketState::Claimed, None, "number")?
+            .iter()
+            .map(|row| row.number)
+            .collect();
+        numbers.sort_unstable();
         let mut claims = Vec::new();
         for number in numbers {
-            let row = self.issue(TicketId::from(number.number))?;
-            claims.extend(row.claim());
+            let row = self.issue(TicketId::from(number))?;
+            let claimed = self.states(&row)?.contains(&TicketState::Claimed);
+            claims.extend(row.claim(claimed));
         }
         Ok(claims)
     }
 
     fn release(&self, task: TicketId, instance: &Instance) -> Result<(), PortError> {
         let row = self.issue(task)?;
-        let holder = row.claim().map(|claim| claim.instance);
+        let states = self.states(&row)?;
+        let holder = row
+            .claim(states.contains(&TicketState::Claimed))
+            .map(|claim| claim.instance);
         if holder.as_ref() != Some(instance) {
             return Ok(());
         }
-        let claimed = TicketState::Claimed.to_string();
-        let ready = TicketState::Ready.to_string();
         let keeps_state = [TicketState::Question, TicketState::Done]
             .iter()
-            .any(|label| row.has_label(&label.to_string()));
-        let add: Vec<&str> = if keeps_state {
-            Vec::new()
-        } else {
-            vec![ready.as_str()]
-        };
-        self.edit_labels(task, &add, &[&claimed])?;
+            .any(|state| states.contains(state));
+        let add = (!keeps_state).then_some(TicketState::Ready);
+        self.change(&row, add, &[TicketState::Claimed])?;
         self.post_comment(task, &release_line(instance, SystemTime::now()))
     }
 
     fn set_state(&self, task: TicketId, label: TicketState) -> Result<(), PortError> {
         let row = self.issue(task)?;
-        if label == TicketState::Question && !row.can_wait() {
+        let states = self.states(&row)?;
+        if label == TicketState::Question && !row.can_wait(&states) {
             return Ok(());
         }
-        let wanted = label.to_string();
-        let others: Vec<String> = row
-            .task_labels()
+        let others: Vec<TicketState> = states
+            .into_iter()
             .filter(|present| *present != label)
-            .map(|present| present.to_string())
             .collect();
-        let add: Vec<&str> = if row.has_label(&wanted) {
-            Vec::new()
-        } else {
-            vec![wanted.as_str()]
-        };
-        if add.is_empty() && others.is_empty() {
-            return Ok(());
-        }
-        let remove: Vec<&str> = others.iter().map(String::as_str).collect();
-        self.edit_labels(task, &add, &remove)
+        self.change(&row, Some(label), &others)
     }
 
     fn comment(&self, issue: TicketId, body: &str) -> Result<(), PortError> {
@@ -435,12 +528,11 @@ impl Board for GithubBoard {
     }
 
     fn questions(&self) -> Result<Vec<Ticket>, PortError> {
-        let question = TicketState::Question.to_string();
         let mut rows: Vec<IssueRow> = self.gh.json(&[
             "issue",
             "list",
             "--label",
-            &question,
+            QUESTION_LABEL,
             "--state",
             "open",
             "--limit",
@@ -450,18 +542,17 @@ impl Board for GithubBoard {
         ])?;
         rows.retain(|row| !row.has_label(TASK_LABEL));
         rows.sort_by_key(|row| row.number);
-        Ok(rows.iter().map(|row| row.ticket(self.gh.repo())).collect())
+        self.tickets(&rows)
     }
 
     /// Lists the `question` issues, open and closed, whose body says `Raised on #<task>`,
     /// oldest first, each with the text of its ruling comment when it has one.
     fn questions_on(&self, task: TicketId) -> Result<Vec<(Ticket, Option<String>)>, PortError> {
-        let question = TicketState::Question.to_string();
         let mut rows: Vec<IssueRow> = self.gh.json(&[
             "issue",
             "list",
             "--label",
-            &question,
+            QUESTION_LABEL,
             "--state",
             "all",
             "--limit",
@@ -473,15 +564,17 @@ impl Board for GithubBoard {
             !row.has_label(TASK_LABEL) && NewQuestion::raised_on(&row.body) == Some(task)
         });
         rows.sort_by_key(|row| row.number);
+        let tickets = self.tickets(&rows)?;
         let raised = rows
             .iter()
-            .map(|row| {
+            .zip(tickets)
+            .map(|(row, ticket)| {
                 let ruling = row
                     .comments
                     .iter()
                     .find_map(|comment| unmarked(RULING_MARKER, &comment.body))
                     .map(|text| text.trim().to_owned());
-                (row.ticket(self.gh.repo()), ruling)
+                (ticket, ruling)
             })
             .collect();
         Ok(raised)
@@ -490,7 +583,6 @@ impl Board for GithubBoard {
     fn open_question(&self, question: &NewQuestion) -> Result<TicketId, PortError> {
         let title = question.title();
         let body = question.body();
-        let question_label = TicketState::Question.to_string();
         let mut args = vec![
             "issue",
             "create",
@@ -499,13 +591,20 @@ impl Board for GithubBoard {
             "--body",
             body.as_str(),
             "--label",
-            question_label.as_str(),
+            QUESTION_LABEL,
         ];
         if question.door {
             args.extend(["--label", DOOR_LABEL]);
         }
         let stdout = self.gh.text(&args)?;
-        number_from_url(&stdout).map(TicketId::from)
+        let number = number_from_url(&stdout)?;
+        // The question label holds the state on the issues board; a Project holds it apart.
+        let labels = [NameRow {
+            name: QUESTION_LABEL.to_owned(),
+        }];
+        self.store
+            .change(&self.gh, number, &labels, Some(TicketState::Question), &[])?;
+        Ok(TicketId::from(number))
     }
 
     fn record_ruling(

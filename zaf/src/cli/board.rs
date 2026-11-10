@@ -1,4 +1,4 @@
-//! `zaf board ready|claim|report|question|ruling|done`.
+//! `zaf board ready|claim|report|question|ruling|done|file`.
 //!
 //! The verbs that act as an instance (`claim`, `report`) read who it is from
 //! [`INSTANCE_VAR`], which the spawner sets, in the form the board prints it:
@@ -11,10 +11,10 @@ use super::slice::print;
 use super::{BoardAction, Cli};
 use crate::app::actions::SliceRecords;
 use crate::app::board::{
-    self, BoardError, ClaimCommand, DoneOutcome, ReportCommand, RulingCommand,
+    self, BoardError, ClaimCommand, DoneOutcome, FileOutcome, ReportCommand, RulingCommand,
 };
 use crate::composition::Composition;
-use crate::domain::{Instance, InstanceNumber, RoleName, Ticket, TicketId};
+use crate::domain::{Instance, InstanceNumber, NewTask, RoleName, Ticket, TicketId, TicketState};
 use crate::ports::{ClaimOutcome, NewQuestion};
 
 /// The environment variable naming the instance a verb acts as.
@@ -125,6 +125,39 @@ pub fn run(cli: &Cli, action: &BoardAction) -> u8 {
                 print(cli, &json, format!("{task} {terse}"))
             })
         }
+        BoardAction::File {
+            epic,
+            title,
+            body,
+            body_file,
+            group,
+            blocked,
+        } => {
+            let body = match read_body(&path, body.as_deref(), body_file.as_deref()) {
+                Ok(body) => body,
+                Err(code) => return code,
+            };
+            let task = NewTask {
+                epic: *epic,
+                title: title.as_str().into(),
+                body: body.into(),
+                state: if *blocked {
+                    TicketState::Blocked
+                } else {
+                    TicketState::Ready
+                },
+                group: group.as_deref().map(Into::into),
+            };
+            board::file(board, &task).map(|outcome| {
+                let (word, terse) = match outcome {
+                    FileOutcome::Filed(_) => ("filed", "filed"),
+                    FileOutcome::AlreadyFiled(_) => ("already_filed", "already filed"),
+                };
+                let number = outcome.task();
+                let json = json!({ "task": number.get(), "epic": epic.get(), "outcome": word });
+                print(cli, &json, format!("{number} {terse} under {epic}"))
+            })
+        }
         BoardAction::Ruling { question, text } => {
             let command = RulingCommand {
                 question: *question,
@@ -149,10 +182,34 @@ pub fn run(cli: &Cli, action: &BoardAction) -> u8 {
     })
 }
 
+/// The body `board file` was given: the `--body` text, or the `--body-file` contents (`-` is
+/// standard input). A file that does not read exits 2.
+fn read_body(path: &str, body: Option<&str>, file: Option<&std::path::Path>) -> Result<String, u8> {
+    if let Some(body) = body {
+        return Ok(body.to_owned());
+    }
+    let Some(file) = file else {
+        eprintln!("zaf {path}: give --body or --body-file");
+        return Err(BACKEND);
+    };
+    let read = if file.as_os_str() == "-" {
+        std::io::read_to_string(std::io::stdin())
+    } else {
+        std::fs::read_to_string(file)
+    };
+    read.map_err(|error| {
+        eprintln!("zaf {path}: reading {}: {error}", file.display());
+        BACKEND
+    })
+}
+
 /// The exit code a board error comes to.
 pub(super) fn exit_code(error: &BoardError) -> u8 {
     match error {
-        BoardError::BatchFull { .. } | BoardError::NotInLand { .. } => REFUSED,
+        BoardError::BatchFull { .. }
+        | BoardError::NotInLand { .. }
+        | BoardError::NotATask(_)
+        | BoardError::NotAnOpeningState(_) => REFUSED,
         // A read that failed is no answer about the task: exit 2, never a refusal.
         BoardError::Unreadable(_) => BACKEND,
         BoardError::Port(error) => code_for(error),

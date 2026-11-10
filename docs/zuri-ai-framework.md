@@ -246,7 +246,7 @@ One binary, `zaf` (§11.5), one page of help pasted into every standing brief, e
 
 | Verb | Replaces | Output |
 |---|---|---|
-| `zaf board ready|claim|report|question|ruling` | hand-crafted `gh` queries and JSON | six-line answers; `question` sets the `question` label only on a task that is `claimed` or `ready` (on an epic or any other task it posts the comment and leaves labels alone); `ruling` closes the question and returns its task to `ready` unless the task is `done` or an epic (the same ruling again changes nothing) |
+| `zaf board ready|claim|report|question|ruling|file` | hand-crafted `gh` queries and JSON | six-line answers; `file` opens a task under an epic in the task template, once per title; `question` sets the `question` label only on a task that is `claimed` or `ready` (on an epic or any other task it posts the comment and leaves labels alone); `ruling` closes the question and returns its task to `ready` unless the task is `done` or an epic (the same ruling again changes nothing) |
 | `zaf ask -t <task> "<kind>: <question>"` (up to five) | reading corpus pages into a working context; asking the lead | a keeper's cited answer; the tool checks each quote exists verbatim in the cited page and re-asks on Haiku or Sonnet if the local model fails; a question whose answer failed only because a cited page could not be read prints `q1: check failed — page <id> could not be read (design dir or index misconfigured)` and the verb exits 2, so a misconfigured design source is never read as `not settled` |
 | `zaf brief <task>` | the opening burst of rg, cat, ls (the biggest look-around cost) | one context pack: ticket, a `## Rulings` section (every question raised on the task, `#<q> <text>` then `ruling: <text>` or `open`, newest last; `— none` when there are none), named corpus pages, `nodes chain` of each place the scope names to start, the style page, the help page |
 | `zaf check <task>` or `zaf check pr:<n>[:<task>]` | reading PR threads turn by turn; hand-run reviews; the LLM QA's checklist | runs the step list configured for the target's kind (task: acceptance checks, run inside the task's slice workspace and refused when the slice is not open; PR: CI, CodeQL, CodeRabbit, Gemini critique, Gemini security when flagged; milestone: objectives check, release reviews, mutant score), waits inside the verb, and returns one deduplicated findings list tagged by source with an exit code: clean, must-fix present, or a step failed. `--status` reads without running. Steps are configured in the manifest with a kind (wait on CI, wait for a bot, run a role on a runner, run a command, read scanner alerts), a `when`, a timeout and a must flag; independent steps run in parallel |
@@ -277,7 +277,7 @@ No project word in the binary, no assumed language, VCS, forge or design source.
 ```toml
 [project]        name = "zurfur"            # only for logs and ticket prefixes
 [requires]       zaf = "2.0.0"  teams = "teams-v2.0.0"  claude = ">=2.1"  jj = "*"  gh = "*"
-[board]          kind = "github-issues"  repo = "ZurNetwork/zurfur-design"
+[board]          kind = "github-issues"  repo = "ZurNetwork/zurfur-design"   # or kind = "github-projects" with project = 3 (owner = repo's owner, state_field = "zaf state" by default)
 [vcs]            kind = "jj"
 [forge]          kind = "github"  repo = "ZurNetwork/ZurFur"
 [design]         kind = "git-sibling"  repo = "ZurNetwork/zurfur-design"  path = "../zurfur-design"  index = "docs/design-index.md"   # path is relative to the project root; absent = ../<repo name>

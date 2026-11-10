@@ -4,7 +4,7 @@
 //! comments) is the backend's choice and never shows here. A [`TicketSummary`] is the one
 //! shape a ticket leaves zaf in: every `--json` prints it, whichever backend holds the ticket.
 
-use super::{TaskTemplate, TaskTemplateError, TicketId, TicketState};
+use super::{GroupName, TaskTemplate, TaskTemplateError, TicketId, TicketState};
 use crate::newtype::text_newtype;
 
 text_newtype! {
@@ -55,6 +55,21 @@ impl Ticket {
             url: self.url.clone(),
         }
     }
+}
+
+/// A task to file under an epic, as [`crate::ports::Board::file_task`] opens it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewTask {
+    /// The epic it belongs to.
+    pub epic: TicketId,
+    /// Its title.
+    pub title: TicketTitle,
+    /// Its body, in the task template.
+    pub body: TicketBody,
+    /// The state it opens in.
+    pub state: TicketState,
+    /// Its group, if it has one.
+    pub group: Option<GroupName>,
 }
 
 /// A ticket as every verb's `--json` prints it (see [`Ticket::summary`]): the id and the epic

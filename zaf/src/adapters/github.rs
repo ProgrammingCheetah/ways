@@ -11,11 +11,13 @@ mod forge;
 mod notes;
 mod releases;
 mod rows;
+mod state;
 
-pub use board::GithubBoard;
+pub use board::{GithubBoard, GithubProjectBoard};
 pub use command::GhCommand;
 pub use forge::GithubForge;
 pub use releases::GithubReleases;
+pub use state::ProjectRef;
 
 #[cfg(test)]
 mod tests;

@@ -6,7 +6,9 @@
 //! board on every test run. They run on the GitHub issues board too when
 //! `ZAF_CONTRACT_REPO` names a scratch repository (`owner/name`) that gh can write to; each
 //! check opens its own issues there and closes them as not planned when it ends. Without the
-//! variable the GitHub checks pass without running.
+//! variable the GitHub checks pass without running. They run on the GitHub Projects board as
+//! well when `ZAF_CONTRACT_PROJECT` also names a Project (`owner/number`) linked to that
+//! repository: states then live in its `zaf state` field, created on the first write.
 //!
 //! A backend's lists may lag behind its writes: GitHub lists a new issue, label or comment a
 //! few seconds after the write. A check that reads a list after a write reads it again until
@@ -18,17 +20,22 @@ use std::fmt::Debug;
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime};
 
-use zaf::adapters::github::{GhCommand, GithubBoard};
+use zaf::adapters::github::{GhCommand, GithubBoard, GithubProjectBoard, ProjectRef};
 
 use zaf::domain::{
-    BodyHash, Epic, EpicStage, Instance, Signature, Standing, Ticket, TicketId, TicketState,
+    BodyHash, Epic, EpicStage, Instance, NewTask, Signature, Standing, Ticket, TicketId,
+    TicketState,
 };
 use zaf::fakes::FakeBoard;
-use zaf::manifest::RepoName;
+use zaf::manifest::{DEFAULT_STATE_FIELD, RepoName};
 use zaf::ports::{Board, ClaimOutcome, NewQuestion, PortError};
 
 /// The environment variable naming the scratch repository the GitHub checks write to.
 const REPO_VAR: &str = "ZAF_CONTRACT_REPO";
+
+/// The environment variable naming the scratch Project (`owner/number`) the Projects checks
+/// keep states in.
+const PROJECT_VAR: &str = "ZAF_CONTRACT_PROJECT";
 
 /// A backend's way to arrange its board for one check.
 trait Arrange {
@@ -42,6 +49,8 @@ trait Arrange {
     fn close(&self, id: TicketId, completed: bool);
     /// Replaces a ticket's body, as a person editing it would.
     fn edit_body(&self, id: TicketId, body: &str);
+    /// Takes a ticket the board itself opened into the arranger's care, to close at the end.
+    fn adopt(&self, id: TicketId);
     /// An id no ticket has.
     fn missing(&self) -> TicketId;
     /// How long its lists may lag behind its writes.
@@ -308,7 +317,8 @@ fn a_challengers_report_challenges_its_epic(arrange: &dyn Arrange) {
             "A team's report is no challenge.",
         )
         .expect("the team reports");
-    assert!(!board.epic(epic).expect("the epic reads").challenged);
+    let listed = settled(arrange, || board.epic(epic), Result::is_ok);
+    assert!(!listed.expect("the epic reads").challenged);
     let challenger = role_instance("challenger", 905, epic);
     board
         .report(epic, &challenger, "Every task is exact.")
@@ -333,6 +343,44 @@ fn a_ticket_that_is_no_open_epic_is_not_one(arrange: &dyn Arrange) {
     assert!(listed.is_ok(), "got {listed:?}");
     let read = arrange.board().epic(task);
     assert!(matches!(read, Err(PortError::NotFound(_))), "got {read:?}");
+}
+
+fn a_filed_task_reads_back_under_its_epic(arrange: &dyn Arrange) {
+    let epic = arrange.epic("contract epic to file under");
+    let board = arrange.board();
+    let filed = board
+        .file_task(&NewTask {
+            epic,
+            title: "filed".into(),
+            body: BODY.into(),
+            state: TicketState::Blocked,
+            group: Some("contract".into()),
+        })
+        .expect("the task is filed");
+    arrange.adopt(filed);
+    let ticket = board.task(filed).expect("the task reads");
+    assert_eq!(ticket.epic, Some(epic));
+    assert_eq!(ticket.title.as_str(), "filed");
+    assert_eq!(ticket.body.as_str().trim(), BODY);
+    assert_eq!(ticket.state, Some(TicketState::Blocked));
+    let read = settled(
+        arrange,
+        || board.epic(epic),
+        |read| read.as_ref().is_ok_and(|read| !read.tasks.is_empty()),
+    )
+    .expect("the epic reads");
+    let listed: Vec<_> = read
+        .tasks
+        .iter()
+        .map(|task| {
+            (
+                task.number,
+                task.title.as_str(),
+                task.group.as_ref().map(|g| g.as_str()),
+            )
+        })
+        .collect();
+    assert_eq!(listed, [(filed, "filed", Some("contract"))]);
 }
 
 // The backends.
@@ -394,6 +442,8 @@ impl Arrange for FakeArrange {
         self.board.set_body(id, body);
     }
 
+    fn adopt(&self, _: TicketId) {}
+
     fn missing(&self) -> TicketId {
         TicketId::from(999_999)
     }
@@ -403,10 +453,13 @@ impl Arrange for FakeArrange {
     }
 }
 
-/// The GitHub issues board on the scratch repository, closing what it opened when dropped.
+/// A GitHub board on the scratch repository, closing what it opened when dropped: states in
+/// labels, or in a field of the scratch Project.
 struct GithubArrange {
     repo: String,
-    board: GithubBoard,
+    board: Box<dyn Board>,
+    /// Whether states live in labels; otherwise the arranger sets them through the board.
+    labels: bool,
     opened: RefCell<Vec<TicketId>>,
 }
 
@@ -416,18 +469,52 @@ const LABELS: &[&str] = &[
 ];
 
 impl GithubArrange {
-    /// The arranger for the repository `ZAF_CONTRACT_REPO` names; none when it is unset.
-    fn from_env() -> Option<Self> {
+    /// The repository `ZAF_CONTRACT_REPO` names, its labels made; none when it is unset.
+    fn repo_from_env() -> Option<String> {
         let repo = std::env::var(REPO_VAR)
             .ok()
             .filter(|repo| !repo.is_empty())?;
         for label in LABELS {
             gh(&["label", "create", label, "--force", "--repo", &repo]);
         }
+        Some(repo)
+    }
+
+    /// The issues board on the repository `ZAF_CONTRACT_REPO` names; none when it is unset.
+    fn from_env() -> Option<Self> {
+        let repo = Self::repo_from_env()?;
         let board = GithubBoard::from(GhCommand::from(RepoName::from(repo.as_str())));
         Some(Self {
             repo,
-            board,
+            board: Box::new(board),
+            labels: true,
+            opened: RefCell::new(Vec::new()),
+        })
+    }
+
+    /// The Projects board on the Project `ZAF_CONTRACT_PROJECT` names, over the repository
+    /// `ZAF_CONTRACT_REPO` names; none unless both are set.
+    fn projects_from_env() -> Option<Self> {
+        let project = std::env::var(PROJECT_VAR)
+            .ok()
+            .filter(|project| !project.is_empty())?;
+        let (owner, number) = project
+            .split_once('/')
+            .and_then(|(owner, number)| Some((owner, number.parse().ok()?)))
+            .unwrap_or_else(|| panic!("{PROJECT_VAR} is `owner/number`, got `{project}`"));
+        let repo = Self::repo_from_env()?;
+        let board = GithubProjectBoard::on_project(
+            GhCommand::from(RepoName::from(repo.as_str())),
+            ProjectRef {
+                owner: owner.to_owned(),
+                number,
+                field: DEFAULT_STATE_FIELD.to_owned(),
+            },
+        );
+        Some(Self {
+            repo,
+            board: Box::new(board),
+            labels: false,
             opened: RefCell::new(Vec::new()),
         })
     }
@@ -459,7 +546,7 @@ impl GithubArrange {
 
 impl Arrange for GithubArrange {
     fn board(&self) -> &dyn Board {
-        &self.board
+        self.board.as_ref()
     }
 
     fn epic(&self, title: &str) -> TicketId {
@@ -467,7 +554,12 @@ impl Arrange for GithubArrange {
     }
 
     fn task(&self, epic: TicketId, title: &str, body: &str, state: TicketState) -> TicketId {
-        let task = self.open(title, body, &["task", state.into()]);
+        let labels: &[&str] = if self.labels {
+            &["task", state.into()]
+        } else {
+            &["task"]
+        };
+        let task = self.open(title, body, labels);
         let issue = format!("repos/{}/issues/{}", self.repo, task.get());
         let database_id = gh(&["api", &issue, "--jq", ".id"]);
         let sub_issues = format!("repos/{}/issues/{}/sub_issues", self.repo, epic.get());
@@ -479,6 +571,17 @@ impl Arrange for GithubArrange {
             "-F",
             &format!("sub_issue_id={}", database_id.trim()),
         ]);
+        if !self.labels {
+            // Only a ready or claimed task can wait on a question, so a waiting one is ready first.
+            if state == TicketState::Question {
+                self.board
+                    .set_state(task, TicketState::Ready)
+                    .expect("the task is made ready on the Project");
+            }
+            self.board
+                .set_state(task, state)
+                .expect("the task's state is set on the Project");
+        }
         task
     }
 
@@ -499,6 +602,10 @@ impl Arrange for GithubArrange {
         gh(&[
             "issue", "edit", &number, "--repo", &self.repo, "--body", body,
         ]);
+    }
+
+    fn adopt(&self, id: TicketId) {
+        self.opened.borrow_mut().push(id);
     }
 
     fn missing(&self) -> TicketId {
@@ -538,7 +645,7 @@ fn gh(args: &[&str]) -> String {
 }
 
 /// One test per check and backend: `fake::<check>` always, `github::<check>` when
-/// `ZAF_CONTRACT_REPO` is set.
+/// `ZAF_CONTRACT_REPO` is set, `projects::<check>` when `ZAF_CONTRACT_PROJECT` is set too.
 macro_rules! contract {
     ($($check:ident),* $(,)?) => {
         mod fake {
@@ -561,6 +668,18 @@ macro_rules! contract {
                 }
             )*
         }
+
+        mod projects {
+            $(
+                #[test]
+                fn $check() {
+                    let Some(arrange) = super::GithubArrange::projects_from_env() else {
+                        return;
+                    };
+                    super::$check(&arrange);
+                }
+            )*
+        }
     };
 }
 
@@ -577,4 +696,5 @@ contract![
     a_signature_holds_until_the_body_changes,
     a_challengers_report_challenges_its_epic,
     a_ticket_that_is_no_open_epic_is_not_one,
+    a_filed_task_reads_back_under_its_epic,
 ];

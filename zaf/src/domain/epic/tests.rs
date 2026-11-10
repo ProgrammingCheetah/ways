@@ -7,6 +7,7 @@ const BODY: &str = "Goal: one ticket shape over every backend.\n";
 fn task(n: u64, state: TicketState, standing: Standing) -> EpicTask {
     EpicTask {
         number: TicketId::from(n),
+        title: format!("task {n}").into(),
         state: Some(state),
         standing,
         group: None,

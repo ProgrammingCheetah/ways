@@ -264,6 +264,29 @@ pub enum BoardAction {
         /// The task.
         task: TicketId,
     },
+    /// File a task under an epic, its body in the task template; a title the epic already has is not filed twice.
+    File {
+        /// The epic.
+        epic: TicketId,
+        /// The task's title.
+        title: String,
+        /// The task's body.
+        #[arg(
+            long,
+            conflicts_with = "body_file",
+            required_unless_present = "body_file"
+        )]
+        body: Option<String>,
+        /// A file holding the task's body; `-` reads standard input.
+        #[arg(long)]
+        body_file: Option<PathBuf>,
+        /// The task's group (its `group:<name>` label on GitHub).
+        #[arg(long)]
+        group: Option<String>,
+        /// Open it blocked, not ready: its `Blockers` are not done yet.
+        #[arg(long)]
+        blocked: bool,
+    },
 }
 
 /// `zaf slice …`.
