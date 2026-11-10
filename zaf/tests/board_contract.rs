@@ -7,15 +7,21 @@
 //! `ZAF_CONTRACT_REPO` names a scratch repository (`owner/name`) that gh can write to; each
 //! check opens its own issues there and closes them as not planned when it ends. Without the
 //! variable the GitHub checks pass without running.
+//!
+//! A backend's lists may lag behind its writes: GitHub lists a new issue, label or comment a
+//! few seconds after the write. A check that reads a list after a write reads it again until
+//! it shows the write, for as long as the backend's [`Arrange::patience`], and then asserts
+//! on the last read. A read of one ticket by its id does not lag.
 
 use std::cell::{Cell, RefCell};
+use std::fmt::Debug;
 use std::process::Command;
+use std::time::{Duration, Instant, SystemTime};
 
-use std::time::SystemTime;
 use zaf::adapters::github::{GhCommand, GithubBoard};
 
 use zaf::domain::{
-    BodyHash, EpicStage, Instance, Signature, Standing, Ticket, TicketId, TicketState,
+    BodyHash, Epic, EpicStage, Instance, Signature, Standing, Ticket, TicketId, TicketState,
 };
 use zaf::fakes::FakeBoard;
 use zaf::manifest::RepoName;
@@ -38,6 +44,21 @@ trait Arrange {
     fn edit_body(&self, id: TicketId, body: &str);
     /// An id no ticket has.
     fn missing(&self) -> TicketId;
+    /// How long its lists may lag behind its writes.
+    fn patience(&self) -> Duration;
+}
+
+/// Reads with `read` until `shows` holds of what it returns, or the backend's patience runs
+/// out, and returns the last read for the check to assert on.
+fn settled<T: Debug>(arrange: &dyn Arrange, read: impl Fn() -> T, shows: impl Fn(&T) -> bool) -> T {
+    let deadline = Instant::now() + arrange.patience();
+    loop {
+        let value = read();
+        if shows(&value) || Instant::now() >= deadline {
+            return value;
+        }
+        std::thread::sleep(Duration::from_secs(2));
+    }
 }
 
 /// A team instance for the checks, on `epic`.
@@ -78,14 +99,17 @@ fn ready_lists_ready_tasks_only_in_id_order(arrange: &dyn Arrange) {
     let first = arrange.task(epic, "first", BODY, TicketState::Ready);
     let blocked = arrange.task(epic, "blocked", BODY, TicketState::Blocked);
     let second = arrange.task(epic, "second", BODY, TicketState::Ready);
-    let ready: Vec<TicketId> = arrange
-        .board()
-        .ready()
-        .expect("ready reads")
-        .iter()
-        .map(|ticket| ticket.id)
-        .filter(|id| [first, blocked, second].contains(id))
-        .collect();
+    let ready_of_these = || -> Vec<TicketId> {
+        arrange
+            .board()
+            .ready()
+            .expect("ready reads")
+            .iter()
+            .map(|ticket| ticket.id)
+            .filter(|id| [first, blocked, second].contains(id))
+            .collect()
+    };
+    let ready = settled(arrange, ready_of_these, |ready| ready == &[first, second]);
     assert_eq!(ready, [first, second]);
 }
 
@@ -103,13 +127,16 @@ fn a_claim_is_held_by_one_instance(arrange: &dyn Arrange) {
     );
     let ticket = board.task(task).expect("the task reads");
     assert_eq!(ticket.state, Some(TicketState::Claimed));
-    let claims = board.claims().expect("claims read");
-    let held: Vec<&Instance> = claims
-        .iter()
-        .filter(|claim| claim.task == task)
-        .map(|claim| &claim.instance)
-        .collect();
-    assert_eq!(held, [&holder]);
+    let holders = || -> Vec<Instance> {
+        let claims = board.claims().expect("claims read");
+        claims
+            .into_iter()
+            .filter(|claim| claim.task == task)
+            .map(|claim| claim.instance)
+            .collect()
+    };
+    let held = settled(arrange, holders, |held| !held.is_empty());
+    assert_eq!(held, [holder]);
 }
 
 fn a_released_task_is_ready_again(arrange: &dyn Arrange) {
@@ -121,7 +148,11 @@ fn a_released_task_is_ready_again(arrange: &dyn Arrange) {
     board.release(task, &holder).expect("the release");
     let ticket = board.task(task).expect("the task reads");
     assert_eq!(ticket.state, Some(TicketState::Ready));
-    let claims = board.claims().expect("claims read");
+    let claims = settled(
+        arrange,
+        || board.claims().expect("claims read"),
+        |claims| claims.iter().all(|claim| claim.task != task),
+    );
     assert!(claims.iter().all(|claim| claim.task != task));
 }
 
@@ -146,7 +177,11 @@ fn a_ruling_closes_its_question_and_frees_the_task(arrange: &dyn Arrange) {
         door: false,
     };
     let question = board.open_question(&asked).expect("the question opens");
-    let open: Vec<Ticket> = board.questions().expect("questions read");
+    let open: Vec<Ticket> = settled(
+        arrange,
+        || board.questions().expect("questions read"),
+        |open| open.iter().any(|ticket| ticket.id == question),
+    );
     let listed = open
         .iter()
         .find(|ticket| ticket.id == question)
@@ -160,7 +195,11 @@ fn a_ruling_closes_its_question_and_frees_the_task(arrange: &dyn Arrange) {
     assert_eq!(board.record_ruling(question, "this way"), Ok(Some(task)));
     let ticket = board.task(task).expect("the task reads");
     assert_eq!(ticket.state, Some(TicketState::Ready));
-    let open = board.questions().expect("questions read");
+    let open = settled(
+        arrange,
+        || board.questions().expect("questions read"),
+        |open| open.iter().all(|ticket| ticket.id != question),
+    );
     assert!(open.iter().all(|ticket| ticket.id != question));
     assert!(board.record_ruling(question, "this way").is_ok());
     let changed = board.record_ruling(question, "the other way");
@@ -168,14 +207,18 @@ fn a_ruling_closes_its_question_and_frees_the_task(arrange: &dyn Arrange) {
         matches!(changed, Err(PortError::Conflict(_))),
         "got {changed:?}"
     );
-    let raised = board
-        .questions_on(task)
-        .expect("questions on the task read");
-    let ruled: Vec<(TicketId, Option<&str>)> = raised
-        .iter()
-        .map(|(ticket, ruling)| (ticket.id, ruling.as_deref()))
-        .collect();
-    assert_eq!(ruled, [(question, Some("this way"))]);
+    let rulings = || -> Vec<(TicketId, Option<String>)> {
+        let raised = board
+            .questions_on(task)
+            .expect("questions on the task read");
+        raised
+            .into_iter()
+            .map(|(ticket, ruling)| (ticket.id, ruling))
+            .collect()
+    };
+    let expected = [(question, Some("this way".to_owned()))];
+    let ruled = settled(arrange, rulings, |ruled| ruled == &expected);
+    assert_eq!(ruled, expected);
 }
 
 fn standing_follows_how_a_ticket_closed(arrange: &dyn Arrange) {
@@ -199,21 +242,25 @@ fn an_open_epic_lists_its_tasks_closed_ones_too(arrange: &dyn Arrange) {
     let dropped = arrange.task(epic, "dropped", BODY, TicketState::Ready);
     arrange.close(completed, true);
     arrange.close(dropped, false);
-    let read = arrange.board().epic(epic).expect("the epic reads");
+    let expected = [
+        (open, Standing::Open),
+        (completed, Standing::Done),
+        (dropped, Standing::ClosedNotPlanned),
+    ];
+    let standings = |epic: &Epic| -> Vec<(TicketId, Standing)> {
+        epic.tasks
+            .iter()
+            .map(|task| (task.number, task.standing))
+            .collect()
+    };
+    let read = settled(
+        arrange,
+        || arrange.board().epic(epic),
+        |read| read.as_ref().is_ok_and(|read| standings(read) == expected),
+    )
+    .expect("the epic reads");
     assert_eq!(read.title.as_str(), "contract epic with tasks");
-    let tasks: Vec<(TicketId, Standing)> = read
-        .tasks
-        .iter()
-        .map(|task| (task.number, task.standing))
-        .collect();
-    assert_eq!(
-        tasks,
-        [
-            (open, Standing::Open),
-            (completed, Standing::Done),
-            (dropped, Standing::ClosedNotPlanned)
-        ]
-    );
+    assert_eq!(standings(&read), expected);
     assert_eq!(read.tally(), (1, 2), "a dropped task counts for nothing");
     let listed = arrange.board().epics().expect("epics read");
     assert!(listed.iter().any(|listed| listed.id == epic));
@@ -222,13 +269,15 @@ fn an_open_epic_lists_its_tasks_closed_ones_too(arrange: &dyn Arrange) {
 fn a_signature_holds_until_the_body_changes(arrange: &dyn Arrange) {
     let epic = arrange.epic("contract epic to sign");
     let board = arrange.board();
-    let before = board.epic(epic).expect("the epic reads");
+    let read = || board.epic(epic);
+    let before = settled(arrange, read, Result::is_ok).expect("the epic reads");
     assert_eq!(before.signature, None);
     assert_eq!(before.stage(), EpicStage::Unsigned);
 
     let signature = Signature::of(&before.body, SystemTime::now());
     board.sign(epic, &signature).expect("the epic is signed");
-    let signed = board.epic(epic).expect("the epic reads");
+    let signed = settled(arrange, read, |read| read.as_ref().is_ok_and(Epic::signed))
+        .expect("the epic reads");
     assert_eq!(
         signed.signature.as_ref().map(|signature| &signature.hash),
         Some(&BodyHash::of(&before.body))
@@ -240,7 +289,10 @@ fn a_signature_holds_until_the_body_changes(arrange: &dyn Arrange) {
         epic,
         "An epic of the contract checks, edited after signing.",
     );
-    let edited = board.epic(epic).expect("the epic reads");
+    let edited = settled(arrange, read, |read| {
+        read.as_ref().is_ok_and(Epic::signature_void)
+    })
+    .expect("the epic reads");
     assert!(edited.signature_void(), "an edit voids the signature");
     assert_eq!(edited.stage(), EpicStage::Unsigned);
 }
@@ -261,12 +313,24 @@ fn a_challengers_report_challenges_its_epic(arrange: &dyn Arrange) {
     board
         .report(epic, &challenger, "Every task is exact.")
         .expect("the challenger reports");
-    assert!(board.epic(epic).expect("the epic reads").challenged);
+    let read = settled(
+        arrange,
+        || board.epic(epic),
+        |read| read.as_ref().is_ok_and(|read| read.challenged),
+    );
+    assert!(read.expect("the epic reads").challenged);
 }
 
 fn a_ticket_that_is_no_open_epic_is_not_one(arrange: &dyn Arrange) {
     let epic = arrange.epic("contract epic");
     let task = arrange.task(epic, "a task", BODY, TicketState::Ready);
+    // Wait until the epic lists, so a task missing from it is not only lagging.
+    let listed = settled(
+        arrange,
+        || arrange.board().epic(epic),
+        |read| read.as_ref().is_ok_and(|read| !read.tasks.is_empty()),
+    );
+    assert!(listed.is_ok(), "got {listed:?}");
     let read = arrange.board().epic(task);
     assert!(matches!(read, Err(PortError::NotFound(_))), "got {read:?}");
 }
@@ -332,6 +396,10 @@ impl Arrange for FakeArrange {
 
     fn missing(&self) -> TicketId {
         TicketId::from(999_999)
+    }
+
+    fn patience(&self) -> Duration {
+        Duration::ZERO
     }
 }
 
@@ -435,6 +503,10 @@ impl Arrange for GithubArrange {
 
     fn missing(&self) -> TicketId {
         TicketId::from(999_999_999)
+    }
+
+    fn patience(&self) -> Duration {
+        Duration::from_secs(60)
     }
 }
 

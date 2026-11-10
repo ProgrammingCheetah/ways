@@ -329,9 +329,18 @@ fn issue_state_tells_open_done_closed_and_missing_apart() {
         "issue view 9 *",
         "GraphQL: Could not resolve to an Issue with the number of 9.",
     )
+    .fail_on(
+        "issue view 12 *",
+        "GraphQL: Could not resolve to an issue or pull request with the number of 12. (repository.issue)",
+    )
     .fail_on("issue view 10 *", "HTTP 502: bad gateway");
     let board = fake.board();
     let state = |number: u64| board.standing(TicketId::from(number));
+    assert_eq!(
+        state(12),
+        Ok(Standing::Missing),
+        "gh 2.102 says `an issue or pull request`"
+    );
 
     assert_eq!(state(3), Ok(Standing::Open));
     assert_eq!(state(4), Ok(Standing::Done));
@@ -368,7 +377,7 @@ fn issue_state_tells_open_done_closed_and_missing_apart() {
     };
     assert_eq!(
         fake.calls(),
-        ["3", "4", "5", "6", "8", "11", "7", "9", "10"].map(standing_view)
+        ["12", "3", "4", "5", "6", "8", "11", "7", "9", "10"].map(standing_view)
     );
 }
 
