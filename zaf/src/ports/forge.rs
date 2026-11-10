@@ -87,7 +87,8 @@ pub struct ScanningAlert {
     pub location: Option<Location>,
 }
 
-/// The forge that hosts the code and its reviews; zaf only reads it.
+/// The forge that hosts the code and its reviews; zaf reads it, and writes one comment on it:
+/// the hand-off.
 pub trait Forge {
     /// The pull request's check runs.
     fn checks(&self, pr: PrNumber) -> Result<Vec<Check>, PortError>;
@@ -108,6 +109,14 @@ pub trait Forge {
 
     /// The open code scanning alerts for the pull request's head ref.
     fn scanning_alerts(&self, pr: PrNumber) -> Result<Vec<ScanningAlert>, PortError>;
+
+    /// The hand-off the pull request carries: the text of its hand-off comment, the latest when
+    /// a forge somehow holds several; none when it has none.
+    fn handoff(&self, pr: PrNumber) -> Result<Option<String>, PortError>;
+
+    /// Writes the pull request's hand-off comment, replacing the one it has: after it the
+    /// pull request carries exactly one, holding `text`.
+    fn set_handoff(&self, pr: PrNumber, text: &str) -> Result<(), PortError>;
 }
 
 #[cfg(test)]

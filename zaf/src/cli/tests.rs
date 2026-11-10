@@ -30,7 +30,7 @@ fn every_verb_is_listed() {
     assert_eq!(
         board_actions,
         [
-            "ready", "claim", "report", "question", "ruling", "done", "file"
+            "ready", "claim", "report", "handoff", "question", "ruling", "done", "file"
         ]
     );
     let slice = command.find_subcommand("slice").expect("slice");
@@ -49,6 +49,7 @@ const BUILT: &[&str] = &[
     "board ready",
     "board claim",
     "board report",
+    "board handoff",
     "board question",
     "board ruling",
     "board done",
@@ -158,6 +159,37 @@ fn board_done_forge_failure_exits_2() {
     assert_eq!(board_done_exit("404", false), 2);
     // An open pull request is a refusal, not a failure.
     assert_eq!(board_done_exit("1", false), 1);
+}
+
+#[test]
+fn board_handoff_exits_0_written_1_without_a_pr_and_2_when_the_forge_fails() {
+    use crate::app::actions::SliceRecords;
+    use crate::domain::TicketId;
+    use crate::fakes::{FakeForge, PrRequest};
+    use crate::ports::{BaseName, SliceName};
+
+    let task = TicketId::from(433);
+    let forge = FakeForge::default();
+    let request = PrRequest {
+        slice: SliceName::from("feature/0.3.0-421-433"),
+        base: BaseName::from("feature/0.3.0"),
+        title: "Task".to_owned(),
+        body: String::new(),
+    };
+    let pr = forge.open_pr(&request).expect("open pr");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let records = SliceRecords::new(dir.path());
+    let slices = dir.path().join(".zaf/slices");
+    std::fs::create_dir_all(&slices).expect("mkdir");
+    let exit = |forge: &FakeForge| {
+        let result = crate::app::board::handoff(forge, &records, task, "text");
+        result.map_or_else(|error| board::exit_code(&error), |_| 0)
+    };
+    assert_eq!(exit(&forge), 1, "no recorded pull request");
+    std::fs::write(slices.join("433.pr"), pr.get().to_string()).expect("write");
+    assert_eq!(exit(&forge), 0);
+    forge.fail_handoffs();
+    assert_eq!(exit(&forge), 2);
 }
 
 #[test]

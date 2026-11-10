@@ -247,6 +247,13 @@ pub enum BoardAction {
         /// The report.
         body: String,
     },
+    /// Leave the hand-off comment on a task's recorded pull request; a second call replaces it.
+    Handoff {
+        /// The task.
+        task: TicketId,
+        /// The hand-off.
+        text: String,
+    },
     /// Raise a question for the Engineer on an issue.
     Question {
         /// The issue that waits.

@@ -68,6 +68,14 @@ pub struct IssueCommentRow {
     pub url: String,
 }
 
+/// A conversation comment as `repos/{repo}/issues/{n}/comments` prints it.
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct ConversationCommentRow {
+    pub id: u64,
+    #[serde(default)]
+    pub body: String,
+}
+
 /// A pull request read only by state.
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct PrStateRow {
