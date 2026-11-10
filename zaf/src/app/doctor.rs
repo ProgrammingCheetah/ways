@@ -270,7 +270,8 @@ pub struct Report {
     /// One entry per action name the project needs, in name order, with the tier that provides it;
     /// a name with no provider fails the report.
     pub needed: Vec<NeededCheck>,
-    /// The manifest files the load read, highest layer first; informational.
+    /// The manifest files the load read, highest layer first; informational. Printed as
+    /// `manifest: <files>`.
     pub manifest: Vec<PathBuf>,
     /// The other `.toml` files directly inside the project's `.zaf/` folder, which nothing
     /// reads; a warning, it never fails the report.

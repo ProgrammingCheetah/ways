@@ -75,6 +75,8 @@ pub enum ManifestError {
     /// A manifest setting in `.zaf/local.toml` other than the machine facts it may hold.
     ///
     /// The file is git-ignored, so it may never loosen what the project commits.
+    ///
+    /// The message reads: `.zaf/local.toml may set only [spawn] slots, [gate] slot and its own tables; it sets <key>`
     #[error(
         ".zaf/local.toml may set only [spawn] slots, [gate] slot and its own tables; it sets {key}"
     )]
