@@ -5,15 +5,17 @@
 //! while the process recorded in its run folder does, so one that died frees its slot at
 //! once, with no tick in between. A claim held by an instance that no longer runs is shown
 //! as orphaned, not claimed: the next tick releases it. The guard line is whatever
-//! `zaf guard` last wrote.
+//! `zaf guard` last wrote. The machine line counts every live zaf instance on the machine,
+//! from any project, as the process table reads it when asked ([`Status::with_machine`]).
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use super::epic::EpicLine;
 use super::guard::{self, GuardError, GuardState};
 use super::spawn::{self, blockers, blockers::DeadLine};
 use crate::domain::{Ticket, TicketId, TicketSummary};
-use crate::ports::{Board, ClaimRecord, Holder, PortError};
+use crate::ports::{Board, ClaimRecord, Holder, MachineInstance, PortError};
 
 /// The spawner's state file under the state folder.
 pub const SPAWN_STATE_FILE: &str = "spawn.state";
@@ -110,6 +112,49 @@ pub struct Status {
     pub cycles: Vec<Vec<u64>>,
     /// Blockers those tasks name that never close.
     pub dead_blockers: Vec<DeadLine>,
+    /// Every live zaf instance on the machine, from any project; empty until
+    /// [`Status::with_machine`] gives the process table's read.
+    pub machine: Machine,
+}
+
+/// The live zaf instances of the whole machine, read from the process table when asked.
+///
+/// The text screen prints it as `machine: <n> instances in <m> projects`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct Machine {
+    /// How many projects they come from: their distinct roots.
+    pub projects: usize,
+    /// Each instance once.
+    pub instances: Vec<MachineLine>,
+}
+
+/// One live instance of the machine.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct MachineLine {
+    /// The root of the project that launched it.
+    pub root: PathBuf,
+    /// Who it is, as `<role> instance <n> on #<epic>`, when its environment says.
+    pub instance: Option<String>,
+    /// Its size name; none for a launch that carries none.
+    pub size: Option<String>,
+}
+
+impl Machine {
+    /// The screen's view of the machine read.
+    pub fn read(instances: &[MachineInstance]) -> Self {
+        let roots: BTreeSet<&Path> = instances.iter().map(|one| one.root.as_path()).collect();
+        Self {
+            projects: roots.len(),
+            instances: instances
+                .iter()
+                .map(|one| MachineLine {
+                    root: one.root.clone(),
+                    instance: one.instance.clone(),
+                    size: one.size.map(|size| size.name().to_owned()),
+                })
+                .collect(),
+        }
+    }
 }
 
 /// Reads the running launches through the spawner's own reader, so both count alike.
@@ -191,6 +236,7 @@ pub fn status(
         questions,
         cycles,
         dead_blockers,
+        machine: Machine::default(),
     })
 }
 
@@ -204,6 +250,13 @@ fn numbers(lines: impl Iterator<Item = u64>) -> String {
 }
 
 impl Status {
+    /// The screen with the machine's live instances, as the process table reads them now.
+    #[must_use]
+    pub fn with_machine(mut self, instances: &[MachineInstance]) -> Self {
+        self.machine = Machine::read(instances);
+        self
+    }
+
     /// The screen as text.
     pub fn render_text(&self) -> String {
         let mut out = String::new();
@@ -248,6 +301,11 @@ impl Status {
         line(format!(
             "slots     {} free of {}",
             self.slots.free, self.slots.total
+        ));
+        line(format!(
+            "machine: {} instances in {} projects",
+            self.machine.instances.len(),
+            self.machine.projects
         ));
         line(format!(
             "guard     {}",

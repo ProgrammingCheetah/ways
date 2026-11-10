@@ -1,7 +1,7 @@
 use super::*;
 use crate::app::spawn::runs;
 use crate::app::spawn::tick::PlannedLaunch;
-use crate::domain::{Instance, InstanceNumber, RoleName, TicketId, TicketState};
+use crate::domain::{Instance, InstanceNumber, RoleName, TaskSize, TicketId, TicketState};
 use crate::fakes::FakeBoard;
 
 fn ticket(number: u64, title: &str, label: TicketState) -> Ticket {
@@ -121,8 +121,71 @@ fn the_screen_joins_board_run_folders_and_guard() {
          running   1\n\
          \x20 team instance 1 on #2: #5\n\
          slots     1 free of 2\n\
+         machine: 0 instances in 0 projects\n\
          guard     yellow 72% ($72 of $100)\n\
          question  #9 Which columns are exported?\n"
+    );
+}
+
+fn machine_instance(root: &str, slug: &str, size: Option<TaskSize>) -> MachineInstance {
+    MachineInstance {
+        run: Path::new(root).join(".zaf/runs").join(slug),
+        root: PathBuf::from(root),
+        instance: Some(slug.replace('-', " ").replace(" on ", " on #")),
+        size,
+        pids: vec![100, 101],
+    }
+}
+
+#[test]
+fn status_lists_the_machines_instances() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let machine = [
+        machine_instance(
+            "/work/bookshelf",
+            "planning-instance-1-on-2",
+            Some(TaskSize::XS),
+        ),
+        machine_instance("/work/bookshelf", "team-instance-2-on-3", None),
+        machine_instance(
+            "/work/ledger",
+            "challenger-instance-5-on-8",
+            Some(TaskSize::XS),
+        ),
+    ];
+
+    let status = status(&board(), dir.path(), 2, &all_alive)
+        .expect("status")
+        .with_machine(&machine);
+
+    let text = status.render_text();
+    assert!(
+        text.contains("slots     2 free of 2\nmachine: 3 instances in 2 projects\n"),
+        "{text}"
+    );
+    let json: serde_json::Value = serde_json::from_str(&status.to_json()).expect("json");
+    assert_eq!(
+        json["machine"],
+        serde_json::json!({
+            "projects": 2,
+            "instances": [
+                {
+                    "root": "/work/bookshelf",
+                    "instance": "planning instance 1 on #2",
+                    "size": "XS",
+                },
+                {
+                    "root": "/work/bookshelf",
+                    "instance": "team instance 2 on #3",
+                    "size": null,
+                },
+                {
+                    "root": "/work/ledger",
+                    "instance": "challenger instance 5 on #8",
+                    "size": "XS",
+                },
+            ],
+        })
     );
 }
 
