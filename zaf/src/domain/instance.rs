@@ -2,7 +2,7 @@
 
 use std::str::FromStr;
 
-use super::{IdError, IssueNumber};
+use super::{IdError, TicketId};
 use crate::newtype::text_newtype;
 
 text_newtype! {
@@ -39,7 +39,7 @@ pub struct Instance {
     /// The role it runs.
     pub role: RoleName,
     /// The epic it works on.
-    pub epic: IssueNumber,
+    pub epic: TicketId,
     /// Its number on that epic.
     pub number: InstanceNumber,
 }
@@ -82,7 +82,7 @@ impl FromStr for Instance {
         let (role, rest) = text.split_once(" instance ").ok_or_else(rejected)?;
         let (number, epic) = rest.split_once(" on ").ok_or_else(rejected)?;
         let number = number.parse::<u32>().map_err(|_| rejected())?;
-        let epic = epic.parse::<IssueNumber>().map_err(|_| rejected())?;
+        let epic = epic.parse::<TicketId>().map_err(|_| rejected())?;
         if role.is_empty() {
             return Err(rejected());
         }

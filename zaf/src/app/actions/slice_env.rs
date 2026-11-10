@@ -14,7 +14,7 @@ use std::process::Command;
 use super::records::SliceRecords;
 use super::run::RunRequest;
 use crate::app::slice::{SliceQuery, resolve};
-use crate::domain::IssueNumber;
+use crate::domain::TicketId;
 use crate::manifest::BranchesSection;
 use crate::ports::{Board, Forge, Vcs};
 
@@ -96,7 +96,7 @@ impl SliceEnv {
             .args
             .first()
             .and_then(|task| task.to_str())
-            .and_then(|task| task.parse::<IssueNumber>().ok())
+            .and_then(|task| task.parse::<TicketId>().ok())
             .ok_or("a `target: task` action needs the task number as its first argument")?;
         let context = context.ok_or("no project to name the task's slice in")?;
         let board = context
@@ -115,7 +115,7 @@ impl SliceEnv {
         vars.push((BASE_VAR, Some(target.base.as_ref().to_owned())));
         vars.push((SLICE_VAR, Some(target.slice.as_ref().to_owned())));
         vars.push((PR_VAR, pr.map(|pr| pr.get().to_string())));
-        vars.push((TASK_TITLE_VAR, Some(target.ticket.title)));
+        vars.push((TASK_TITLE_VAR, Some(target.ticket.title.to_string())));
         Ok(Self(vars))
     }
 

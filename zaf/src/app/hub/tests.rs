@@ -276,7 +276,7 @@ fn reports_stay_under_the_cap() {
 fn a_report_reads_back_as_written() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut one = report_at(90, "testing");
-    one.task = Some(crate::domain::IssueNumber::from(322));
+    one.task = Some(crate::domain::TicketId::from(322));
     append(dir.path(), &one).expect("appends");
     append(
         dir.path(),
@@ -284,7 +284,7 @@ fn a_report_reads_back_as_written() {
     )
     .expect("appends");
     assert_eq!(
-        last_report(dir.path(), crate::domain::IssueNumber::from(322)),
+        last_report(dir.path(), crate::domain::TicketId::from(322)),
         Some(("testing".to_owned(), one.at))
     );
     let text = std::fs::read_to_string(reports_file(dir.path())).expect("file");
@@ -311,7 +311,7 @@ fn model(role: &str, phases: &[&str], current: Option<&str>, iteration: u32) -> 
 #[test]
 fn a_repeated_phase_counts_an_iteration() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let task = crate::domain::IssueNumber::from(330);
+    let task = crate::domain::TicketId::from(330);
     declare(
         dir.path(),
         task,
@@ -336,7 +336,7 @@ fn a_repeated_phase_counts_an_iteration() {
     assert_eq!(plans.len(), 1);
     assert_eq!(plans[0].0.iteration(), 3);
     assert_eq!(
-        plans_of(dir.path(), crate::domain::IssueNumber::from(331)),
+        plans_of(dir.path(), crate::domain::TicketId::from(331)),
         vec![]
     );
     let mut row = epic();

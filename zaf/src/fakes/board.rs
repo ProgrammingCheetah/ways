@@ -4,10 +4,9 @@ use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::SystemTime;
 
-use crate::domain::{Instance, IssueNumber, TaskLabel};
+use crate::domain::{Instance, Ticket, TicketId, TicketState};
 use crate::ports::{
-    Board, ClaimOutcome, ClaimRecord, EpicTask, EpicTree, IssueState, NewQuestion, PortError,
-    Ticket,
+    Board, ClaimOutcome, ClaimRecord, EpicTask, EpicTree, NewQuestion, PortError, Standing,
 };
 
 /// One issue and everything written on it.
@@ -29,7 +28,13 @@ struct Issue {
 
 #[derive(Debug, Default)]
 struct State {
-    issues: BTreeMap<IssueNumber, Issue>,
+    issues: BTreeMap<TicketId, Issue>,
+}
+
+/// Where the in-memory board says a ticket it opened can be seen: an address that leads
+/// nowhere, so nothing mistakes it for a real link.
+pub fn link(number: TicketId) -> String {
+    format!("https://board.invalid/tickets/{}", number.get())
 }
 
 /// A board held in memory. Seed it with [`FakeBoard::add_ticket`].
@@ -54,17 +59,18 @@ impl FakeBoard {
             epic: false,
             group: None,
         };
-        self.state().issues.insert(ticket.number, issue);
+        self.state().issues.insert(ticket.id, issue);
     }
 
     /// Puts an open epic on the board, as [`Board::epic_trees`] lists it.
-    pub fn add_epic(&self, number: IssueNumber, title: &str) {
+    pub fn add_epic(&self, number: TicketId, title: &str) {
         self.add_ticket(Ticket {
-            number,
+            id: number,
             epic: None,
-            title: title.to_owned(),
-            body: String::new(),
-            label: None,
+            title: title.into(),
+            body: "".into(),
+            state: None,
+            url: "".into(),
         });
         if let Some(issue) = self.state().issues.get_mut(&number) {
             issue.epic = true;
@@ -72,21 +78,21 @@ impl FakeBoard {
     }
 
     /// Gives a task the `group:<name>` label.
-    pub fn set_group(&self, task: IssueNumber, group: &str) {
+    pub fn set_group(&self, task: TicketId, group: &str) {
         if let Some(issue) = self.state().issues.get_mut(&task) {
             issue.group = Some(group.to_owned());
         }
     }
 
     /// Closes an issue as completed, without any ruling, as closing it on the forge would.
-    pub fn close(&self, issue: IssueNumber) {
+    pub fn close(&self, issue: TicketId) {
         if let Some(issue) = self.state().issues.get_mut(&issue) {
             issue.closed = true;
         }
     }
 
     /// Closes an issue as not planned, as folding a task into a unit or dropping it would.
-    pub fn close_not_planned(&self, issue: IssueNumber) {
+    pub fn close_not_planned(&self, issue: TicketId) {
         if let Some(issue) = self.state().issues.get_mut(&issue) {
             issue.closed = true;
             issue.not_planned = true;
@@ -95,9 +101,9 @@ impl FakeBoard {
 
     /// Puts an open question ticket on the board, labelled `question`, as `open_question` would.
     pub fn add_question(&self, ticket: Ticket) {
-        let number = ticket.number;
+        let number = ticket.id;
         self.add_ticket(Ticket {
-            label: Some(TaskLabel::Question),
+            state: Some(TicketState::Question),
             ..ticket
         });
         if let Some(issue) = self.state().issues.get_mut(&number) {
@@ -106,7 +112,7 @@ impl FakeBoard {
     }
 
     /// The comments on an issue, oldest first.
-    pub fn comments(&self, issue: IssueNumber) -> Vec<String> {
+    pub fn comments(&self, issue: TicketId) -> Vec<String> {
         self.state()
             .issues
             .get(&issue)
@@ -115,7 +121,7 @@ impl FakeBoard {
     }
 
     /// The status comments on a task, one per instance.
-    pub fn reports(&self, task: IssueNumber) -> Vec<(Instance, String)> {
+    pub fn reports(&self, task: TicketId) -> Vec<(Instance, String)> {
         self.state()
             .issues
             .get(&task)
@@ -124,7 +130,7 @@ impl FakeBoard {
     }
 
     /// Whether a question was raised as a door, and its ruling if there is one.
-    pub fn question(&self, question: IssueNumber) -> Option<(bool, Option<String>)> {
+    pub fn question(&self, question: TicketId) -> Option<(bool, Option<String>)> {
         self.state()
             .issues
             .get(&question)
@@ -132,7 +138,7 @@ impl FakeBoard {
     }
 
     /// Whether an issue is closed, as recording a ruling closes a question.
-    pub fn is_closed(&self, issue: IssueNumber) -> bool {
+    pub fn is_closed(&self, issue: TicketId) -> bool {
         self.state()
             .issues
             .get(&issue)
@@ -144,12 +150,12 @@ impl FakeBoard {
     }
 }
 
-fn not_found(issue: IssueNumber) -> PortError {
+fn not_found(issue: TicketId) -> PortError {
     PortError::NotFound(format!("issue {issue}"))
 }
 
 impl State {
-    fn issue_mut(&mut self, number: IssueNumber) -> Result<&mut Issue, PortError> {
+    fn issue_mut(&mut self, number: TicketId) -> Result<&mut Issue, PortError> {
         self.issues
             .get_mut(&number)
             .ok_or_else(|| not_found(number))
@@ -164,15 +170,15 @@ impl Board for FakeBoard {
             .values()
             .filter(|issue| issue.epic && !issue.closed)
             .map(|epic| EpicTree {
-                number: epic.ticket.number,
+                number: epic.ticket.id,
                 title: epic.ticket.title.clone(),
                 tasks: state
                     .issues
                     .values()
-                    .filter(|task| task.ticket.epic == Some(epic.ticket.number))
+                    .filter(|task| task.ticket.epic == Some(epic.ticket.id))
                     .map(|task| EpicTask {
-                        number: task.ticket.number,
-                        label: task.ticket.label,
+                        number: task.ticket.id,
+                        state: task.ticket.state,
                         closed: task.closed,
                         group: task.group.clone(),
                     })
@@ -182,19 +188,19 @@ impl Board for FakeBoard {
         Ok(trees)
     }
 
-    fn issue_state(&self, number: IssueNumber) -> Result<IssueState, PortError> {
+    fn standing(&self, number: TicketId) -> Result<Standing, PortError> {
         let state = self.state();
         let Some(issue) = state.issues.get(&number) else {
-            return Ok(IssueState::Missing);
+            return Ok(Standing::Missing);
         };
-        Ok(if issue.ticket.label == Some(TaskLabel::Done) {
-            IssueState::Done
+        Ok(if issue.ticket.state == Some(TicketState::Done) {
+            Standing::Done
         } else if issue.closed && issue.not_planned {
-            IssueState::ClosedNotPlanned
+            Standing::ClosedNotPlanned
         } else if issue.closed {
-            IssueState::Done
+            Standing::Done
         } else {
-            IssueState::Open
+            Standing::Open
         })
     }
 
@@ -203,13 +209,13 @@ impl Board for FakeBoard {
             .state()
             .issues
             .values()
-            .filter(|issue| issue.ticket.label == Some(TaskLabel::Ready))
+            .filter(|issue| issue.ticket.state == Some(TicketState::Ready))
             .map(|issue| issue.ticket.clone())
             .collect();
         Ok(ready)
     }
 
-    fn task(&self, number: IssueNumber) -> Result<Ticket, PortError> {
+    fn task(&self, number: TicketId) -> Result<Ticket, PortError> {
         self.state()
             .issues
             .get(&number)
@@ -217,7 +223,7 @@ impl Board for FakeBoard {
             .ok_or_else(|| not_found(number))
     }
 
-    fn claim(&self, task: IssueNumber, instance: &Instance) -> Result<ClaimOutcome, PortError> {
+    fn claim(&self, task: TicketId, instance: &Instance) -> Result<ClaimOutcome, PortError> {
         let mut state = self.state();
         let issue = state.issue_mut(task)?;
         if let Some(claim) = &issue.claim {
@@ -229,7 +235,7 @@ impl Board for FakeBoard {
                 claim.instance
             )));
         }
-        if issue.ticket.label != Some(TaskLabel::Ready) {
+        if issue.ticket.state != Some(TicketState::Ready) {
             return Err(PortError::Rejected(format!("{task} is not ready")));
         }
         let claim = ClaimRecord {
@@ -238,11 +244,11 @@ impl Board for FakeBoard {
             heartbeat: SystemTime::now(),
         };
         issue.claim = Some(claim);
-        issue.ticket.label = Some(TaskLabel::Claimed);
+        issue.ticket.state = Some(TicketState::Claimed);
         Ok(ClaimOutcome::Claimed)
     }
 
-    fn heartbeat(&self, task: IssueNumber, instance: &Instance) -> Result<(), PortError> {
+    fn heartbeat(&self, task: TicketId, instance: &Instance) -> Result<(), PortError> {
         let mut state = self.state();
         let issue = state.issue_mut(task)?;
         let claim = issue
@@ -264,7 +270,7 @@ impl Board for FakeBoard {
         Ok(claims)
     }
 
-    fn release(&self, task: IssueNumber, instance: &Instance) -> Result<(), PortError> {
+    fn release(&self, task: TicketId, instance: &Instance) -> Result<(), PortError> {
         let mut state = self.state();
         let issue = state.issue_mut(task)?;
         if !issue
@@ -276,10 +282,10 @@ impl Board for FakeBoard {
         }
         issue.claim = None;
         if !matches!(
-            issue.ticket.label,
-            Some(TaskLabel::Question | TaskLabel::Done)
+            issue.ticket.state,
+            Some(TicketState::Question | TicketState::Done)
         ) {
-            issue.ticket.label = Some(TaskLabel::Ready);
+            issue.ticket.state = Some(TicketState::Ready);
         }
         let at = humantime::format_rfc3339_seconds(SystemTime::now());
         issue
@@ -288,19 +294,19 @@ impl Board for FakeBoard {
         Ok(())
     }
 
-    fn label(&self, task: IssueNumber, label: TaskLabel) -> Result<(), PortError> {
+    fn set_state(&self, task: TicketId, label: TicketState) -> Result<(), PortError> {
         let mut state = self.state();
-        state.issue_mut(task)?.ticket.label = Some(label);
+        state.issue_mut(task)?.ticket.state = Some(label);
         Ok(())
     }
 
-    fn comment(&self, issue: IssueNumber, body: &str) -> Result<(), PortError> {
+    fn comment(&self, issue: TicketId, body: &str) -> Result<(), PortError> {
         let mut state = self.state();
         state.issue_mut(issue)?.comments.push(body.to_owned());
         Ok(())
     }
 
-    fn report(&self, task: IssueNumber, instance: &Instance, body: &str) -> Result<(), PortError> {
+    fn report(&self, task: TicketId, instance: &Instance, body: &str) -> Result<(), PortError> {
         let mut state = self.state();
         let issue = state.issue_mut(task)?;
         let existing = issue
@@ -325,19 +331,19 @@ impl Board for FakeBoard {
         Ok(questions)
     }
 
-    fn questions_on(&self, task: IssueNumber) -> Result<Vec<(Ticket, Option<String>)>, PortError> {
+    fn questions_on(&self, task: TicketId) -> Result<Vec<(Ticket, Option<String>)>, PortError> {
         let raised = self
             .state()
             .issues
             .values()
             .filter(|issue| issue.question)
-            .filter(|issue| NewQuestion::raised_on(&issue.ticket.body) == Some(task))
+            .filter(|issue| NewQuestion::raised_on(issue.ticket.body.as_str()) == Some(task))
             .map(|issue| (issue.ticket.clone(), issue.ruling.clone()))
             .collect();
         Ok(raised)
     }
 
-    fn open_question(&self, question: &NewQuestion) -> Result<IssueNumber, PortError> {
+    fn open_question(&self, question: &NewQuestion) -> Result<TicketId, PortError> {
         let mut state = self.state();
         state.issue_mut(question.on)?;
         let highest = state
@@ -345,13 +351,14 @@ impl Board for FakeBoard {
             .keys()
             .next_back()
             .map_or(0, |number| number.get());
-        let number = IssueNumber::from(highest + 1);
+        let number = TicketId::from(highest + 1);
         let ticket = Ticket {
-            number,
+            id: number,
             epic: None,
-            title: question.title(),
-            body: question.body(),
-            label: Some(TaskLabel::Question),
+            title: question.title().into(),
+            body: question.body().into(),
+            state: Some(TicketState::Question),
+            url: link(number).into(),
         };
         let issue = Issue {
             ticket,
@@ -372,9 +379,9 @@ impl Board for FakeBoard {
 
     fn record_ruling(
         &self,
-        question: IssueNumber,
+        question: TicketId,
         ruling: &str,
-    ) -> Result<Option<IssueNumber>, PortError> {
+    ) -> Result<Option<TicketId>, PortError> {
         let mut state = self.state();
         let issue = state.issue_mut(question)?;
         match &issue.ruling {
@@ -389,14 +396,14 @@ impl Board for FakeBoard {
                 issue.closed = true;
             }
         }
-        let Some(task) = NewQuestion::raised_on(&issue.ticket.body) else {
+        let Some(task) = NewQuestion::raised_on(issue.ticket.body.as_str()) else {
             return Ok(None);
         };
         let waiting = state.issue_mut(task)?;
-        if waiting.ticket.label != Some(TaskLabel::Question) {
+        if waiting.ticket.state != Some(TicketState::Question) {
             return Ok(None);
         }
-        waiting.ticket.label = Some(TaskLabel::Ready);
+        waiting.ticket.state = Some(TicketState::Ready);
         waiting.claim = None;
         Ok(Some(task))
     }

@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use crate::domain::IssueNumber;
+use crate::domain::TicketId;
 
 /// The folder holding the plans, under the project's state folder.
 pub fn plans_dir(state_dir: &Path) -> PathBuf {
@@ -123,7 +123,7 @@ impl PhasePlan {
     }
 }
 
-fn plan_file(state_dir: &Path, task: IssueNumber, role: &str) -> PathBuf {
+fn plan_file(state_dir: &Path, task: TicketId, role: &str) -> PathBuf {
     plans_dir(state_dir).join(format!("{}.{role}", task.get()))
 }
 
@@ -142,7 +142,7 @@ fn check_word(phase: &str) -> Result<(), PhaseError> {
     Ok(())
 }
 
-fn store(state_dir: &Path, task: IssueNumber, plan: &PhasePlan) -> Result<(), PhaseError> {
+fn store(state_dir: &Path, task: TicketId, plan: &PhasePlan) -> Result<(), PhaseError> {
     let failed = |error: std::io::Error| PhaseError::Store(error.to_string());
     fs::create_dir_all(plans_dir(state_dir)).map_err(failed)?;
     fs::write(plan_file(state_dir, task, &plan.role), plan.text()).map_err(failed)
@@ -152,7 +152,7 @@ fn store(state_dir: &Path, task: IssueNumber, plan: &PhasePlan) -> Result<(), Ph
 /// is stored when the role or a phase is not one word, the plan is empty or names a phase twice.
 pub fn declare(
     state_dir: &Path,
-    task: IssueNumber,
+    task: TicketId,
     role: &str,
     phases: &[String],
 ) -> Result<PhasePlan, PhaseError> {
@@ -180,7 +180,7 @@ pub fn declare(
 /// another one counts an iteration.
 pub fn enter(
     state_dir: &Path,
-    task: IssueNumber,
+    task: TicketId,
     role: &str,
     phase: &str,
 ) -> Result<PhasePlan, PhaseError> {
@@ -206,11 +206,7 @@ pub fn enter(
     Ok(plan)
 }
 
-fn read_one(
-    state_dir: &Path,
-    task: IssueNumber,
-    role: &str,
-) -> Result<Option<PhasePlan>, PhaseError> {
+fn read_one(state_dir: &Path, task: TicketId, role: &str) -> Result<Option<PhasePlan>, PhaseError> {
     match fs::read_to_string(plan_file(state_dir, task, role)) {
         Ok(text) => Ok(PhasePlan::read(role, &text)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -220,7 +216,7 @@ fn read_one(
 
 /// Every plan declared on `task`, by role, with when its last report was made. Unreadable files
 /// are skipped: the hub only reads.
-pub fn plans_of(state_dir: &Path, task: IssueNumber) -> Vec<(PhasePlan, SystemTime)> {
+pub fn plans_of(state_dir: &Path, task: TicketId) -> Vec<(PhasePlan, SystemTime)> {
     let Ok(entries) = fs::read_dir(plans_dir(state_dir)) else {
         return Vec::new();
     };

@@ -12,7 +12,7 @@ use crate::app::actions::{PhaseUnreadable, SliceRecords, derive_phase, gather_ph
 use crate::app::report::PriceTable;
 use crate::app::report::epics::cost_of;
 use crate::app::report::ledger::{LedgerRow, is_this_project};
-use crate::domain::{IssueNumber, TaskLabel};
+use crate::domain::{TicketId, TicketState};
 use crate::ports::{Board, EpicTask, EpicTree, Forge, NewQuestion, PortError, Vcs};
 
 /// Why a frame could not be gathered.
@@ -61,7 +61,7 @@ pub fn gather(inputs: &HubInputs) -> Result<Snapshot, HubError> {
     let trees = inputs.board.epic_trees().map_err(HubError::Board)?;
     let claims = inputs.board.claims().map_err(HubError::Board)?;
     let questions = inputs.board.questions().map_err(HubError::Board)?;
-    let holders: HashMap<IssueNumber, String> = claims
+    let holders: HashMap<TicketId, String> = claims
         .iter()
         .map(|claim| (claim.task, who_is(claim.instance.role.as_ref(), inputs)))
         .collect();
@@ -79,7 +79,7 @@ pub fn gather(inputs: &HubInputs) -> Result<Snapshot, HubError> {
         let asked = questions
             .iter()
             .filter(|question| {
-                NewQuestion::raised_on(&question.body).is_some_and(|on| {
+                NewQuestion::raised_on(question.body.as_str()).is_some_and(|on| {
                     on == tree.number || tree.tasks.iter().any(|task| task.number == on)
                 })
             })
@@ -125,11 +125,11 @@ fn dollars_by_epic(inputs: &HubInputs, epic_of: &HashMap<u64, u64>) -> HashMap<u
 /// Whether a task counts toward its epic: an open one, or one that is done. A closed task that
 /// is not done counts for nothing.
 fn counts(task: &EpicTask) -> bool {
-    !task.closed || task.label == Some(TaskLabel::Done)
+    !task.closed || task.state == Some(TicketState::Done)
 }
 
 fn is_done(task: &EpicTask) -> bool {
-    task.label == Some(TaskLabel::Done)
+    task.state == Some(TicketState::Done)
 }
 
 fn tally<'a>(tasks: impl Iterator<Item = &'a EpicTask>) -> (u32, u32) {
@@ -143,7 +143,7 @@ fn tally<'a>(tasks: impl Iterator<Item = &'a EpicTask>) -> (u32, u32) {
 fn epic_row(
     inputs: &HubInputs,
     tree: &EpicTree,
-    holders: &HashMap<IssueNumber, String>,
+    holders: &HashMap<TicketId, String>,
     questions: usize,
     dollars: f64,
 ) -> Result<EpicRow, HubError> {
@@ -151,7 +151,7 @@ fn epic_row(
     let ready = tree
         .tasks
         .iter()
-        .filter(|task| !task.closed && task.label == Some(TaskLabel::Ready))
+        .filter(|task| !task.closed && task.state == Some(TicketState::Ready))
         .count();
     let mut row = EpicRow {
         number: tree.number.get(),
@@ -191,13 +191,13 @@ fn epic_row(
 }
 
 fn is_claimed(task: &EpicTask) -> bool {
-    !task.closed && task.label == Some(TaskLabel::Claimed)
+    !task.closed && task.state == Some(TicketState::Claimed)
 }
 
 fn ticket_row(
     inputs: &HubInputs,
     task: &EpicTask,
-    holders: &HashMap<IssueNumber, String>,
+    holders: &HashMap<TicketId, String>,
 ) -> Result<TicketRow, HubError> {
     let facts = gather_phase_facts(
         inputs.board,

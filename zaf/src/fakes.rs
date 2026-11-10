@@ -12,7 +12,7 @@ mod releases;
 mod runner;
 mod vcs;
 
-pub use board::FakeBoard;
+pub use board::{FakeBoard, link as board_link};
 pub use design::FakeDesign;
 pub use forge::{FakeForge, PrMerge, PrRequest};
 pub use gate::FakeGate;

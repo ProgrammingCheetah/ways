@@ -1,0 +1,429 @@
+//! The board's contract: what every backend behind [`Board`] does, checked the same way on
+//! each.
+//!
+//! Each check takes an [`Arrange`]: a backend's own way to put epics and tasks on its board
+//! and close them, which the port itself does not offer. The checks run on the in-memory
+//! board on every test run. They run on the GitHub issues board too when
+//! `ZAF_CONTRACT_REPO` names a scratch repository (`owner/name`) that gh can write to; each
+//! check opens its own issues there and closes them as not planned when it ends. Without the
+//! variable the GitHub checks pass without running.
+
+use std::cell::{Cell, RefCell};
+use std::process::Command;
+
+use zaf::adapters::github::{GhCommand, GithubBoard};
+use zaf::domain::{Instance, Ticket, TicketId, TicketState};
+use zaf::fakes::FakeBoard;
+use zaf::manifest::RepoName;
+use zaf::ports::{Board, ClaimOutcome, NewQuestion, PortError, Standing};
+
+/// The environment variable naming the scratch repository the GitHub checks write to.
+const REPO_VAR: &str = "ZAF_CONTRACT_REPO";
+
+/// A backend's way to arrange its board for one check.
+trait Arrange {
+    /// The board under test.
+    fn board(&self) -> &dyn Board;
+    /// Opens an epic.
+    fn epic(&self, title: &str) -> TicketId;
+    /// Opens a task under `epic` in `state`.
+    fn task(&self, epic: TicketId, title: &str, body: &str, state: TicketState) -> TicketId;
+    /// Closes a ticket, as completed or as not planned.
+    fn close(&self, id: TicketId, completed: bool);
+    /// An id no ticket has.
+    fn missing(&self) -> TicketId;
+}
+
+/// An instance for the checks, on `epic`.
+fn instance(n: u32, epic: TicketId) -> Instance {
+    format!("team instance {n} on {epic}")
+        .parse()
+        .expect("an instance")
+}
+
+const BODY: &str = "Goal: hold to the contract.";
+
+// The checks.
+
+fn a_task_reads_back_as_arranged(arrange: &dyn Arrange) {
+    let epic = arrange.epic("contract epic");
+    let task = arrange.task(epic, "contract task", BODY, TicketState::Ready);
+    let ticket = arrange.board().task(task).expect("the task reads");
+    assert_eq!(ticket.id, task);
+    assert_eq!(ticket.epic, Some(epic));
+    assert_eq!(ticket.title.as_str(), "contract task");
+    assert_eq!(ticket.body.as_str().trim(), BODY);
+    assert_eq!(ticket.state, Some(TicketState::Ready));
+    assert!(!ticket.url.as_str().is_empty(), "a ticket carries its link");
+}
+
+fn a_missing_ticket_is_not_found(arrange: &dyn Arrange) {
+    let read = arrange.board().task(arrange.missing());
+    assert!(matches!(read, Err(PortError::NotFound(_))), "got {read:?}");
+}
+
+fn ready_lists_ready_tasks_only_in_id_order(arrange: &dyn Arrange) {
+    let epic = arrange.epic("contract epic");
+    let first = arrange.task(epic, "first", BODY, TicketState::Ready);
+    let blocked = arrange.task(epic, "blocked", BODY, TicketState::Blocked);
+    let second = arrange.task(epic, "second", BODY, TicketState::Ready);
+    let ready: Vec<TicketId> = arrange
+        .board()
+        .ready()
+        .expect("ready reads")
+        .iter()
+        .map(|ticket| ticket.id)
+        .filter(|id| [first, blocked, second].contains(id))
+        .collect();
+    assert_eq!(ready, [first, second]);
+}
+
+fn a_claim_is_held_by_one_instance(arrange: &dyn Arrange) {
+    let epic = arrange.epic("contract epic");
+    let task = arrange.task(epic, "claimed", BODY, TicketState::Ready);
+    let (holder, other) = (instance(901, epic), instance(902, epic));
+    let board = arrange.board();
+    assert_eq!(board.claim(task, &holder), Ok(ClaimOutcome::Claimed));
+    assert_eq!(board.claim(task, &holder), Ok(ClaimOutcome::AlreadyHeld));
+    let by_other = board.claim(task, &other);
+    assert!(
+        matches!(by_other, Err(PortError::Conflict(_))),
+        "got {by_other:?}"
+    );
+    let ticket = board.task(task).expect("the task reads");
+    assert_eq!(ticket.state, Some(TicketState::Claimed));
+    let claims = board.claims().expect("claims read");
+    let held: Vec<&Instance> = claims
+        .iter()
+        .filter(|claim| claim.task == task)
+        .map(|claim| &claim.instance)
+        .collect();
+    assert_eq!(held, [&holder]);
+}
+
+fn a_released_task_is_ready_again(arrange: &dyn Arrange) {
+    let epic = arrange.epic("contract epic");
+    let task = arrange.task(epic, "released", BODY, TicketState::Ready);
+    let holder = instance(903, epic);
+    let board = arrange.board();
+    board.claim(task, &holder).expect("the claim");
+    board.release(task, &holder).expect("the release");
+    let ticket = board.task(task).expect("the task reads");
+    assert_eq!(ticket.state, Some(TicketState::Ready));
+    let claims = board.claims().expect("claims read");
+    assert!(claims.iter().all(|claim| claim.task != task));
+}
+
+fn a_new_state_replaces_the_old(arrange: &dyn Arrange) {
+    let epic = arrange.epic("contract epic");
+    let task = arrange.task(epic, "moved", BODY, TicketState::Ready);
+    let board = arrange.board();
+    for state in [TicketState::Blocked, TicketState::Done] {
+        board.set_state(task, state).expect("the state is set");
+        let ticket = board.task(task).expect("the task reads");
+        assert_eq!(ticket.state, Some(state));
+    }
+}
+
+fn a_ruling_closes_its_question_and_frees_the_task(arrange: &dyn Arrange) {
+    let epic = arrange.epic("contract epic");
+    let task = arrange.task(epic, "waiting", BODY, TicketState::Question);
+    let board = arrange.board();
+    let asked = NewQuestion {
+        on: task,
+        text: "Which way does the contract go?".to_owned(),
+        door: false,
+    };
+    let question = board.open_question(&asked).expect("the question opens");
+    let open: Vec<Ticket> = board.questions().expect("questions read");
+    let listed = open
+        .iter()
+        .find(|ticket| ticket.id == question)
+        .expect("the question is listed");
+    assert!(
+        !listed.url.as_str().is_empty(),
+        "a question carries its link"
+    );
+    assert_eq!(NewQuestion::raised_on(listed.body.as_str()), Some(task));
+
+    assert_eq!(board.record_ruling(question, "this way"), Ok(Some(task)));
+    let ticket = board.task(task).expect("the task reads");
+    assert_eq!(ticket.state, Some(TicketState::Ready));
+    let open = board.questions().expect("questions read");
+    assert!(open.iter().all(|ticket| ticket.id != question));
+    assert!(board.record_ruling(question, "this way").is_ok());
+    let changed = board.record_ruling(question, "the other way");
+    assert!(
+        matches!(changed, Err(PortError::Conflict(_))),
+        "got {changed:?}"
+    );
+    let raised = board
+        .questions_on(task)
+        .expect("questions on the task read");
+    let ruled: Vec<(TicketId, Option<&str>)> = raised
+        .iter()
+        .map(|(ticket, ruling)| (ticket.id, ruling.as_deref()))
+        .collect();
+    assert_eq!(ruled, [(question, Some("this way"))]);
+}
+
+fn standing_follows_how_a_ticket_closed(arrange: &dyn Arrange) {
+    let epic = arrange.epic("contract epic");
+    let open = arrange.task(epic, "open", BODY, TicketState::Ready);
+    let completed = arrange.task(epic, "completed", BODY, TicketState::Ready);
+    let dropped = arrange.task(epic, "dropped", BODY, TicketState::Ready);
+    arrange.close(completed, true);
+    arrange.close(dropped, false);
+    let board = arrange.board();
+    assert_eq!(board.standing(open), Ok(Standing::Open));
+    assert_eq!(board.standing(completed), Ok(Standing::Done));
+    assert_eq!(board.standing(dropped), Ok(Standing::ClosedNotPlanned));
+    assert_eq!(board.standing(arrange.missing()), Ok(Standing::Missing));
+}
+
+fn an_open_epic_lists_its_tasks_closed_ones_too(arrange: &dyn Arrange) {
+    let epic = arrange.epic("contract epic with tasks");
+    let open = arrange.task(epic, "open", BODY, TicketState::Ready);
+    let closed = arrange.task(epic, "closed", BODY, TicketState::Done);
+    arrange.close(closed, true);
+    let trees = arrange.board().epic_trees().expect("epics read");
+    let tree = trees
+        .iter()
+        .find(|tree| tree.number == epic)
+        .expect("the epic is listed");
+    assert_eq!(tree.title.as_str(), "contract epic with tasks");
+    let tasks: Vec<(TicketId, Option<TicketState>, bool)> = tree
+        .tasks
+        .iter()
+        .map(|task| (task.number, task.state, task.closed))
+        .collect();
+    assert_eq!(
+        tasks,
+        [
+            (open, Some(TicketState::Ready), false),
+            (closed, Some(TicketState::Done), true)
+        ]
+    );
+}
+
+// The backends.
+
+/// The in-memory board, numbering tickets from 1.
+struct FakeArrange {
+    board: FakeBoard,
+    next: Cell<u64>,
+}
+
+impl FakeArrange {
+    fn new() -> Self {
+        Self {
+            board: FakeBoard::default(),
+            next: Cell::new(1),
+        }
+    }
+
+    fn take(&self) -> TicketId {
+        let id = self.next.get();
+        self.next.set(id + 1);
+        TicketId::from(id)
+    }
+}
+
+impl Arrange for FakeArrange {
+    fn board(&self) -> &dyn Board {
+        &self.board
+    }
+
+    fn epic(&self, title: &str) -> TicketId {
+        let id = self.take();
+        self.board.add_epic(id, title);
+        id
+    }
+
+    fn task(&self, epic: TicketId, title: &str, body: &str, state: TicketState) -> TicketId {
+        let id = self.take();
+        self.board.add_ticket(Ticket {
+            id,
+            epic: Some(epic),
+            title: title.into(),
+            body: body.into(),
+            state: Some(state),
+            url: zaf::fakes::board_link(id).into(),
+        });
+        id
+    }
+
+    fn close(&self, id: TicketId, completed: bool) {
+        if completed {
+            self.board.close(id);
+        } else {
+            self.board.close_not_planned(id);
+        }
+    }
+
+    fn missing(&self) -> TicketId {
+        TicketId::from(999_999)
+    }
+}
+
+/// The GitHub issues board on the scratch repository, closing what it opened when dropped.
+struct GithubArrange {
+    repo: String,
+    board: GithubBoard,
+    opened: RefCell<Vec<TicketId>>,
+}
+
+/// Every label the GitHub board reads or writes.
+const LABELS: &[&str] = &[
+    "task", "epic", "ready", "claimed", "blocked", "question", "done", "door",
+];
+
+impl GithubArrange {
+    /// The arranger for the repository `ZAF_CONTRACT_REPO` names; none when it is unset.
+    fn from_env() -> Option<Self> {
+        let repo = std::env::var(REPO_VAR)
+            .ok()
+            .filter(|repo| !repo.is_empty())?;
+        for label in LABELS {
+            gh(&["label", "create", label, "--force", "--repo", &repo]);
+        }
+        let board = GithubBoard::from(GhCommand::from(RepoName::from(repo.as_str())));
+        Some(Self {
+            repo,
+            board,
+            opened: RefCell::new(Vec::new()),
+        })
+    }
+
+    fn open(&self, title: &str, body: &str, labels: &[&str]) -> TicketId {
+        let url = gh(&[
+            "issue",
+            "create",
+            "--repo",
+            &self.repo,
+            "--title",
+            title,
+            "--body",
+            body,
+            "--label",
+            &labels.join(","),
+        ]);
+        let number: u64 = url
+            .trim()
+            .rsplit('/')
+            .next()
+            .and_then(|tail| tail.parse().ok())
+            .unwrap_or_else(|| panic!("gh issue create printed no issue link: {url}"));
+        let id = TicketId::from(number);
+        self.opened.borrow_mut().push(id);
+        id
+    }
+}
+
+impl Arrange for GithubArrange {
+    fn board(&self) -> &dyn Board {
+        &self.board
+    }
+
+    fn epic(&self, title: &str) -> TicketId {
+        self.open(title, "An epic of the contract checks.", &["epic"])
+    }
+
+    fn task(&self, epic: TicketId, title: &str, body: &str, state: TicketState) -> TicketId {
+        let task = self.open(title, body, &["task", state.into()]);
+        let issue = format!("repos/{}/issues/{}", self.repo, task.get());
+        let database_id = gh(&["api", &issue, "--jq", ".id"]);
+        let sub_issues = format!("repos/{}/issues/{}/sub_issues", self.repo, epic.get());
+        gh(&[
+            "api",
+            "-X",
+            "POST",
+            &sub_issues,
+            "-F",
+            &format!("sub_issue_id={}", database_id.trim()),
+        ]);
+        task
+    }
+
+    fn close(&self, id: TicketId, completed: bool) {
+        let reason = if completed {
+            "completed"
+        } else {
+            "not planned"
+        };
+        let number = id.get().to_string();
+        gh(&[
+            "issue", "close", &number, "--repo", &self.repo, "--reason", reason,
+        ]);
+    }
+
+    fn missing(&self) -> TicketId {
+        TicketId::from(999_999_999)
+    }
+}
+
+impl Drop for GithubArrange {
+    fn drop(&mut self) {
+        for id in self.opened.borrow().iter() {
+            let number = id.get().to_string();
+            let _ = Command::new("gh")
+                .args(["issue", "close", &number, "--repo", &self.repo])
+                .args(["--reason", "not planned"])
+                .output();
+        }
+    }
+}
+
+/// Runs gh and returns what it printed; a failure fails the check with gh's own words.
+fn gh(args: &[&str]) -> String {
+    let output = Command::new("gh")
+        .args(args)
+        .output()
+        .unwrap_or_else(|error| panic!("gh does not run: {error}"));
+    assert!(
+        output.status.success(),
+        "gh {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// One test per check and backend: `fake::<check>` always, `github::<check>` when
+/// `ZAF_CONTRACT_REPO` is set.
+macro_rules! contract {
+    ($($check:ident),* $(,)?) => {
+        mod fake {
+            $(
+                #[test]
+                fn $check() {
+                    super::$check(&super::FakeArrange::new());
+                }
+            )*
+        }
+
+        mod github {
+            $(
+                #[test]
+                fn $check() {
+                    let Some(arrange) = super::GithubArrange::from_env() else {
+                        return;
+                    };
+                    super::$check(&arrange);
+                }
+            )*
+        }
+    };
+}
+
+contract![
+    a_task_reads_back_as_arranged,
+    a_missing_ticket_is_not_found,
+    ready_lists_ready_tasks_only_in_id_order,
+    a_claim_is_held_by_one_instance,
+    a_released_task_is_ready_again,
+    a_new_state_replaces_the_old,
+    a_ruling_closes_its_question_and_frees_the_task,
+    standing_follows_how_a_ticket_closed,
+    an_open_epic_lists_its_tasks_closed_ones_too,
+];

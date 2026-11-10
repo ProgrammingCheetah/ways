@@ -9,7 +9,7 @@ use super::exit::{BACKEND, OK, REFUSED, fail, fail_composition, note_design_path
 use crate::app::actions::Caller;
 use crate::app::ask::{AskFailure, AskOutcome, AskPorts, AskQuery, LadderRung, ask};
 use crate::composition::{Composition, CompositionError};
-use crate::domain::IssueNumber;
+use crate::domain::TicketId;
 use crate::manifest::{ModelName, Rung, RunnerName};
 use crate::ports::Runner;
 
@@ -17,7 +17,7 @@ use crate::ports::Runner;
 const MODEL_RUNNER: &str = "claude";
 
 /// Asks the keeper up to five questions.
-pub fn run(cli: &Cli, task: IssueNumber, questions: &[String]) -> u8 {
+pub fn run(cli: &Cli, task: TicketId, questions: &[String]) -> u8 {
     let path = cli.verb.path();
     let composition = match Composition::discover_here() {
         Ok(composition) => composition,

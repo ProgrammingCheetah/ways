@@ -1,7 +1,7 @@
 use super::*;
 use crate::app::check::task::LineKind;
 use crate::app::check::{CheckedFinding, Step, StepResult, TaskLine};
-use crate::domain::{Finding, FindingSource, IssueNumber, Location};
+use crate::domain::{Finding, FindingSource, Location, TicketId};
 use crate::ports::PrNumber;
 use std::time::{Duration, SystemTime};
 
@@ -27,7 +27,7 @@ fn a_task_check_prints_one_line_per_thing_and_the_verdict() {
         ],
     };
     let record = CheckRecord::from_task(
-        &Target::Task(IssueNumber::from(7)),
+        &Target::Task(TicketId::from(7)),
         &check,
         SystemTime::UNIX_EPOCH,
     );
@@ -112,7 +112,7 @@ fn record_stores_the_head() {
 #[test]
 fn task_record_has_no_head() {
     let record = CheckRecord::from_task(
-        &Target::Task(IssueNumber::from(7)),
+        &Target::Task(TicketId::from(7)),
         &empty_task_check(),
         SystemTime::UNIX_EPOCH,
     );
@@ -128,7 +128,7 @@ fn record_stores_its_time() {
     let at = SystemTime::UNIX_EPOCH + Duration::new(1_793_750_400, 999_000_000);
     let report = CheckRecord::from_report(&pr_target(), &empty_report(), None, at);
     assert_eq!(report.at.as_deref(), Some("2026-11-04T00:00:00Z"));
-    let task = CheckRecord::from_task(&Target::Task(IssueNumber::from(7)), &empty_task_check(), at);
+    let task = CheckRecord::from_task(&Target::Task(TicketId::from(7)), &empty_task_check(), at);
     assert_eq!(task.at.as_deref(), Some("2026-11-04T00:00:00Z"));
     let text = serde_json::to_string(&report).expect("serializes");
     assert!(text.contains(r#""at":"2026-11-04T00:00:00Z""#), "{text}");

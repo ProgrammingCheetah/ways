@@ -14,6 +14,7 @@ mod profile;
 mod quote;
 mod task;
 mod text;
+mod ticket;
 
 pub use answer::{
     ANSWER_WORD_LIMIT, Answer, AnswerError, AnsweredQuestion, Citation, QuoteCheckError, Verdict,
@@ -24,9 +25,10 @@ pub use ask::{
 };
 pub use epic::Epic;
 pub use finding::{Finding, FindingSource, Location, Severity};
-pub use ids::{IdError, IssueNumber, PageId};
+pub use ids::{IdError, PageId, TicketId};
 pub use instance::{Instance, InstanceNumber, RoleName};
-pub use labels::{PageStatus, TaskLabel};
+pub use labels::{PageStatus, TicketState};
 pub use profile::Profile;
 pub use quote::Quote;
 pub use task::{SecurityTrigger, TaskField, TaskModel, TaskSize, TaskTemplate, TaskTemplateError};
+pub use ticket::{Ticket, TicketBody, TicketSummary, TicketTitle, TicketUrl};

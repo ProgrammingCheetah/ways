@@ -3,9 +3,9 @@
 //! The slice's own work (open, pull request, merge, drop) is the project's `slice-*` actions;
 //! `zaf changes` and the slice environment of an action read the target from here.
 
-use crate::domain::IssueNumber;
+use crate::domain::{Ticket, TicketId};
 use crate::manifest::{BranchPattern, BranchesSection};
-use crate::ports::{BaseName, Board, PortError, SliceName, Ticket};
+use crate::ports::{BaseName, Board, PortError, SliceName};
 
 /// The placeholder for the task's bare number in a branch pattern.
 const TASK_PLACEHOLDER: &str = "{task}";
@@ -31,7 +31,7 @@ pub enum SliceError {
     #[error("{task} belongs to no epic, and the branch pattern names `{{epic}}`")]
     NoEpic {
         /// The task.
-        task: IssueNumber,
+        task: TicketId,
     },
     /// A branch pattern names `{version}` and the call gave none.
     #[error("the branch pattern names `{{version}}`, and no version was given")]
@@ -66,7 +66,7 @@ fn at(step: Step) -> impl FnOnce(PortError) -> SliceError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SliceQuery {
     /// The task.
-    pub task: IssueNumber,
+    pub task: TicketId,
     /// The release version, for patterns that name `{version}`.
     pub version: Option<String>,
 }
@@ -105,13 +105,9 @@ fn fill(
     ticket: &Ticket,
     version: Option<&str>,
 ) -> Result<String, SliceError> {
-    let mut name = pattern
-        .as_ref()
-        .replace(TASK_PLACEHOLDER, &bare(ticket.number));
+    let mut name = pattern.as_ref().replace(TASK_PLACEHOLDER, &bare(ticket.id));
     if name.contains(EPIC_PLACEHOLDER) {
-        let epic = ticket.epic.ok_or(SliceError::NoEpic {
-            task: ticket.number,
-        })?;
+        let epic = ticket.epic.ok_or(SliceError::NoEpic { task: ticket.id })?;
         name = name.replace(EPIC_PLACEHOLDER, &bare(epic));
     }
     if name.contains(VERSION_PLACEHOLDER) {
@@ -122,7 +118,7 @@ fn fill(
 }
 
 /// An issue number without its `#`, as a branch name carries it.
-fn bare(number: IssueNumber) -> String {
+fn bare(number: TicketId) -> String {
     number.get().to_string()
 }
 

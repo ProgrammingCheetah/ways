@@ -88,8 +88,8 @@ impl Place {
     }
 }
 
-fn task() -> IssueNumber {
-    IssueNumber::from(TASK)
+fn task() -> TicketId {
+    TicketId::from(TASK)
 }
 
 /// A body that writes `value` as its last line, single-quoted for the shell.

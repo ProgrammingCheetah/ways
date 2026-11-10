@@ -1,4 +1,4 @@
-//! Identifiers that cross every layer: board issue numbers and design page ids.
+//! Identifiers that cross every layer: ticket ids and design page ids.
 
 use std::str::FromStr;
 
@@ -7,7 +7,7 @@ use std::str::FromStr;
 pub enum IdError {
     /// The text is not an issue number such as `#12` or `12`.
     #[error("`{0}` is not an issue number")]
-    IssueNumber(String),
+    TicketId(String),
     /// The text is not a page id: empty, or holding whitespace, a comma or a parenthesis.
     #[error("`{0}` is not a page id")]
     PageId(String),
@@ -18,7 +18,7 @@ pub enum IdError {
 
 /// The number of an issue on the board: an epic, a task or a question.
 ///
-/// Parses from `#12` or `12` and displays as `#12`.
+/// Parses from `#12` or `12`, displays as `#12`, and serializes as the bare number.
 #[derive(
     Debug,
     Clone,
@@ -30,18 +30,20 @@ pub enum IdError {
     Hash,
     derive_more::From,
     derive_more::Display,
+    serde::Serialize,
 )]
 #[display("#{_0}")]
-pub struct IssueNumber(u64);
+#[serde(transparent)]
+pub struct TicketId(u64);
 
-impl IssueNumber {
+impl TicketId {
     /// The bare number, for adapters that address issues numerically.
     pub fn get(self) -> u64 {
         self.0
     }
 }
 
-impl FromStr for IssueNumber {
+impl FromStr for TicketId {
     type Err = IdError;
 
     fn from_str(text: &str) -> Result<Self, Self::Err> {
@@ -49,12 +51,12 @@ impl FromStr for IssueNumber {
         let digits = trimmed.strip_prefix('#').unwrap_or(trimmed);
         let all_digits = !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit());
         if !all_digits {
-            return Err(IdError::IssueNumber(text.to_owned()));
+            return Err(IdError::TicketId(text.to_owned()));
         }
         digits
             .parse::<u64>()
             .map(Self)
-            .map_err(|_| IdError::IssueNumber(text.to_owned()))
+            .map_err(|_| IdError::TicketId(text.to_owned()))
     }
 }
 

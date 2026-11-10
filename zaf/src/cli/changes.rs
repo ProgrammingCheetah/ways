@@ -7,10 +7,10 @@ use super::exit::fail_composition;
 use super::slice::{fail_slice, prepare, print, refuse_not_open};
 use crate::app::actions::SliceRecords;
 use crate::app::changes::{self, Changes, ChangesQuery};
-use crate::domain::IssueNumber;
+use crate::domain::TicketId;
 
 /// Shows a task's change: stat first, hunks on request.
-pub fn run(cli: &Cli, task: IssueNumber, path: Option<&str>) -> u8 {
+pub fn run(cli: &Cli, task: TicketId, path: Option<&str>) -> u8 {
     let verb = cli.verb.path();
     let (composition, target) = match prepare(&verb, cli, task) {
         Ok(prepared) => prepared,

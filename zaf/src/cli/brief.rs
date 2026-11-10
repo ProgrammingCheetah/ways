@@ -13,7 +13,7 @@ use crate::app::brief::{
     brief_with_actions,
 };
 use crate::composition::{Composition, zaf_home};
-use crate::domain::IssueNumber;
+use crate::domain::TicketId;
 
 /// The environment variable naming the instance a brief or an ask is for.
 pub const INSTANCE_VAR: &str = "ZAF_INSTANCE";
@@ -28,7 +28,7 @@ const NODES_BINARY: &str = "nodes";
 const NODE_TREE_FILE: &str = "NODE.inf.json";
 
 /// Builds a task's context pack.
-pub fn run(cli: &Cli, task: IssueNumber) -> u8 {
+pub fn run(cli: &Cli, task: TicketId) -> u8 {
     let path = cli.verb.path();
     let composition = match Composition::discover_here() {
         Ok(composition) => composition,

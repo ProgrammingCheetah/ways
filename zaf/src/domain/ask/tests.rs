@@ -36,7 +36,7 @@ fn the_ask_format_parses_with_annotations() {
         text: "Is an empty list exported as a header row only?".to_owned(),
     };
     assert_eq!(ask.from, Asker::from("team#3 / programmer otter"));
-    assert_eq!(ask.for_task, IssueNumber::from(12));
+    assert_eq!(ask.for_task, TicketId::from(12));
     assert_eq!(
         ask.context,
         ["Members export their reading list; implementing the CSV writer"]

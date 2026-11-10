@@ -15,7 +15,7 @@ use super::run::{RunOutcome, RunRequest, RunResult};
 use crate::app::brief::RUNS_DIR;
 use crate::app::check::{CheckRecord, Target};
 use crate::composition::STATE_DIR;
-use crate::domain::IssueNumber;
+use crate::domain::TicketId;
 use crate::ports::PrNumber;
 
 /// The action whose hand-back is the task's workspace.
@@ -75,7 +75,7 @@ impl SliceRecords {
     /// recorded pull request (`.zaf/runs/check-task-<task>.json`, `check-pr-<n>.json`), so a
     /// dropped task is back in `claim` and a reopened slice starts clean. A record that is not
     /// there is already forgotten. Every removal is tried, and the first error is returned.
-    pub fn forget(&self, task: IssueNumber) -> io::Result<()> {
+    pub fn forget(&self, task: TicketId) -> io::Result<()> {
         // Read before the record goes: it names the pull request whose check record goes too.
         let mut doomed = vec![
             self.dir.join(workspace_file(task)),
@@ -99,26 +99,26 @@ impl SliceRecords {
 
     /// The task's workspace. Read by the same rule that wrote it: a record that does not hold, or
     /// whose directory has gone, is no record, so the guard falls to the earlier phase.
-    pub fn workspace(&self, task: IssueNumber) -> Option<PathBuf> {
+    pub fn workspace(&self, task: TicketId) -> Option<PathBuf> {
         let text = fs::read_to_string(self.dir.join(workspace_file(task))).ok()?;
         workspace_value(&text).map(Path::to_owned)
     }
 
     /// The task's pull request. Read by the same rule that wrote it: a record that does not hold
     /// is no record.
-    pub fn pr(&self, task: IssueNumber) -> Option<PrNumber> {
+    pub fn pr(&self, task: TicketId) -> Option<PrNumber> {
         let text = fs::read_to_string(self.dir.join(pr_file(task))).ok()?;
         pr_value(&text)
     }
 
     /// When the task's pull request record was written; none when that cannot be read.
-    pub fn pr_recorded_at(&self, task: IssueNumber) -> Option<SystemTime> {
+    pub fn pr_recorded_at(&self, task: TicketId) -> Option<SystemTime> {
         let metadata = fs::metadata(self.dir.join(pr_file(task))).ok()?;
         metadata.modified().ok()
     }
 
     /// The last `zaf check <task>` record; one that cannot be read is no record.
-    pub fn task_check(&self, task: IssueNumber) -> Option<CheckRecord> {
+    pub fn task_check(&self, task: TicketId) -> Option<CheckRecord> {
         self.check_record(Target::Task(task))
     }
 
@@ -150,11 +150,11 @@ impl SliceRecords {
     }
 }
 
-fn workspace_file(task: IssueNumber) -> String {
+fn workspace_file(task: TicketId) -> String {
     task.get().to_string()
 }
 
-fn pr_file(task: IssueNumber) -> String {
+fn pr_file(task: TicketId) -> String {
     format!("{}.pr", task.get())
 }
 
@@ -222,12 +222,12 @@ fn refuse_if(done: Result<(), String>, outcome: RunOutcome) -> RunOutcome {
 }
 
 /// The task the caller named first, and the project whose records it is.
-fn task_and_root<'a>(request: &RunRequest<'a>) -> Result<(IssueNumber, &'a Path), String> {
+fn task_and_root<'a>(request: &RunRequest<'a>) -> Result<(TicketId, &'a Path), String> {
     let task = request
         .args
         .first()
         .and_then(|task| task.to_str())
-        .and_then(|task| task.parse::<IssueNumber>().ok())
+        .and_then(|task| task.parse::<TicketId>().ok())
         .ok_or("no task number as its first argument")?;
     let root = request
         .project_root

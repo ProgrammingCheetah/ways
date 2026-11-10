@@ -6,11 +6,11 @@ use std::time::{Duration, SystemTime};
 
 use super::notes::LeaseNote;
 use super::*;
-use crate::domain::{Instance, InstanceNumber, IssueNumber, Location, RoleName, TaskLabel};
+use crate::domain::{Instance, InstanceNumber, Location, RoleName, Ticket, TicketId, TicketState};
 use crate::manifest::RepoName;
 use crate::ports::{
     Author, Board, Check, CheckName, CheckState, ClaimOutcome, ClaimRecord, Forge, NewQuestion,
-    PortError, PrNumber, QUESTION_TITLE_LIMIT, ReviewComment, RuleId, ScanningAlert, Ticket,
+    PortError, PrNumber, QUESTION_TITLE_LIMIT, ReviewComment, RuleId, ScanningAlert,
 };
 
 const REPO: &str = "example/tracker";
@@ -111,7 +111,7 @@ fn view(number: &str) -> Vec<String> {
 fn instance(number: u32) -> Instance {
     Instance {
         role: RoleName::from("programmer"),
-        epic: IssueNumber::from(1),
+        epic: TicketId::from(1),
         number: InstanceNumber::from(number),
     }
 }
@@ -128,7 +128,7 @@ fn issue(number: u64, labels: &[&str], comments: &[String], state: &str) -> Stri
 /// A question ticket as `gh issue view --json` prints it, raised on `task`.
 fn question_issue(number: u64, comments: &[String], state: &str, task: u64) -> String {
     let body = NewQuestion {
-        on: IssueNumber::from(task),
+        on: TicketId::from(task),
         text: String::new(),
         door: false,
     }
@@ -215,10 +215,10 @@ fn ready_lists_ready_tasks_in_issue_order() {
     );
     fake.on("issue list *", &listed);
     let tickets = fake.board().ready().expect("ready");
-    let numbers: Vec<IssueNumber> = tickets.iter().map(|ticket| ticket.number).collect();
-    assert_eq!(numbers, [IssueNumber::from(2), IssueNumber::from(4)]);
-    assert_eq!(tickets[0].epic, Some(IssueNumber::from(1)));
-    assert_eq!(tickets[0].label, Some(TaskLabel::Ready));
+    let numbers: Vec<TicketId> = tickets.iter().map(|ticket| ticket.id).collect();
+    assert_eq!(numbers, [TicketId::from(2), TicketId::from(4)]);
+    assert_eq!(tickets[0].epic, Some(TicketId::from(1)));
+    assert_eq!(tickets[0].state, Some(TicketState::Ready));
     let expected_call = argv(&[
         "issue",
         "list",
@@ -251,23 +251,24 @@ fn task_reads_one_issue_and_a_failure_carries_stderr() {
     )
     .fail_on("issue view 10 *", "HTTP 502: bad gateway");
     let expected_ticket = Ticket {
-        number: IssueNumber::from(3),
-        epic: Some(IssueNumber::from(1)),
-        title: "task 3".to_owned(),
-        body: "Goal: export the list".to_owned(),
-        label: Some(TaskLabel::Blocked),
+        id: TicketId::from(3),
+        epic: Some(TicketId::from(1)),
+        title: "task 3".into(),
+        body: "Goal: export the list".into(),
+        state: Some(TicketState::Blocked),
+        url: format!("https://github.com/{REPO}/issues/3").into(),
     };
-    assert_eq!(fake.board().task(IssueNumber::from(3)), Ok(expected_ticket));
+    assert_eq!(fake.board().task(TicketId::from(3)), Ok(expected_ticket));
     let missing_issue_error = PortError::NotFound(
         "gh issue view: GraphQL: Could not resolve to an Issue with the number of 9.".to_owned(),
     );
     assert_eq!(
-        fake.board().task(IssueNumber::from(9)),
+        fake.board().task(TicketId::from(9)),
         Err(missing_issue_error)
     );
     let failed_call_error = PortError::Backend("gh issue view: HTTP 502: bad gateway".to_owned());
     assert_eq!(
-        fake.board().task(IssueNumber::from(10)),
+        fake.board().task(TicketId::from(10)),
         Err(failed_call_error)
     );
     assert_eq!(fake.calls(), [view("3"), view("9"), view("10")]);
@@ -303,7 +304,7 @@ fn closed_for(number: u64, reason: &str) -> String {
 
 #[test]
 fn issue_state_tells_open_done_closed_and_missing_apart() {
-    use crate::ports::IssueState;
+    use crate::ports::Standing;
 
     let fake = FakeGh::new();
     fake.on(
@@ -328,24 +329,24 @@ fn issue_state_tells_open_done_closed_and_missing_apart() {
     )
     .fail_on("issue view 10 *", "HTTP 502: bad gateway");
     let board = fake.board();
-    let state = |number: u64| board.issue_state(IssueNumber::from(number));
+    let state = |number: u64| board.standing(TicketId::from(number));
 
-    assert_eq!(state(3), Ok(IssueState::Open));
-    assert_eq!(state(4), Ok(IssueState::Done));
-    assert_eq!(state(5), Ok(IssueState::Done));
-    assert_eq!(state(6), Ok(IssueState::ClosedNotPlanned));
+    assert_eq!(state(3), Ok(Standing::Open));
+    assert_eq!(state(4), Ok(Standing::Done));
+    assert_eq!(state(5), Ok(Standing::Done));
+    assert_eq!(state(6), Ok(Standing::ClosedNotPlanned));
     assert_eq!(
         state(8),
-        Ok(IssueState::Done),
+        Ok(Standing::Done),
         "closed as completed is done without the label"
     );
-    assert_eq!(state(11), Ok(IssueState::ClosedNotPlanned));
+    assert_eq!(state(11), Ok(Standing::ClosedNotPlanned));
     assert_eq!(
         state(7),
-        Ok(IssueState::Missing),
+        Ok(Standing::Missing),
         "a pull request is no issue"
     );
-    assert_eq!(state(9), Ok(IssueState::Missing));
+    assert_eq!(state(9), Ok(Standing::Missing));
     assert_eq!(
         state(10),
         Err(PortError::Backend(
@@ -375,13 +376,13 @@ fn every_call_on_a_missing_issue_is_not_found() {
     let gone = "GraphQL: Could not resolve to an Issue with the number of 9.";
     fake.fail_on("issue *", gone);
     let board = fake.board();
-    let missing = IssueNumber::from(9);
+    let missing = TicketId::from(9);
     let results = [
         board.task(missing).map(drop),
         board.claim(missing, &instance(1)).map(drop),
         board.heartbeat(missing, &instance(1)),
         board.release(missing, &instance(1)),
-        board.label(missing, TaskLabel::Done),
+        board.set_state(missing, TicketState::Done),
         board.comment(missing, "Blocked."),
         board.report(missing, &instance(1), "working"),
         board.record_ruling(missing, "Title only.").map(drop),
@@ -403,11 +404,11 @@ fn a_new_claim_comments_then_labels() {
         .on("issue edit *", "");
     let board = fake.board();
     assert_eq!(
-        board.claim(IssueNumber::from(2), &instance(1)),
+        board.claim(TicketId::from(2), &instance(1)),
         Ok(ClaimOutcome::Claimed)
     );
     assert!(matches!(
-        board.claim(IssueNumber::from(3), &instance(1)),
+        board.claim(TicketId::from(3), &instance(1)),
         Err(PortError::Rejected(_))
     ));
     let calls = fake.calls();
@@ -441,11 +442,11 @@ fn a_repeated_claim_is_quiet_for_the_holder_and_a_conflict_for_others() {
     );
     let board = fake.board();
     assert_eq!(
-        board.claim(IssueNumber::from(2), &instance(1)),
+        board.claim(TicketId::from(2), &instance(1)),
         Ok(ClaimOutcome::AlreadyHeld)
     );
     assert!(matches!(
-        board.claim(IssueNumber::from(2), &instance(2)),
+        board.claim(TicketId::from(2), &instance(2)),
         Err(PortError::Conflict(_))
     ));
     assert_eq!(fake.calls(), [view("2"), view("2")]);
@@ -468,14 +469,14 @@ fn a_heartbeat_is_a_new_comment_and_claims_read_the_latest() {
     .on("issue comment *", "");
     let board = fake.board();
     board
-        .heartbeat(IssueNumber::from(2), &instance(1))
+        .heartbeat(TicketId::from(2), &instance(1))
         .expect("heartbeat");
     assert!(matches!(
-        board.heartbeat(IssueNumber::from(2), &instance(2)),
+        board.heartbeat(TicketId::from(2), &instance(2)),
         Err(PortError::Conflict(_))
     ));
     let expected_claims = vec![ClaimRecord {
-        task: IssueNumber::from(2),
+        task: TicketId::from(2),
         instance: instance(1),
         heartbeat: at(1_800_000_600),
     }];
@@ -501,7 +502,7 @@ fn release_returns_a_held_task_to_ready_and_comments() {
     .on("issue edit *", "")
     .on("issue comment *", "");
     fake.board()
-        .release(IssueNumber::from(2), &instance(1))
+        .release(TicketId::from(2), &instance(1))
         .expect("release");
     let expected_edit = argv(&[
         "issue",
@@ -542,10 +543,10 @@ fn a_release_keeps_question_and_done_and_adds_no_ready() {
     .on("issue comment *", "");
     let board = fake.board();
     board
-        .release(IssueNumber::from(2), &instance(1))
+        .release(TicketId::from(2), &instance(1))
         .expect("release");
     board
-        .release(IssueNumber::from(3), &instance(1))
+        .release(TicketId::from(3), &instance(1))
         .expect("release");
     let removes_claimed_only = |number: &str| {
         argv(&[
@@ -574,10 +575,10 @@ fn a_release_by_a_non_holder_is_quiet_and_changes_nothing() {
     .on("issue view 4 *", &issue(4, &["task", "ready"], &[], "OPEN"));
     let board = fake.board();
     board
-        .release(IssueNumber::from(2), &instance(2))
+        .release(TicketId::from(2), &instance(2))
         .expect("another instance holds it");
     board
-        .release(IssueNumber::from(4), &instance(1))
+        .release(TicketId::from(4), &instance(1))
         .expect("nobody holds it");
     assert_eq!(fake.calls(), [view("2"), view("4")]);
 }
@@ -593,10 +594,10 @@ fn label_replaces_the_state_label_and_an_existing_one_is_quiet() {
     .on("issue edit *", "");
     let board = fake.board();
     board
-        .label(IssueNumber::from(2), TaskLabel::Done)
+        .set_state(TicketId::from(2), TicketState::Done)
         .expect("label");
     board
-        .label(IssueNumber::from(4), TaskLabel::Done)
+        .set_state(TicketId::from(4), TicketState::Done)
         .expect("the same label again");
     let expected_edit = argv(&[
         "issue",
@@ -617,7 +618,7 @@ fn comment_posts_the_body() {
     let fake = FakeGh::new();
     fake.on("issue comment *", "");
     fake.board()
-        .comment(IssueNumber::from(2), "Blocked on the schema.")
+        .comment(TicketId::from(2), "Blocked on the schema.")
         .expect("comment");
     let expected_call = argv(&[
         "issue",
@@ -653,13 +654,13 @@ fn report_posts_once_then_edits_its_own_comment() {
     .on("api *", "{}");
     let board = fake.board();
     board
-        .report(IssueNumber::from(2), &instance(1), "working")
+        .report(TicketId::from(2), &instance(1), "working")
         .expect("first report");
     board
-        .report(IssueNumber::from(3), &instance(1), "done")
+        .report(TicketId::from(3), &instance(1), "done")
         .expect("second report");
     board
-        .report(IssueNumber::from(4), &instance(1), "done")
+        .report(TicketId::from(4), &instance(1), "done")
         .expect("the same report");
     let first_body = format!("{marker}\nworking");
     let edit_field = format!("body={marker}\ndone");
@@ -696,14 +697,11 @@ fn open_question_creates_a_labelled_issue() {
         &format!("https://github.com/{REPO}/issues/7\n"),
     );
     let question = NewQuestion {
-        on: IssueNumber::from(2),
+        on: TicketId::from(2),
         text: "Which columns does the export carry?".to_owned(),
         door: true,
     };
-    assert_eq!(
-        fake.board().open_question(&question),
-        Ok(IssueNumber::from(7))
-    );
+    assert_eq!(fake.board().open_question(&question), Ok(TicketId::from(7)));
     let expected_call = argv(&[
         "issue",
         "create",
@@ -724,7 +722,7 @@ fn open_question_creates_a_labelled_issue() {
 /// A question of `words` words, `word` repeated, raised on #2.
 fn wordy_question(word: &str, words: usize) -> NewQuestion {
     NewQuestion {
-        on: IssueNumber::from(2),
+        on: TicketId::from(2),
         text: vec![word; words].join(" "),
         door: false,
     }
@@ -751,15 +749,12 @@ fn long_question_is_filed() {
         &format!("https://github.com/{REPO}/issues/7\n"),
     );
     let question = NewQuestion {
-        on: IssueNumber::from(2),
+        on: TicketId::from(2),
         text: "Which columns? ".repeat(70).trim().to_owned(),
         door: false,
     };
     assert!(question.text.chars().count() >= 1000);
-    assert_eq!(
-        fake.board().open_question(&question),
-        Ok(IssueNumber::from(7))
-    );
+    assert_eq!(fake.board().open_question(&question), Ok(TicketId::from(7)));
     let (title, _) = created_title_and_body(&fake);
     assert!(title.chars().count() <= 200, "GitHub refuses a long title");
 }
@@ -792,7 +787,7 @@ fn short_question_title_is_unchanged() {
         &format!("https://github.com/{REPO}/issues/7\n"),
     );
     let exact = NewQuestion {
-        on: IssueNumber::from(2),
+        on: TicketId::from(2),
         text: "a".repeat(QUESTION_TITLE_LIMIT),
         door: false,
     };
@@ -828,7 +823,7 @@ fn long_question_body_holds_the_whole_text() {
     listing.on("issue list *", &listed.to_string());
     let raised = listing
         .board()
-        .questions_on(IssueNumber::from(2))
+        .questions_on(TicketId::from(2))
         .expect("questions on the task");
     assert_eq!(raised.len(), 1, "questions_on still finds it");
     assert_eq!(NewQuestion::text_of(&raised[0].0), question.text);
@@ -846,9 +841,9 @@ fn questions_lists_open_question_issues_and_skips_tasks_waiting_on_one() {
     );
     fake.on("issue list *", &listed);
     let tickets = fake.board().questions().expect("questions");
-    let numbers: Vec<IssueNumber> = tickets.iter().map(|ticket| ticket.number).collect();
-    assert_eq!(numbers, [IssueNumber::from(7), IssueNumber::from(9)]);
-    assert_eq!(tickets[0].label, Some(TaskLabel::Question));
+    let numbers: Vec<TicketId> = tickets.iter().map(|ticket| ticket.id).collect();
+    assert_eq!(numbers, [TicketId::from(7), TicketId::from(9)]);
+    assert_eq!(tickets[0].state, Some(TicketState::Question));
     let expected_call = argv(&[
         "issue",
         "list",
@@ -885,18 +880,18 @@ fn questions_on_lists_ruled_and_open_questions_raised_on_the_task_oldest_first()
 
     let raised = fake
         .board()
-        .questions_on(IssueNumber::from(2))
+        .questions_on(TicketId::from(2))
         .expect("questions on the task");
 
-    let seen: Vec<(IssueNumber, Option<&str>)> = raised
+    let seen: Vec<(TicketId, Option<&str>)> = raised
         .iter()
-        .map(|(ticket, ruling)| (ticket.number, ruling.as_deref()))
+        .map(|(ticket, ruling)| (ticket.id, ruling.as_deref()))
         .collect();
     assert_eq!(
         seen,
         [
-            (IssueNumber::from(7), Some("Title and author.")),
-            (IssueNumber::from(9), None)
+            (TicketId::from(7), Some("Title and author.")),
+            (TicketId::from(9), None)
         ]
     );
     let expected_call = argv(&[
@@ -920,7 +915,7 @@ fn questions_on_lists_ruled_and_open_questions_raised_on_the_task_oldest_first()
 fn a_listed_question_is_the_one_that_opened_it() {
     let fake = FakeGh::new();
     let question = NewQuestion {
-        on: IssueNumber::from(2),
+        on: TicketId::from(2),
         text: "Which columns?".to_owned(),
         door: false,
     };
@@ -934,7 +929,7 @@ fn a_listed_question_is_the_one_that_opened_it() {
     let tickets = fake.board().questions().expect("questions");
     assert!(question.is_asked_by(&tickets[0]));
     let elsewhere = NewQuestion {
-        on: IssueNumber::from(3),
+        on: TicketId::from(3),
         ..question
     };
     assert!(!elsewhere.is_asked_by(&tickets[0]));
@@ -950,13 +945,13 @@ fn record_ruling_comments_and_closes_once() {
         .on("issue close *", "");
     let board = fake.board();
     board
-        .record_ruling(IssueNumber::from(7), "Title and author.")
+        .record_ruling(TicketId::from(7), "Title and author.")
         .expect("ruling");
     board
-        .record_ruling(IssueNumber::from(8), "Title and author.")
+        .record_ruling(TicketId::from(8), "Title and author.")
         .expect("the same ruling is quiet");
     assert!(matches!(
-        board.record_ruling(IssueNumber::from(8), "Title only."),
+        board.record_ruling(TicketId::from(8), "Title only."),
         Err(PortError::Conflict(_))
     ));
     let expected_calls = vec![
@@ -990,8 +985,8 @@ fn a_ruling_returns_the_waiting_task_to_ready() {
         .on("issue edit *", "");
     let returned = fake
         .board()
-        .record_ruling(IssueNumber::from(7), "Title and author.");
-    assert_eq!(returned, Ok(Some(IssueNumber::from(2))));
+        .record_ruling(TicketId::from(7), "Title and author.");
+    assert_eq!(returned, Ok(Some(TicketId::from(2))));
     let expected_calls = vec![
         view("7"),
         argv(&[
@@ -1035,12 +1030,12 @@ fn a_second_identical_ruling_changes_nothing_and_a_done_task_keeps_its_labels() 
         .on("issue close *", "");
     let board = fake.board();
     assert_eq!(
-        board.record_ruling(IssueNumber::from(8), "Title and author."),
+        board.record_ruling(TicketId::from(8), "Title and author."),
         Ok(None),
         "the task already returned"
     );
     assert_eq!(
-        board.record_ruling(IssueNumber::from(9), "Title and author."),
+        board.record_ruling(TicketId::from(9), "Title and author."),
         Ok(None),
         "a done task is left alone"
     );
@@ -1070,10 +1065,10 @@ fn a_question_replaces_claimed_or_ready_with_question() {
     .on("issue edit *", "");
     let board = fake.board();
     board
-        .label(IssueNumber::from(2), TaskLabel::Question)
+        .set_state(TicketId::from(2), TicketState::Question)
         .expect("claimed task");
     board
-        .label(IssueNumber::from(4), TaskLabel::Question)
+        .set_state(TicketId::from(4), TicketState::Question)
         .expect("ready task");
     let edit = |number: &str, removed: &str| {
         argv(&[
@@ -1099,10 +1094,10 @@ fn a_question_on_a_task_that_is_neither_claimed_nor_ready_leaves_its_labels_alon
         .on("issue edit *", "");
     let board = fake.board();
     board
-        .label(IssueNumber::from(2), TaskLabel::Question)
+        .set_state(TicketId::from(2), TicketState::Question)
         .expect("unlabelled task");
     board
-        .label(IssueNumber::from(4), TaskLabel::Question)
+        .set_state(TicketId::from(4), TicketState::Question)
         .expect("done task");
     assert_eq!(edits(&fake), Vec::<Vec<String>>::new());
 }
@@ -1115,10 +1110,10 @@ fn a_question_on_an_epic_never_adds_a_state_label() {
         .on("issue edit *", "");
     let board = fake.board();
     board
-        .label(IssueNumber::from(3), TaskLabel::Question)
+        .set_state(TicketId::from(3), TicketState::Question)
         .expect("epic");
     board
-        .label(IssueNumber::from(5), TaskLabel::Question)
+        .set_state(TicketId::from(5), TicketState::Question)
         .expect("epic carrying a state label");
     assert_eq!(edits(&fake), Vec::<Vec<String>>::new());
 }
@@ -1136,7 +1131,7 @@ fn a_ruling_on_a_question_raised_on_an_epic_edits_no_labels() {
         .on("issue edit *", "");
     let returned = fake
         .board()
-        .record_ruling(IssueNumber::from(7), "Title and author.");
+        .record_ruling(TicketId::from(7), "Title and author.");
     assert_eq!(returned, Ok(None), "an epic is never returned to ready");
     assert_eq!(edits(&fake), Vec::<Vec<String>>::new());
 }
@@ -1163,7 +1158,7 @@ fn questions_and_rulings_on_an_epic_and_unsigned_tasks_change_no_label() {
     let board = fake.board();
     for on in [71, 72, 73] {
         let command = NewQuestion {
-            on: IssueNumber::from(on),
+            on: TicketId::from(on),
             text: "Which columns does the export carry?".to_owned(),
             door: false,
         };
@@ -1171,7 +1166,7 @@ fn questions_and_rulings_on_an_epic_and_unsigned_tasks_change_no_label() {
     }
     for question in [78, 79, 80] {
         assert_eq!(
-            board.record_ruling(IssueNumber::from(question), "Title and author."),
+            board.record_ruling(TicketId::from(question), "Title and author."),
             Ok(None),
             "ruling #{question} returns nothing to ready"
         );
@@ -1405,13 +1400,13 @@ fn a_missing_gh_is_unavailable_and_bad_json_a_backend_error() {
     let empty = tempfile::tempdir().expect("empty directory");
     let missing = GhCommand::from(RepoName::from(REPO)).env("PATH", empty.path());
     assert!(matches!(
-        GithubBoard::from(missing).task(IssueNumber::from(2)),
+        GithubBoard::from(missing).task(TicketId::from(2)),
         Err(PortError::Unavailable(_))
     ));
     let fake = FakeGh::new();
     fake.on("issue view *", "not json");
     assert!(matches!(
-        fake.board().task(IssueNumber::from(2)),
+        fake.board().task(TicketId::from(2)),
         Err(PortError::Backend(_))
     ));
 }

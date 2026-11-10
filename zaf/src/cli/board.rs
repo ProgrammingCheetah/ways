@@ -14,7 +14,7 @@ use crate::app::board::{
     self, BoardError, ClaimCommand, DoneOutcome, ReportCommand, RulingCommand,
 };
 use crate::composition::Composition;
-use crate::domain::{Instance, InstanceNumber, IssueNumber, RoleName};
+use crate::domain::{Instance, InstanceNumber, RoleName, Ticket, TicketId};
 use crate::ports::{ClaimOutcome, NewQuestion};
 
 /// The environment variable naming the instance a verb acts as.
@@ -37,19 +37,10 @@ pub fn run(cli: &Cli, action: &BoardAction) -> u8 {
     let board = board.as_ref();
     let done = match action {
         BoardAction::Ready => board::ready(board).map(|tickets| {
-            let json: Vec<_> = tickets
-                .iter()
-                .map(|ticket| {
-                    json!({
-                        "number": ticket.number.get(),
-                        "epic": ticket.epic.map(IssueNumber::get),
-                        "title": ticket.title,
-                    })
-                })
-                .collect();
+            let json: Vec<_> = tickets.iter().map(Ticket::summary).collect();
             let lines: Vec<String> = tickets
                 .iter()
-                .map(|ticket| format!("{} {}", ticket.number, ticket.title))
+                .map(|ticket| format!("{} {}", ticket.id, ticket.title))
                 .collect();
             let terse = if lines.is_empty() {
                 "no ready tasks".to_owned()
@@ -142,7 +133,7 @@ pub fn run(cli: &Cli, action: &BoardAction) -> u8 {
             board::ruling(board, &command).map(|returned| {
                 let json = json!({
                     "question": question.get(),
-                    "ready": returned.map(IssueNumber::get),
+                    "ready": returned.map(TicketId::get),
                 });
                 let terse = match returned {
                     Some(task) => format!("{question} ruled; {task} ready"),
@@ -188,7 +179,7 @@ fn parse_instance(text: &str) -> Option<Instance> {
     }
     let instance = Instance {
         role: RoleName::from(role),
-        epic: epic.parse::<IssueNumber>().ok()?,
+        epic: epic.parse::<TicketId>().ok()?,
         number: InstanceNumber::from(number.parse::<u32>().ok()?),
     };
     Some(instance)

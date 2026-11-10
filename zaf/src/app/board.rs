@@ -1,8 +1,8 @@
 //! `zaf board ready|claim|report|question|ruling|done`: reading and writing the board.
 
 use crate::app::actions::{Phase, PhaseUnreadable, SliceRecords, derive_phase, gather_phase_facts};
-use crate::domain::{Instance, IssueNumber, TaskLabel};
-use crate::ports::{Board, ClaimOutcome, Forge, NewQuestion, PortError, Ticket, Vcs};
+use crate::domain::{Instance, Ticket, TicketId, TicketState};
+use crate::ports::{Board, ClaimOutcome, Forge, NewQuestion, PortError, Vcs};
 
 /// Why a board verb stopped.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -15,13 +15,13 @@ pub enum BoardError {
         /// The batch size the manifest gives its role.
         batch: u32,
         /// The tasks it holds.
-        held: Vec<IssueNumber>,
+        held: Vec<TicketId>,
     },
     /// `board done` found the task outside `land` with no merged pull request to show for it.
     #[error("{task} is in {phase}, not land")]
     NotInLand {
         /// The task.
-        task: IssueNumber,
+        task: TicketId,
         /// The phase it is in.
         phase: Phase,
     },
@@ -33,7 +33,7 @@ pub enum BoardError {
     Port(#[from] PortError),
 }
 
-fn list(numbers: &[IssueNumber]) -> String {
+fn list(numbers: &[TicketId]) -> String {
     let numbers: Vec<String> = numbers.iter().map(ToString::to_string).collect();
     numbers.join(", ")
 }
@@ -47,7 +47,7 @@ pub fn ready(board: &dyn Board) -> Result<Vec<Ticket>, BoardError> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaimCommand {
     /// The task.
-    pub task: IssueNumber,
+    pub task: TicketId,
     /// Who claims it.
     pub instance: Instance,
     /// How many claims the instance may hold at once: its role's batch size.
@@ -59,7 +59,7 @@ pub struct ClaimCommand {
 /// Claiming one's own claim again succeeds with [`ClaimOutcome::AlreadyHeld`]
 /// and never counts against the batch; a task held by another instance is a conflict.
 pub fn claim(board: &dyn Board, command: &ClaimCommand) -> Result<ClaimOutcome, BoardError> {
-    let held: Vec<IssueNumber> = board
+    let held: Vec<TicketId> = board
         .claims()?
         .into_iter()
         .filter(|claim| claim.instance == command.instance)
@@ -82,7 +82,7 @@ pub fn claim(board: &dyn Board, command: &ClaimCommand) -> Result<ClaimOutcome, 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReportCommand {
     /// The task or epic reported on.
-    pub task: IssueNumber,
+    pub task: TicketId,
     /// Who reports.
     pub instance: Instance,
     /// The status.
@@ -115,16 +115,16 @@ pub fn report(board: &dyn Board, command: &ReportCommand) -> Result<ReportOutcom
 ///
 /// Asking the same text on the same issue again reuses the question still open
 /// instead of opening a second one, and returns its number.
-pub fn question(board: &dyn Board, command: &NewQuestion) -> Result<IssueNumber, BoardError> {
+pub fn question(board: &dyn Board, command: &NewQuestion) -> Result<TicketId, BoardError> {
     let open = board
         .questions()?
         .into_iter()
         .find(|ticket| command.is_asked_by(ticket));
     let number = match open {
-        Some(ticket) => ticket.number,
+        Some(ticket) => ticket.id,
         None => board.open_question(command)?,
     };
-    board.label(command.on, TaskLabel::Question)?;
+    board.set_state(command.on, TicketState::Question)?;
     Ok(number)
 }
 
@@ -132,7 +132,7 @@ pub fn question(board: &dyn Board, command: &NewQuestion) -> Result<IssueNumber,
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RulingCommand {
     /// The question ruled on.
-    pub question: IssueNumber,
+    pub question: TicketId,
     /// The Engineer's ruling.
     pub ruling: String,
 }
@@ -140,10 +140,7 @@ pub struct RulingCommand {
 /// `zaf board ruling`: records the ruling, closes the question and returns the task
 /// it was raised on to `ready`; that task is the one returned, if there was one.
 /// The same ruling again succeeds quietly; a different one is a conflict.
-pub fn ruling(
-    board: &dyn Board,
-    command: &RulingCommand,
-) -> Result<Option<IssueNumber>, BoardError> {
+pub fn ruling(board: &dyn Board, command: &RulingCommand) -> Result<Option<TicketId>, BoardError> {
     Ok(board.record_ruling(command.question, &command.ruling)?)
 }
 
@@ -169,7 +166,7 @@ pub fn done(
     forge: &dyn Forge,
     vcs: &dyn Vcs,
     records: &SliceRecords,
-    task: IssueNumber,
+    task: TicketId,
 ) -> Result<DoneOutcome, BoardError> {
     let facts = gather_phase_facts(board, forge, vcs, records, task)?;
     let phase = derive_phase(&facts);
@@ -186,7 +183,7 @@ pub fn done(
             }
         }
     }
-    board.label(task, TaskLabel::Done)?;
+    board.set_state(task, TicketState::Done)?;
     Ok(DoneOutcome::Marked)
 }
 

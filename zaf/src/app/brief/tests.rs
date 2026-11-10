@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 
 use super::*;
-use crate::domain::{PageStatus, TaskLabel};
+use crate::domain::{PageStatus, TicketState};
 use crate::fakes::{FakeBoard, FakeDesign};
 
 const BODY: &str = "\
@@ -19,18 +19,19 @@ Size: S
 Blocked by: —
 ";
 
-fn task() -> IssueNumber {
-    IssueNumber::from(12)
+fn task() -> TicketId {
+    TicketId::from(12)
 }
 
 fn board_with(body: &str) -> FakeBoard {
     let board = FakeBoard::default();
     board.add_ticket(Ticket {
-        number: task(),
-        epic: Some(IssueNumber::from(10)),
-        title: "Export a reading list".to_owned(),
-        body: body.to_owned(),
-        label: Some(TaskLabel::Claimed),
+        id: task(),
+        epic: Some(TicketId::from(10)),
+        title: "Export a reading list".into(),
+        body: body.into(),
+        state: Some(TicketState::Claimed),
+        url: "".into(),
     });
     board
 }
@@ -153,14 +154,15 @@ fn the_pack_holds_every_section_in_order() {
     );
 }
 
-fn raise(board: &FakeBoard, number: u64, on: u64, text: &str) -> IssueNumber {
-    let number = IssueNumber::from(number);
+fn raise(board: &FakeBoard, number: u64, on: u64, text: &str) -> TicketId {
+    let number = TicketId::from(number);
     board.add_question(Ticket {
-        number,
+        id: number,
         epic: None,
-        title: text.to_owned(),
-        body: format!("Raised on {}.", IssueNumber::from(on)),
-        label: None,
+        title: text.into(),
+        body: format!("Raised on {}.", TicketId::from(on)).into(),
+        state: None,
+        url: "".into(),
     });
     number
 }
@@ -181,11 +183,12 @@ fn rulings_of(board: &FakeBoard) -> String {
 fn a_ruled_question_is_in_the_brief_so_it_is_not_asked_again() {
     let board = board_with(BODY);
     board.add_ticket(Ticket {
-        number: IssueNumber::from(13),
-        epic: Some(IssueNumber::from(10)),
-        title: "Another task".to_owned(),
-        body: BODY.to_owned(),
-        label: Some(TaskLabel::Claimed),
+        id: TicketId::from(13),
+        epic: Some(TicketId::from(10)),
+        title: "Another task".into(),
+        body: BODY.into(),
+        state: Some(TicketState::Claimed),
+        url: "".into(),
     });
     let ruled = raise(&board, 80, 12, "Which columns does the export carry?");
     board
@@ -219,8 +222,11 @@ fn brief_prints_the_whole_question() {
     };
     let opened = board.open_question(&long).expect("question");
     let ticket = board.task(opened).expect("ticket");
-    assert!(ticket.title.chars().count() <= 200, "the title is cut");
-    assert!(ticket.title.len() < long.text.len());
+    assert!(
+        ticket.title.as_str().chars().count() <= 200,
+        "the title is cut"
+    );
+    assert!(ticket.title.as_str().len() < long.text.len());
 
     let rulings = rulings_of(&board);
 
@@ -282,37 +288,32 @@ fn a_board_that_cannot_list_questions_is_a_board_error() {
         fn ready(&self) -> Result<Vec<Ticket>, PortError> {
             self.0.ready()
         }
-        fn task(&self, number: IssueNumber) -> Result<Ticket, PortError> {
+        fn task(&self, number: TicketId) -> Result<Ticket, PortError> {
             self.0.task(number)
         }
         fn claim(
             &self,
-            task: IssueNumber,
+            task: TicketId,
             instance: &Instance,
         ) -> Result<crate::ports::ClaimOutcome, PortError> {
             self.0.claim(task, instance)
         }
-        fn heartbeat(&self, task: IssueNumber, instance: &Instance) -> Result<(), PortError> {
+        fn heartbeat(&self, task: TicketId, instance: &Instance) -> Result<(), PortError> {
             self.0.heartbeat(task, instance)
         }
         fn claims(&self) -> Result<Vec<crate::ports::ClaimRecord>, PortError> {
             self.0.claims()
         }
-        fn release(&self, task: IssueNumber, instance: &Instance) -> Result<(), PortError> {
+        fn release(&self, task: TicketId, instance: &Instance) -> Result<(), PortError> {
             self.0.release(task, instance)
         }
-        fn label(&self, task: IssueNumber, label: TaskLabel) -> Result<(), PortError> {
-            self.0.label(task, label)
+        fn set_state(&self, task: TicketId, label: TicketState) -> Result<(), PortError> {
+            self.0.set_state(task, label)
         }
-        fn comment(&self, issue: IssueNumber, body: &str) -> Result<(), PortError> {
+        fn comment(&self, issue: TicketId, body: &str) -> Result<(), PortError> {
             self.0.comment(issue, body)
         }
-        fn report(
-            &self,
-            task: IssueNumber,
-            instance: &Instance,
-            body: &str,
-        ) -> Result<(), PortError> {
+        fn report(&self, task: TicketId, instance: &Instance, body: &str) -> Result<(), PortError> {
             self.0.report(task, instance, body)
         }
         fn questions(&self) -> Result<Vec<Ticket>, PortError> {
@@ -321,14 +322,14 @@ fn a_board_that_cannot_list_questions_is_a_board_error() {
         fn open_question(
             &self,
             question: &crate::ports::NewQuestion,
-        ) -> Result<IssueNumber, PortError> {
+        ) -> Result<TicketId, PortError> {
             self.0.open_question(question)
         }
         fn record_ruling(
             &self,
-            question: IssueNumber,
+            question: TicketId,
             ruling: &str,
-        ) -> Result<Option<IssueNumber>, PortError> {
+        ) -> Result<Option<TicketId>, PortError> {
             self.0.record_ruling(question, ruling)
         }
     }

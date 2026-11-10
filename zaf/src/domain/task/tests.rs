@@ -39,7 +39,7 @@ fn template_round_trips_parse_render_parse() {
 #[test]
 fn template_fields_are_read_into_their_types() {
     let template = filled();
-    let expected_blockers = vec![IssueNumber::from(3), IssueNumber::from(5)];
+    let expected_blockers = vec![TicketId::from(3), TicketId::from(5)];
     assert_eq!(
         template.goal,
         "Members can export their reading list as a CSV file."

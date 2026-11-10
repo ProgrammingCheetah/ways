@@ -6,9 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::blockers::{self, DeadBlocker, DeadReason, Graph, blockers};
 use super::state::SpawnState;
 use crate::app::guard::Level;
-use crate::domain::{Instance, InstanceNumber, IssueNumber, RoleName};
+use crate::domain::{Instance, InstanceNumber, RoleName, Ticket, TicketId};
 use crate::manifest::Manifest;
-use crate::ports::Ticket;
 
 /// The role the tick launches.
 pub const TEAM_ROLE: &str = "team";
@@ -25,14 +24,14 @@ pub struct Snapshot {
     /// Tasks labelled `ready`, in issue order.
     pub ready: Vec<Ticket>,
     /// Tasks with a live claim.
-    pub claimed: BTreeSet<IssueNumber>,
+    pub claimed: BTreeSet<TicketId>,
     /// Blockers that are closed.
-    pub closed: BTreeSet<IssueNumber>,
+    pub closed: BTreeSet<TicketId>,
     /// The open tasks the blockers lead to that are not ready, with the blockers each names;
     /// the ready tasks' own bodies are read from `ready`.
     pub open: Graph,
     /// Blockers that can never be seen closed, and why.
-    pub dead: BTreeMap<IssueNumber, DeadReason>,
+    pub dead: BTreeMap<TicketId, DeadReason>,
 }
 
 /// What the tick reads from the manifest.
@@ -79,7 +78,7 @@ pub struct PlannedLaunch {
     /// The instance, numbered from the state's counter.
     pub instance: Instance,
     /// Its tasks, at most a batch, in issue order.
-    pub tasks: Vec<IssueNumber>,
+    pub tasks: Vec<TicketId>,
 }
 
 /// Why an epic launched nothing this tick.
@@ -98,9 +97,9 @@ pub enum EpicSkip {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskSkip {
     /// A `Blocked by:` issue is still open; the open ones are named.
-    Blocked(Vec<IssueNumber>),
+    Blocked(Vec<TicketId>),
     /// It is on a blocker cycle, each task waiting for the next; the cycle, from its lowest task.
-    InCycle(Vec<IssueNumber>),
+    InCycle(Vec<TicketId>),
     /// Another instance holds a claim on it.
     Claimed,
     /// A running instance already carries it.
@@ -117,11 +116,11 @@ pub struct Plan {
     /// The instances to launch, one per epic at most, in epic order.
     pub launches: Vec<PlannedLaunch>,
     /// The epics that launched nothing, and why.
-    pub epics: Vec<(IssueNumber, EpicSkip)>,
+    pub epics: Vec<(TicketId, EpicSkip)>,
     /// The ready tasks left out, and why.
-    pub tasks: Vec<(IssueNumber, TaskSkip)>,
+    pub tasks: Vec<(TicketId, TaskSkip)>,
     /// Every blocker cycle among the open tasks reached, each from its lowest task.
-    pub cycles: Vec<Vec<IssueNumber>>,
+    pub cycles: Vec<Vec<TicketId>>,
     /// Every dead blocker the open tasks reached name.
     pub dead: Vec<DeadBlocker>,
 }
@@ -155,33 +154,33 @@ pub fn plan(snapshot: &Snapshot, state: &SpawnState, level: Level, settings: Set
 
     let mut graph = snapshot.open.clone();
     for ticket in &snapshot.ready {
-        graph.insert(ticket.number, blockers(&ticket.body));
+        graph.insert(ticket.id, blockers(ticket.body.as_str()));
     }
     let cycles = blockers::cycles(&graph);
     let dead = blockers::dead(&graph, &snapshot.dead);
 
     let mut tasks = Vec::new();
-    let mut epics: BTreeMap<IssueNumber, Vec<IssueNumber>> = BTreeMap::new();
+    let mut epics: BTreeMap<TicketId, Vec<TicketId>> = BTreeMap::new();
     for ticket in &snapshot.ready {
         let Some(epic) = ticket.epic else {
-            tasks.push((ticket.number, TaskSkip::NoEpic));
+            tasks.push((ticket.id, TaskSkip::NoEpic));
             continue;
         };
         let launchable = epics.entry(epic).or_default();
-        let open: Vec<IssueNumber> = blockers(&ticket.body)
+        let open: Vec<TicketId> = blockers(ticket.body.as_str())
             .into_iter()
             .filter(|blocker| !snapshot.closed.contains(blocker))
             .collect();
-        if snapshot.claimed.contains(&ticket.number) {
-            tasks.push((ticket.number, TaskSkip::Claimed));
-        } else if let Some(instance) = carried.get(&ticket.number.get()) {
-            tasks.push((ticket.number, TaskSkip::Running((*instance).to_owned())));
-        } else if let Some(cycle) = cycles.iter().find(|cycle| cycle.contains(&ticket.number)) {
-            tasks.push((ticket.number, TaskSkip::InCycle(cycle.clone())));
+        if snapshot.claimed.contains(&ticket.id) {
+            tasks.push((ticket.id, TaskSkip::Claimed));
+        } else if let Some(instance) = carried.get(&ticket.id.get()) {
+            tasks.push((ticket.id, TaskSkip::Running((*instance).to_owned())));
+        } else if let Some(cycle) = cycles.iter().find(|cycle| cycle.contains(&ticket.id)) {
+            tasks.push((ticket.id, TaskSkip::InCycle(cycle.clone())));
         } else if !open.is_empty() {
-            tasks.push((ticket.number, TaskSkip::Blocked(open)));
+            tasks.push((ticket.id, TaskSkip::Blocked(open)));
         } else {
-            launchable.push(ticket.number);
+            launchable.push(ticket.id);
         }
     }
 

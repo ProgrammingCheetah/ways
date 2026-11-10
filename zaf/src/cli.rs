@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use crate::app::setup::ensure_homes;
 use crate::composition::Composition;
-use crate::domain::IssueNumber;
+use crate::domain::TicketId;
 use crate::manifest::ProjectFiles;
 
 pub mod ask;
@@ -68,7 +68,7 @@ pub enum Verb {
     Ask {
         /// The task whose named pages are searched first.
         #[arg(short, long)]
-        task: IssueNumber,
+        task: TicketId,
         /// Each question as `<kind>: <question>`.
         #[arg(required = true, num_args = 1..=5)]
         questions: Vec<String>,
@@ -76,7 +76,7 @@ pub enum Verb {
     /// Build a task's context pack: ticket, named pages, owned paths, style, help.
     Brief {
         /// The task.
-        task: IssueNumber,
+        task: TicketId,
     },
     /// Run the configured check steps for a task, a pull request or a milestone.
     Check {
@@ -89,7 +89,7 @@ pub enum Verb {
     /// A task's change: stat first, hunks on request.
     Changes {
         /// The task.
-        task: IssueNumber,
+        task: TicketId,
         /// Show the hunks of this file.
         #[arg(long)]
         path: Option<String>,
@@ -97,7 +97,7 @@ pub enum Verb {
     /// Check a task's acceptance lines and declared interfaces.
     Verify {
         /// The task.
-        task: IssueNumber,
+        task: TicketId,
     },
     /// Open, publish, merge or drop a task's slice.
     Slice {
@@ -175,7 +175,7 @@ pub enum ProgressAction {
     /// Declare the phases this model goes through on a task, in order.
     Plan {
         /// The task.
-        task: IssueNumber,
+        task: TicketId,
         /// The phases, one word each.
         #[arg(required = true, num_args = 1..)]
         phases: Vec<String>,
@@ -186,7 +186,7 @@ pub enum ProgressAction {
     /// Report that this model is now in one of its declared phases.
     At {
         /// The task.
-        task: IssueNumber,
+        task: TicketId,
         /// The phase, as declared.
         phase: String,
         /// The role the phase is for; the role `ZAF_INSTANCE` names when not given.
@@ -213,19 +213,19 @@ pub enum BoardAction {
     /// Claim a task under a lease.
     Claim {
         /// The task.
-        task: IssueNumber,
+        task: TicketId,
     },
     /// Write the instance's status comment on a task.
     Report {
         /// The task.
-        task: IssueNumber,
+        task: TicketId,
         /// The report.
         body: String,
     },
     /// Raise a question for the Engineer on an issue.
     Question {
         /// The issue that waits.
-        on: IssueNumber,
+        on: TicketId,
         /// The question.
         text: String,
         /// A one-way decision.
@@ -235,14 +235,14 @@ pub enum BoardAction {
     /// Record the Engineer's ruling on a question.
     Ruling {
         /// The question.
-        question: IssueNumber,
+        question: TicketId,
         /// The ruling.
         text: String,
     },
     /// Mark a task done once its work has landed: in land, or when its recorded pull request has merged.
     Done {
         /// The task.
-        task: IssueNumber,
+        task: TicketId,
     },
 }
 
@@ -253,22 +253,22 @@ pub enum SliceAction {
     /// Open the task's slice and workspace.
     Open {
         /// The task.
-        task: IssueNumber,
+        task: TicketId,
     },
     /// Publish the slice and open or update its pull request.
     Pr {
         /// The task.
-        task: IssueNumber,
+        task: TicketId,
     },
     /// Merge the slice's pull request when the merge conditions hold.
     Merge {
         /// The task.
-        task: IssueNumber,
+        task: TicketId,
     },
     /// Drop the slice and its workspace.
     Drop {
         /// The task.
-        task: IssueNumber,
+        task: TicketId,
     },
 }
 
