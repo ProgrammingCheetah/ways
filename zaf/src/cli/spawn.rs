@@ -10,12 +10,12 @@
 //! the tasks, the profile, the environment and the command line, and stops there.
 
 use std::collections::BTreeMap;
-use std::process::{Command, Stdio};
 
 use super::Cli;
 use super::board::INSTANCE_VAR;
 use super::exit::{self, BACKEND, OK, REFUSED};
 use super::slice::VERSION_VAR;
+use crate::adapters::process;
 use crate::app::spawn::{
     self, DryLaunch, LaunchContext, LaunchPorts, Launched, Prepared, SpawnError, TEAM_ROLE,
 };
@@ -61,12 +61,17 @@ pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool) -> u8 {
     if dry_run {
         return dry(cli, &path, &composition, version, &project_env);
     }
+    // This tick holds each launch it reserves until the runner starts the instance.
+    let Some(holder) = process::this() else {
+        eprintln!("zaf {path}: cannot read this process's start time, so no launch could be held");
+        return BACKEND;
+    };
     let prepared = match spawn::prepare(
         board.as_ref(),
         &state_dir,
         manifest,
-        &alive,
-        std::process::id(),
+        &process::alive,
+        &holder,
     ) {
         Ok(prepared) => prepared,
         Err(error) => return failed(&path, &error),
@@ -170,11 +175,15 @@ fn dry(
         Err(error) => return exit::fail_composition(path, &error),
     };
     let manifest = composition.manifest();
-    let prepared =
-        match spawn::plan_only(board.as_ref(), &composition.state_dir(), manifest, &alive) {
-            Ok(prepared) => prepared,
-            Err(error) => return failed(path, &error),
-        };
+    let prepared = match spawn::plan_only(
+        board.as_ref(),
+        &composition.state_dir(),
+        manifest,
+        &process::alive,
+    ) {
+        Ok(prepared) => prepared,
+        Err(error) => return failed(path, &error),
+    };
     let jobs = jobs(composition, &prepared, version, project_env);
     let describe = |request: &RunRequest| {
         composition
@@ -219,19 +228,6 @@ pub fn launch_env(instance: &Instance, version: &str) -> BTreeMap<String, String
         (INSTANCE_VAR.to_owned(), instance.to_string()),
         (VERSION_VAR.to_owned(), version.to_owned()),
     ])
-}
-
-/// Whether a recorded process still runs: this one does; another is asked with `kill -0`.
-fn alive(pid: u32) -> bool {
-    if pid == std::process::id() {
-        return true;
-    }
-    Command::new("kill")
-        .args(["-0", &pid.to_string()])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
 }
 
 fn failed(path: &str, error: &SpawnError) -> u8 {

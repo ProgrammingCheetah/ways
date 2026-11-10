@@ -104,6 +104,7 @@ fn the_port_returns_a_timeout_as_timed_out() {
         prompt: "unused".to_owned(),
         dir: dir.path().to_path_buf(),
         env: std::collections::BTreeMap::new(),
+        holder_file: None,
     };
     let slow = ProcessRunner::new(CommandLine::from("sleep 5"), Duration::from_millis(200));
     let port: &dyn Runner = &slow;
@@ -122,6 +123,7 @@ fn the_port_returns_the_exit_code_and_the_report_as_transcript() {
         prompt: "read the brief".to_owned(),
         dir: dir.path().to_path_buf(),
         env: std::collections::BTreeMap::new(),
+        holder_file: None,
     };
     let process = runner("echo {prompt}; exit 2");
     let port: &dyn Runner = &process;
@@ -137,6 +139,7 @@ fn request(role: &str, profile: Profile, dir: &Path) -> RunRequest {
         prompt: "read the brief".to_owned(),
         dir: dir.to_path_buf(),
         env: std::collections::BTreeMap::new(),
+        holder_file: None,
     }
 }
 
@@ -262,5 +265,33 @@ fn the_requests_environment_wins_over_every_layer() {
     assert_eq!(
         output.transcript,
         "from-request team instance 1 on #2 only-request"
+    );
+}
+
+#[test]
+fn a_run_writes_its_own_process_to_the_holder_file() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let holder_file = dir.path().join("pid");
+    std::fs::write(&holder_file, "1 the tick\n").expect("writes the tick's holder");
+    let request = RunRequest {
+        holder_file: Some(holder_file.clone()),
+        ..request("keeper", Profile::Lean, dir.path())
+    };
+    let process = runner("echo $$ > shell.pid");
+    let port: &dyn Runner = &process;
+    port.run(&request).expect("a run");
+    let holder = crate::ports::Holder::parse(
+        &std::fs::read_to_string(&holder_file).expect("the holder file"),
+    )
+    .expect("a holder");
+    let shell: u32 = std::fs::read_to_string(dir.path().join("shell.pid"))
+        .expect("the shell's pid")
+        .trim()
+        .parse()
+        .expect("a pid");
+    assert_eq!(holder.pid, shell, "the run's own process, not the caller's");
+    assert!(
+        !crate::adapters::process::alive(&holder),
+        "the run has exited"
     );
 }

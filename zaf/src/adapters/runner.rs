@@ -5,7 +5,8 @@
 //! directory. A request's role picks the template (and any environment of its
 //! own) and its profile adds environment, on top of the runner's defaults; the
 //! request's own environment goes on last. stdout is captured to `report.md` and stderr to `errors.log`
-//! there. A watchdog thread owns the child and kills it past the timeout.
+//! there. A watchdog thread owns the child and kills it past the timeout. A request with a
+//! holder file gets the child's [`Holder`] written there as soon as it starts.
 
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -16,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use crate::domain::{Profile, RoleName};
 use crate::manifest::CommandLine;
-use crate::ports::{PortError, RunOutput, RunRequest, Runner};
+use crate::ports::{Holder, PortError, RunOutput, RunRequest, Runner};
 
 /// What the command's stdout is captured to, inside the run's directory.
 pub const REPORT_FILE: &str = "report.md";
@@ -125,7 +126,7 @@ impl ProcessRunner {
 
     /// Runs the runner's own command in `dir` and waits; a timeout is [`PortError::TimedOut`].
     pub fn execute(&self, prompt: &str, dir: &Path) -> Result<ProcessReport, PortError> {
-        self.launch(&self.command, &self.env, prompt, dir)
+        self.launch(&self.command, &self.env, prompt, dir, None)
     }
 
     fn launch(
@@ -134,6 +135,7 @@ impl ProcessRunner {
         env: &BTreeMap<String, String>,
         prompt: &str,
         dir: &Path,
+        holder_file: Option<&Path>,
     ) -> Result<ProcessReport, PortError> {
         let line = expand(template, prompt, dir);
         let report = dir.join(REPORT_FILE);
@@ -152,9 +154,17 @@ impl ProcessRunner {
         // Its own process group, so a timeout can take the command's children down too.
         std::os::unix::process::CommandExt::process_group(&mut command, 0);
         let started = Instant::now();
-        let child = command
+        let mut child = command
             .spawn()
             .map_err(|error| PortError::Backend(format!("cannot start `sh`: {error}")))?;
+        if let Some(path) = holder_file
+            && let Err(error) = record_holder(&child, path)
+        {
+            kill_group(&child);
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
         let timeout = self.timeout;
         let watchdog = thread::spawn(move || watch(child, timeout));
         let outcome = watchdog
@@ -218,6 +228,7 @@ impl Runner for ProcessRunner {
             &env,
             &request.prompt,
             &request.dir,
+            request.holder_file.as_deref(),
         )?;
         let transcript = fs::read_to_string(&report.report).map_err(|error| {
             PortError::Backend(format!("cannot read {}: {error}", report.report.display()))
@@ -246,6 +257,22 @@ pub(crate) fn single_quote(text: &str) -> String {
 fn create(path: &Path) -> Result<File, PortError> {
     File::create(path)
         .map_err(|error| PortError::Backend(format!("cannot create {}: {error}", path.display())))
+}
+
+/// Writes the child as a [`Holder`] to `path`, replacing what it held.
+fn record_holder(child: &Child, path: &Path) -> Result<(), PortError> {
+    let pid = child.id();
+    let holder = super::process::holder_of(pid).unwrap_or(Holder {
+        pid,
+        // Gone already: a start no process has, so the record reads dead.
+        start: "exited".to_owned(),
+    });
+    fs::write(path, format!("{holder}\n")).map_err(|error| {
+        PortError::Backend(format!(
+            "cannot record the run's process in {}: {error}",
+            path.display()
+        ))
+    })
 }
 
 /// Waits for the child; `None` means it outlived the timeout and was killed.

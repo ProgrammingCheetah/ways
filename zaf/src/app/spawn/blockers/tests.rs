@@ -100,11 +100,13 @@ fn every_task_on_a_cycle_is_on_a_returned_cycle() {
 #[test]
 fn read_walks_open_blockers_and_classes_the_rest() {
     let board = FakeBoard::default();
-    board.add_ticket(ticket(3, "Blocked by: #4 #5 #6 #99", TaskLabel::Ready));
+    board.add_ticket(ticket(3, "Blocked by: #4 #5 #6 #8 #99", TaskLabel::Ready));
     board.add_ticket(ticket(4, "Blocked by: #3", TaskLabel::Blocked));
     board.add_ticket(ticket(5, "", TaskLabel::Done));
     board.add_ticket(ticket(6, "", TaskLabel::Blocked));
-    board.close(number(6));
+    board.close_not_planned(number(6));
+    board.add_ticket(ticket(8, "", TaskLabel::Blocked));
+    board.close(number(8));
     let ready = board.ready().expect("ready");
 
     let found = read(&board, &ready).expect("reads");
@@ -113,11 +115,15 @@ fn read_walks_open_blockers_and_classes_the_rest() {
         found.graph.keys().copied().collect::<Vec<_>>(),
         numbers(&[3, 4])
     );
-    assert_eq!(found.closed, BTreeSet::from([number(5)]));
+    assert_eq!(
+        found.closed,
+        BTreeSet::from([number(5), number(8)]),
+        "closed as completed is done, label or not"
+    );
     assert_eq!(
         found.dead,
         BTreeMap::from([
-            (number(6), DeadReason::ClosedWithoutDone),
+            (number(6), DeadReason::ClosedNotPlanned),
             (number(99), DeadReason::NotAnIssue),
         ])
     );
@@ -127,7 +133,7 @@ fn read_walks_open_blockers_and_classes_the_rest() {
 fn dead_blockers_are_listed_by_task_then_blocker_with_their_reason() {
     let dead_map = BTreeMap::from([
         (number(9), DeadReason::NotAnIssue),
-        (number(8), DeadReason::ClosedWithoutDone),
+        (number(8), DeadReason::ClosedNotPlanned),
     ]);
     let found = dead(&graph(&[(2, &[9, 8, 8]), (1, &[9, 3])]), &dead_map);
     let lines: Vec<String> = found.iter().map(ToString::to_string).collect();
@@ -135,7 +141,7 @@ fn dead_blockers_are_listed_by_task_then_blocker_with_their_reason() {
         lines,
         [
             "dead blocker #9 on #1: not an issue",
-            "dead blocker #8 on #2: closed without done",
+            "dead blocker #8 on #2: closed as not planned",
             "dead blocker #9 on #2: not an issue",
         ]
     );

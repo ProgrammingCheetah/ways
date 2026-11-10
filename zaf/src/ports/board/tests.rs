@@ -305,13 +305,20 @@ fn the_fake_tells_the_four_issue_states_apart() {
     let board = seeded();
     board.add_ticket(ticket(5, TaskLabel::Done));
     board.add_ticket(ticket(6, TaskLabel::Blocked));
-    board.close(IssueNumber::from(6));
+    board.close_not_planned(IssueNumber::from(6));
+    board.add_ticket(ticket(7, TaskLabel::Blocked));
+    board.close(IssueNumber::from(7));
     let port: &dyn Board = &board;
     let state = |number: u64| port.issue_state(IssueNumber::from(number));
 
     assert_eq!(state(3), Ok(IssueState::Open));
     assert_eq!(state(5), Ok(IssueState::Done));
-    assert_eq!(state(6), Ok(IssueState::ClosedNotDone));
+    assert_eq!(state(6), Ok(IssueState::ClosedNotPlanned));
+    assert_eq!(
+        state(7),
+        Ok(IssueState::Done),
+        "closed as completed, no label"
+    );
     assert_eq!(state(99), Ok(IssueState::Missing));
 }
 

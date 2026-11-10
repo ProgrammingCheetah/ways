@@ -21,6 +21,8 @@ struct Issue {
     question: bool,
     ruling: Option<String>,
     closed: bool,
+    /// Closed as not planned (or as a duplicate), not as completed.
+    not_planned: bool,
     epic: bool,
     group: Option<String>,
 }
@@ -48,6 +50,7 @@ impl FakeBoard {
             question: false,
             ruling: None,
             closed: false,
+            not_planned: false,
             epic: false,
             group: None,
         };
@@ -75,10 +78,18 @@ impl FakeBoard {
         }
     }
 
-    /// Closes an issue without any ruling, as closing it on the forge would.
+    /// Closes an issue as completed, without any ruling, as closing it on the forge would.
     pub fn close(&self, issue: IssueNumber) {
         if let Some(issue) = self.state().issues.get_mut(&issue) {
             issue.closed = true;
+        }
+    }
+
+    /// Closes an issue as not planned, as folding a task into a unit or dropping it would.
+    pub fn close_not_planned(&self, issue: IssueNumber) {
+        if let Some(issue) = self.state().issues.get_mut(&issue) {
+            issue.closed = true;
+            issue.not_planned = true;
         }
     }
 
@@ -178,8 +189,10 @@ impl Board for FakeBoard {
         };
         Ok(if issue.ticket.label == Some(TaskLabel::Done) {
             IssueState::Done
+        } else if issue.closed && issue.not_planned {
+            IssueState::ClosedNotPlanned
         } else if issue.closed {
-            IssueState::ClosedNotDone
+            IssueState::Done
         } else {
             IssueState::Open
         })
@@ -349,6 +362,7 @@ impl Board for FakeBoard {
             question: true,
             ruling: None,
             closed: false,
+            not_planned: false,
             epic: false,
             group: None,
         };
