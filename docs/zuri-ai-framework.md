@@ -191,26 +191,15 @@ Blocked by: #<n>, #<m>
 - **The interface is the only door.** Each role's permissions allow `zaf`, the read-only commands and its editor, and deny raw `jj git push`, `gh pr merge`, workspace commands and the like. The script does those inside its verbs, so a model cannot do them by hand even by mistake.
 - **Billing stays on the subscription.** Headless `claude -p` under the Max login counts against the weekly limit like a session. The Agent SDK may be metered differently; settle that before using it for the spawner.
 
-### 5.1 The spawner's tick
-```
-for each milestone open
-  for each epic signed
-    if no tasks           -> planning instance
-    elif unchallenged     -> challenger
-    elif ruling newer than plan -> planning instance (re-plan)
-    elif ready unblocked unclaimed tasks and a free slot -> team instance
-  if all epics done and no release instance ran since -> release instance
-```
-Every launch is `claude -p` (or `agy -p`) with a one-line prompt naming the role, the epic and the instance number, plus the role's standing brief from the pack. The spawner records the launch as a comment on the epic and holds the slot until the instance exits.
+### 5.1 The spawner's tick: the phase scheduler
+The spawner is a phase scheduler. A task is an ordered list of phases, each one an action, and the list is declared in the manifest for the task's type. Each tick derives every task's standing from the forge and the phase run folders (the queue is never stored), runs the actions that need no model, launches the waits (review and CI run with no model), and starts at most one model, the ready phase that has waited longest and fits the budget. A tick never waits for the model it starts. Planning, the challenger and the release launch join the same order as epic launches. A task with a pull request is held by its forge facts, not by an instance. A tick runs every five minutes (`zaf spawn --watch`) and whenever a phase ends.
 
-### 5.2 A team instance, step by step
-1. `zaf board ready <epic>` → claim up to four with `zaf board claim`.
-2. For each task: `zaf slice open <task>` (workspace and branch), spawn a programmer with `zaf brief <task>`.
-3. On hand-back: `zaf check <task>`; if green, `zaf slice pr <task>` opens the PR with the ticket in its title.
-4. `zaf check <pr>`: runs the PR's configured steps, waits, returns the findings.
-5. Must-fix → fresh programmer with the task and the findings. Ladder: Sonnet, Sonnet, Opus, then `question`.
-6. Clean → `zaf slice merge <task>`: merges the integration branch in first, pushes plain, merges the PR, marks the task `done`, removes the workspace.
-7. `zaf board report <epic> "<status>"`, end.
+The phases, the kinds, the standing, the claims, the tick's steps, the hooks and the triggers are written once, in `docs/zaf-actions.md` §5.1; read that section, not this one, for how the tick works.
+
+Every model launch is `claude -p` (or `agy -p`) with a one-line prompt naming the role and the epic or task, plus the role's standing brief from the pack. The spawner records the launch in the run folder of the phase, and the phase holds its share of the budget until its process exits.
+
+### 5.2 A task's phases, in place of a team instance's steps
+The phase scheduler of §5.1 replaces the team instance's seven steps. Its phase actions do what those steps did: implement starts a programmer on the brief, `ci` and review are waits with no model, a failed wait starts a fresh model on the findings (its `on-fail` action), and `merge` runs `zaf do slice-merge` with no model. Each phase is an action, so the lead that coordinated them (§3.5) is no longer launched. The escalation ladder of §5.4 still decides which model a fix round gets. See `docs/zaf-actions.md` §5.1 for the phases, the kinds and the tick.
 
 ### 5.3 Merge conditions
 A task PR merges into the integration branch when CI is green, CodeRabbit and Gemini have no open must-fix, and for a security-flagged task the Gemini security review passed. The integration branch merges into `main` only by the release instance, after every must passes and the release reviews are clean, by squash, then the tag.
