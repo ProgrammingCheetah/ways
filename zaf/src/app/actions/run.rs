@@ -18,7 +18,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use super::caller::Caller;
-use super::metadata::{ActionMetadata, parse};
+use super::metadata::{ActionKind, ActionMetadata, parse};
 use super::phase::{derive_phase, gather_phase_facts};
 use super::records::{SliceRecords, forget_records, keep_hand_back};
 use super::resolve::{
@@ -281,6 +281,8 @@ pub struct ListedAction {
     pub tier: Tier,
     /// Its description; for a file without valid metadata, what is wrong with it.
     pub description: String,
+    /// Its declared kind; none for a file without valid metadata or without a `kind`.
+    pub kind: Option<ActionKind>,
 }
 
 /// The file a name resolves to; outside a project only the machine's tier exists. With `only`,
@@ -328,6 +330,7 @@ pub fn list_actions(
         .filter_map(|found| {
             let metadata = read_metadata(&found.path);
             may_read(caller, &metadata).then(|| ListedAction {
+                kind: metadata.as_ref().ok().and_then(|metadata| metadata.kind),
                 description: metadata.map_or_else(
                     |reason| format!("invalid metadata: {reason}"),
                     |metadata| metadata.description,

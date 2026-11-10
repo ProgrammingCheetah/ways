@@ -29,6 +29,26 @@ pub enum Target {
     Task,
 }
 
+/// What running an action does to the budget: the kind a phase action declares,
+/// as `# zaf kind: model | wait | zaf`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display, strum::EnumString)]
+#[strum(serialize_all = "lowercase")]
+pub enum ActionKind {
+    /// It starts a model and costs the task's size.
+    Model,
+    /// It waits on the outside and costs nothing.
+    Wait,
+    /// Zaf runs it alone, with no model, and it costs nothing.
+    Zaf,
+}
+
+impl ActionKind {
+    /// Whether running it spends the budget: only a model does.
+    pub fn costs_budget(self) -> bool {
+        matches!(self, Self::Model)
+    }
+}
+
 /// One digit of a mode: the `r`, `w` and `x` bits for one subject.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Bits(u8);
@@ -114,6 +134,10 @@ pub struct ActionMetadata {
     pub phases: Vec<Phase>,
     /// Minutes before the run is killed; none means the manifest's default.
     pub timeout: Option<u64>,
+    /// `ActionMetadata.kind: Option<ActionKind>`: whether it starts a model,
+    /// waits or is run by zaf alone; none when it declares no kind, as an
+    /// action no phase list names need not.
+    pub kind: Option<ActionKind>,
 }
 
 /// A parsed action file: its metadata and where its body starts.
@@ -238,6 +262,7 @@ struct Fields {
     target: Option<Target>,
     phases: Option<(usize, Vec<Phase>)>,
     timeout: Option<u64>,
+    kind: Option<ActionKind>,
 }
 
 impl Fields {
@@ -305,12 +330,21 @@ impl Fields {
                     })?;
                 self.timeout = Some(minutes);
             }
+            "kind" => {
+                if self.kind.is_some() {
+                    return Err(repeated());
+                }
+                let kind = ActionKind::from_str(value).map_err(|_| {
+                    format!("`kind: {value}` is not one of the three kinds: model, wait, zaf")
+                })?;
+                self.kind = Some(kind);
+            }
             _ if key.starts_with(|c: char| c.is_ascii_digit() || c == '-' || c == '+') => {
                 self.code(key, value)?;
             }
             _ => {
                 return Err(format!(
-                    "unknown key `{key}`; the keys are description, an exit code, mode, group, target, phases and timeout"
+                    "unknown key `{key}`; the keys are description, an exit code, mode, group, target, phases, timeout and kind"
                 ));
             }
         }
@@ -364,6 +398,7 @@ impl Fields {
             target,
             phases,
             timeout: self.timeout,
+            kind: self.kind,
         })
     }
 }
