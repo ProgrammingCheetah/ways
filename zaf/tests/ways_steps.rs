@@ -27,12 +27,24 @@ profile = "build"
 turns = 100
 "#;
 
-/// The actions §7 gives mode 755: they run a check and name no group.
-const OPEN: [&str; 3] = ["gate", "gate-light", "nodes-check"];
+/// The actions §7 gives mode 755: they run a check, read or file on the board, and name no
+/// group. `issue-file` is the planning instance's, a role no manifest declares, so no group
+/// can name it.
+const OPEN: [&str; 6] = [
+    "ci-wait",
+    "gate",
+    "gate-light",
+    "issue-file",
+    "nodes-check",
+    "task-pr",
+];
 
-/// The one action only the release role runs; every other 750 action is the team's and the
+/// The actions only the release role runs; every other 750 action is the team's and the
 /// release's.
-const RELEASE_ONLY: &str = "release";
+const RELEASE_ONLY: [&str; 2] = ["base-up", "release"];
+
+/// The one action only the Engineer runs: it merges onto any base, `main` included.
+const OWNER_ONLY: &str = "ship";
 
 /// The three actions that run one line, each with that line.
 const LINES: [(&str, &str); 3] = [
@@ -79,7 +91,9 @@ fn parsed(name: &str) -> (String, ParsedAction) {
 fn row(name: &str) -> (&'static str, &'static [&'static str]) {
     if OPEN.contains(&name) {
         ("755", &[])
-    } else if name == RELEASE_ONLY {
+    } else if name == OWNER_ONLY {
+        ("700", &[])
+    } else if RELEASE_ONLY.contains(&name) {
         ("750", &["release"])
     } else {
         ("750", &["team", "release"])

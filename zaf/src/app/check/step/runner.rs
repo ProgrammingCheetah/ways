@@ -50,6 +50,7 @@ pub(super) fn run(
         prompt: format!("Follow the brief at {}.", brief_path.display()),
         dir: context.dir.clone(),
         env: std::collections::BTreeMap::new(),
+        holder_file: None,
     };
     let output = runner.run(&request)?;
     let log_path = log::keep(&context.root, source, &output.transcript)?;

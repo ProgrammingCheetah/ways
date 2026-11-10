@@ -61,6 +61,11 @@
       "node": false
     },
     {
+      "name": "process.rs",
+      "role": "the process table: a Holder (pid plus start time) and whether it still runs, from /proc or ps",
+      "node": false
+    },
+    {
       "name": "runner.rs",
       "role": "ProcessRunner: a role run as a [runners.<name>] command template",
       "node": false

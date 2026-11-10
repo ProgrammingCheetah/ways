@@ -21,3 +21,4 @@ pub mod setup;
 pub mod slice;
 pub mod spawn;
 pub mod status;
+pub mod update;

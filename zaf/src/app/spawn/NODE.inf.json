@@ -2,7 +2,7 @@
   "path": "zaf/src/app/spawn",
   "charted": "2026-11-03",
   "short": "spawner tick: plan, reserve, launch",
-  "is": "One tick of the spawner, split into a pure planner, the .zaf/spawn.state slot file, and the I/O that reserves slots, launches team instances through the Runner port and records them on the epic.",
+  "is": "One tick of the spawner, split into a pure planner, the run folders that record each launch and the process holding it, the counter-only .zaf/spawn.state, and the I/O that reserves launches, runs team instances through the Runner port and records them in their run folders and on the epic. Nothing it plans from is kept in step by hand: running instances, slots and live claims are derived on every read.",
   "type": "code",
   "tags": [
     "category:source",
@@ -10,7 +10,8 @@
   ],
   "conventions": [
     "tick.rs stays pure (no port, no file); every side effect lives in mod.rs",
-    "Launch and exit are HTML-comment markers on the epic: `<!-- zaf:launch <instance> -->`, `<!-- zaf:exit <instance> <status> -->`"
+    "Launch and exit are HTML-comment markers on the epic: `<!-- zaf:launch <instance> -->`, `<!-- zaf:exit <instance> <status> -->`",
+    "Derive, never keep in step: whether a launch runs is its run folder's pid (pid plus start time) checked against the process table on every read; only the counter, the launch record and the exit are written"
   ],
   "entry_points": [
     "mod.rs",
@@ -18,13 +19,33 @@
   ],
   "fs": [
     {
+      "name": "blockers.rs",
+      "role": "Blocked by: parsing, the blocker graph, its cycles and dead blockers",
+      "node": false
+    },
+    {
+      "name": "blockers/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
       "name": "mod.rs",
-      "role": "prepare, launch, launch_all, dry run",
+      "role": "prepare (lost, orphaned claims, plan, reserve under spawn.lock), launch, launch_all, dry run",
+      "node": false
+    },
+    {
+      "name": "runs.rs",
+      "role": ".zaf/runs/<slug>/: launch.json, the holding process in pid, exit; Run::running reads the process table",
+      "node": false
+    },
+    {
+      "name": "runs/",
+      "role": "tests.rs",
       "node": false
     },
     {
       "name": "state.rs",
-      "role": ".zaf/spawn.state: next instance number, slot-holding launches",
+      "role": ".zaf/spawn.state, the instance counter alone; derive() adds the launches that run now",
       "node": false
     },
     {
@@ -39,7 +60,7 @@
     },
     {
       "name": "tick.rs",
-      "role": "board snapshot, state, guard and settings in, launch plan out",
+      "role": "board snapshot, derived running launches, guard and settings in, launch plan out",
       "node": false
     },
     {

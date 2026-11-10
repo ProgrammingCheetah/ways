@@ -5,10 +5,11 @@ use std::time::SystemTime;
 use super::GhCommand;
 use super::command::number_from_url;
 use super::notes::{LeaseNote, RULING_MARKER, marked, release_line, report_marker, unmarked};
-use super::rows::{ISSUE_FIELDS, IssueRow, NumberRow};
+use super::rows::{ISSUE_FIELDS, IssueRow, NumberRow, STANDING_FIELDS, StandingRow};
 use crate::domain::{Instance, IssueNumber, TaskLabel};
 use crate::ports::{
-    Board, ClaimOutcome, ClaimRecord, EpicTask, EpicTree, NewQuestion, PortError, Ticket,
+    Board, ClaimOutcome, ClaimRecord, EpicTask, EpicTree, IssueState, NewQuestion, PortError,
+    Ticket,
 };
 
 /// The label every task carries.
@@ -21,6 +22,14 @@ const DOOR_LABEL: &str = "door";
 const LIST_LIMIT: &str = "1000";
 /// The state gh prints for an open issue.
 const OPEN: &str = "OPEN";
+/// What a pull request's URL holds and an issue's does not.
+const PULL_PATH: &str = "/pull/";
+
+/// The close reason of an issue closed as not planned.
+const NOT_PLANNED: &str = "NOT_PLANNED";
+
+/// The close reason of an issue closed as a duplicate.
+const DUPLICATE: &str = "DUPLICATE";
 /// The prefix of the label that puts a task in a group.
 const GROUP_PREFIX: &str = "group:";
 
@@ -232,6 +241,34 @@ impl Board for GithubBoard {
             })
             .collect();
         Ok(trees)
+    }
+
+    /// One `gh issue view`: an issue that is not there, or is a pull request, is missing;
+    /// else `done` by its label, closed without it, or open.
+    fn issue_state(&self, number: IssueNumber) -> Result<IssueState, PortError> {
+        let number = number.get().to_string();
+        let viewed: Result<StandingRow, PortError> =
+            self.gh
+                .json(&["issue", "view", &number, "--json", STANDING_FIELDS]);
+        let row = match viewed {
+            Ok(row) => row,
+            Err(PortError::NotFound(_)) => return Ok(IssueState::Missing),
+            Err(error) => return Err(error),
+        };
+        let done = TaskLabel::Done.to_string();
+        // A closed issue is done unless it was closed as not planned or as a duplicate.
+        let never_done = matches!(row.state_reason.as_deref(), Some(NOT_PLANNED | DUPLICATE));
+        Ok(if row.url.contains(PULL_PATH) {
+            IssueState::Missing
+        } else if row.labels.iter().any(|label| label.name == done) {
+            IssueState::Done
+        } else if row.state == OPEN {
+            IssueState::Open
+        } else if never_done {
+            IssueState::ClosedNotPlanned
+        } else {
+            IssueState::Done
+        })
     }
 
     fn ready(&self) -> Result<Vec<Ticket>, PortError> {

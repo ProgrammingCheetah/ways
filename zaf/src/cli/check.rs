@@ -11,7 +11,7 @@ use std::time::{Duration, SystemTime};
 
 use super::Cli;
 use super::exit::{self, BACKEND, REFUSED};
-use super::slice::VERSION_VAR;
+use super::slice::{VERSION_VAR, refuse_not_open};
 use crate::adapters::gate::RUNS_DIR;
 use crate::app::actions::{RunOutcome, SliceRecords};
 use crate::app::check::{
@@ -145,8 +145,7 @@ fn check_task_in_slice(
     task: IssueNumber,
 ) -> Result<(CheckRecord, String), u8> {
     let Some(dir) = SliceRecords::new(composition.root()).workspace(task) else {
-        eprintln!("zaf {path}: {}", not_open(task));
-        return Err(REFUSED);
+        return Err(refuse_not_open(path, composition, task));
     };
     let ticket = ports
         .board
@@ -177,14 +176,6 @@ fn check_task_in_slice(
     let check = check_task(&template, &inputs);
     let line = format!("workspace {}", dir.display());
     Ok((CheckRecord::from_task(target, &check, began), line))
-}
-
-/// Why a task with no slice record is refused.
-pub(super) fn not_open(task: IssueNumber) -> String {
-    format!(
-        "slice for {task} is not open; run zaf do slice-open {}",
-        task.get()
-    )
 }
 
 fn check_pr_target(
@@ -589,12 +580,11 @@ HOME = "/overridden"
         // A workspace that predates the records sits where the patterns would put it: no record,
         // so it is refused rather than guessed at.
         std::fs::create_dir_all(dir.path().join(".zaf/workspaces").join(SLICE)).expect("old");
+        // With `slice-open` provided, the refusal is the slice not being open.
+        std::fs::create_dir_all(dir.path().join(".zaf/actions")).expect("actions");
+        std::fs::write(dir.path().join(".zaf/actions/slice-open"), "#!/bin/sh\n").expect("action");
         let (outcome, runs) = check_with_fakes(&composition);
         assert_eq!(outcome.err(), Some(REFUSED));
-        assert_eq!(
-            not_open(IssueNumber::from(46)),
-            "slice for #46 is not open; run zaf do slice-open 46"
-        );
         assert!(runs.is_empty(), "the gate ran at {runs:?}");
         // A record whose workspace has gone is no record either.
         let gone = dir.path().join("gone");
@@ -608,10 +598,6 @@ HOME = "/overridden"
     struct SharedForge(Arc<crate::fakes::FakeForge>);
 
     impl Forge for SharedForge {
-        fn open_pr(&self, request: &crate::ports::PrRequest) -> Result<PrNumber, PortError> {
-            self.0.open_pr(request)
-        }
-
         fn checks(&self, pr: PrNumber) -> Result<Vec<crate::ports::Check>, PortError> {
             self.0.checks(pr)
         }
@@ -640,10 +626,6 @@ HOME = "/overridden"
             pr: PrNumber,
         ) -> Result<Vec<crate::ports::ScanningAlert>, PortError> {
             self.0.scanning_alerts(pr)
-        }
-
-        fn merge(&self, pr: PrNumber) -> Result<crate::ports::PrMerge, PortError> {
-            self.0.merge(pr)
         }
     }
 
@@ -681,7 +663,7 @@ HOME = "/overridden"
     fn pull_request(head: Option<&str>) -> (Arc<crate::fakes::FakeForge>, PrNumber) {
         let forge = Arc::new(crate::fakes::FakeForge::default());
         let pr = forge
-            .open_pr(&crate::ports::PrRequest {
+            .open_pr(&crate::fakes::PrRequest {
                 slice: crate::ports::SliceName::from("feature/one-task"),
                 base: crate::ports::BaseName::from("feature/one"),
                 title: "#7 one task".to_owned(),

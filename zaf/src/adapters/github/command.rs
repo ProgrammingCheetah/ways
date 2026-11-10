@@ -11,8 +11,10 @@ use crate::ports::PortError;
 /// The program run; found on the `PATH` the call sees.
 const PROGRAM: &str = "gh";
 
-/// What gh's stderr says when the issue addressed does not exist.
-const MISSING_ISSUE: &str = "Could not resolve to an Issue";
+/// What gh's stderr says, in any case, when the issue addressed does not exist: older gh
+/// prints `Could not resolve to an Issue with the number of …`, newer `Could not resolve to an
+/// issue or pull request with the number of …`.
+const MISSING_ISSUE: &str = "could not resolve to an issue";
 
 /// Runs `gh` against one repository and reads its output.
 ///
@@ -88,7 +90,7 @@ impl GhCommand {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
             let subcommand = argv.iter().take(2).copied().collect::<Vec<_>>().join(" ");
             let message = format!("{PROGRAM} {subcommand}: {stderr}");
-            let failed_call_error = if stderr.contains(MISSING_ISSUE) {
+            let failed_call_error = if stderr.to_lowercase().contains(MISSING_ISSUE) {
                 PortError::NotFound(message)
             } else {
                 PortError::Backend(message)

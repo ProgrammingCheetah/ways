@@ -6,14 +6,10 @@
 //! tier provides fails it as `missing action <name>`; any other refusal fails it with the
 //! reason the runner gave.
 
-use crate::app::actions::{RunOutcome, RunResult};
+use crate::app::actions::{NO_SUCH_ACTION, RunOutcome, RunResult};
 use crate::app::check::StepPorts;
 use crate::domain::{Finding, FindingSource, Severity};
 use crate::ports::PortError;
-
-/// What the runner says of a name no tier provides. It is told apart from a refusal after the
-/// file is found, which always names a tier.
-const NO_SUCH_ACTION: &str = "no such action";
 
 pub(super) fn run(
     source: &FindingSource,

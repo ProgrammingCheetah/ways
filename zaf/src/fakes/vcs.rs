@@ -4,10 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use crate::ports::{
-    BaseMerge, BaseName, CommitId, DiffStat, FileStat, PortError, Publication, SliceName,
-    SliceOpening, Vcs,
-};
+use crate::ports::{BaseName, CommitId, DiffStat, FileStat, PortError, SliceName, Vcs};
 
 #[derive(Debug, Clone)]
 struct Change {
@@ -20,12 +17,8 @@ struct Change {
 struct Slice {
     base: BaseName,
     workspace: Option<PathBuf>,
-    behind_base: bool,
-    conflicts: Vec<String>,
     changes: BTreeMap<String, Change>,
     uncommitted: BTreeSet<String>,
-    commits: u32,
-    published: u32,
     /// The last commit made; a new slice stands on its base.
     latest: CommitId,
 }
@@ -36,14 +29,26 @@ struct State {
     next_commit: u64,
 }
 
-/// A VCS held in memory. Arrange work with [`FakeVcs::edit`], [`FakeVcs::advance_base`]
-/// and [`FakeVcs::conflict_on_merge`].
+/// A VCS held in memory. Arrange a slice with [`FakeVcs::open`], [`FakeVcs::place`],
+/// [`FakeVcs::edit`] and [`FakeVcs::commit`]: the port reads what they leave.
 #[derive(Debug, Default)]
 pub struct FakeVcs {
     state: Mutex<State>,
 }
 
 impl FakeVcs {
+    /// Opens a slice on a base; an open slice stays as it is.
+    pub fn open(&self, slice: &SliceName, base: &BaseName) {
+        let opened = Slice {
+            base: base.clone(),
+            workspace: None,
+            changes: BTreeMap::new(),
+            uncommitted: BTreeSet::new(),
+            latest: CommitId::from(format!("fake-base-{base}")),
+        };
+        self.state().slices.entry(slice.clone()).or_insert(opened);
+    }
+
     /// Records uncommitted work on a file of an open slice.
     pub fn edit(
         &self,
@@ -71,23 +76,21 @@ impl FakeVcs {
         Ok(())
     }
 
-    /// Moves a base ahead, so every slice on it is behind.
-    pub fn advance_base(&self, base: &BaseName) {
+    /// Commits the slice's uncommitted work; nothing to commit is [`PortError::Rejected`].
+    pub fn commit(&self, slice: &SliceName, message: &str) -> Result<CommitId, PortError> {
         let mut state = self.state();
-        for slice in state
-            .slices
-            .values_mut()
-            .filter(|slice| slice.base == *base)
-        {
-            slice.behind_base = true;
+        let next_commit = state.next_commit + 1;
+        let slice = state.slice_mut(slice)?;
+        if slice.uncommitted.is_empty() {
+            return Err(PortError::Rejected(format!(
+                "nothing to commit for `{message}`"
+            )));
         }
-    }
-
-    /// Makes the next base merges into a slice stop on conflicts in these paths.
-    pub fn conflict_on_merge(&self, slice: &SliceName, paths: &[&str]) -> Result<(), PortError> {
-        let mut state = self.state();
-        state.slice_mut(slice)?.conflicts = paths.iter().map(|path| (*path).to_owned()).collect();
-        Ok(())
+        let commit_id = CommitId::from(format!("fake-{next_commit}"));
+        slice.uncommitted.clear();
+        slice.latest = commit_id.clone();
+        state.next_commit = next_commit;
+        Ok(commit_id)
     }
 
     /// Whether a slice exists.
@@ -119,80 +122,6 @@ impl State {
 }
 
 impl Vcs for FakeVcs {
-    fn open_slice(&self, slice: &SliceName, base: &BaseName) -> Result<SliceOpening, PortError> {
-        let mut state = self.state();
-        if let Some(existing) = state.slices.get(slice) {
-            if existing.base == *base {
-                return Ok(SliceOpening::AlreadyOpen);
-            }
-            return Err(PortError::Conflict(format!(
-                "slice {slice} is open on {}",
-                existing.base
-            )));
-        }
-        let opened = Slice {
-            base: base.clone(),
-            workspace: None,
-            behind_base: false,
-            conflicts: Vec::new(),
-            changes: BTreeMap::new(),
-            uncommitted: BTreeSet::new(),
-            commits: 0,
-            published: 0,
-            latest: CommitId::from(format!("fake-base-{base}")),
-        };
-        state.slices.insert(slice.clone(), opened);
-        Ok(SliceOpening::Opened)
-    }
-
-    fn merge_base(&self, slice: &SliceName) -> Result<BaseMerge, PortError> {
-        let mut state = self.state();
-        let slice = state.slice_mut(slice)?;
-        if !slice.conflicts.is_empty() {
-            let conflicted = BaseMerge::Conflicted {
-                paths: slice.conflicts.clone(),
-            };
-            return Ok(conflicted);
-        }
-        if slice.behind_base {
-            slice.behind_base = false;
-            return Ok(BaseMerge::Merged);
-        }
-        Ok(BaseMerge::UpToDate)
-    }
-
-    fn commit(&self, slice: &SliceName, message: &str) -> Result<CommitId, PortError> {
-        let mut state = self.state();
-        let next_commit = state.next_commit + 1;
-        let slice = state.slice_mut(slice)?;
-        if slice.uncommitted.is_empty() {
-            return Err(PortError::Rejected(format!(
-                "nothing to commit for `{message}`"
-            )));
-        }
-        let commit_id = CommitId::from(format!("fake-{next_commit}"));
-        slice.uncommitted.clear();
-        slice.commits += 1;
-        slice.latest = commit_id.clone();
-        state.next_commit = next_commit;
-        Ok(commit_id)
-    }
-
-    fn publish(&self, slice: &SliceName) -> Result<Publication, PortError> {
-        let mut state = self.state();
-        let slice = state.slice_mut(slice)?;
-        if slice.published == slice.commits {
-            return Ok(Publication::AlreadyPublished);
-        }
-        slice.published = slice.commits;
-        Ok(Publication::Published)
-    }
-
-    fn is_clean(&self, slice: &SliceName) -> Result<bool, PortError> {
-        let mut state = self.state();
-        Ok(state.slice_mut(slice)?.uncommitted.is_empty())
-    }
-
     fn latest_commit(&self, workspace: &Path) -> Result<CommitId, PortError> {
         self.state()
             .slices
@@ -230,10 +159,5 @@ impl Vcs for FakeVcs {
             .get(path)
             .map(|change| change.hunks.clone())
             .ok_or_else(|| PortError::NotFound(format!("no change to {path}")))
-    }
-
-    fn drop_slice(&self, slice: &SliceName) -> Result<(), PortError> {
-        self.state().slices.remove(slice);
-        Ok(())
     }
 }

@@ -10,6 +10,7 @@ fn request(role: &str) -> RunRequest {
         prompt: "Read the brief at .zaf/runs/1/brief.md".to_owned(),
         dir: PathBuf::from("."),
         env: std::collections::BTreeMap::new(),
+        holder_file: None,
     }
 }
 

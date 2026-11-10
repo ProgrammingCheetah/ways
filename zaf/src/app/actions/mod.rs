@@ -27,9 +27,9 @@ pub use resolve::{
     same_file,
 };
 pub use run::{
-    ACTION_VAR, CHAIN_VAR, DEPTH_VAR, LOG_VAR, ListedAction, MAX_DEPTH, MINUTE, NOT_RUN_EXIT,
-    Nesting, ROOT_VAR, Refused, RunOutcome, RunRequest, RunResult, TIMEOUT_EXIT, forbidden_action,
-    last_lines, list_actions, read_action, refuse_forbidden, run_action,
+    ACTION_VAR, CHAIN_VAR, DEPTH_VAR, LOG_VAR, ListedAction, MAX_DEPTH, MINUTE, NO_SUCH_ACTION,
+    NOT_RUN_EXIT, Nesting, ROOT_VAR, Refused, RunOutcome, RunRequest, RunResult, TIMEOUT_EXIT,
+    forbidden_action, last_lines, list_actions, read_action, refuse_forbidden, run_action,
 };
 pub use slice_env::{BASE_VAR, PR_VAR, SLICE_VAR, SliceContext, TASK_TITLE_VAR};
 
