@@ -32,6 +32,7 @@ fn board_with(body: &str) -> FakeBoard {
         body: body.into(),
         state: Some(TicketState::Claimed),
         url: "".into(),
+        kind: None,
     });
     board
 }
@@ -163,6 +164,7 @@ fn raise(board: &FakeBoard, number: u64, on: u64, text: &str) -> TicketId {
         body: format!("Raised on {}.", TicketId::from(on)).into(),
         state: None,
         url: "".into(),
+        kind: None,
     });
     number
 }
@@ -189,6 +191,7 @@ fn a_ruled_question_is_in_the_brief_so_it_is_not_asked_again() {
         body: BODY.into(),
         state: Some(TicketState::Claimed),
         url: "".into(),
+        kind: None,
     });
     let ruled = raise(&board, 80, 12, "Which columns does the export carry?");
     board

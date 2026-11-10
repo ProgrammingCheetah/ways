@@ -20,6 +20,7 @@ fn opened(vcs: &FakeVcs) -> SliceTarget {
         body: "".into(),
         state: Some(TicketState::Claimed),
         url: "".into(),
+        kind: None,
     };
     board.add_ticket(ticket);
     let query = SliceQuery {

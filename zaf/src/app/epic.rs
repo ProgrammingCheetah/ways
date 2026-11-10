@@ -15,7 +15,7 @@ use super::spawn::SpawnError;
 use super::spawn::runs::{self, Run};
 use crate::domain::{
     BodyHash, Epic, EpicStage, EpicTask, GroupName, Signature, Standing, TicketId, TicketState,
-    TicketTitle,
+    TicketTitle, TicketType,
 };
 use crate::ports::{Board, Holder, PortError};
 
@@ -98,6 +98,9 @@ pub struct TaskLine {
     pub closed: Option<&'static str>,
     /// Its group, if it has one.
     pub group: Option<GroupName>,
+    /// Its type's name, `null` when it has none.
+    #[serde(rename = "type")]
+    pub kind: Option<TicketType>,
 }
 
 impl From<&EpicTask> for TaskLine {
@@ -112,6 +115,7 @@ impl From<&EpicTask> for TaskLine {
                 Standing::ClosedNotPlanned => Some("not_planned"),
             },
             group: task.group.clone(),
+            kind: task.kind.clone(),
         }
     }
 }

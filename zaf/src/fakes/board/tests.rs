@@ -10,6 +10,7 @@ fn ticket(number: u64) -> Ticket {
         body: "Goal: export the list".into(),
         state: Some(TicketState::Ready),
         url: "".into(),
+        kind: None,
     }
 }
 

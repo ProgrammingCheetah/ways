@@ -13,6 +13,7 @@ fn ticket(label: TicketState) -> Ticket {
         body: "".into(),
         state: Some(label),
         url: "".into(),
+        kind: None,
     }
 }
 

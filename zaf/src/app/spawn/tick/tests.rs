@@ -10,6 +10,7 @@ fn task(number: u64, epic: u64, body: &str) -> Ticket {
         body: body.into(),
         state: Some(TicketState::Ready),
         url: "".into(),
+        kind: None,
     }
 }
 
@@ -29,6 +30,7 @@ fn epic_in(number: u64, signed: bool, challenged: bool, tasks: &[u64]) -> Epic {
                 state: Some(TicketState::Ready),
                 standing: Standing::Open,
                 group: None,
+                kind: None,
             })
             .collect(),
         challenged,
