@@ -486,6 +486,48 @@ fn do_missing_name_is_not_run() {
 }
 
 #[test]
+fn a_hook_is_not_run_as_an_action() {
+    let project = project();
+    let marker = "touch \"$ZAF_ROOT/ran\"";
+    action(&project, "land", "", "true");
+    let hook = |dir: &Path| {
+        executable(
+            &dir.join("hooks"),
+            "pre-tick",
+            &action_text("pre-tick", "", marker),
+        )
+    };
+    hook(&project.root.join(".zaf/actions"));
+    hook(&project.home.join("actions"));
+
+    for args in [
+        &["do", "hooks/pre-tick"][..],
+        &["do", "--tier", "machine", "hooks/pre-tick"],
+        &["do", "--show", "hooks/pre-tick"],
+    ] {
+        let run = zaf(&project, args);
+        assert_eq!(outcome(&run).0, 125, "{args:?}: {}", said(&run));
+        assert_eq!(
+            said(&run),
+            "NOT_RUN hooks/pre-tick: a hook runs on its event, not as an action\n",
+            "{args:?}"
+        );
+    }
+    assert!(!project.root.join("ran").exists(), "its body never ran");
+    assert!(logs_of(&project, "hooks/pre-tick").is_empty());
+
+    // The listing has the action and no hook.
+    let listing = zaf(&project, &["do"]);
+    assert_eq!(outcome(&listing).0, 0, "{}", said(&listing));
+    let text = said(&listing);
+    assert!(text.contains("land"), "{text}");
+    assert!(
+        !text.contains("pre-tick") && !text.contains("hooks"),
+        "{text}"
+    );
+}
+
+#[test]
 fn do_refuses_a_file_without_metadata() {
     let project = project();
     executable(

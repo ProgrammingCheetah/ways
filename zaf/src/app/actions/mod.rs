@@ -23,8 +23,8 @@ pub use phase::{
 };
 pub use records::{SliceRecords, hand_back};
 pub use resolve::{
-    ACTIONS_DIR, ResolveError, Resolved, Tier, can_shadow, check_name, list, resolve, resolve_in,
-    same_file,
+    ACTIONS_DIR, HOOK_EVENTS, HOOKS_DIR, ResolveError, Resolved, Tier, can_shadow, check_name,
+    hook, hook_file, hook_file_in, list, list_hooks, resolve, resolve_in, same_file,
 };
 pub use run::{
     ACTION_VAR, CHAIN_VAR, DEPTH_VAR, LOG_VAR, ListedAction, MAX_DEPTH, MINUTE, NO_SUCH_ACTION,
