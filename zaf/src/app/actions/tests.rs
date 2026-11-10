@@ -117,6 +117,45 @@ fn metadata_refusals_name_the_line() {
 }
 
 #[test]
+fn every_kind_parses() {
+    for (value, kind) in [
+        ("model", ActionKind::Model),
+        ("wait", ActionKind::Wait),
+        ("zaf", ActionKind::Zaf),
+    ] {
+        let action = parsed(&block(&format!("# zaf kind: {value}\n")));
+        assert_eq!(action.metadata.kind, Some(kind), "kind {value}");
+        assert_eq!(kind.to_string(), value);
+    }
+}
+
+#[test]
+fn only_a_model_costs_the_budget() {
+    assert!(ActionKind::Model.costs_budget());
+    assert!(!ActionKind::Wait.costs_budget());
+    assert!(!ActionKind::Zaf.costs_budget());
+}
+
+#[test]
+fn an_unknown_kind_is_refused() {
+    for value in ["agent", "", "Model", "model, wait"] {
+        let error = refusal(&block(&format!("# zaf kind: {value}\n")));
+        assert_eq!(error.line, 3, "kind {value:?}");
+        for word in ["kind", "model", "wait", "zaf"] {
+            assert!(error.reason.contains(word), "kind {value:?}: {error}");
+        }
+    }
+    let error = refusal(&block("# zaf kind: wait\n# zaf kind: zaf\n"));
+    assert_eq!(error.line, 4);
+    assert!(error.reason.contains("twice"), "{error}");
+}
+
+#[test]
+fn kind_is_optional() {
+    assert_eq!(parsed(&block("")).metadata.kind, None);
+}
+
+#[test]
 fn declared_125_is_refused() {
     let error = refusal(&block("# zaf 125: nested\n"));
     assert_eq!(error.line, 3);

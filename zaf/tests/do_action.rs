@@ -861,6 +861,21 @@ fn do_lists_with_tiers() {
 }
 
 #[test]
+fn do_json_shows_a_declared_kind() {
+    let project = project();
+    action(&project, "plain", "", "true");
+    action(&project, "waiter", "# zaf kind: wait\n", "true");
+
+    let (code, stdout, stderr) = outcome(&zaf(&project, &["do", "--json"]));
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    let listed: serde_json::Value = serde_json::from_str(&stdout).expect(&stdout);
+    assert_eq!(listed[0]["name"], "plain");
+    assert!(listed[0].get("kind").is_none(), "{stdout}");
+    assert_eq!(listed[1]["name"], "waiter");
+    assert_eq!(listed[1]["kind"], "wait");
+}
+
+#[test]
 fn do_show_prints_the_file() {
     let project = project();
     let bytes = b"#!/bin/sh\n# zaf description: odd bytes\n# zaf 1: no\n# \xff\n  echo no newline at the end";

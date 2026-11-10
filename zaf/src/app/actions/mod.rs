@@ -17,7 +17,9 @@ mod run;
 mod slice_env;
 
 pub use caller::{Caller, INSTANCE_VAR};
-pub use metadata::{ActionMetadata, ActionMode, Bits, MetadataError, ParsedAction, Target, parse};
+pub use metadata::{
+    ActionKind, ActionMetadata, ActionMode, Bits, MetadataError, ParsedAction, Target, parse,
+};
 pub use phase::{
     Phase, PhaseFacts, PhaseUnreadable, PrFacts, WorkspaceFacts, derive_phase, gather_phase_facts,
 };

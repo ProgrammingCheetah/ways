@@ -299,11 +299,16 @@ fn list(cli: &Cli, path: &str) -> u8 {
         let rows: Vec<_> = listed
             .iter()
             .map(|action| {
-                serde_json::json!({
+                let mut row = serde_json::json!({
                     "name": action.name,
                     "tier": action.tier.to_string(),
                     "description": action.description,
-                })
+                });
+                // Only an action that declares a kind has one to show.
+                if let Some(kind) = action.kind {
+                    row["kind"] = kind.to_string().into();
+                }
+                row
             })
             .collect();
         println!("{}", serde_json::Value::Array(rows));
