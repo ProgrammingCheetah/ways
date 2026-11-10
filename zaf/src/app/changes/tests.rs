@@ -2,10 +2,10 @@ use std::path::{Path, PathBuf};
 
 use super::*;
 use crate::app::slice::{SliceQuery, resolve};
-use crate::domain::{IssueNumber, TaskLabel};
+use crate::domain::{Ticket, TicketId, TicketState};
 use crate::fakes::{FakeBoard, FakeVcs};
 use crate::manifest::BranchesSection;
-use crate::ports::{BaseName, FileStat, PortError, Ticket};
+use crate::ports::{BaseName, FileStat, PortError};
 
 fn workspace() -> PathBuf {
     PathBuf::from("/project/.zaf/workspaces/feature/v1-1-2")
@@ -14,15 +14,16 @@ fn workspace() -> PathBuf {
 fn opened(vcs: &FakeVcs) -> SliceTarget {
     let board = FakeBoard::default();
     let ticket = Ticket {
-        number: IssueNumber::from(2),
-        epic: Some(IssueNumber::from(1)),
-        title: "Export the list".to_owned(),
-        body: String::new(),
-        label: Some(TaskLabel::Claimed),
+        id: TicketId::from(2),
+        epic: Some(TicketId::from(1)),
+        title: "Export the list".into(),
+        body: "".into(),
+        state: Some(TicketState::Claimed),
+        url: "".into(),
     };
     board.add_ticket(ticket);
     let query = SliceQuery {
-        task: IssueNumber::from(2),
+        task: TicketId::from(2),
         version: Some("v1".to_owned()),
     };
     let target = resolve(&board, &BranchesSection::default(), &query).expect("resolve");

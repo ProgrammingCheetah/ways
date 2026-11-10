@@ -1,14 +1,15 @@
 use super::*;
 use crate::app::status::Launch;
-use crate::domain::TaskLabel;
+use crate::domain::TicketState;
 
 fn task(number: u64, epic: u64, body: &str) -> Ticket {
     Ticket {
-        number: IssueNumber::from(number),
-        epic: Some(IssueNumber::from(epic)),
-        title: format!("Task {number}"),
-        body: body.to_owned(),
-        label: Some(TaskLabel::Ready),
+        id: TicketId::from(number),
+        epic: Some(TicketId::from(epic)),
+        title: format!("Task {number}").into(),
+        body: body.into(),
+        state: Some(TicketState::Ready),
+        url: "".into(),
     }
 }
 
@@ -32,8 +33,8 @@ fn running(task: u64, instance: &str) -> Launch {
     }
 }
 
-fn numbers(values: &[u64]) -> Vec<IssueNumber> {
-    values.iter().copied().map(IssueNumber::from).collect()
+fn numbers(values: &[u64]) -> Vec<TicketId> {
+    values.iter().copied().map(TicketId::from).collect()
 }
 
 #[test]
@@ -50,7 +51,7 @@ fn no_free_slot_launches_nothing() {
     );
     assert!(plan.launches.is_empty());
     assert_eq!(plan.slots.free, 0);
-    assert_eq!(plan.epics, [(IssueNumber::from(2), EpicSkip::NoFreeSlot)]);
+    assert_eq!(plan.epics, [(TicketId::from(2), EpicSkip::NoFreeSlot)]);
 }
 
 #[test]
@@ -59,11 +60,11 @@ fn a_blocked_task_is_skipped_with_the_blocker_named() {
         task(3, 2, "Goal: rows\nBlocked by: #7, #8"),
         task(4, 2, "Blocked by: —"),
     ]);
-    board.closed.insert(IssueNumber::from(8));
+    board.closed.insert(TicketId::from(8));
     let plan = plan(&board, &SpawnState::default(), Level::Green, settings(2));
     assert_eq!(
         plan.tasks,
-        [(IssueNumber::from(3), TaskSkip::Blocked(numbers(&[7])))]
+        [(TicketId::from(3), TaskSkip::Blocked(numbers(&[7])))]
     );
     assert_eq!(plan.launches.len(), 1);
     assert_eq!(plan.launches[0].tasks, numbers(&[4]));
@@ -76,7 +77,7 @@ fn an_epic_whose_tasks_are_all_blocked_launches_nothing() {
     assert!(plan.launches.is_empty());
     assert_eq!(
         plan.epics,
-        [(IssueNumber::from(2), EpicSkip::NothingLaunchable)]
+        [(TicketId::from(2), EpicSkip::NothingLaunchable)]
     );
 }
 
@@ -85,8 +86,8 @@ fn two_epics_and_one_slot_launch_one() {
     let board = snapshot(vec![task(3, 2, ""), task(13, 12, "")]);
     let plan = plan(&board, &SpawnState::default(), Level::Green, settings(1));
     assert_eq!(plan.launches.len(), 1);
-    assert_eq!(plan.launches[0].instance.epic, IssueNumber::from(2));
-    assert_eq!(plan.epics, [(IssueNumber::from(12), EpicSkip::NoFreeSlot)]);
+    assert_eq!(plan.launches[0].instance.epic, TicketId::from(2));
+    assert_eq!(plan.epics, [(TicketId::from(12), EpicSkip::NoFreeSlot)]);
 }
 
 #[test]
@@ -129,18 +130,18 @@ fn a_red_guard_names_itself_as_the_reason() {
     let board = snapshot(vec![task(3, 2, "")]);
     let plan = plan(&board, &SpawnState::default(), Level::Red, settings(2));
     assert_eq!(plan.slots.allowed, 0);
-    assert_eq!(plan.epics, [(IssueNumber::from(2), EpicSkip::GuardRed)]);
+    assert_eq!(plan.epics, [(TicketId::from(2), EpicSkip::GuardRed)]);
 }
 
 #[test]
 fn a_claimed_task_is_never_launched() {
     let mut board = snapshot(vec![task(3, 2, ""), task(4, 2, "")]);
-    board.claimed.insert(IssueNumber::from(3));
+    board.claimed.insert(TicketId::from(3));
     let plan = plan(&board, &SpawnState::default(), Level::Green, settings(2));
-    assert_eq!(plan.tasks, [(IssueNumber::from(3), TaskSkip::Claimed)]);
+    assert_eq!(plan.tasks, [(TicketId::from(3), TaskSkip::Claimed)]);
     assert_eq!(plan.launches[0].tasks, numbers(&[4]));
 
-    board.claimed.insert(IssueNumber::from(4));
+    board.claimed.insert(TicketId::from(4));
     let plan = super::plan(&board, &SpawnState::default(), Level::Green, settings(2));
     assert!(plan.launches.is_empty());
 }
@@ -156,7 +157,7 @@ fn a_task_a_running_instance_carries_is_not_launched_again() {
     assert_eq!(
         plan.tasks,
         [(
-            IssueNumber::from(3),
+            TicketId::from(3),
             TaskSkip::Running("team instance 1 on #2".to_owned())
         )]
     );
@@ -214,7 +215,7 @@ fn a_task_without_an_epic_is_skipped() {
         settings(2),
     );
     assert!(plan.launches.is_empty());
-    assert_eq!(plan.tasks, [(IssueNumber::from(3), TaskSkip::NoEpic)]);
+    assert_eq!(plan.tasks, [(TicketId::from(3), TaskSkip::NoEpic)]);
 }
 
 #[test]
@@ -232,8 +233,8 @@ fn tick_says_in_a_blocker_cycle() {
     assert_eq!(
         plan.tasks,
         [
-            (IssueNumber::from(3), TaskSkip::InCycle(numbers(&[3, 4]))),
-            (IssueNumber::from(4), TaskSkip::InCycle(numbers(&[3, 4]))),
+            (TicketId::from(3), TaskSkip::InCycle(numbers(&[3, 4]))),
+            (TicketId::from(4), TaskSkip::InCycle(numbers(&[3, 4]))),
         ]
     );
     assert_eq!(
@@ -253,13 +254,13 @@ fn tick_says_in_a_blocker_cycle() {
 #[test]
 fn a_task_whose_blocker_is_in_a_cycle_says_so() {
     let mut board = snapshot(vec![task(3, 2, "Blocked by: #7 #9")]);
-    board.open.insert(IssueNumber::from(7), numbers(&[8]));
-    board.open.insert(IssueNumber::from(8), numbers(&[7]));
-    board.open.insert(IssueNumber::from(9), Vec::new());
+    board.open.insert(TicketId::from(7), numbers(&[8]));
+    board.open.insert(TicketId::from(8), numbers(&[7]));
+    board.open.insert(TicketId::from(9), Vec::new());
     let plan = plan(&board, &SpawnState::default(), Level::Green, settings(2));
     assert_eq!(
         plan.tasks,
-        [(IssueNumber::from(3), TaskSkip::Blocked(numbers(&[7, 9])))]
+        [(TicketId::from(3), TaskSkip::Blocked(numbers(&[7, 9])))]
     );
     assert_eq!(plan.cycles, [numbers(&[7, 8])]);
     let text = plan.render_text();
@@ -270,7 +271,7 @@ fn a_task_whose_blocker_is_in_a_cycle_says_so() {
 #[test]
 fn a_plain_open_blocker_reads_blocked_by_alone() {
     let mut board = snapshot(vec![task(3, 2, "Blocked by: #7")]);
-    board.open.insert(IssueNumber::from(7), Vec::new());
+    board.open.insert(TicketId::from(7), Vec::new());
     let plan = plan(&board, &SpawnState::default(), Level::Green, settings(2));
     assert!(plan.cycles.is_empty());
     assert!(plan.dead.is_empty());
@@ -280,12 +281,10 @@ fn a_plain_open_blocker_reads_blocked_by_alone() {
 #[test]
 fn the_plan_names_dead_blockers_in_text_and_json() {
     let mut board = snapshot(vec![task(3, 2, "Blocked by: #7 #8")]);
+    board.dead.insert(TicketId::from(7), DeadReason::NotAnIssue);
     board
         .dead
-        .insert(IssueNumber::from(7), DeadReason::NotAnIssue);
-    board
-        .dead
-        .insert(IssueNumber::from(8), DeadReason::ClosedNotPlanned);
+        .insert(TicketId::from(8), DeadReason::ClosedNotPlanned);
     let plan = plan(&board, &SpawnState::default(), Level::Green, settings(2));
     let text = plan.render_text();
     assert!(text.contains("dead blocker #7 on #3: not an issue\n"));

@@ -3,7 +3,7 @@ use super::*;
 fn instance() -> Instance {
     Instance {
         role: RoleName::from("programmer"),
-        epic: IssueNumber::from(12),
+        epic: TicketId::from(12),
         number: InstanceNumber::from(3),
     }
 }
@@ -38,7 +38,7 @@ fn text_that_is_not_an_instance_is_rejected() {
 fn the_slug_names_an_instance_as_one_folder() {
     let team = Instance {
         role: RoleName::from("team"),
-        epic: IssueNumber::from(16),
+        epic: TicketId::from(16),
         number: InstanceNumber::from(12),
     };
     assert_eq!(team.slug(), "team-instance-12-on-16");

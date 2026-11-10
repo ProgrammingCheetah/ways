@@ -26,7 +26,7 @@ use super::resolve::{
 };
 use super::slice_env::{SliceContext, SliceEnv};
 use crate::composition::{STATE_DIR, ZAF_HOME_VAR};
-use crate::domain::IssueNumber;
+use crate::domain::TicketId;
 
 /// The exit code of a body that never ran; no action may declare it.
 pub const NOT_RUN_EXIT: u8 = 125;
@@ -532,7 +532,7 @@ fn check_phase(request: &RunRequest<'_>, metadata: &ActionMetadata) -> Result<()
         .args
         .first()
         .and_then(|task| task.to_str())
-        .and_then(|task| task.parse::<IssueNumber>().ok())
+        .and_then(|task| task.parse::<TicketId>().ok())
         .ok_or("a `target: task` action needs the task number as its first argument")?;
     let unavailable = |what: &str, reason: &String| {
         format!("cannot read the phase of {task}: no {what}: {reason}")

@@ -5,7 +5,8 @@
 //! A value with a rule gets a hand-written parser in its own module instead.
 
 /// Declares a text newtype over `String` with the derived std surface:
-/// `Display`, `From<String>`, `From<&str>`, `AsRef<str>`, and transparent serde.
+/// `Display`, `From<String>`, `From<&str>`, `AsRef<str>`, `as_str`, and transparent serde
+/// both ways.
 macro_rules! text_newtype {
     ($(#[$meta:meta])* $name:ident) => {
         $(#[$meta])*
@@ -20,6 +21,7 @@ macro_rules! text_newtype {
             derive_more::Display,
             derive_more::From,
             derive_more::AsRef,
+            serde::Serialize,
             serde::Deserialize,
         )]
         #[serde(transparent)]
@@ -29,6 +31,14 @@ macro_rules! text_newtype {
         impl From<&str> for $name {
             fn from(text: &str) -> Self {
                 Self(text.to_owned())
+            }
+        }
+
+        impl $name {
+            /// The text.
+            #[allow(dead_code)]
+            pub fn as_str(&self) -> &str {
+                &self.0
             }
         }
     };

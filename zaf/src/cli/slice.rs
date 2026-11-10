@@ -19,7 +19,7 @@ use super::{Cli, SliceAction};
 use crate::app::actions::{self, NO_SUCH_ACTION, RunOutcome, RunResult, Tier, hand_back};
 use crate::app::slice::{self, SliceError, SliceQuery, SliceTarget};
 use crate::composition::{Composition, zaf_home};
-use crate::domain::IssueNumber;
+use crate::domain::TicketId;
 
 /// The environment variable that names the release a slice's branches build toward,
 /// for branch patterns that hold `{version}`.
@@ -94,7 +94,7 @@ fn report_missing(path: &str, name: &str) -> u8 {
 }
 
 /// Why a task with no slice record is refused.
-fn not_open(task: IssueNumber) -> String {
+fn not_open(task: TicketId) -> String {
     format!(
         "slice for {task} is not open; run zaf do slice-open {}",
         task.get()
@@ -103,12 +103,12 @@ fn not_open(task: IssueNumber) -> String {
 
 /// Refuses a task with no slice record: names the missing `slice-open` action when no tier
 /// provides it (exit 2), else says the slice is not open (exit 1). Prints and returns the code.
-pub(super) fn refuse_not_open(path: &str, composition: &Composition, task: IssueNumber) -> u8 {
+pub(super) fn refuse_not_open(path: &str, composition: &Composition, task: TicketId) -> u8 {
     refuse(path, composition.root(), zaf_home().as_deref(), task)
 }
 
 /// [`refuse_not_open`] for a project root and a zaf home.
-fn refuse(path: &str, root: &Path, home: Option<&Path>, task: IssueNumber) -> u8 {
+fn refuse(path: &str, root: &Path, home: Option<&Path>, task: TicketId) -> u8 {
     if provides(root, home, SLICE_OPEN) {
         eprintln!("zaf {path}: {}", not_open(task));
         REFUSED
@@ -134,7 +134,7 @@ fn provides(root: &Path, home: Option<&Path>, name: &str) -> bool {
 pub(super) fn prepare(
     path: &str,
     cli: &Cli,
-    task: IssueNumber,
+    task: TicketId,
 ) -> Result<(Composition, SliceTarget), u8> {
     let composition =
         Composition::discover_here().map_err(|error| fail_composition(path, &error))?;
@@ -202,7 +202,7 @@ mod tests {
     #[test]
     fn a_task_with_no_record_is_refused_by_what_the_tiers_hold() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let task = IssueNumber::from(46);
+        let task = TicketId::from(46);
         assert_eq!(
             not_open(task),
             "slice for #46 is not open; run zaf do slice-open 46"
@@ -218,7 +218,7 @@ mod tests {
     fn the_machines_slice_open_counts_as_provided() {
         let project = tempfile::tempdir().expect("tempdir");
         let home = tempfile::tempdir().expect("tempdir");
-        let task = IssueNumber::from(46);
+        let task = TicketId::from(46);
         assert_eq!(
             refuse("check", project.path(), Some(home.path()), task),
             BACKEND

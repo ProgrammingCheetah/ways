@@ -1,9 +1,9 @@
 use clap::Parser;
 
 use super::*;
-use crate::domain::{Instance, IssueNumber, TaskLabel};
+use crate::domain::{Instance, Ticket, TicketId, TicketState};
 use crate::fakes::FakeBoard;
-use crate::ports::{ClaimOutcome, ClaimRecord, NewQuestion, PortError, Ticket};
+use crate::ports::{ClaimOutcome, ClaimRecord, NewQuestion, PortError};
 
 const MANIFEST: &str =
     "[project]\nname = \"demo\"\n[board]\nkind = \"github-issues\"\nrepo = \"owner/demo\"\n";
@@ -84,37 +84,37 @@ impl Board for Down {
     fn ready(&self) -> Result<Vec<Ticket>, PortError> {
         Err(down())
     }
-    fn task(&self, _: IssueNumber) -> Result<Ticket, PortError> {
+    fn task(&self, _: TicketId) -> Result<Ticket, PortError> {
         Err(down())
     }
-    fn claim(&self, _: IssueNumber, _: &Instance) -> Result<ClaimOutcome, PortError> {
+    fn claim(&self, _: TicketId, _: &Instance) -> Result<ClaimOutcome, PortError> {
         Err(down())
     }
-    fn heartbeat(&self, _: IssueNumber, _: &Instance) -> Result<(), PortError> {
+    fn heartbeat(&self, _: TicketId, _: &Instance) -> Result<(), PortError> {
         Err(down())
     }
     fn claims(&self) -> Result<Vec<ClaimRecord>, PortError> {
         Err(down())
     }
-    fn release(&self, _: IssueNumber, _: &Instance) -> Result<(), PortError> {
+    fn release(&self, _: TicketId, _: &Instance) -> Result<(), PortError> {
         Err(down())
     }
-    fn label(&self, _: IssueNumber, _: TaskLabel) -> Result<(), PortError> {
+    fn set_state(&self, _: TicketId, _: TicketState) -> Result<(), PortError> {
         Err(down())
     }
-    fn comment(&self, _: IssueNumber, _: &str) -> Result<(), PortError> {
+    fn comment(&self, _: TicketId, _: &str) -> Result<(), PortError> {
         Err(down())
     }
-    fn report(&self, _: IssueNumber, _: &Instance, _: &str) -> Result<(), PortError> {
+    fn report(&self, _: TicketId, _: &Instance, _: &str) -> Result<(), PortError> {
         Err(down())
     }
     fn questions(&self) -> Result<Vec<Ticket>, PortError> {
         Err(down())
     }
-    fn open_question(&self, _: &NewQuestion) -> Result<IssueNumber, PortError> {
+    fn open_question(&self, _: &NewQuestion) -> Result<TicketId, PortError> {
         Err(down())
     }
-    fn record_ruling(&self, _: IssueNumber, _: &str) -> Result<Option<IssueNumber>, PortError> {
+    fn record_ruling(&self, _: TicketId, _: &str) -> Result<Option<TicketId>, PortError> {
         Err(down())
     }
 }

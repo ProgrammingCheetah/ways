@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::str::FromStr;
 
-use super::IssueNumber;
+use super::TicketId;
 use super::text::{strip_comment, word_count};
 use crate::newtype::text_newtype;
 
@@ -107,7 +107,7 @@ pub struct Ask {
     /// Who asks.
     pub from: Asker,
     /// The task whose named pages are searched first.
-    pub for_task: IssueNumber,
+    pub for_task: TicketId,
     /// One or two lines of context.
     pub context: Vec<String>,
     /// One to five questions with distinct ids.
@@ -193,7 +193,7 @@ impl FromStr for Ask {
         let (line, for_line) = lines.next().ok_or(AskError::Truncated(FOR))?;
         let for_value = expect_field(line, for_line, FOR)?;
         let for_task = for_value
-            .parse::<IssueNumber>()
+            .parse::<TicketId>()
             .map_err(|_| AskError::Task(for_value.to_owned()))?;
 
         let (line, context_line) = lines.next().ok_or(AskError::Truncated(CONTEXT))?;

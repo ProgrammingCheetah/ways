@@ -1,12 +1,12 @@
 use super::*;
-use crate::domain::TaskLabel;
+use crate::domain::TicketState;
 use crate::fakes::FakeBoard;
 
-fn number(value: u64) -> IssueNumber {
-    IssueNumber::from(value)
+fn number(value: u64) -> TicketId {
+    TicketId::from(value)
 }
 
-fn numbers(values: &[u64]) -> Vec<IssueNumber> {
+fn numbers(values: &[u64]) -> Vec<TicketId> {
     values.iter().copied().map(number).collect()
 }
 
@@ -17,13 +17,14 @@ fn graph(edges: &[(u64, &[u64])]) -> Graph {
         .collect()
 }
 
-fn ticket(value: u64, body: &str, label: TaskLabel) -> Ticket {
+fn ticket(value: u64, body: &str, label: TicketState) -> Ticket {
     Ticket {
-        number: number(value),
+        id: number(value),
         epic: Some(number(2)),
-        title: format!("Task {value}"),
-        body: body.to_owned(),
-        label: Some(label),
+        title: format!("Task {value}").into(),
+        body: body.into(),
+        state: Some(label),
+        url: "".into(),
     }
 }
 
@@ -93,19 +94,19 @@ fn a_blocker_that_is_not_open_cannot_close_a_cycle() {
 fn every_task_on_a_cycle_is_on_a_returned_cycle() {
     // #1 and #2 share #3: both cycles run through it.
     let found = cycles(&graph(&[(1, &[3]), (3, &[1, 2]), (2, &[3])]));
-    let on: BTreeSet<IssueNumber> = found.iter().flatten().copied().collect();
+    let on: BTreeSet<TicketId> = found.iter().flatten().copied().collect();
     assert_eq!(on, numbers(&[1, 2, 3]).into_iter().collect());
 }
 
 #[test]
 fn read_walks_open_blockers_and_classes_the_rest() {
     let board = FakeBoard::default();
-    board.add_ticket(ticket(3, "Blocked by: #4 #5 #6 #8 #99", TaskLabel::Ready));
-    board.add_ticket(ticket(4, "Blocked by: #3", TaskLabel::Blocked));
-    board.add_ticket(ticket(5, "", TaskLabel::Done));
-    board.add_ticket(ticket(6, "", TaskLabel::Blocked));
+    board.add_ticket(ticket(3, "Blocked by: #4 #5 #6 #8 #99", TicketState::Ready));
+    board.add_ticket(ticket(4, "Blocked by: #3", TicketState::Blocked));
+    board.add_ticket(ticket(5, "", TicketState::Done));
+    board.add_ticket(ticket(6, "", TicketState::Blocked));
     board.close_not_planned(number(6));
-    board.add_ticket(ticket(8, "", TaskLabel::Blocked));
+    board.add_ticket(ticket(8, "", TicketState::Blocked));
     board.close(number(8));
     let ready = board.ready().expect("ready");
 

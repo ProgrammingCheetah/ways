@@ -8,7 +8,7 @@ use super::{Cli, ProgressAction};
 use crate::app::actions::Caller;
 use crate::app::hub::{PhaseError, PhasePlan, Report, declare, enter, record};
 use crate::composition::Composition;
-use crate::domain::IssueNumber;
+use crate::domain::TicketId;
 
 /// What a plan leaves as its report: the frame's word for a task whose model has just planned.
 const PLANNED: &str = "planned";
@@ -75,7 +75,7 @@ fn role_of(given: Option<&str>, caller: Result<Caller, String>) -> Result<String
 }
 
 /// One line, or the plan as JSON: `#330 programmer: write ×2 (3 of 5)`.
-fn print_plan(json: bool, task: IssueNumber, plan: &PhasePlan) {
+fn print_plan(json: bool, task: TicketId, plan: &PhasePlan) {
     if json {
         println!(
             "{}",

@@ -38,7 +38,7 @@ pub use tick::{
 };
 
 use super::guard::{GUARD_FILE, Level};
-use crate::domain::{Instance, IssueNumber, Profile, RoleName};
+use crate::domain::{Instance, Profile, RoleName, TicketId};
 use crate::manifest::{Manifest, ManifestError};
 use crate::ports::{Board, ClaimRecord, Holder, PortError, RunRequest, Runner};
 
@@ -131,7 +131,7 @@ pub fn snapshot(board: &dyn Board) -> Result<Snapshot, PortError> {
     let found = blockers::read(board, &ready)?;
     let mut open = found.graph;
     for ticket in &ready {
-        open.remove(&ticket.number);
+        open.remove(&ticket.id);
     }
     Ok(Snapshot {
         ready,
@@ -157,7 +157,7 @@ pub struct Prepared {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Released {
     /// The task.
-    pub task: IssueNumber,
+    pub task: TicketId,
     /// The instance that held it.
     pub instance: Instance,
 }
@@ -373,7 +373,7 @@ pub struct Launched {
     /// The instance.
     pub instance: Instance,
     /// Its tasks.
-    pub tasks: Vec<IssueNumber>,
+    pub tasks: Vec<TicketId>,
     /// How it ended.
     pub exit: LaunchExit,
     /// Its run folder, holding `report.md`.
@@ -685,7 +685,7 @@ impl Plan {
     /// The plan as JSON, with the finished launches and the lost instances.
     pub fn to_json(&self, launched: &[Launched], lost: &[String]) -> serde_json::Value {
         let numbers =
-            |tasks: &[IssueNumber]| -> Vec<u64> { tasks.iter().map(|task| task.get()).collect() };
+            |tasks: &[TicketId]| -> Vec<u64> { tasks.iter().map(|task| task.get()).collect() };
         let launched: Vec<serde_json::Value> = launched
             .iter()
             .map(|launch| {
@@ -750,7 +750,7 @@ impl Plan {
     }
 
     /// Whether a task of `cycle` is among the skipped tasks, so its skip line names the cycle.
-    fn has_skipped(&self, cycle: &[IssueNumber]) -> bool {
+    fn has_skipped(&self, cycle: &[TicketId]) -> bool {
         self.tasks
             .iter()
             .any(|(task, skip)| matches!(skip, TaskSkip::InCycle(_)) && cycle.contains(task))

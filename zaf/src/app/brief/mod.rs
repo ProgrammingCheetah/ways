@@ -18,8 +18,8 @@ use std::path::{Path, PathBuf};
 
 use super::actions::{Caller, ListedAction, ResolveError, list_actions};
 use crate::composition::STATE_DIR;
-use crate::domain::{Instance, IssueNumber, PageId, TaskTemplate};
-use crate::ports::{Board, Design, NewQuestion, Page, PortError, Ticket};
+use crate::domain::{Instance, PageId, TaskTemplate, Ticket, TicketId};
+use crate::ports::{Board, Design, NewQuestion, Page, PortError};
 
 /// The interface help page every brief ends with.
 pub const INTERFACE_PAGE: &str = include_str!("../../../assets/interface.md");
@@ -64,7 +64,7 @@ pub struct ActionsView<'a> {
 #[derive(Debug, Clone, Copy)]
 pub struct BriefQuery<'a> {
     /// The task.
-    pub task: IssueNumber,
+    pub task: TicketId,
     /// The instance the pack is for; one path segment, its folder under `runs`.
     pub instance: &'a str,
     /// The project's state folder, `.zaf`.
@@ -162,7 +162,7 @@ fn build(
         return Err(BriefError::Instance(query.instance.to_owned()));
     }
     let ticket = ports.board.task(query.task).map_err(BriefError::Board)?;
-    let template = ticket.body.parse::<TaskTemplate>().ok();
+    let template = ticket.template().ok();
     let pages = match (&template, ports.design) {
         (Some(template), Some(design)) => {
             named_pages(design, &template.design_pages).map_err(BriefError::Design)?
@@ -310,9 +310,9 @@ fn render(
     actions: &[ListedAction],
 ) -> Result<String, fmt::Error> {
     let mut text = String::new();
-    writeln!(text, "# Brief: {} {}\n", ticket.number, ticket.title)?;
+    writeln!(text, "# Brief: {} {}\n", ticket.id, ticket.title)?;
 
-    writeln!(text, "## Ticket\n\n{}\n", ticket.body.trim_end())?;
+    writeln!(text, "## Ticket\n\n{}\n", ticket.body.as_str().trim_end())?;
     if template.is_none() {
         writeln!(
             text,
@@ -325,12 +325,7 @@ fn render(
         writeln!(text, "— none\n")?;
     }
     for (question, ruling) in questions {
-        writeln!(
-            text,
-            "{} {}",
-            question.number,
-            NewQuestion::text_of(question)
-        )?;
+        writeln!(text, "{} {}", question.id, NewQuestion::text_of(question))?;
         match ruling {
             Some(ruling) => writeln!(text, "ruling: {ruling}\n")?,
             None => writeln!(text, "open\n")?,

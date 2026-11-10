@@ -1,23 +1,24 @@
 use super::*;
 use crate::app::spawn::runs;
 use crate::app::spawn::tick::PlannedLaunch;
-use crate::domain::{Instance, InstanceNumber, IssueNumber, RoleName, TaskLabel};
+use crate::domain::{Instance, InstanceNumber, RoleName, TicketId, TicketState};
 use crate::fakes::FakeBoard;
 
-fn ticket(number: u64, title: &str, label: TaskLabel) -> Ticket {
+fn ticket(number: u64, title: &str, label: TicketState) -> Ticket {
     Ticket {
-        number: IssueNumber::from(number),
+        id: TicketId::from(number),
         epic: None,
-        title: title.to_owned(),
-        body: String::new(),
-        label: Some(label),
+        title: title.into(),
+        body: "".into(),
+        state: Some(label),
+        url: "".into(),
     }
 }
 
 fn instance(number: u32, epic: u64) -> Instance {
     Instance {
         role: RoleName::from("team"),
-        epic: IssueNumber::from(epic),
+        epic: TicketId::from(epic),
         number: InstanceNumber::from(number),
     }
 }
@@ -26,7 +27,7 @@ fn instance(number: u32, epic: u64) -> Instance {
 fn launched(state_dir: &Path, instance: Instance, tasks: &[u64]) {
     let planned = PlannedLaunch {
         instance,
-        tasks: tasks.iter().copied().map(IssueNumber::from).collect(),
+        tasks: tasks.iter().copied().map(TicketId::from).collect(),
     };
     let holder = Holder {
         pid: 4242,
@@ -47,21 +48,21 @@ fn none_alive(_: &Holder) -> bool {
 
 fn board() -> FakeBoard {
     let board = FakeBoard::default();
-    board.add_ticket(ticket(3, "Export rows", TaskLabel::Ready));
-    board.add_ticket(ticket(4, "Export header", TaskLabel::Ready));
-    board.add_ticket(ticket(5, "Import rows", TaskLabel::Ready));
+    board.add_ticket(ticket(3, "Export rows", TicketState::Ready));
+    board.add_ticket(ticket(4, "Export header", TicketState::Ready));
+    board.add_ticket(ticket(5, "Import rows", TicketState::Ready));
     board.add_question(ticket(
         9,
         "Which columns are exported?",
-        TaskLabel::Question,
+        TicketState::Question,
     ));
-    board.add_question(ticket(10, "Quoting rule?", TaskLabel::Question));
+    board.add_question(ticket(10, "Quoting rule?", TicketState::Question));
     board
-        .record_ruling(IssueNumber::from(10), "Always quote.")
+        .record_ruling(TicketId::from(10), "Always quote.")
         .expect("a ruled question closes");
-    board.add_ticket(ticket(6, "Export footer", TaskLabel::Question));
+    board.add_ticket(ticket(6, "Export footer", TicketState::Question));
     board
-        .claim(IssueNumber::from(5), &instance(1, 2))
+        .claim(TicketId::from(5), &instance(1, 2))
         .expect("claims the ready task");
     board
 }
@@ -85,7 +86,7 @@ fn the_screen_joins_board_run_folders_and_guard() {
 
     let status = status(&board(), dir.path(), 2, &all_alive).expect("status");
 
-    let ready: Vec<u64> = status.ready.iter().map(|t| t.number).collect();
+    let ready: Vec<u64> = status.ready.iter().map(|t| t.number.get()).collect();
     assert_eq!(ready, [3, 4], "the claimed task is no longer ready");
     assert_eq!(status.claimed.len(), 1);
     assert_eq!(status.claimed[0].task, 5);
@@ -101,7 +102,7 @@ fn the_screen_joins_board_run_folders_and_guard() {
     let questions: Vec<(u64, &str)> = status
         .questions
         .iter()
-        .map(|q| (q.number, q.title.as_str()))
+        .map(|q| (q.number.get(), q.title.as_str()))
         .collect();
     assert_eq!(
         questions,
@@ -264,8 +265,8 @@ fn the_running_line_counts_instances_and_each_is_listed_once_with_its_tasks() {
 
 fn blocked(number: u64, by: &str) -> Ticket {
     Ticket {
-        body: format!("Blocked by: {by}"),
-        ..ticket(number, &format!("Task {number}"), TaskLabel::Ready)
+        body: format!("Blocked by: {by}").into(),
+        ..ticket(number, &format!("Task {number}"), TicketState::Ready)
     }
 }
 
@@ -314,11 +315,11 @@ fn status_names_dead_blockers_and_keeps_a_plain_open_blocker_quiet() {
     let dir = tempfile::tempdir().expect("tempdir");
     let board = FakeBoard::default();
     board.add_ticket(blocked(3, "#4 #5 #7 #99"));
-    board.add_ticket(ticket(4, "Open blocker", TaskLabel::Blocked));
-    board.add_ticket(ticket(5, "Dropped blocker", TaskLabel::Blocked));
-    board.close_not_planned(IssueNumber::from(5));
-    board.add_ticket(ticket(7, "Finished blocker", TaskLabel::Blocked));
-    board.close(IssueNumber::from(7));
+    board.add_ticket(ticket(4, "Open blocker", TicketState::Blocked));
+    board.add_ticket(ticket(5, "Dropped blocker", TicketState::Blocked));
+    board.close_not_planned(TicketId::from(5));
+    board.add_ticket(ticket(7, "Finished blocker", TicketState::Blocked));
+    board.close(TicketId::from(7));
 
     let status = status(&board, dir.path(), 2, &all_alive).expect("status");
 

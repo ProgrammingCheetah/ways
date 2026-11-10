@@ -1,9 +1,8 @@
 use clap::Parser;
 
 use super::*;
-use crate::domain::{IssueNumber, TaskLabel};
+use crate::domain::{Ticket, TicketId, TicketState};
 use crate::fakes::FakeBoard;
-use crate::ports::Ticket;
 
 const MANIFEST: &str = "[project]\nname = \"demo\"\n[board]\nkind = \"github-issues\"\nrepo = \"owner/demo\"\n[spawn]\nslots = 2\n";
 
@@ -28,13 +27,14 @@ fn the_screen_exits_ok_over_a_fake_board_and_a_scripted_spawn_state() {
     )
     .expect("spawn.state");
     let board = FakeBoard::default();
-    for (number, label) in [(3, TaskLabel::Ready), (9, TaskLabel::Question)] {
+    for (number, label) in [(3, TicketState::Ready), (9, TicketState::Question)] {
         board.add_ticket(Ticket {
-            number: IssueNumber::from(number),
+            id: TicketId::from(number),
             epic: None,
-            title: format!("ticket {number}"),
-            body: String::new(),
-            label: Some(label),
+            title: format!("ticket {number}").into(),
+            body: "".into(),
+            state: Some(label),
+            url: "".into(),
         });
     }
     assert_eq!(print_status(&cli(&["status"]), &composition, &board), OK);

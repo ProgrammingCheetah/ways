@@ -6,7 +6,7 @@
 
 use super::{PhaseFacts, PrFacts, WorkspaceFacts};
 use crate::app::actions::{RunOutcome, SliceRecords, Tier};
-use crate::domain::{IssueNumber, TaskLabel};
+use crate::domain::{TicketId, TicketState};
 use crate::ports::{Board, Forge, PortError, Vcs};
 
 /// A read the phase needs that failed: the board, the forge or the workspace could not say.
@@ -17,7 +17,7 @@ use crate::ports::{Board, Forge, PortError, Vcs};
 #[error("{task}'s phase cannot be read: {source}")]
 pub struct PhaseUnreadable {
     /// The task whose phase was being derived.
-    pub task: IssueNumber,
+    pub task: TicketId,
     /// What the failed read answered.
     pub source: PortError,
 }
@@ -40,11 +40,11 @@ pub fn gather_phase_facts(
     forge: &dyn Forge,
     vcs: &dyn Vcs,
     records: &SliceRecords,
-    task: IssueNumber,
+    task: TicketId,
 ) -> Result<PhaseFacts, PhaseUnreadable> {
     let unreadable = |source| PhaseUnreadable { task, source };
-    let label = board.task(task).map_err(unreadable)?.label;
-    let claimed = label == Some(TaskLabel::Claimed);
+    let label = board.task(task).map_err(unreadable)?.state;
+    let claimed = label == Some(TicketState::Claimed);
     let claim_comment = claimed
         && board
             .claims()
@@ -70,7 +70,7 @@ pub fn gather_phase_facts(
         None => None,
     };
     let facts = PhaseFacts {
-        done: label == Some(TaskLabel::Done),
+        done: label == Some(TicketState::Done),
         claimed,
         claim_comment,
         workspace,

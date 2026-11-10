@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 
 use super::guard::{self, GuardError, GuardState};
 use super::spawn::{self, blockers, blockers::DeadLine};
-use crate::domain::IssueNumber;
-use crate::ports::{Board, ClaimRecord, Holder, PortError, Ticket};
+use crate::domain::{Ticket, TicketId, TicketSummary};
+use crate::ports::{Board, ClaimRecord, Holder, PortError};
 
 /// The spawner's state file under the state folder.
 pub const SPAWN_STATE_FILE: &str = "spawn.state";
@@ -34,15 +34,6 @@ pub enum StatusError {
     /// `.zaf/guard.json` is there but unreadable.
     #[error(transparent)]
     Guard(#[from] GuardError),
-}
-
-/// A ticket as a line of the screen.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct TicketLine {
-    /// Its issue number.
-    pub number: u64,
-    /// Its title.
-    pub title: String,
 }
 
 /// A live claim.
@@ -91,7 +82,7 @@ pub struct Slots {
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Status {
     /// Tasks open for a claim.
-    pub ready: Vec<TicketLine>,
+    pub ready: Vec<TicketSummary>,
     /// Claims held now by an instance that runs, or by one this machine did not launch.
     pub claimed: Vec<ClaimLine>,
     /// Claims held by an instance this machine launched that no longer runs: free, and
@@ -108,7 +99,7 @@ pub struct Status {
     /// The guard as last computed; none if `zaf guard` never ran.
     pub guard: Option<GuardState>,
     /// Questions still waiting for the Engineer.
-    pub questions: Vec<TicketLine>,
+    pub questions: Vec<TicketSummary>,
     /// Blocker cycles among the open tasks reached from the ready ones, each from its
     /// lowest task: the first waits for the second, the last for the first.
     pub cycles: Vec<Vec<u64>>,
@@ -150,7 +141,7 @@ pub fn status(
         .iter()
         .map(blockers::DeadLine::from)
         .collect();
-    let ready = ready_tickets.into_iter().map(ticket_line).collect();
+    let ready = ready_tickets.iter().map(Ticket::summary).collect();
     let claims = board.claims()?;
     let orphaned_claims = spawn::orphaned(&claims, &runs, alive);
     let claim_line = |claim: &ClaimRecord| ClaimLine {
@@ -163,7 +154,7 @@ pub fn status(
         .map(claim_line)
         .collect();
     let orphaned = orphaned_claims.into_iter().map(claim_line).collect();
-    let questions = board.questions()?.into_iter().map(ticket_line).collect();
+    let questions = board.questions()?.iter().map(Ticket::summary).collect();
     // A batch of tasks shares one instance and one slot; the state counts them.
     let in_use = state.running();
     let instances = state
@@ -192,13 +183,6 @@ pub fn status(
     })
 }
 
-fn ticket_line(ticket: Ticket) -> TicketLine {
-    TicketLine {
-        number: ticket.number.get(),
-        title: ticket.title,
-    }
-}
-
 fn numbers(lines: impl Iterator<Item = u64>) -> String {
     let list: Vec<String> = lines.map(|number| format!("#{number}")).collect();
     if list.is_empty() {
@@ -219,7 +203,7 @@ impl Status {
         line(format!(
             "ready     {}{}",
             self.ready.len(),
-            numbers(self.ready.iter().map(|t| t.number))
+            numbers(self.ready.iter().map(|t| t.number.get()))
         ));
         line(format!(
             "claimed   {}{}",
@@ -236,7 +220,7 @@ impl Status {
         line(format!(
             "questions {}{}",
             self.questions.len(),
-            numbers(self.questions.iter().map(|q| q.number))
+            numbers(self.questions.iter().map(|q| q.number.get()))
         ));
         line(format!("running   {}", self.running_count));
         for instance in &self.instances {
@@ -259,7 +243,7 @@ impl Status {
             )
         ));
         for cycle in &self.cycles {
-            let tasks: Vec<IssueNumber> = cycle.iter().copied().map(IssueNumber::from).collect();
+            let tasks: Vec<TicketId> = cycle.iter().copied().map(TicketId::from).collect();
             line(format!("blocker cycle: {}", blockers::render_cycle(&tasks)));
         }
         for dead in &self.dead_blockers {
@@ -269,7 +253,7 @@ impl Status {
             ));
         }
         for question in &self.questions {
-            line(format!("question  #{} {}", question.number, question.title));
+            line(format!("question  {} {}", question.number, question.title));
         }
         out
     }

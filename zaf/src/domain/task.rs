@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
-use super::IssueNumber;
+use super::TicketId;
 
 /// A field of the task template, by the label it carries in the ticket.
 #[derive(
@@ -206,7 +206,7 @@ pub struct TaskTemplate {
     /// How big it is.
     pub size: TaskSize,
     /// The issues that must close first.
-    pub blocked_by: Vec<IssueNumber>,
+    pub blocked_by: Vec<TicketId>,
     /// The style rules to follow, when the ticket names them.
     pub style: Option<String>,
 }
@@ -405,7 +405,7 @@ fn parse_vocabulary<T: FromStr>(
         .map_err(|_| TaskTemplateError::InvalidValue { field, value })
 }
 
-fn parse_blockers(value: &str) -> Result<Vec<IssueNumber>, TaskTemplateError> {
+fn parse_blockers(value: &str) -> Result<Vec<TicketId>, TaskTemplateError> {
     if matches!(value, "" | NO_BLOCKERS | "-" | "none") {
         return Ok(Vec::new());
     }
@@ -414,7 +414,7 @@ fn parse_blockers(value: &str) -> Result<Vec<IssueNumber>, TaskTemplateError> {
         .map(|number| {
             number
                 .trim()
-                .parse::<IssueNumber>()
+                .parse::<TicketId>()
                 .map_err(|_| TaskTemplateError::InvalidValue {
                     field: TaskField::BlockedBy,
                     value: value.to_owned(),

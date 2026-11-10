@@ -16,8 +16,8 @@ mod shell;
 mod vcs;
 
 pub use board::{
-    Board, ClaimOutcome, ClaimRecord, EpicTask, EpicTree, IssueState, NewQuestion,
-    QUESTION_TITLE_LIMIT, Ticket,
+    Board, ClaimOutcome, ClaimRecord, EpicTask, EpicTree, NewQuestion, QUESTION_TITLE_LIMIT,
+    Standing,
 };
 pub use design::{Design, Page};
 pub use errors::PortError;

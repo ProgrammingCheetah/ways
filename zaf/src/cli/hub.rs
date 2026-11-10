@@ -27,7 +27,7 @@ use crate::app::report::PriceTable;
 use crate::app::report::ledger::{LEDGER_FILE, Ledger, LedgerRow};
 use crate::app::{actions::SliceRecords, spawn};
 use crate::composition::{Composition, zaf_home};
-use crate::domain::IssueNumber;
+use crate::domain::TicketId;
 
 /// How much of a hook's payload is read: a tool call with its output can be large, and the hook
 /// needs only its first fields.
@@ -104,7 +104,7 @@ pub fn leave_tool_report(payload: &str, here: Option<&Path>, home: Option<&Path>
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Event {
     /// The task it is about, when the verb names one.
-    pub task: Option<IssueNumber>,
+    pub task: Option<TicketId>,
     /// What happened, in general words.
     pub what: &'static str,
     /// Whether a refusal (exit 1) still counts: a check that finds a failure has still run.
@@ -112,7 +112,7 @@ pub struct Event {
 }
 
 impl Event {
-    fn done(task: impl Into<Option<IssueNumber>>, what: &'static str) -> Option<Self> {
+    fn done(task: impl Into<Option<TicketId>>, what: &'static str) -> Option<Self> {
         Some(Self {
             task: task.into(),
             what,
@@ -120,7 +120,7 @@ impl Event {
         })
     }
 
-    fn check(task: Option<IssueNumber>, what: &'static str) -> Option<Self> {
+    fn check(task: Option<TicketId>, what: &'static str) -> Option<Self> {
         Some(Self {
             task,
             what,
@@ -164,7 +164,7 @@ pub fn event_of(verb: &Verb) -> Option<Event> {
             let task = rest
                 .first()
                 .and_then(|word| word.to_str())
-                .and_then(|word| word.trim_start_matches('#').parse::<IssueNumber>().ok());
+                .and_then(|word| word.trim_start_matches('#').parse::<TicketId>().ok());
             match name.to_str()? {
                 "slice-open" => Event::done(task, "slice opened"),
                 "slice-pr" => Event::done(task, "pull request opened"),

@@ -14,9 +14,11 @@
     strum::EnumString,
     strum::IntoStaticStr,
     strum::VariantArray,
+    serde::Serialize,
 )]
 #[strum(serialize_all = "snake_case")]
-pub enum TaskLabel {
+#[serde(rename_all = "snake_case")]
+pub enum TicketState {
     /// Open for a claim.
     Ready,
     /// Held by an instance under a lease.

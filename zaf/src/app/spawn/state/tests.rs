@@ -1,16 +1,16 @@
 use super::*;
 use crate::app::spawn::runs;
 use crate::app::spawn::tick::PlannedLaunch;
-use crate::domain::{Instance, InstanceNumber, IssueNumber, RoleName};
+use crate::domain::{Instance, InstanceNumber, RoleName, TicketId};
 
 fn planned(number: u32, epic: u64, tasks: &[u64]) -> PlannedLaunch {
     PlannedLaunch {
         instance: Instance {
             role: RoleName::from("team"),
-            epic: IssueNumber::from(epic),
+            epic: TicketId::from(epic),
             number: InstanceNumber::from(number),
         },
-        tasks: tasks.iter().copied().map(IssueNumber::from).collect(),
+        tasks: tasks.iter().copied().map(TicketId::from).collect(),
     }
 }
 

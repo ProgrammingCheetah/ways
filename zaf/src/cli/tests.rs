@@ -110,19 +110,21 @@ fn every_unbuilt_verb_exits_not_implemented() {
 /// the forge failing the merged read when `forge_down`.
 fn board_done_exit(pr: &str, forge_down: bool) -> u8 {
     use crate::app::actions::SliceRecords;
-    use crate::domain::{IssueNumber, TaskLabel};
+    use crate::domain::Ticket;
+    use crate::domain::{TicketId, TicketState};
     use crate::fakes::{FakeBoard, FakeForge, FakeVcs, PrRequest};
-    use crate::ports::{BaseName, Board, SliceName, Ticket};
+    use crate::ports::{BaseName, Board, SliceName};
 
     let dir = tempfile::tempdir().expect("tempdir");
-    let task = IssueNumber::from(319);
+    let task = TicketId::from(319);
     let board = FakeBoard::default();
     board.add_ticket(Ticket {
-        number: task,
+        id: task,
         epic: None,
-        title: "Task".to_owned(),
-        body: String::new(),
-        label: Some(TaskLabel::Ready),
+        title: "Task".into(),
+        body: "".into(),
+        state: Some(TicketState::Ready),
+        url: "".into(),
     });
     let forge = FakeForge::default();
     let request = PrRequest {
@@ -141,8 +143,8 @@ fn board_done_exit(pr: &str, forge_down: bool) -> u8 {
     let records = SliceRecords::new(dir.path());
     let outcome = crate::app::board::done(&board, &forge, &FakeVcs::default(), &records, task);
     let error = outcome.expect_err("no task is done here");
-    let ready = board.task(task).expect("task").label;
-    assert_eq!(ready, Some(TaskLabel::Ready), "nothing changed");
+    let ready = board.task(task).expect("task").state;
+    assert_eq!(ready, Some(TicketState::Ready), "nothing changed");
     board::exit_code(&error)
 }
 

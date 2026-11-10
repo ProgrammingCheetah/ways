@@ -2,18 +2,18 @@ use super::*;
 
 #[test]
 fn issue_number_parses_with_and_without_hash() {
-    let expected = IssueNumber::from(412);
-    assert_eq!("#412".parse::<IssueNumber>(), Ok(expected));
-    assert_eq!("412".parse::<IssueNumber>(), Ok(expected));
+    let expected = TicketId::from(412);
+    assert_eq!("#412".parse::<TicketId>(), Ok(expected));
+    assert_eq!("412".parse::<TicketId>(), Ok(expected));
     assert_eq!(expected.to_string(), "#412");
 }
 
 #[test]
 fn issue_number_rejects_non_digits() {
-    let not_a_number_error = IdError::IssueNumber("#4a".to_owned());
-    assert_eq!("#4a".parse::<IssueNumber>(), Err(not_a_number_error));
-    assert!("#".parse::<IssueNumber>().is_err());
-    assert!("-3".parse::<IssueNumber>().is_err());
+    let not_a_number_error = IdError::TicketId("#4a".to_owned());
+    assert_eq!("#4a".parse::<TicketId>(), Err(not_a_number_error));
+    assert!("#".parse::<TicketId>().is_err());
+    assert!("-3".parse::<TicketId>().is_err());
 }
 
 #[test]

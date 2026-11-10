@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use super::ledger::LedgerRow;
 use super::{PriceTable, median};
-use crate::domain::{IssueNumber, TaskLabel, TaskSize, TaskTemplate};
+use crate::domain::{TaskSize, TicketId, TicketState};
 use crate::ports::{Board, PortError};
 
 /// What the text and the JSON say about every dollar figure.
@@ -168,7 +168,7 @@ pub struct SizeMedians {
 /// reads.
 #[derive(Debug, Clone, Copy)]
 struct Found {
-    epic: IssueNumber,
+    epic: TicketId,
     done: bool,
     size: Option<TaskSize>,
 }
@@ -196,15 +196,11 @@ impl<'a> Tasks<'a> {
         if let Some(known) = self.seen.get(&task) {
             return Ok(*known);
         }
-        let found = match self.board.task(IssueNumber::from(task)) {
+        let found = match self.board.task(TicketId::from(task)) {
             Ok(ticket) => ticket.epic.map(|epic| Found {
                 epic,
-                done: ticket.label == Some(TaskLabel::Done),
-                size: ticket
-                    .body
-                    .parse::<TaskTemplate>()
-                    .ok()
-                    .map(|template| template.size),
+                done: ticket.state == Some(TicketState::Done),
+                size: ticket.template().ok().map(|template| template.size),
             }),
             Err(PortError::NotFound(_)) => None,
             Err(error) => return Err(error),

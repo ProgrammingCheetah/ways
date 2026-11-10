@@ -244,7 +244,7 @@ fn failed(path: &str, error: &SpawnError) -> u8 {
 mod tests {
     use super::*;
     use crate::cli;
-    use crate::domain::{InstanceNumber, IssueNumber, RoleName};
+    use crate::domain::{InstanceNumber, RoleName, TicketId};
 
     #[test]
     fn without_once_the_verb_refuses() {
@@ -261,7 +261,7 @@ mod tests {
     fn a_launch_carries_the_manifests_env_beside_zafs_own() {
         let instance = Instance {
             role: RoleName::from("team"),
-            epic: IssueNumber::from(16),
+            epic: TicketId::from(16),
             number: InstanceNumber::from(12),
         };
         let project = BTreeMap::from([("GATE_BASE".to_owned(), "feature/release-0-3".to_owned())]);
@@ -276,7 +276,7 @@ mod tests {
     fn a_launch_carries_its_instance_and_version() {
         let instance = Instance {
             role: RoleName::from("team"),
-            epic: IssueNumber::from(16),
+            epic: TicketId::from(16),
             number: InstanceNumber::from(12),
         };
         assert_eq!(

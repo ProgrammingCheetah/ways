@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use super::*;
 use crate::app::status;
-use crate::domain::{InstanceNumber, TaskLabel};
+use crate::domain::{InstanceNumber, Ticket, TicketState};
 use crate::fakes::{FakeBoard, FakeRunner};
-use crate::ports::{ClaimOutcome, ClaimRecord, NewQuestion, RunOutput, Ticket};
+use crate::ports::{ClaimOutcome, ClaimRecord, NewQuestion, RunOutput};
 
 /// Lends one fake board to every launch thread.
 struct SharedBoard(Arc<FakeBoard>);
@@ -13,41 +13,41 @@ impl Board for SharedBoard {
     fn ready(&self) -> Result<Vec<Ticket>, PortError> {
         self.0.ready()
     }
-    fn task(&self, number: IssueNumber) -> Result<Ticket, PortError> {
+    fn task(&self, number: TicketId) -> Result<Ticket, PortError> {
         self.0.task(number)
     }
-    fn claim(&self, task: IssueNumber, instance: &Instance) -> Result<ClaimOutcome, PortError> {
+    fn claim(&self, task: TicketId, instance: &Instance) -> Result<ClaimOutcome, PortError> {
         self.0.claim(task, instance)
     }
-    fn heartbeat(&self, task: IssueNumber, instance: &Instance) -> Result<(), PortError> {
+    fn heartbeat(&self, task: TicketId, instance: &Instance) -> Result<(), PortError> {
         self.0.heartbeat(task, instance)
     }
     fn claims(&self) -> Result<Vec<ClaimRecord>, PortError> {
         self.0.claims()
     }
-    fn release(&self, task: IssueNumber, instance: &Instance) -> Result<(), PortError> {
+    fn release(&self, task: TicketId, instance: &Instance) -> Result<(), PortError> {
         self.0.release(task, instance)
     }
-    fn label(&self, task: IssueNumber, label: TaskLabel) -> Result<(), PortError> {
-        self.0.label(task, label)
+    fn set_state(&self, task: TicketId, label: TicketState) -> Result<(), PortError> {
+        self.0.set_state(task, label)
     }
-    fn comment(&self, issue: IssueNumber, body: &str) -> Result<(), PortError> {
+    fn comment(&self, issue: TicketId, body: &str) -> Result<(), PortError> {
         self.0.comment(issue, body)
     }
-    fn report(&self, task: IssueNumber, instance: &Instance, body: &str) -> Result<(), PortError> {
+    fn report(&self, task: TicketId, instance: &Instance, body: &str) -> Result<(), PortError> {
         self.0.report(task, instance, body)
     }
     fn questions(&self) -> Result<Vec<Ticket>, PortError> {
         self.0.questions()
     }
-    fn open_question(&self, question: &NewQuestion) -> Result<IssueNumber, PortError> {
+    fn open_question(&self, question: &NewQuestion) -> Result<TicketId, PortError> {
         self.0.open_question(question)
     }
     fn record_ruling(
         &self,
-        question: IssueNumber,
+        question: TicketId,
         ruling: &str,
-    ) -> Result<Option<IssueNumber>, PortError> {
+    ) -> Result<Option<TicketId>, PortError> {
         self.0.record_ruling(question, ruling)
     }
 }
@@ -98,20 +98,21 @@ fn manifest() -> Manifest {
     MANIFEST.parse().expect("manifest parses")
 }
 
-fn ticket(number: u64, epic: Option<u64>, body: &str, label: TaskLabel) -> Ticket {
+fn ticket(number: u64, epic: Option<u64>, body: &str, label: TicketState) -> Ticket {
     Ticket {
-        number: IssueNumber::from(number),
-        epic: epic.map(IssueNumber::from),
-        title: format!("Issue {number}"),
-        body: body.to_owned(),
-        label: Some(label),
+        id: TicketId::from(number),
+        epic: epic.map(TicketId::from),
+        title: format!("Issue {number}").into(),
+        body: body.into(),
+        state: Some(label),
+        url: "".into(),
     }
 }
 
 fn epic(number: u64) -> Ticket {
     Ticket {
-        label: None,
-        ..ticket(number, None, "", TaskLabel::Ready)
+        state: None,
+        ..ticket(number, None, "", TicketState::Ready)
     }
 }
 
@@ -120,13 +121,13 @@ fn epic(number: u64) -> Ticket {
 fn board() -> FakeBoard {
     let board = FakeBoard::default();
     board.add_ticket(epic(2));
-    board.add_ticket(ticket(3, Some(2), "Blocked by: —", TaskLabel::Ready));
-    board.add_ticket(ticket(4, Some(2), "Blocked by: #7", TaskLabel::Ready));
-    board.add_ticket(ticket(5, Some(2), "Blocked by: #6", TaskLabel::Ready));
-    board.add_ticket(ticket(6, Some(2), "", TaskLabel::Blocked));
-    board.add_ticket(ticket(7, Some(2), "", TaskLabel::Done));
+    board.add_ticket(ticket(3, Some(2), "Blocked by: —", TicketState::Ready));
+    board.add_ticket(ticket(4, Some(2), "Blocked by: #7", TicketState::Ready));
+    board.add_ticket(ticket(5, Some(2), "Blocked by: #6", TicketState::Ready));
+    board.add_ticket(ticket(6, Some(2), "", TicketState::Blocked));
+    board.add_ticket(ticket(7, Some(2), "", TicketState::Done));
     board.add_ticket(epic(12));
-    board.add_ticket(ticket(13, Some(12), "", TaskLabel::Ready));
+    board.add_ticket(ticket(13, Some(12), "", TicketState::Ready));
     board
 }
 
@@ -157,7 +158,7 @@ fn team() -> RoleName {
 fn instance(number: u32, epic: u64) -> Instance {
     Instance {
         role: team(),
-        epic: IssueNumber::from(epic),
+        epic: TicketId::from(epic),
         number: InstanceNumber::from(number),
     }
 }
@@ -179,7 +180,7 @@ fn a_launch_through_the_runner_records_launch_and_exit_and_frees_its_slot() {
     let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
     let first = &prepared.plan.launches[0];
     assert_eq!(first.instance, instance(1, 2));
-    assert_eq!(first.tasks, [IssueNumber::from(3), IssueNumber::from(4)]);
+    assert_eq!(first.tasks, [TicketId::from(3), TicketId::from(4)]);
 
     // Reserved before running, held by the tick: `zaf status` reads the same run folders.
     let (reserved, _) = derive(&state_dir, &|_| true).expect("derives");
@@ -204,7 +205,7 @@ fn a_launch_through_the_runner_records_launch_and_exit_and_frees_its_slot() {
     let done = launch(&board, &runner, &context(&state_dir), first).expect("launches");
     assert_eq!(done.exit, LaunchExit::Code(0));
     assert_eq!(
-        board.comments(IssueNumber::from(2)),
+        board.comments(TicketId::from(2)),
         [
             "<!-- zaf:launch team instance 1 on #2 -->",
             "<!-- zaf:exit team instance 1 on #2 0 -->",
@@ -276,7 +277,7 @@ fn a_launch_marks_its_start_in_the_state() {
     .expect("records the failed run");
     assert!(matches!(done.exit, LaunchExit::Error(_)));
     assert_eq!(
-        board.comments(IssueNumber::from(12)),
+        board.comments(TicketId::from(12)),
         [
             "<!-- zaf:launch team instance 2 on #12 -->",
             "<!-- zaf:exit team instance 2 on #12 error -->",
@@ -319,7 +320,7 @@ fn timeout_text_in_another_error_is_not_a_timeout() {
     let board = board();
     let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
     let first = &prepared.plan.launches[0];
-    let task = IssueNumber::from(3);
+    let task = TicketId::from(3);
     board.claim(task, &first.instance).expect("claims #3");
 
     let lookalike = FailingRunner(PortError::Unavailable(
@@ -340,15 +341,11 @@ fn timed_out_launch_releases_its_claims() {
     let board = board();
     let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
     let first = &prepared.plan.launches[0];
-    let (stuck, waiting, other) = (
-        IssueNumber::from(3),
-        IssueNumber::from(4),
-        IssueNumber::from(13),
-    );
+    let (stuck, waiting, other) = (TicketId::from(3), TicketId::from(4), TicketId::from(13));
     board.claim(stuck, &first.instance).expect("claims #3");
     board.claim(waiting, &first.instance).expect("claims #4");
     board
-        .label(waiting, TaskLabel::Question)
+        .set_state(waiting, TicketState::Question)
         .expect("#4 waits on a question");
     // Held by another instance: stays held.
     board.claim(other, &instance(2, 12)).expect("claims #13");
@@ -357,15 +354,15 @@ fn timed_out_launch_releases_its_claims() {
 
     assert!(done.exit.timed_out());
     assert_eq!(done.exit.status(), "timeout");
-    let epic_comments = board.comments(IssueNumber::from(2));
+    let epic_comments = board.comments(TicketId::from(2));
     assert!(
         epic_comments.contains(&"<!-- zaf:exit team instance 1 on #2 timeout -->".to_owned()),
         "{epic_comments:?}"
     );
-    let label = |task| board.task(task).expect("task").label;
-    assert_eq!(label(stuck), Some(TaskLabel::Ready));
-    assert_eq!(label(waiting), Some(TaskLabel::Question));
-    assert_eq!(label(other), Some(TaskLabel::Claimed));
+    let label = |task| board.task(task).expect("task").state;
+    assert_eq!(label(stuck), Some(TicketState::Ready));
+    assert_eq!(label(waiting), Some(TicketState::Question));
+    assert_eq!(label(other), Some(TicketState::Claimed));
     for task in [stuck, waiting] {
         let comments = board.comments(task);
         assert_eq!(comments.len(), 1, "{comments:?}");
@@ -392,7 +389,7 @@ fn a_launch_that_did_not_time_out_keeps_its_claims() {
     let board = board();
     let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
     let first = &prepared.plan.launches[0];
-    let task = IssueNumber::from(3);
+    let task = TicketId::from(3);
     board.claim(task, &first.instance).expect("claims #3");
 
     let exited = FakeRunner::default();
@@ -449,7 +446,7 @@ fn the_projects_own_brief_wins_over_the_pack() {
     assert!(!done.run_dir.join(BRIEF_FILE).exists());
     assert!(
         board
-            .comments(IssueNumber::from(2))
+            .comments(TicketId::from(2))
             .contains(&"<!-- zaf:exit team instance 1 on #2 3 -->".to_owned())
     );
 }
@@ -460,22 +457,20 @@ fn prepare_skips_blocked_and_claimed_tasks_read_from_the_board() {
     let state_dir = dir.path().join(".zaf");
     let board = board();
     let holder = instance(9, 2);
-    board
-        .claim(IssueNumber::from(3), &holder)
-        .expect("claims #3");
+    board.claim(TicketId::from(3), &holder).expect("claims #3");
     let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
     let plan = &prepared.plan;
-    assert_eq!(plan.launches[0].tasks, [IssueNumber::from(4)]);
+    assert_eq!(plan.launches[0].tasks, [TicketId::from(4)]);
     assert!(
         plan.launches
             .iter()
-            .all(|launch| !launch.tasks.contains(&IssueNumber::from(3)))
+            .all(|launch| !launch.tasks.contains(&TicketId::from(3)))
     );
     assert_eq!(
         plan.tasks,
         [(
-            IssueNumber::from(5),
-            TaskSkip::Blocked(vec![IssueNumber::from(6)])
+            TicketId::from(5),
+            TaskSkip::Blocked(vec![TicketId::from(6)])
         )]
     );
     assert!(plan.render_text().contains("#5 skipped: blocked by #6"));
@@ -487,7 +482,7 @@ fn a_missing_blocker_is_dead() {
     let state_dir = dir.path().join(".zaf");
     let board = FakeBoard::default();
     board.add_ticket(epic(2));
-    board.add_ticket(ticket(3, Some(2), "Blocked by: #99", TaskLabel::Ready));
+    board.add_ticket(ticket(3, Some(2), "Blocked by: #99", TicketState::Ready));
 
     let prepared = plan_only(&board, &state_dir, &manifest(), &|_| true).expect("plans");
     let text = prepared.plan.render_text();
@@ -513,11 +508,11 @@ fn a_blocker_closed_as_not_planned_is_dead() {
     let state_dir = dir.path().join(".zaf");
     let board = FakeBoard::default();
     board.add_ticket(epic(2));
-    board.add_ticket(ticket(3, Some(2), "Blocked by: #6 #7", TaskLabel::Ready));
-    board.add_ticket(ticket(6, Some(2), "", TaskLabel::Blocked));
-    board.close_not_planned(IssueNumber::from(6));
-    board.add_ticket(ticket(7, Some(2), "", TaskLabel::Done));
-    board.close(IssueNumber::from(7));
+    board.add_ticket(ticket(3, Some(2), "Blocked by: #6 #7", TicketState::Ready));
+    board.add_ticket(ticket(6, Some(2), "", TicketState::Blocked));
+    board.close_not_planned(TicketId::from(6));
+    board.add_ticket(ticket(7, Some(2), "", TicketState::Done));
+    board.close(TicketId::from(7));
 
     let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
     let text = prepared.plan.render_text();
@@ -535,9 +530,9 @@ fn a_blocker_closed_without_the_done_label_lets_its_dependent_launch() {
     let state_dir = dir.path().join(".zaf");
     let board = FakeBoard::default();
     board.add_ticket(epic(2));
-    board.add_ticket(ticket(3, Some(2), "Blocked by: #6", TaskLabel::Ready));
-    board.add_ticket(ticket(6, Some(2), "", TaskLabel::Claimed));
-    board.close(IssueNumber::from(6));
+    board.add_ticket(ticket(3, Some(2), "Blocked by: #6", TicketState::Ready));
+    board.add_ticket(ticket(6, Some(2), "", TicketState::Claimed));
+    board.close(TicketId::from(6));
 
     let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
 
@@ -547,21 +542,21 @@ fn a_blocker_closed_without_the_done_label_lets_its_dependent_launch() {
         "{}",
         prepared.plan.render_text()
     );
-    assert_eq!(prepared.plan.launches[0].tasks, [IssueNumber::from(3)]);
+    assert_eq!(prepared.plan.launches[0].tasks, [TicketId::from(3)]);
 }
 
 #[test]
 fn the_snapshot_reads_a_cycle_through_open_tasks_that_are_not_ready() {
     let board = FakeBoard::default();
     board.add_ticket(epic(2));
-    board.add_ticket(ticket(3, Some(2), "Blocked by: #4", TaskLabel::Ready));
-    board.add_ticket(ticket(4, Some(2), "Blocked by: #5", TaskLabel::Blocked));
-    board.add_ticket(ticket(5, Some(2), "Blocked by: #4", TaskLabel::Blocked));
+    board.add_ticket(ticket(3, Some(2), "Blocked by: #4", TicketState::Ready));
+    board.add_ticket(ticket(4, Some(2), "Blocked by: #5", TicketState::Blocked));
+    board.add_ticket(ticket(5, Some(2), "Blocked by: #4", TicketState::Blocked));
 
     let read = snapshot(&board).expect("snapshot");
     assert_eq!(
         read.open.keys().copied().collect::<Vec<_>>(),
-        [IssueNumber::from(4), IssueNumber::from(5)]
+        [TicketId::from(4), TicketId::from(5)]
     );
     let text = tick::plan(
         &read,
@@ -605,7 +600,7 @@ fn a_launch_whose_process_is_gone_is_recorded_as_lost() {
     );
     assert!(
         board
-            .comments(IssueNumber::from(2))
+            .comments(TicketId::from(2))
             .contains(&"<!-- zaf:exit team instance 1 on #2 lost -->".to_owned())
     );
     assert_eq!(second.plan.launches[0].instance, instance(3, 2));
@@ -618,15 +613,11 @@ fn a_lost_instances_tasks_are_released_and_a_question_is_kept() {
     let board = board();
     prepare(&board, &state_dir, &manifest(), &|_| true, &holder(100)).expect("first tick");
     let lost = instance(1, 2);
-    let (waiting, stuck, other) = (
-        IssueNumber::from(4),
-        IssueNumber::from(3),
-        IssueNumber::from(13),
-    );
+    let (waiting, stuck, other) = (TicketId::from(4), TicketId::from(3), TicketId::from(13));
     board.claim(stuck, &lost).expect("claims #3");
     board.claim(waiting, &lost).expect("claims #4");
     board
-        .label(waiting, TaskLabel::Question)
+        .set_state(waiting, TicketState::Question)
         .expect("#4 waits on a question");
     // Held by an instance that is not lost: stays held.
     board.claim(other, &instance(9, 12)).expect("claims #13");
@@ -651,10 +642,10 @@ fn a_lost_instances_tasks_are_released_and_a_question_is_kept() {
         },
     ];
     assert_eq!(second.released, expected);
-    let label = |task| board.task(task).expect("task").label;
-    assert_eq!(label(stuck), Some(TaskLabel::Ready));
-    assert_eq!(label(waiting), Some(TaskLabel::Question));
-    assert_eq!(label(other), Some(TaskLabel::Claimed));
+    let label = |task| board.task(task).expect("task").state;
+    assert_eq!(label(stuck), Some(TicketState::Ready));
+    assert_eq!(label(waiting), Some(TicketState::Question));
+    assert_eq!(label(other), Some(TicketState::Claimed));
     for task in [stuck, waiting] {
         let comments = board.comments(task);
         assert_eq!(comments.len(), 1, "{comments:?}");
@@ -676,7 +667,7 @@ fn a_tick_with_nothing_lost_releases_nothing() {
     let board = board();
     prepare(&board, &state_dir, &manifest(), &|_| true, &holder(100)).expect("first tick");
     board
-        .claim(IssueNumber::from(3), &instance(1, 2))
+        .claim(TicketId::from(3), &instance(1, 2))
         .expect("claims #3");
     let second = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("second tick");
     assert!(second.released.is_empty());
@@ -886,8 +877,8 @@ fn launches_run_in_parallel_threads_and_all_are_joined() {
         .collect();
     seen.sort();
     assert_eq!(seen, ["team instance 1 on #2", "team instance 2 on #12"]);
-    assert_eq!(board.comments(IssueNumber::from(2)).len(), 2);
-    assert_eq!(board.comments(IssueNumber::from(12)).len(), 2);
+    assert_eq!(board.comments(TicketId::from(2)).len(), 2);
+    assert_eq!(board.comments(TicketId::from(12)).len(), 2);
 }
 
 #[test]
@@ -985,8 +976,8 @@ fn a_dry_run_names_each_launch_and_its_command_line_and_writes_nothing() {
         !state_dir.exists(),
         "nothing written under the state folder"
     );
-    assert!(board.comments(IssueNumber::from(2)).is_empty());
-    assert!(board.comments(IssueNumber::from(12)).is_empty());
+    assert!(board.comments(TicketId::from(2)).is_empty());
+    assert!(board.comments(TicketId::from(12)).is_empty());
 }
 
 #[test]
@@ -1007,7 +998,7 @@ fn a_dry_run_reports_a_dead_launch_as_lost_without_recording_it() {
         "the state is untouched"
     );
     assert!(
-        board.comments(IssueNumber::from(2)).is_empty(),
+        board.comments(TicketId::from(2)).is_empty(),
         "no lost comment"
     );
 }
@@ -1029,7 +1020,7 @@ fn a_killed_tick_leaves_its_running_instance_its_slot_and_its_claims() {
     prepare(&board, &state_dir, &manifest(), &|_| true, &holder(100)).expect("first tick");
     instance_holds(&state_dir, "team-instance-1-on-2", 500);
     board
-        .claim(IssueNumber::from(3), &instance(1, 2))
+        .claim(TicketId::from(3), &instance(1, 2))
         .expect("the instance claims #3");
 
     // The first tick (100) is gone; instance 1 (500) still runs; instance 2 never started.
@@ -1055,7 +1046,7 @@ fn a_tick_that_outlives_its_instance_holds_no_slot_and_the_next_tick_takes_its_t
     prepare(&board, &state_dir, &manifest(), &|_| true, &holder(100)).expect("first tick");
     instance_holds(&state_dir, "team-instance-1-on-2", 500);
     instance_holds(&state_dir, "team-instance-2-on-12", 600);
-    let stuck = IssueNumber::from(3);
+    let stuck = TicketId::from(3);
     board
         .claim(stuck, &instance(1, 2))
         .expect("the instance claims #3");
@@ -1081,7 +1072,7 @@ fn a_tick_that_outlives_its_instance_holds_no_slot_and_the_next_tick_takes_its_t
     assert_eq!(second.plan.slots.running, 0);
     assert_eq!(
         second.plan.launches[0].tasks,
-        [IssueNumber::from(3), IssueNumber::from(4)],
+        [TicketId::from(3), TicketId::from(4)],
         "the freed task launches again"
     );
 }
@@ -1098,7 +1089,7 @@ fn a_lost_launch_is_recorded_once() {
     let third = prepare(&board, &state_dir, &manifest(), &table, &tick()).expect("third tick");
     assert!(third.lost.is_empty(), "{:?}", third.lost);
     let lost_comments = board
-        .comments(IssueNumber::from(2))
+        .comments(TicketId::from(2))
         .into_iter()
         .filter(|comment| comment.ends_with(" lost -->"))
         .count();

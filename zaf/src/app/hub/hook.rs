@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::domain::IssueNumber;
+use crate::domain::TicketId;
 
 /// The worker of a call made inside a slice workspace.
 pub const PROGRAMMER: &str = "programmer";
@@ -135,7 +135,7 @@ fn words_of(command: &str) -> Vec<&str> {
 /// The task of the slice workspace `cwd` is in, when it is in one: `cwd` under `workspaces`, its
 /// first components naming a slice by the `task_pattern` (`feature/{version}-{epic}-{task}`).
 /// A slice name holds `/`, so each prefix of the path under `workspaces` is tried, shortest first.
-pub fn task_in_workspace(cwd: &Path, workspaces: &Path, task_pattern: &str) -> Option<IssueNumber> {
+pub fn task_in_workspace(cwd: &Path, workspaces: &Path, task_pattern: &str) -> Option<TicketId> {
     let relative = cwd.strip_prefix(workspaces).ok()?;
     let parts: Vec<String> = relative
         .components()
@@ -144,7 +144,7 @@ pub fn task_in_workspace(cwd: &Path, workspaces: &Path, task_pattern: &str) -> O
     let pieces = pieces_of(task_pattern);
     (1..=parts.len())
         .find_map(|count| walk(&pieces, &parts[..count].join("/"), None))
-        .map(IssueNumber::from)
+        .map(TicketId::from)
 }
 
 /// A branch pattern as literals and placeholders.
