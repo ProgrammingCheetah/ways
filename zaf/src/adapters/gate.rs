@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use super::slot::Slot;
 use crate::manifest::{CommandLine, GateSection};
 use crate::ports::{Gate, GateLevel, GateRun, GateVerdict, PortError};
 
@@ -34,6 +35,7 @@ pub struct ShellGate {
     dir: PathBuf,
     gate: GateSection,
     env: BTreeMap<String, String>,
+    slot: Option<Slot>,
 }
 
 impl ShellGate {
@@ -46,7 +48,15 @@ impl ShellGate {
             dir: dir.to_owned(),
             gate: gate.clone(),
             env: BTreeMap::new(),
+            slot: None,
         }
+    }
+
+    /// The same gate with every line run inside `slot`; without one, lines run as they are.
+    #[must_use]
+    pub fn with_slot(mut self, slot: Option<Slot>) -> Self {
+        self.slot = slot;
+        self
     }
 
     /// The same gate with `env` set on every run, on top of the inherited environment: a
@@ -68,9 +78,17 @@ impl ShellGate {
         let stderr = stdout
             .try_clone()
             .map_err(|error| file_error(&path, &error))?;
+        // The record lives as long as the run: it drops when this function returns.
+        let (_held, script) = match &self.slot {
+            Some(slot) => (
+                Some(slot.hold(&level.to_string())?),
+                slot.command(command_line.as_ref()),
+            ),
+            None => (None, command_line.as_ref().to_owned()),
+        };
         let status = Command::new("sh")
             .arg("-c")
-            .arg(command_line.as_ref())
+            .arg(script)
             .current_dir(&self.dir)
             .envs(&self.env)
             .stdin(Stdio::null())

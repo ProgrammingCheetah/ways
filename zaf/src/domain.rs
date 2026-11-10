@@ -12,6 +12,7 @@ mod instance;
 mod labels;
 mod profile;
 mod quote;
+mod slot;
 mod task;
 mod text;
 
@@ -29,6 +30,7 @@ pub use instance::{Instance, InstanceNumber, RoleName};
 pub use labels::{PageStatus, TaskLabel};
 pub use profile::Profile;
 pub use quote::Quote;
+pub use slot::{SLOTS_DIR, SlotRecord};
 pub use task::{
     SecurityTrigger, TaskField, TaskModel, TaskProblem, TaskSize, TaskTemplate, TaskTemplateError,
 };

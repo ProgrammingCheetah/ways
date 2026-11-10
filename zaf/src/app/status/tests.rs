@@ -423,3 +423,60 @@ fn status_names_dead_blockers_and_keeps_a_plain_open_blocker_quiet() {
         serde_json::json!({ "blocker": 99, "on": 3, "reason": "not an issue" })
     );
 }
+
+/// Writes `.zaf/slots/<pid>` as a slotted gate run would, its process started at `start`.
+fn slot_record(state_dir: &Path, pid: u32, holder: &str, level: &str, start: &str) {
+    let folder = state_dir.join(SLOTS_DIR);
+    std::fs::create_dir_all(&folder).expect("slots dir");
+    let record = SlotRecord {
+        holder: holder.to_owned(),
+        level: level.to_owned(),
+        since: "2026-11-09T10:00:00Z".to_owned(),
+        start: start.to_owned(),
+    };
+    std::fs::write(
+        folder.join(pid.to_string()),
+        serde_json::to_string(&record).expect("json"),
+    )
+    .expect("record");
+}
+
+#[test]
+fn status_shows_who_holds_a_slot() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    slot_record(dir.path(), 4242, "team instance 1 on #2", "full", "1000");
+    slot_record(dir.path(), 4343, "the Engineer", "tests", "2000");
+    // Pid 4343 is gone, and pid 4242 was reused by a process that started later.
+    let only_4242_at_1000 = |holder: &Holder| holder.pid == 4242 && holder.start == "1000";
+
+    let screen = status(&board(), dir.path(), 2, &only_4242_at_1000).expect("status");
+
+    assert_eq!(
+        screen.held_slots,
+        [SlotLine {
+            holder: "team instance 1 on #2".to_owned(),
+            level: "full".to_owned(),
+            since: "2026-11-09T10:00:00Z".to_owned(),
+        }]
+    );
+    let text = screen.render_text();
+    assert!(
+        text.contains("slot: team instance 1 on #2 full since 2026-11-09T10:00:00Z\n"),
+        "{text}"
+    );
+    assert!(!text.contains("the Engineer"), "{text}");
+    assert!(
+        !dir.path().join(SLOTS_DIR).join("4343").exists(),
+        "a record left by a dead process is dropped"
+    );
+    let json: serde_json::Value = serde_json::from_str(&screen.to_json()).expect("json");
+    assert_eq!(json["held_slots"][0]["level"], "full");
+}
+
+#[test]
+fn a_screen_without_slot_records_has_no_slot_line() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let screen = status(&board(), dir.path(), 2, &all_alive).expect("status");
+    assert!(screen.held_slots.is_empty());
+    assert!(!screen.render_text().contains("slot:"));
+}
