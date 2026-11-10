@@ -7,7 +7,7 @@
 use std::time::SystemTime;
 
 use super::PortError;
-use crate::domain::{Epic, Instance, Signature, Standing, Ticket, TicketId, TicketState};
+use crate::domain::{Epic, Instance, NewTask, Signature, Standing, Ticket, TicketId, TicketState};
 
 /// What a claim did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,6 +151,16 @@ pub trait Board {
         let _ = signature;
         Err(PortError::Rejected(format!(
             "this board cannot sign {epic}"
+        )))
+    }
+
+    /// Files a task under its epic, in its state and group, and returns its id.
+    ///
+    /// A board that cannot file one answers [`PortError::Rejected`] unless it overrides this.
+    fn file_task(&self, task: &NewTask) -> Result<TicketId, PortError> {
+        Err(PortError::Rejected(format!(
+            "this board cannot file a task under {}",
+            task.epic
         )))
     }
 

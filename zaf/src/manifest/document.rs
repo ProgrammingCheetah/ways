@@ -111,6 +111,15 @@ impl Manifest {
             BoardKind::GithubIssues => {
                 require_key("board", "repo", self.board.kind, self.board.repo.is_some())?
             }
+            BoardKind::GithubProjects => {
+                require_key("board", "repo", self.board.kind, self.board.repo.is_some())?;
+                require_key(
+                    "board",
+                    "project",
+                    self.board.kind,
+                    self.board.project.is_some(),
+                )?;
+            }
         }
         if let Some(forge) = &self.forge {
             match forge.kind {

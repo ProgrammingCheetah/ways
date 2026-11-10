@@ -481,3 +481,80 @@ fn a_forge_that_cannot_answer_changes_nothing() {
     assert!(matches!(unknown.done(), Err(BoardError::Unreadable(_))));
     assert_eq!(unknown.label(), Some(TicketState::Claimed));
 }
+
+/// A task body in the template, as a planning instance files it.
+const TASK_BODY: &str = "\
+Goal: Members can export their reading list as a CSV file.
+Owned paths: src/export/**
+Interfaces: ExportSink (defined here)
+Design pages: 1001
+Architecture: export, ExportSink
+Acceptance:
+  - an empty list exports a header row only
+Tests: export_empty_list_writes_header
+Security trigger: no
+Model: sonnet
+Size: S
+Blocked by: none
+";
+
+fn new_task(title: &str, body: &str, state: TicketState) -> NewTask {
+    NewTask {
+        epic: TicketId::from(1),
+        title: title.into(),
+        body: body.into(),
+        state,
+        group: Some("export".into()),
+    }
+}
+
+fn board_with_epic() -> FakeBoard {
+    let board = FakeBoard::default();
+    board.add_epic(TicketId::from(1), "exports");
+    board
+}
+
+#[test]
+fn a_filed_task_opens_under_its_epic_and_a_second_filing_is_quiet() {
+    let board = board_with_epic();
+    let task = new_task("export as CSV", TASK_BODY, TicketState::Ready);
+    let filed = file(&board, &task).expect("files");
+    let FileOutcome::Filed(id) = filed else {
+        panic!("expected a new task, got {filed:?}");
+    };
+    let epic = board.epic(TicketId::from(1)).expect("the epic");
+    let listed = epic.tasks.iter().find(|t| t.number == id).expect("listed");
+    assert_eq!(listed.state, Some(TicketState::Ready));
+    assert_eq!(listed.group.as_ref().map(|g| g.as_str()), Some("export"));
+    assert_eq!(file(&board, &task), Ok(FileOutcome::AlreadyFiled(id)));
+    assert_eq!(
+        board.epic(TicketId::from(1)).expect("the epic").tasks.len(),
+        1
+    );
+}
+
+#[test]
+fn a_body_outside_the_template_or_a_state_a_task_cannot_open_in_files_nothing() {
+    let board = board_with_epic();
+    let loose = new_task("export", "Just do the export.", TicketState::Ready);
+    assert!(matches!(file(&board, &loose), Err(BoardError::NotATask(_))));
+    let claimed = new_task("export", TASK_BODY, TicketState::Claimed);
+    assert_eq!(
+        file(&board, &claimed),
+        Err(BoardError::NotAnOpeningState(TicketState::Claimed))
+    );
+    assert!(
+        board
+            .epic(TicketId::from(1))
+            .expect("the epic")
+            .tasks
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_task_filed_under_no_open_epic_is_refused() {
+    let board = FakeBoard::default();
+    let task = new_task("export", TASK_BODY, TicketState::Blocked);
+    assert!(matches!(file(&board, &task), Err(BoardError::Port(_))));
+}

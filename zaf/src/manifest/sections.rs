@@ -61,7 +61,14 @@ pub struct ProjectSection {
 pub enum BoardKind {
     /// Issues of a forge repository, with sub-issues and labels.
     GithubIssues,
+    /// Issues of a forge repository on a GitHub Project, each task's state in a field of the
+    /// Project instead of a label.
+    GithubProjects,
 }
+
+/// The single-select field a `github-projects` board keeps each task's state in, unless
+/// `[board] state_field` names another.
+pub const DEFAULT_STATE_FIELD: &str = "zaf state";
 
 /// `[board]`: required; the one port every project has.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
@@ -72,6 +79,17 @@ pub struct BoardSection {
     /// The repository holding the issues.
     #[serde(default)]
     pub repo: Option<RepoName>,
+    /// `github-projects`: the Project's number among its owner's projects.
+    #[serde(default)]
+    pub project: Option<u64>,
+    /// `github-projects`: the user or organization owning the Project; the repository's
+    /// owner when absent.
+    #[serde(default)]
+    pub owner: Option<String>,
+    /// `github-projects`: the single-select field holding each task's state;
+    /// [`DEFAULT_STATE_FIELD`] when absent.
+    #[serde(default)]
+    pub state_field: Option<String>,
 }
 
 /// The VCS backends zaf knows.

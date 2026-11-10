@@ -5,8 +5,8 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::SystemTime;
 
 use crate::domain::{
-    CHALLENGER_ROLE, Epic, EpicTask, GroupName, Instance, Signature, Standing, Ticket, TicketId,
-    TicketState,
+    CHALLENGER_ROLE, Epic, EpicTask, GroupName, Instance, NewTask, Signature, Standing, Ticket,
+    TicketId, TicketState,
 };
 use crate::ports::{Board, ClaimOutcome, ClaimRecord, NewQuestion, PortError};
 
@@ -205,6 +205,7 @@ impl Board for FakeBoard {
                     .filter(|task| task.ticket.epic == Some(epic.ticket.id))
                     .map(|task| EpicTask {
                         number: task.ticket.id,
+                        title: task.ticket.title.clone(),
                         state: task.ticket.state,
                         standing: task.standing(),
                         group: task.group.clone(),
@@ -218,6 +219,27 @@ impl Board for FakeBoard {
             })
             .collect();
         Ok(epics)
+    }
+
+    fn file_task(&self, task: &NewTask) -> Result<TicketId, PortError> {
+        let id = {
+            let mut state = self.state();
+            state.issue_mut(task.epic)?;
+            let highest = state.issues.keys().next_back().map_or(0, |id| id.get());
+            TicketId::from(highest + 1)
+        };
+        self.add_ticket(Ticket {
+            id,
+            epic: Some(task.epic),
+            title: task.title.clone(),
+            body: task.body.clone(),
+            state: Some(task.state),
+            url: link(id).into(),
+        });
+        if let Some(group) = &task.group {
+            self.set_group(id, group.as_str());
+        }
+        Ok(id)
     }
 
     fn sign(&self, epic: TicketId, signature: &Signature) -> Result<(), PortError> {

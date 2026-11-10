@@ -26,6 +26,8 @@ text_newtype! {
 pub struct EpicTask {
     /// Its id.
     pub number: TicketId,
+    /// Its title.
+    pub title: TicketTitle,
     /// Its state, if it has one.
     pub state: Option<TicketState>,
     /// Where it stands: open, done (labelled so, or closed as completed), or closed as not

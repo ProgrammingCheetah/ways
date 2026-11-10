@@ -7,8 +7,10 @@ pub(super) const ISSUE_FIELDS: &str = "number,title,body,labels,parent,state,com
 
 /// An issue as `gh issue view --json` prints it.
 #[derive(Debug, Clone, Deserialize)]
-pub(super) struct IssueRow {
+pub struct IssueRow {
     pub number: u64,
+    /// Absent from a list read only for numbers.
+    #[serde(default)]
     pub title: String,
     #[serde(default)]
     pub body: String,
@@ -31,6 +33,7 @@ pub(super) const STANDING_FIELDS: &str = "number,state,stateReason,labels,url";
 /// An issue read only for where it stands as a blocker.
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct StandingRow {
+    pub number: u64,
     #[serde(default)]
     pub state: String,
     /// Why a closed issue was closed: `COMPLETED`, `NOT_PLANNED` or `DUPLICATE`; empty when
@@ -46,19 +49,19 @@ pub(super) struct StandingRow {
 
 /// A label, or anything else read only by name.
 #[derive(Debug, Clone, Deserialize)]
-pub(super) struct NameRow {
+pub struct NameRow {
     pub name: String,
 }
 
 /// An issue or pull request read only by number.
 #[derive(Debug, Clone, Copy, Deserialize)]
-pub(super) struct NumberRow {
+pub struct NumberRow {
     pub number: u64,
 }
 
 /// A comment on an issue as `gh issue view --json comments` prints it.
 #[derive(Debug, Clone, Deserialize)]
-pub(super) struct IssueCommentRow {
+pub struct IssueCommentRow {
     pub body: String,
     /// Ends in `#issuecomment-<id>`, the id the REST API edits by.
     #[serde(default)]

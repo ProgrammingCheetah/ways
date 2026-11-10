@@ -12,15 +12,15 @@ use std::time::Duration;
 
 use crate::adapters::design::DirDesign;
 use crate::adapters::gate::ShellGate;
-use crate::adapters::github::{GhCommand, GithubBoard, GithubForge};
+use crate::adapters::github::{GhCommand, GithubBoard, GithubForge, ProjectRef};
 use crate::adapters::jj::JjVcs;
 use crate::adapters::runner::{ProcessRunner, single_quote};
 use crate::adapters::shell::SystemShell;
 use crate::app::profile::{self, CONFIG_DIR_VAR};
 use crate::domain::{Profile, RoleName};
 use crate::manifest::{
-    BoardKind, CommandLine, DesignKind, Effort, FOLDER_FILE, ForgeKind, LEGACY_FILE, Manifest,
-    ManifestError, ModelName, ProjectFiles, ROOT_FILE, RunnerName, VcsKind,
+    BoardKind, CommandLine, DEFAULT_STATE_FIELD, DesignKind, Effort, FOLDER_FILE, ForgeKind,
+    LEGACY_FILE, Manifest, ManifestError, ModelName, ProjectFiles, ROOT_FILE, RunnerName, VcsKind,
     workspaces_path_lenient,
 };
 use crate::ports::{Board, Design, Forge, Gate, RunRequest, Runner, Shell, SliceName, Vcs};
@@ -240,6 +240,32 @@ impl Composition {
                     kind: section.kind.to_string(),
                 })?;
                 Ok(Box::new(GithubBoard::from(GhCommand::from(repo))))
+            }
+            BoardKind::GithubProjects => {
+                let missing = |key: &'static str| CompositionError::MissingKey {
+                    section: "board",
+                    key,
+                    kind: section.kind.to_string(),
+                };
+                let repo = section.repo.clone().ok_or_else(|| missing("repo"))?;
+                let number = section.project.ok_or_else(|| missing("project"))?;
+                let owner = section.owner.clone().unwrap_or_else(|| {
+                    repo.as_ref()
+                        .split_once('/')
+                        .map_or_else(|| repo.to_string(), |(owner, _)| owner.to_owned())
+                });
+                let project = ProjectRef {
+                    owner,
+                    number,
+                    field: section
+                        .state_field
+                        .clone()
+                        .unwrap_or_else(|| DEFAULT_STATE_FIELD.to_owned()),
+                };
+                Ok(Box::new(GithubBoard::on_project(
+                    GhCommand::from(repo),
+                    project,
+                )))
             }
         }
     }

@@ -145,6 +145,7 @@ pub fn event_of(verb: &Verb) -> Option<Event> {
             super::BoardAction::Done { task } => Event::done(*task, "finished"),
             super::BoardAction::Question { on, .. } => Event::done(*on, "question raised"),
             super::BoardAction::Ruling { .. } => Event::done(None, "question ruled"),
+            super::BoardAction::File { .. } => Event::done(None, "task filed"),
             // A heartbeat on the ticket and a listing change nothing the hub shows.
             super::BoardAction::Ready | super::BoardAction::Report { .. } => None,
         },
