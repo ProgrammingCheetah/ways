@@ -29,4 +29,6 @@ pub use instance::{Instance, InstanceNumber, RoleName};
 pub use labels::{PageStatus, TaskLabel};
 pub use profile::Profile;
 pub use quote::Quote;
-pub use task::{SecurityTrigger, TaskField, TaskModel, TaskSize, TaskTemplate, TaskTemplateError};
+pub use task::{
+    SecurityTrigger, TaskField, TaskModel, TaskProblem, TaskSize, TaskTemplate, TaskTemplateError,
+};

@@ -1,4 +1,4 @@
-//! `zaf board ready|claim|report|question|ruling|done`.
+//! `zaf board ready|claim|report|question|ruling|done|lint`.
 //!
 //! The verbs that act as an instance (`claim`, `report`) read who it is from
 //! [`INSTANCE_VAR`], which the spawner sets, in the form the board prints it:
@@ -6,7 +6,7 @@
 
 use serde_json::json;
 
-use super::exit::{BACKEND, REFUSED, code_for, fail_composition};
+use super::exit::{BACKEND, OK, REFUSED, code_for, fail_composition};
 use super::slice::print;
 use super::{BoardAction, Cli};
 use crate::app::actions::SliceRecords;
@@ -134,6 +134,25 @@ pub fn run(cli: &Cli, action: &BoardAction) -> u8 {
                 print(cli, &json, format!("{task} {terse}"))
             })
         }
+        BoardAction::Lint { issue } => board::lint(board, *issue).map(|problems| {
+            let json = json!({
+                "issue": issue.get(),
+                "problems": problems
+                    .iter()
+                    .map(|problem| json!({
+                        "field": problem.name(),
+                        "value": problem.value(),
+                        "accepts": problem.accepts(),
+                    }))
+                    .collect::<Vec<_>>(),
+            });
+            let lines: Vec<String> = problems.iter().map(ToString::to_string).collect();
+            // A body that parses prints nothing unless the JSON asks for its empty list.
+            if !problems.is_empty() || cli.json {
+                print(cli, &json, lines.join("\n"));
+            }
+            if problems.is_empty() { OK } else { REFUSED }
+        }),
         BoardAction::Ruling { question, text } => {
             let command = RulingCommand {
                 question: *question,

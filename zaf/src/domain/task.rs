@@ -4,6 +4,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
+use strum::VariantArray;
+
 use super::IssueNumber;
 
 /// A field of the task template, by the label it carries in the ticket.
@@ -172,6 +174,266 @@ pub enum TaskTemplateError {
         /// The value as written.
         value: String,
     },
+}
+
+/// What a line must look like when it is neither a field nor an acceptance item.
+const LINE_ACCEPTS: &str = "Field: value | - item under Acceptance";
+
+/// What `Blocked by` accepts: `-` and `none` also read as empty.
+const BLOCKERS_ACCEPTS: &str = "— | #<issue>, #<issue>";
+
+/// One thing wrong with a task body, as `zaf board lint` names it.
+///
+/// [`TaskTemplate::problems`] returns every one of them, where parsing stops at the first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TaskProblem {
+    /// A field whose value is outside what it accepts.
+    Bad {
+        /// The field.
+        field: TaskField,
+        /// The value as written.
+        value: String,
+        /// The forms the field accepts.
+        accepts: String,
+    },
+    /// A field that is left out or left empty.
+    Missing(TaskField),
+    /// Neither `Scope` nor `Owned paths` is given.
+    MissingScope,
+    /// A `Label: value` line whose label is not a template field.
+    Unknown {
+        /// The 1-based line number.
+        line: usize,
+        /// The label as written.
+        label: String,
+    },
+    /// A line that is neither a field, a continuation nor an acceptance item.
+    Misplaced {
+        /// The 1-based line number.
+        line: usize,
+        /// The line as written.
+        text: String,
+    },
+}
+
+impl TaskProblem {
+    /// What the problem is about: the field's label, or `line <n>`.
+    pub fn name(&self) -> String {
+        match self {
+            Self::Bad { field, .. } | Self::Missing(field) => field.to_string(),
+            Self::MissingScope => format!("{} or {}", TaskField::Scope, TaskField::OwnedPaths),
+            Self::Unknown { line, .. } | Self::Misplaced { line, .. } => format!("line {line}"),
+        }
+    }
+
+    /// What was written, when something was.
+    pub fn value(&self) -> Option<&str> {
+        match self {
+            Self::Bad { value, .. } => Some(value),
+            Self::Unknown { label, .. } => Some(label),
+            Self::Misplaced { text, .. } => Some(text),
+            Self::Missing(_) | Self::MissingScope => None,
+        }
+    }
+
+    /// What would have been accepted, when that is a short list of forms.
+    pub fn accepts(&self) -> Option<String> {
+        match self {
+            Self::Bad { accepts, .. } => Some(accepts.clone()),
+            Self::Misplaced { .. } => Some(LINE_ACCEPTS.to_owned()),
+            Self::Unknown { .. } => Some(forms::<TaskField>()),
+            Self::Missing(_) | Self::MissingScope => None,
+        }
+    }
+}
+
+impl fmt::Display for TaskProblem {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Bad {
+                field,
+                value,
+                accepts,
+            } => {
+                let written: Vec<&str> = value.lines().collect();
+                write!(formatter, "{field}: {} (accepts: {accepts})", written.join(" "))
+            }
+            Self::Missing(_) | Self::MissingScope => write!(formatter, "{}: missing", self.name()),
+            Self::Unknown { line, label } => {
+                write!(formatter, "line {line}: unknown field {label}")
+            }
+            Self::Misplaced { line, text } => {
+                write!(formatter, "line {line}: {text} (accepts: {LINE_ACCEPTS})")
+            }
+        }
+    }
+}
+
+/// Where the line scan of [`TaskTemplate::problems`] stands.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reading {
+    /// Before any field.
+    Nothing,
+    /// Inside a field: its continuation lines and, under `Acceptance`, its items belong to it.
+    Field(TaskField),
+    /// Inside a field already reported: its lines are not reported again.
+    Reported,
+}
+
+/// The forms a vocabulary field accepts, as written in a ticket.
+fn forms<T: VariantArray + ToString + 'static>() -> String {
+    let forms: Vec<String> = T::VARIANTS.iter().map(ToString::to_string).collect();
+    forms.join(" | ")
+}
+
+/// A field given as text that must be one of a few forms, checked by `parses`.
+fn check_form(
+    problems: &mut Vec<TaskProblem>,
+    values: &BTreeMap<TaskField, String>,
+    field: TaskField,
+    accepts: &str,
+    parses: impl Fn(&str) -> bool,
+) {
+    match values.get(&field) {
+        None => problems.push(TaskProblem::Missing(field)),
+        Some(value) if !parses(value) => problems.push(TaskProblem::Bad {
+            field,
+            value: value.clone(),
+            accepts: accepts.to_owned(),
+        }),
+        Some(_) => {}
+    }
+}
+
+impl TaskTemplate {
+    /// Every problem a task body has, in line order and then in template order; none when
+    /// it parses as a [`TaskTemplate`].
+    pub fn problems(text: &str) -> Vec<TaskProblem> {
+        let mut problems = Vec::new();
+        let mut values: BTreeMap<TaskField, String> = BTreeMap::new();
+        let mut items = 0_usize;
+        let mut reading = Reading::Nothing;
+
+        for (index, raw_line) in text.lines().enumerate() {
+            let line = index + 1;
+            let content = raw_line.trim();
+            if content.is_empty() {
+                continue;
+            }
+            let misplaced = TaskProblem::Misplaced {
+                line,
+                text: content.to_owned(),
+            };
+            if content.starts_with("- ") {
+                match reading {
+                    Reading::Field(TaskField::Acceptance) => items += 1,
+                    Reading::Reported => {}
+                    _ => problems.push(misplaced),
+                }
+            } else if raw_line.starts_with([' ', '\t']) {
+                match reading {
+                    Reading::Field(field) => {
+                        if let Some(continued) = values.get_mut(&field) {
+                            if !continued.is_empty() {
+                                continued.push('\n');
+                            }
+                            continued.push_str(content);
+                        }
+                    }
+                    Reading::Reported => {}
+                    Reading::Nothing => problems.push(misplaced),
+                }
+            } else if let Some((label, value)) = content.split_once(':') {
+                let label = label.trim();
+                reading = match label.parse::<TaskField>() {
+                    Err(_) => {
+                        problems.push(TaskProblem::Unknown {
+                            line,
+                            label: label.to_owned(),
+                        });
+                        Reading::Reported
+                    }
+                    Ok(field) if values.contains_key(&field) => {
+                        problems.push(TaskProblem::Bad {
+                            field,
+                            value: value.trim().to_owned(),
+                            accepts: "one line".to_owned(),
+                        });
+                        Reading::Reported
+                    }
+                    Ok(field) => {
+                        values.insert(field, value.trim().to_owned());
+                        Reading::Field(field)
+                    }
+                };
+            } else {
+                problems.push(misplaced);
+            }
+        }
+
+        match values.get(&TaskField::Goal) {
+            Some(goal) if !goal.is_empty() => {}
+            _ => problems.push(TaskProblem::Missing(TaskField::Goal)),
+        }
+        match (
+            values.contains_key(&TaskField::Scope),
+            values.contains_key(&TaskField::OwnedPaths),
+        ) {
+            (true, _) if !values.contains_key(&TaskField::OutOfScope) => {
+                problems.push(TaskProblem::Missing(TaskField::OutOfScope));
+            }
+            (false, false) => problems.push(TaskProblem::MissingScope),
+            _ => {}
+        }
+        for field in [
+            TaskField::Interfaces,
+            TaskField::DesignPages,
+            TaskField::Tests,
+        ] {
+            if !values.contains_key(&field) {
+                problems.push(TaskProblem::Missing(field));
+            }
+        }
+        match values.get(&TaskField::Acceptance) {
+            None => problems.push(TaskProblem::Missing(TaskField::Acceptance)),
+            Some(inline) if !inline.is_empty() => problems.push(TaskProblem::Bad {
+                field: TaskField::Acceptance,
+                value: inline.clone(),
+                accepts: "- item, one per line below".to_owned(),
+            }),
+            Some(_) if items == 0 => problems.push(TaskProblem::Missing(TaskField::Acceptance)),
+            Some(_) => {}
+        }
+        check_form(
+            &mut problems,
+            &values,
+            TaskField::SecurityTrigger,
+            "no | yes <which>",
+            |value| value.parse::<SecurityTrigger>().is_ok(),
+        );
+        check_form(
+            &mut problems,
+            &values,
+            TaskField::Model,
+            &forms::<TaskModel>(),
+            |value| value.parse::<TaskModel>().is_ok(),
+        );
+        check_form(
+            &mut problems,
+            &values,
+            TaskField::Size,
+            &forms::<TaskSize>(),
+            |value| value.parse::<TaskSize>().is_ok(),
+        );
+        check_form(
+            &mut problems,
+            &values,
+            TaskField::BlockedBy,
+            BLOCKERS_ACCEPTS,
+            |value| parse_blockers(value).is_ok(),
+        );
+        problems
+    }
 }
 
 /// The body of a task ticket.

@@ -29,7 +29,7 @@ fn every_verb_is_listed() {
         .collect();
     assert_eq!(
         board_actions,
-        ["ready", "claim", "report", "question", "ruling", "done"]
+        ["ready", "claim", "report", "question", "ruling", "done", "lint"]
     );
     let slice = command.find_subcommand("slice").expect("slice");
     let slice_actions: Vec<&str> = slice
@@ -50,6 +50,7 @@ const BUILT: &[&str] = &[
     "board question",
     "board ruling",
     "board done",
+    "board lint",
     "brief",
     "changes",
     "check",
@@ -70,8 +71,9 @@ const BUILT: &[&str] = &[
 
 #[test]
 fn every_unbuilt_verb_exits_not_implemented() {
-    let invocations: [&[&str]; 24] = [
+    let invocations: [&[&str]; 25] = [
         &["board", "ready"],
+        &["board", "lint", "2"],
         &["board", "done", "2"],
         &["board", "claim", "#2"],
         &["board", "report", "2", "working"],

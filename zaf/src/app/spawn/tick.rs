@@ -33,6 +33,9 @@ pub struct Snapshot {
     pub open: Graph,
     /// Blockers that can never be seen closed, and why.
     pub dead: BTreeMap<IssueNumber, DeadReason>,
+    /// The ready tasks whose body does not follow the template, each with what is wrong
+    /// (the field names, or `line <n>`).
+    pub unparsed: BTreeMap<IssueNumber, Vec<String>>,
 }
 
 /// What the tick reads from the manifest.
@@ -107,6 +110,8 @@ pub enum TaskSkip {
     Running(String),
     /// It belongs to no epic.
     NoEpic,
+    /// Its body does not follow the template; the fields at fault, or `line <n>`.
+    DoesNotParse(Vec<String>),
 }
 
 /// What one tick decided.
@@ -176,6 +181,8 @@ pub fn plan(snapshot: &Snapshot, state: &SpawnState, level: Level, settings: Set
             tasks.push((ticket.number, TaskSkip::Claimed));
         } else if let Some(instance) = carried.get(&ticket.number.get()) {
             tasks.push((ticket.number, TaskSkip::Running((*instance).to_owned())));
+        } else if let Some(fields) = snapshot.unparsed.get(&ticket.number) {
+            tasks.push((ticket.number, TaskSkip::DoesNotParse(fields.clone())));
         } else if let Some(cycle) = cycles.iter().find(|cycle| cycle.contains(&ticket.number)) {
             tasks.push((ticket.number, TaskSkip::InCycle(cycle.clone())));
         } else if !open.is_empty() {

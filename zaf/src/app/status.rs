@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use super::guard::{self, GuardError, GuardState};
 use super::spawn::{self, blockers, blockers::DeadLine};
-use crate::domain::IssueNumber;
+use crate::domain::{IssueNumber, TaskTemplate};
 use crate::ports::{Board, PortError, Ticket};
 
 /// The spawner's state file under the state folder.
@@ -40,6 +40,17 @@ pub struct TicketLine {
     pub number: u64,
     /// Its title.
     pub title: String,
+}
+
+/// A ready task whose body does not follow the template, and what is wrong with it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct UnparsedLine {
+    /// Its issue number.
+    pub number: u64,
+    /// Its title.
+    pub title: String,
+    /// One line per problem, as `zaf board lint` prints them.
+    pub problems: Vec<String>,
 }
 
 /// A live claim.
@@ -87,8 +98,10 @@ pub struct Slots {
 /// The whole screen.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Status {
-    /// Tasks open for a claim.
+    /// Tasks open for a claim whose body follows the template.
     pub ready: Vec<TicketLine>,
+    /// Ready tasks whose body does not, which the spawner skips.
+    pub unparsed: Vec<UnparsedLine>,
     /// Claims held now.
     pub claimed: Vec<ClaimLine>,
     /// Running instances, from `spawn.state`: one slot each, however many tasks.
@@ -138,7 +151,20 @@ pub fn status(board: &dyn Board, state_dir: &Path, slots: u32) -> Result<Status,
         .iter()
         .map(blockers::DeadLine::from)
         .collect();
-    let ready = ready_tickets.into_iter().map(ticket_line).collect();
+    let mut ready = Vec::new();
+    let mut unparsed = Vec::new();
+    for ticket in ready_tickets {
+        let problems = TaskTemplate::problems(&ticket.body);
+        if problems.is_empty() {
+            ready.push(ticket_line(ticket));
+        } else {
+            unparsed.push(UnparsedLine {
+                number: ticket.number.get(),
+                title: ticket.title,
+                problems: problems.iter().map(ToString::to_string).collect(),
+            });
+        }
+    }
     let claimed = board
         .claims()?
         .into_iter()
@@ -160,6 +186,7 @@ pub fn status(board: &dyn Board, state_dir: &Path, slots: u32) -> Result<Status,
         .collect();
     Ok(Status {
         ready,
+        unparsed,
         claimed,
         slots: Slots {
             total: slots,
@@ -204,6 +231,15 @@ impl Status {
             self.ready.len(),
             numbers(self.ready.iter().map(|t| t.number))
         ));
+        if !self.unparsed.is_empty() {
+            line("Ready, does not parse:".to_owned());
+            for task in &self.unparsed {
+                line(format!("  #{} {}", task.number, task.title));
+                for problem in &task.problems {
+                    line(format!("    {problem}"));
+                }
+            }
+        }
         line(format!(
             "claimed   {}{}",
             self.claimed.len(),
