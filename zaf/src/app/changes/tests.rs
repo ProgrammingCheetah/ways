@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use super::*;
-use crate::app::slice::{SliceQuery, open, resolve};
+use crate::app::slice::{SliceQuery, resolve};
 use crate::domain::{IssueNumber, TaskLabel};
 use crate::fakes::{FakeBoard, FakeVcs};
 use crate::manifest::BranchesSection;
@@ -26,7 +26,7 @@ fn opened(vcs: &FakeVcs) -> SliceTarget {
         version: Some("v1".to_owned()),
     };
     let target = resolve(&board, &BranchesSection::default(), &query).expect("resolve");
-    open(vcs, &target).expect("open");
+    vcs.open(&target.slice, &target.base);
     vcs.place(&target.slice, &workspace()).expect("place");
     target
 }

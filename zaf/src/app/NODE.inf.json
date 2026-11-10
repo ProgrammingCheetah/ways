@@ -135,6 +135,16 @@
       "name": "status/",
       "role": "tests.rs",
       "node": false
+    },
+    {
+      "name": "update.rs",
+      "role": "zaf update: the newest zaf-v* release read live, its archive checked by sha256, probed with --version, renamed over the running binary",
+      "node": false
+    },
+    {
+      "name": "update/",
+      "role": "tests.rs",
+      "node": false
     }
   ],
   "notes": [

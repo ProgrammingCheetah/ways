@@ -1,15 +1,18 @@
 //! `zaf status`: the board, running instances, slots, guard and open questions on one screen.
 //!
-//! The board gives the ready tasks, the live claims and the open questions.
-//! `.zaf/spawn.state`, the spawner's file, gives what is running.
-//! The guard line is whatever `zaf guard` last wrote.
+//! Everything on it is read live. The board gives the ready tasks, the claims and the open
+//! questions. The run folders and the process table give what is running: an instance runs
+//! while the process recorded in its run folder does, so one that died frees its slot at
+//! once, with no tick in between. A claim held by an instance that no longer runs is shown
+//! as orphaned, not claimed: the next tick releases it. The guard line is whatever
+//! `zaf guard` last wrote.
 
 use std::path::{Path, PathBuf};
 
 use super::guard::{self, GuardError, GuardState};
 use super::spawn::{self, blockers, blockers::DeadLine};
 use crate::domain::{IssueNumber, TaskTemplate};
-use crate::ports::{Board, PortError, Ticket};
+use crate::ports::{Board, ClaimRecord, Holder, PortError, Ticket};
 
 /// The spawner's state file under the state folder.
 pub const SPAWN_STATE_FILE: &str = "spawn.state";
@@ -62,14 +65,14 @@ pub struct ClaimLine {
     pub instance: String,
 }
 
-/// One launch the spawner started and has not seen finish.
+/// One task of a launch that runs now, read from its run folder.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Launch {
     /// The task it works on.
     pub task: u64,
     /// The instance, as `<role> instance <n> on #<epic>`.
     pub instance: String,
-    /// Its process, when known.
+    /// The process holding it, when known: the tick until the instance starts, then the instance.
     #[serde(default)]
     pub pid: Option<u32>,
     /// When it started, RFC 3339, when known.
@@ -102,13 +105,16 @@ pub struct Status {
     pub ready: Vec<TicketLine>,
     /// Ready tasks whose body does not, which the spawner skips.
     pub unparsed: Vec<UnparsedLine>,
-    /// Claims held now.
+    /// Claims held now by an instance that runs, or by one this machine did not launch.
     pub claimed: Vec<ClaimLine>,
-    /// Running instances, from `spawn.state`: one slot each, however many tasks.
+    /// Claims held by an instance this machine launched that no longer runs: free, and
+    /// released by the next tick.
+    pub orphaned: Vec<ClaimLine>,
+    /// Running instances, read from the run folders: one slot each, however many tasks.
     pub running_count: usize,
     /// The running instances, each once with the tasks it carries.
     pub instances: Vec<InstanceLine>,
-    /// Every recorded launch, one per task, from `spawn.state`.
+    /// Every running launch, one per task.
     pub running: Vec<Launch>,
     /// The slots.
     pub slots: Slots,
@@ -123,10 +129,12 @@ pub struct Status {
     pub dead_blockers: Vec<DeadLine>,
 }
 
-/// Reads `spawn.state` through the spawner's own reader, so the state owns the count.
-/// Its `questions` array is not used: the board is the source of open questions.
-fn read_spawn_state(state_dir: &Path) -> Result<spawn::SpawnState, StatusError> {
-    spawn::load(state_dir).map_err(|error| match error {
+/// Reads the running launches through the spawner's own reader, so both count alike.
+fn read_spawn_state(
+    state_dir: &Path,
+    alive: &dyn Fn(&Holder) -> bool,
+) -> Result<(spawn::SpawnState, Vec<spawn::runs::Run>), StatusError> {
+    spawn::derive(state_dir, alive).map_err(|error| match error {
         spawn::SpawnError::Read { path, reason } => StatusError::SpawnState { path, reason },
         spawn::SpawnError::Write { path, source } => StatusError::SpawnState {
             path,
@@ -136,11 +144,15 @@ fn read_spawn_state(state_dir: &Path) -> Result<spawn::SpawnState, StatusError> 
     })
 }
 
-/// Reads the board, `spawn.state` and `guard.json` into one screen.
-///
-/// The open questions come from the board, not from `spawn.state`.
-pub fn status(board: &dyn Board, state_dir: &Path, slots: u32) -> Result<Status, StatusError> {
-    let state = read_spawn_state(state_dir)?;
+/// Reads the board, the run folders and `guard.json` into one screen; `alive` says whether a
+/// recorded process still runs.
+pub fn status(
+    board: &dyn Board,
+    state_dir: &Path,
+    slots: u32,
+    alive: &dyn Fn(&Holder) -> bool,
+) -> Result<Status, StatusError> {
+    let (state, runs) = read_spawn_state(state_dir, alive)?;
     let ready_tickets = board.ready()?;
     let found = blockers::read(board, &ready_tickets)?;
     let cycles = blockers::cycles(&found.graph)
@@ -165,14 +177,18 @@ pub fn status(board: &dyn Board, state_dir: &Path, slots: u32) -> Result<Status,
             });
         }
     }
-    let claimed = board
-        .claims()?
-        .into_iter()
-        .map(|claim| ClaimLine {
-            task: claim.task.get(),
-            instance: claim.instance.to_string(),
-        })
+    let claims = board.claims()?;
+    let orphaned_claims = spawn::orphaned(&claims, &runs, alive);
+    let claim_line = |claim: &ClaimRecord| ClaimLine {
+        task: claim.task.get(),
+        instance: claim.instance.to_string(),
+    };
+    let claimed = claims
+        .iter()
+        .filter(|claim| !orphaned_claims.contains(claim))
+        .map(claim_line)
         .collect();
+    let orphaned = orphaned_claims.into_iter().map(claim_line).collect();
     let questions = board.questions()?.into_iter().map(ticket_line).collect();
     // A batch of tasks shares one instance and one slot; the state counts them.
     let in_use = state.running();
@@ -188,6 +204,7 @@ pub fn status(board: &dyn Board, state_dir: &Path, slots: u32) -> Result<Status,
         ready,
         unparsed,
         claimed,
+        orphaned,
         slots: Slots {
             total: slots,
             free: slots.saturating_sub(u32::try_from(in_use).unwrap_or(u32::MAX)),
@@ -245,6 +262,13 @@ impl Status {
             self.claimed.len(),
             numbers(self.claimed.iter().map(|c| c.task))
         ));
+        if !self.orphaned.is_empty() {
+            line(format!(
+                "orphaned  {}{}",
+                self.orphaned.len(),
+                numbers(self.orphaned.iter().map(|c| c.task))
+            ));
+        }
         line(format!(
             "questions {}{}",
             self.questions.len(),

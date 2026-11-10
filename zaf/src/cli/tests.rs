@@ -19,7 +19,7 @@ fn every_verb_is_listed() {
         [
             "board", "ask", "brief", "check", "changes", "verify", "slice", "spawn", "asklog",
             "status", "report", "guard", "init", "doctor", "setup", "profile", "do", "hub",
-            "progress",
+            "progress", "update",
         ]
     );
     let board = command.find_subcommand("board").expect("board");
@@ -113,8 +113,8 @@ fn every_unbuilt_verb_exits_not_implemented() {
 fn board_done_exit(pr: &str, forge_down: bool) -> u8 {
     use crate::app::actions::SliceRecords;
     use crate::domain::{IssueNumber, TaskLabel};
-    use crate::fakes::{FakeBoard, FakeForge, FakeVcs};
-    use crate::ports::{BaseName, Board, Forge, PrRequest, SliceName, Ticket};
+    use crate::fakes::{FakeBoard, FakeForge, FakeVcs, PrRequest};
+    use crate::ports::{BaseName, Board, SliceName, Ticket};
 
     let dir = tempfile::tempdir().expect("tempdir");
     let task = IssueNumber::from(319);

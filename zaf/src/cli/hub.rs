@@ -16,6 +16,7 @@ use std::time::{Duration, SystemTime};
 
 use super::exit::{self, BACKEND, OK, REFUSED};
 use super::{Cli, HubAction, Verb};
+use crate::adapters::process;
 use crate::app::check::Target;
 use crate::app::guard;
 use crate::app::hub::{
@@ -323,7 +324,8 @@ fn show(cli: &Cli, port: Option<u16>) -> u8 {
     let project = composition.manifest().project.name.to_string();
     let slots_total = composition.manifest().spawn.slots;
     let gatherer = |now: SystemTime| {
-        let running = spawn::load(&state_dir).map_or(0, |state| state.running());
+        let running =
+            spawn::derive(&state_dir, &process::alive).map_or(0, |(state, _)| state.running());
         let ledger = ledger_rows(&composition);
         gather(&HubInputs {
             board: board.as_ref(),

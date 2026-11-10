@@ -24,6 +24,12 @@ const LIST_LIMIT: &str = "1000";
 const OPEN: &str = "OPEN";
 /// What a pull request's URL holds and an issue's does not.
 const PULL_PATH: &str = "/pull/";
+
+/// The close reason of an issue closed as not planned.
+const NOT_PLANNED: &str = "NOT_PLANNED";
+
+/// The close reason of an issue closed as a duplicate.
+const DUPLICATE: &str = "DUPLICATE";
 /// The prefix of the label that puts a task in a group.
 const GROUP_PREFIX: &str = "group:";
 
@@ -250,14 +256,18 @@ impl Board for GithubBoard {
             Err(error) => return Err(error),
         };
         let done = TaskLabel::Done.to_string();
+        // A closed issue is done unless it was closed as not planned or as a duplicate.
+        let never_done = matches!(row.state_reason.as_deref(), Some(NOT_PLANNED | DUPLICATE));
         Ok(if row.url.contains(PULL_PATH) {
             IssueState::Missing
         } else if row.labels.iter().any(|label| label.name == done) {
             IssueState::Done
         } else if row.state == OPEN {
             IssueState::Open
+        } else if never_done {
+            IssueState::ClosedNotPlanned
         } else {
-            IssueState::ClosedNotDone
+            IssueState::Done
         })
     }
 

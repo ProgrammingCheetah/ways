@@ -9,9 +9,8 @@ use super::*;
 use crate::domain::{Instance, InstanceNumber, IssueNumber, Location, RoleName, TaskLabel};
 use crate::manifest::RepoName;
 use crate::ports::{
-    Author, BaseName, Board, Check, CheckName, CheckState, ClaimOutcome, ClaimRecord, Forge,
-    NewQuestion, PortError, PrMerge, PrNumber, PrRequest, QUESTION_TITLE_LIMIT, ReviewComment,
-    RuleId, ScanningAlert, SliceName, Ticket,
+    Author, Board, Check, CheckName, CheckState, ClaimOutcome, ClaimRecord, Forge, NewQuestion,
+    PortError, PrNumber, QUESTION_TITLE_LIMIT, ReviewComment, RuleId, ScanningAlert, Ticket,
 };
 
 const REPO: &str = "example/tracker";
@@ -283,8 +282,21 @@ fn standing(number: u64, labels: &[&str], state: &str, kind: &str) -> String {
     serde_json::json!({
         "number": number,
         "state": state,
+        "stateReason": if state == "CLOSED" { serde_json::json!("COMPLETED") } else { serde_json::Value::Null },
         "labels": labels,
         "url": format!("https://github.com/{REPO}/{kind}/{number}"),
+    })
+    .to_string()
+}
+
+/// An issue closed for `reason`, read only for where it stands.
+fn closed_for(number: u64, reason: &str) -> String {
+    serde_json::json!({
+        "number": number,
+        "state": "CLOSED",
+        "stateReason": reason,
+        "labels": [{ "name": "task" }],
+        "url": format!("https://github.com/{REPO}/issues/{number}"),
     })
     .to_string()
 }
@@ -306,23 +318,37 @@ fn issue_state_tells_open_done_closed_and_missing_apart() {
         "issue view 5 *",
         &standing(5, &["task", "done"], "OPEN", "issues"),
     )
-    .on(
-        "issue view 6 *",
-        &standing(6, &["task"], "CLOSED", "issues"),
-    )
+    .on("issue view 6 *", &closed_for(6, "NOT_PLANNED"))
+    .on("issue view 8 *", &closed_for(8, "COMPLETED"))
+    .on("issue view 11 *", &closed_for(11, "DUPLICATE"))
     .on("issue view 7 *", &standing(7, &[], "OPEN", "pull"))
     .fail_on(
         "issue view 9 *",
         "GraphQL: Could not resolve to an Issue with the number of 9.",
     )
+    .fail_on(
+        "issue view 12 *",
+        "GraphQL: Could not resolve to an issue or pull request with the number of 12. (repository.issue)",
+    )
     .fail_on("issue view 10 *", "HTTP 502: bad gateway");
     let board = fake.board();
     let state = |number: u64| board.issue_state(IssueNumber::from(number));
+    assert_eq!(
+        state(12),
+        Ok(IssueState::Missing),
+        "gh 2.102 says `an issue or pull request`"
+    );
 
     assert_eq!(state(3), Ok(IssueState::Open));
     assert_eq!(state(4), Ok(IssueState::Done));
     assert_eq!(state(5), Ok(IssueState::Done));
-    assert_eq!(state(6), Ok(IssueState::ClosedNotDone));
+    assert_eq!(state(6), Ok(IssueState::ClosedNotPlanned));
+    assert_eq!(
+        state(8),
+        Ok(IssueState::Done),
+        "closed as completed is done without the label"
+    );
+    assert_eq!(state(11), Ok(IssueState::ClosedNotPlanned));
     assert_eq!(
         state(7),
         Ok(IssueState::Missing),
@@ -341,14 +367,14 @@ fn issue_state_tells_open_done_closed_and_missing_apart() {
             "view",
             number,
             "--json",
-            "number,state,labels,url",
+            "number,state,stateReason,labels,url",
             "--repo",
             REPO,
         ])
     };
     assert_eq!(
         fake.calls(),
-        ["3", "4", "5", "6", "7", "9", "10"].map(standing_view)
+        ["12", "3", "4", "5", "6", "8", "11", "7", "9", "10"].map(standing_view)
     );
 }
 
@@ -1162,57 +1188,6 @@ fn questions_and_rulings_on_an_epic_and_unsigned_tasks_change_no_label() {
     assert_eq!(edits(&fake), Vec::<Vec<String>>::new());
 }
 
-fn request() -> PrRequest {
-    PrRequest {
-        slice: SliceName::from("feature/v1-export-2"),
-        base: BaseName::from("feature/v1"),
-        title: "Add the CSV writer".to_owned(),
-        body: "Closes #2".to_owned(),
-    }
-}
-
-#[test]
-fn open_pr_creates_one_or_returns_the_open_one() {
-    let fake = FakeGh::new();
-    fake.on("pr list *", "[]").on(
-        "pr create *",
-        &format!("https://github.com/{REPO}/pull/7\n"),
-    );
-    assert_eq!(fake.forge().open_pr(&request()), Ok(PrNumber::from(7)));
-    let list_call = argv(&[
-        "pr",
-        "list",
-        "--head",
-        "feature/v1-export-2",
-        "--state",
-        "open",
-        "--json",
-        "number",
-        "--repo",
-        REPO,
-    ]);
-    let create_call = argv(&[
-        "pr",
-        "create",
-        "--head",
-        "feature/v1-export-2",
-        "--base",
-        "feature/v1",
-        "--title",
-        "Add the CSV writer",
-        "--body",
-        "Closes #2",
-        "--repo",
-        REPO,
-    ]);
-    assert_eq!(fake.calls(), [list_call.clone(), create_call]);
-
-    let existing = FakeGh::new();
-    existing.on("pr list *", r#"[{"number":5}]"#);
-    assert_eq!(existing.forge().open_pr(&request()), Ok(PrNumber::from(5)));
-    assert_eq!(existing.calls(), [list_call]);
-}
-
 #[test]
 fn checks_map_gh_buckets_and_none_reported_is_empty() {
     let fake = FakeGh::new();
@@ -1392,23 +1367,6 @@ fn last_changed_file_reads_the_diff() {
 }
 
 #[test]
-fn merge_merges_once_and_a_merged_pr_is_quiet() {
-    let fake = FakeGh::new();
-    fake.on("pr view 7 *", r#"{"state":"OPEN"}"#)
-        .on("pr view 8 *", r#"{"state":"MERGED"}"#)
-        .on("pr merge *", "");
-    let forge = fake.forge();
-    assert_eq!(forge.merge(PrNumber::from(7)), Ok(PrMerge::Merged));
-    assert_eq!(forge.merge(PrNumber::from(8)), Ok(PrMerge::AlreadyMerged));
-    let expected_calls = vec![
-        argv(&["pr", "view", "7", "--json", "state", "--repo", REPO]),
-        argv(&["pr", "merge", "7", "--merge", "--repo", REPO]),
-        argv(&["pr", "view", "8", "--json", "state", "--repo", REPO]),
-    ];
-    assert_eq!(fake.calls(), expected_calls);
-}
-
-#[test]
 fn merged_is_true_only_for_a_merged_pr_and_changes_nothing() {
     let fake = FakeGh::new();
     fake.on("pr view 7 *", r#"{"state":"OPEN"}"#)
@@ -1465,4 +1423,50 @@ fn a_missing_gh_is_unavailable_and_bad_json_a_backend_error() {
         fake.board().task(IssueNumber::from(2)),
         Err(PortError::Backend(_))
     ));
+}
+
+#[test]
+fn releases_list_stable_tags_and_download_by_pattern() {
+    use crate::ports::Releases;
+
+    let fake = FakeGh::new();
+    fake.on(
+        "release list *",
+        r#"[{"tagName":"zaf-v0.2.1","isDraft":false,"isPrerelease":false},
+            {"tagName":"zaf-v0.3.0","isDraft":true,"isPrerelease":false},
+            {"tagName":"zaf-v0.3.0-rc.1","isDraft":false,"isPrerelease":true},
+            {"tagName":"zaf-v0.2.0","isDraft":false,"isPrerelease":false}]"#,
+    )
+    .on("release download *", "");
+    let releases = super::GithubReleases::from(fake.gh());
+
+    assert_eq!(
+        releases.tags().expect("lists"),
+        ["zaf-v0.2.1", "zaf-v0.2.0"]
+    );
+    let dir = Path::new("/tmp/zaf-update");
+    releases
+        .download(
+            "zaf-v0.2.1",
+            &["a.tar.gz".to_owned(), "a.tar.gz.sha256".to_owned()],
+            dir,
+        )
+        .expect("downloads");
+    assert_eq!(
+        fake.calls()[1],
+        argv(&[
+            "release",
+            "download",
+            "zaf-v0.2.1",
+            "--dir",
+            "/tmp/zaf-update",
+            "--clobber",
+            "--pattern",
+            "a.tar.gz",
+            "--pattern",
+            "a.tar.gz.sha256",
+            "--repo",
+            REPO,
+        ])
+    );
 }

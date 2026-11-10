@@ -1,0 +1,121 @@
+#!/bin/sh
+# zaf description: bring a branch up to its base as the remote has them (main by default) and push it: a fast-forward when the branch has nothing of its own, else a merge commit; up to date is quiet; the working copy never moves; hands back the branch's commit
+# zaf 1: refused: the arguments are not <branch> [<base>], a name is not a usable bookmark, a branch is not on the remote, the local branch differs from the remote's, the merge conflicts (the paths are listed and nothing moved), or the remote moved during the push
+# zaf 2: a backend failed (jj is missing or refused, or the fetch failed)
+# zaf mode: 750
+# zaf group: release
+branch=$1
+base=${2:-main}
+
+if [ -z "$ZAF_ROOT" ] || [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+    echo "usage: base-up <branch> [<base>], with ZAF_ROOT set" >&2
+    exit 1
+fi
+for name in "$branch" "$base"; do
+    case $name in
+        "" | -* | *\"* | *\\*)
+            echo "$name is not a usable bookmark name" >&2
+            exit 1
+            ;;
+    esac
+done
+if [ "$branch" = "$base" ]; then
+    echo "a branch cannot be brought up to itself" >&2
+    exit 1
+fi
+
+jj_run() {
+    jj --no-pager --color=never -R "$ZAF_ROOT" "$@"
+}
+
+# One commit id for a revset, or nothing. A jj that fails ends the run: the answer would be a guess.
+commit_of() {
+    if ! ids=$(jj_run --ignore-working-copy log --no-graph -r "$1" -T 'commit_id ++ "\n"'); then
+        exit 2
+    fi
+    printf '%s\n' "$ids" | awk 'NF { print; exit }'
+}
+
+# The remote the branch tracks; origin when it tracks none.
+remote=origin
+if ! tracked=$(jj_run --ignore-working-copy bookmark list --tracked -T 'remote ++ "\n"' "exact:\"$branch\""); then
+    exit 2
+fi
+for name in $tracked; do
+    if [ "$name" != "git" ]; then
+        remote=$name
+        break
+    fi
+done
+
+jj_run git fetch --remote "$remote" || exit 2
+
+# The remote's two branches are what the forge has; work only from them.
+branch_rev="remote_bookmarks(exact:\"$branch\", exact:\"$remote\")"
+base_rev="remote_bookmarks(exact:\"$base\", exact:\"$remote\")"
+branch_head=$(commit_of "$branch_rev")
+base_head=$(commit_of "$base_rev")
+if [ -z "$branch_head" ]; then
+    echo "$branch is not on $remote" >&2
+    exit 1
+fi
+if [ -z "$base_head" ]; then
+    echo "$base is not on $remote" >&2
+    exit 1
+fi
+
+# A local branch with work the remote lacks, or a conflicted one, is the Engineer's to settle.
+local_head=$(commit_of "bookmarks(exact:\"$branch\")")
+if [ -n "$local_head" ] && [ "$local_head" != "$branch_head" ]; then
+    echo "the local $branch is at $local_head, not at $remote's $branch_head; push or reset it first" >&2
+    exit 1
+fi
+# A branch known only on the remote is tracked first, so the push below moves the remote's.
+if [ -z "$local_head" ]; then
+    jj_run --ignore-working-copy bookmark track "$branch@$remote" || exit 2
+fi
+
+# The base has nothing the branch lacks.
+if [ -z "$(commit_of "$base_rev ~ ::$branch_rev")" ]; then
+    echo "$branch_head"
+    exit 0
+fi
+
+if [ -z "$(commit_of "$branch_rev ~ ::$base_rev")" ]; then
+    # The branch has nothing of its own: its tip becomes the base's.
+    target=$base_head
+else
+    message="Merge $base into $branch"
+    jj_run new --no-edit "$branch_rev" "$base_rev" -m "$message" || exit 2
+    target=$(commit_of "latest(children($branch_rev) & children($base_rev) & description(exact:\"$message\n\"))")
+    if [ -z "$target" ]; then
+        echo "the merge commit could not be found after it was made" >&2
+        exit 2
+    fi
+    if ! conflicted=$(jj_run --ignore-working-copy log --no-graph -r "$target" -T conflict); then
+        exit 2
+    fi
+    if [ "$conflicted" = "true" ]; then
+        # The paths first, then the merge commit is thrown away: nothing moved.
+        echo "the merge of $base into $branch conflicts in:" >&2
+        jj_run --ignore-working-copy resolve --list -r "$target" >&2
+        jj_run --ignore-working-copy abandon "$target" || exit 2
+        exit 1
+    fi
+fi
+
+jj_run --ignore-working-copy bookmark set "$branch" -r "$target" || exit 2
+
+# A plain push, never forced: a remote whose branch moved past what jj last saw refuses it.
+if ! pushed=$(jj_run --ignore-working-copy git push --remote "$remote" --bookmark "exact:$branch" 2>&1); then
+    printf '%s\n' "$pushed" >&2
+    case $pushed in
+        *"unexpectedly moved on the remote"*)
+            echo "$remote's $branch moved during the push" >&2
+            exit 1
+            ;;
+    esac
+    exit 2
+fi
+printf '%s\n' "$pushed" >&2
+echo "$target"

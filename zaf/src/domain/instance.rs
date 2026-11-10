@@ -25,6 +25,13 @@ text_newtype! {
 )]
 pub struct InstanceNumber(u32);
 
+impl InstanceNumber {
+    /// The number itself.
+    pub fn get(self) -> u32 {
+        self.0
+    }
+}
+
 /// One run of a role on an epic; it leaves exactly one status comment.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, derive_more::Display)]
 #[display("{role} instance {number} on {epic}")]

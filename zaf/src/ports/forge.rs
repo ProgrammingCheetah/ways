@@ -1,7 +1,6 @@
 //! The forge: pull requests, their checks and review comments, and the merge.
 
 use super::PortError;
-use super::{BaseName, SliceName};
 use crate::domain::Location;
 use crate::newtype::text_newtype;
 
@@ -88,33 +87,8 @@ pub struct ScanningAlert {
     pub location: Option<Location>,
 }
 
-/// What a pull request is opened from and into.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PrRequest {
-    /// The slice it carries.
-    pub slice: SliceName,
-    /// The line it targets.
-    pub base: BaseName,
-    /// Its title.
-    pub title: String,
-    /// Its body.
-    pub body: String,
-}
-
-/// What merging a pull request did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PrMerge {
-    /// It merged now.
-    Merged,
-    /// It had merged before; nothing changed.
-    AlreadyMerged,
-}
-
-/// The forge that hosts the code and its reviews.
+/// The forge that hosts the code and its reviews; zaf only reads it.
 pub trait Forge {
-    /// Opens a pull request for a slice; a slice with an open one gets that one back.
-    fn open_pr(&self, request: &PrRequest) -> Result<PrNumber, PortError>;
-
     /// The pull request's check runs.
     fn checks(&self, pr: PrNumber) -> Result<Vec<Check>, PortError>;
 
@@ -134,9 +108,6 @@ pub trait Forge {
 
     /// The open code scanning alerts for the pull request's head ref.
     fn scanning_alerts(&self, pr: PrNumber) -> Result<Vec<ScanningAlert>, PortError>;
-
-    /// Merges the pull request; one already merged succeeds with [`PrMerge::AlreadyMerged`].
-    fn merge(&self, pr: PrNumber) -> Result<PrMerge, PortError>;
 }
 
 #[cfg(test)]

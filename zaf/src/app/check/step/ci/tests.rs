@@ -8,8 +8,7 @@ use crate::app::check::{Shell, StepPorts};
 use crate::fakes::FakeForge;
 use crate::manifest::{CommandLine, RunnerName};
 use crate::ports::{
-    Check, CheckName, Forge, GateRun, PrMerge, PrNumber, PrRequest, ReviewComment, Runner,
-    ScanningAlert,
+    Check, CheckName, Forge, GateRun, PrNumber, ReviewComment, Runner, ScanningAlert,
 };
 
 fn source() -> FindingSource {
@@ -32,10 +31,6 @@ struct ScriptedForge {
 }
 
 impl Forge for ScriptedForge {
-    fn open_pr(&self, request: &PrRequest) -> Result<PrNumber, PortError> {
-        self.inner.open_pr(request)
-    }
-
     fn checks(&self, _pr: PrNumber) -> Result<Vec<Check>, PortError> {
         *self.polls.lock().expect("polls") += 1;
         let mut script = self.script.lock().expect("script");
@@ -65,10 +60,6 @@ impl Forge for ScriptedForge {
 
     fn scanning_alerts(&self, pr: PrNumber) -> Result<Vec<ScanningAlert>, PortError> {
         self.inner.scanning_alerts(pr)
-    }
-
-    fn merge(&self, pr: PrNumber) -> Result<PrMerge, PortError> {
-        self.inner.merge(pr)
     }
 }
 

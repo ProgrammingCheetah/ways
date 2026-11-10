@@ -8,12 +8,14 @@ mod board;
 mod design;
 mod forge;
 mod gate;
+mod releases;
 mod runner;
 mod vcs;
 
 pub use board::FakeBoard;
 pub use design::FakeDesign;
-pub use forge::FakeForge;
+pub use forge::{FakeForge, PrMerge, PrRequest};
 pub use gate::FakeGate;
+pub use releases::FakeReleases;
 pub use runner::FakeRunner;
 pub use vcs::FakeVcs;

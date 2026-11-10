@@ -463,6 +463,39 @@ fn doctor_fails_on_a_missing_needed_name() {
 }
 
 #[test]
+fn doctor_lists_the_missing_slice_actions() {
+    // No `.zaf/actions` at all: the four slice names are the verbs' needs, and nothing provides them.
+    let project = Project::new(MANIFEST);
+    assert!(!project_actions(&project).exists());
+
+    let (code, text) = doctor(&project);
+
+    assert_eq!(code, 1, "{text}");
+    for name in SLICE {
+        assert!(
+            text.contains(&format!(
+                "needed {name}: no provider, needed by the slice verbs"
+            )),
+            "{name} is listed as missing: {text}"
+        );
+    }
+
+    let output = project.zaf(&["--json", "doctor"]);
+    assert_eq!(output.status.code(), Some(1));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json");
+    let rows = report["needed"].as_array().expect("needed");
+    let mut names: Vec<&str> = rows.iter().filter_map(|row| row["name"].as_str()).collect();
+    names.sort_unstable();
+    let mut expected = SLICE.to_vec();
+    expected.sort_unstable();
+    assert_eq!(names, expected, "only the four slice names are needed");
+    assert!(
+        rows.iter()
+            .all(|row| row["ok"] == false && row["tier"].is_null())
+    );
+}
+
+#[test]
 fn doctor_finds_names_in_gate_lines() {
     let manifest = format!(
         "{MANIFEST}\n[gate]\nfull = \"zaf do gate-full && zaf do gate-more\"\n\

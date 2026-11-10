@@ -1,5 +1,5 @@
-//! Integration tests against throwaway jj repositories with a bare git remote,
-//! plus the pure parsers the adapter reads jj's output with.
+//! Integration tests against throwaway jj repositories, plus the pure parsers the adapter
+//! reads jj's output with.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -10,12 +10,10 @@ const BASE: &str = "feature/v1";
 const SLICE: &str = "feature/v1-export-2";
 const NOTES: &str = "one\ntwo\nthree\n";
 
-/// A jj repository at `root`, its base bookmark pushed to the bare remote at `remote`.
+/// A jj repository at `root` with a base bookmark; slice workspaces are made beside it.
 struct Fixture {
     _temp: tempfile::TempDir,
     root: PathBuf,
-    remote: PathBuf,
-    vcs: JjVcs,
 }
 
 fn run(dir: &Path, program: &str, args: &[&str]) -> String {
@@ -47,9 +45,7 @@ fn write(dir: &Path, path: &str, content: &str) {
 impl Fixture {
     fn new(colocate: bool) -> Self {
         let temp = tempfile::tempdir().expect("temp dir");
-        let remote = temp.path().join("remote.git");
         let root = temp.path().join("repo");
-        run(temp.path(), "git", &["init", "-q", "--bare", "remote.git"]);
         let init_args: &[&str] = if colocate {
             &["git", "init", "--colocate", "repo"]
         } else {
@@ -70,64 +66,48 @@ impl Fixture {
                 "author@example.com",
             ],
         );
-        let remote_text = remote.to_string_lossy();
-        jj(&root, &["git", "remote", "add", "origin", &remote_text]);
         write(&root, "notes.txt", NOTES);
         jj(&root, &["commit", "-m", "Start the project"]);
         jj(&root, &["bookmark", "create", BASE, "-r", "@-"]);
-        jj(&root, &["git", "push", "--bookmark", BASE]);
-        let vcs = JjVcs::new(&root, &WorkspacesSection::default());
-        Self {
-            _temp: temp,
-            root,
-            remote,
-            vcs,
-        }
+        Self { _temp: temp, root }
     }
 
-    fn slice(&self) -> (SliceName, BaseName) {
-        let (slice, base) = (SliceName::from(SLICE), BaseName::from(BASE));
-        assert_eq!(self.vcs.open_slice(&slice, &base), Ok(SliceOpening::Opened));
-        (slice, base)
+    /// A slice workspace on the base, the way a `slice-open` action leaves one.
+    fn slice(&self) -> (PathBuf, BaseName) {
+        let base_revset = bookmark(BASE);
+        jj(
+            &self.root,
+            &["bookmark", "create", SLICE, "-r", &base_revset],
+        );
+        let dir = self
+            .root
+            .parent()
+            .expect("temp")
+            .join("workspaces")
+            .join(SLICE);
+        std::fs::create_dir_all(dir.parent().expect("parent")).expect("mkdir");
+        let dir_text = dir.to_string_lossy();
+        jj(
+            &self.root,
+            &[
+                "workspace",
+                "add",
+                "--name",
+                SLICE,
+                "-r",
+                &bookmark(SLICE),
+                &dir_text,
+            ],
+        );
+        (dir, BaseName::from(BASE))
     }
 
-    fn slice_dir(&self, slice: &SliceName) -> PathBuf {
-        self.vcs.slice_dir(slice).expect("slice dir")
-    }
-
-    /// Commits a file on the base from the root's own working copy and pushes it.
+    /// Commits a file on the base from the root's own working copy.
     fn advance_base(&self, path: &str, content: &str) {
         jj(&self.root, &["new", &bookmark(BASE)]);
         write(&self.root, path, content);
         jj(&self.root, &["commit", "-m", "Advance the base"]);
         jj(&self.root, &["bookmark", "set", BASE, "-r", "@-"]);
-        jj(&self.root, &["git", "push", "--bookmark", BASE]);
-    }
-
-    /// Pushes a commit to the base from a second clone, so this repository's
-    /// local and remote-tracking base both lag until something fetches.
-    fn advance_base_elsewhere(&self, path: &str, content: &str) {
-        let temp = self.root.parent().expect("temp").to_owned();
-        let remote_text = self.remote.to_string_lossy();
-        run(&temp, "git", &["clone", "-q", &remote_text, "other"]);
-        let other = temp.join("other");
-        run(&other, "git", &["checkout", "-q", BASE]);
-        write(&other, path, content);
-        run(&other, "git", &["add", path]);
-        run(
-            &other,
-            "git",
-            &[
-                "-c",
-                "user.name=Other",
-                "-c",
-                "user.email=other@example.com",
-                "commit",
-                "-qm",
-                "Advance the base elsewhere",
-            ],
-        );
-        run(&other, "git", &["push", "-q", "origin", BASE]);
     }
 
     fn target(&self, name: &str) -> String {
@@ -144,139 +124,12 @@ impl Fixture {
             ],
         )
     }
-
-    fn remote_target(&self, name: &str) -> String {
-        let git_dir = self.remote.to_string_lossy();
-        let reference = format!("refs/heads/{name}");
-        let stdout = run(
-            &self.root,
-            "git",
-            &["--git-dir", &git_dir, "rev-parse", &reference],
-        );
-        stdout.trim().to_owned()
-    }
-
-    fn workspaces(&self) -> String {
-        jj(&self.root, &["--ignore-working-copy", "workspace", "list"])
-    }
-}
-
-#[test]
-fn slices_open_once_per_base_and_drop_quietly() {
-    let fixture = Fixture::new(false);
-    let (slice, base) = fixture.slice();
-    let dir = fixture.slice_dir(&slice);
-    assert!(dir.join(".jj").is_dir());
-    assert!(dir.join("notes.txt").is_file());
-    assert!(fixture.workspaces().contains(SLICE));
-    assert_eq!(fixture.target(SLICE), fixture.target(BASE));
-    assert_eq!(
-        fixture.vcs.open_slice(&slice, &base),
-        Ok(SliceOpening::AlreadyOpen)
-    );
-    let other_base = BaseName::from("feature/v2");
-    assert!(matches!(
-        fixture.vcs.open_slice(&slice, &other_base),
-        Err(PortError::Conflict(_))
-    ));
-    fixture.vcs.drop_slice(&slice).expect("drop");
-    assert!(!dir.exists());
-    assert!(!dir.parent().expect("parent").exists());
-    assert!(!fixture.workspaces().contains(SLICE));
-    fixture
-        .vcs
-        .drop_slice(&slice)
-        .expect("a second drop is quiet");
-    assert!(matches!(
-        fixture.vcs.is_clean(&slice),
-        Err(PortError::NotFound(_))
-    ));
-    assert_eq!(
-        fixture.vcs.open_slice(&slice, &base),
-        Ok(SliceOpening::Opened)
-    );
-}
-
-#[test]
-fn a_missing_base_or_an_escaping_name_is_refused() {
-    let fixture = Fixture::new(false);
-    let slice = SliceName::from(SLICE);
-    assert!(matches!(
-        fixture
-            .vcs
-            .open_slice(&slice, &BaseName::from("feature/none")),
-        Err(PortError::NotFound(_))
-    ));
-    let escaping = SliceName::from("../outside");
-    assert!(matches!(
-        fixture.vcs.open_slice(&escaping, &BaseName::from(BASE)),
-        Err(PortError::Rejected(_))
-    ));
-}
-
-#[test]
-fn commit_and_publish_follow_the_work() {
-    let fixture = Fixture::new(false);
-    let (slice, _base) = fixture.slice();
-    assert_eq!(fixture.vcs.is_clean(&slice), Ok(true));
-    assert!(matches!(
-        fixture.vcs.commit(&slice, "empty"),
-        Err(PortError::Rejected(_))
-    ));
-    write(
-        &fixture.slice_dir(&slice),
-        "src/export.rs",
-        "fn export() {}\n",
-    );
-    assert_eq!(fixture.vcs.is_clean(&slice), Ok(false));
-    let commit = fixture
-        .vcs
-        .commit(&slice, "Add the CSV writer")
-        .expect("commit");
-    assert_eq!(commit.as_ref(), fixture.target(SLICE));
-    assert_eq!(fixture.vcs.is_clean(&slice), Ok(true));
-    assert_eq!(fixture.vcs.publish(&slice), Ok(Publication::Published));
-    assert_eq!(fixture.remote_target(SLICE), commit.as_ref());
-    assert_eq!(
-        fixture.vcs.publish(&slice),
-        Ok(Publication::AlreadyPublished)
-    );
-    write(
-        &fixture.slice_dir(&slice),
-        "src/export.rs",
-        "fn export2() {}\n",
-    );
-    let second = fixture.vcs.commit(&slice, "Rename").expect("commit");
-    assert_ne!(second, commit);
-    assert_eq!(fixture.vcs.publish(&slice), Ok(Publication::Published));
-    assert_eq!(fixture.remote_target(SLICE), second.as_ref());
-}
-
-#[test]
-fn publish_pushes_a_commit_made_by_hand() {
-    let fixture = Fixture::new(false);
-    let (slice, _base) = fixture.slice();
-    let dir = fixture.slice_dir(&slice);
-    write(&dir, "by_hand.txt", "hand\n");
-    jj(&dir, &["commit", "-m", "Made by hand"]);
-    // The bookmark was left on the base by the hand-made commit.
-    assert_eq!(fixture.target(SLICE), fixture.target(BASE));
-    let head = jj(&dir, &["log", "--no-graph", "-r", "@-", "-T", "commit_id"]);
-    assert_ne!(head, fixture.target(BASE));
-    assert_eq!(fixture.vcs.publish(&slice), Ok(Publication::Published));
-    assert_eq!(fixture.target(SLICE), head);
-    assert_eq!(fixture.remote_target(SLICE), head);
-    assert_eq!(
-        fixture.vcs.publish(&slice),
-        Ok(Publication::AlreadyPublished)
-    );
 }
 
 #[test]
 fn latest_commit_reads_the_workspace() {
     let fixture = Fixture::new(false);
-    let (slice, _base) = fixture.slice();
-    let dir = fixture.slice_dir(&slice);
+    let (dir, _base) = fixture.slice();
     write(&dir, "by_hand.txt", "hand\n");
     jj(&dir, &["commit", "-m", "Made by hand"]);
     // The hand-made commit left the bookmark on the base; the read does not follow the bookmark.
@@ -284,286 +137,66 @@ fn latest_commit_reads_the_workspace() {
     let hand_made = jj(&dir, &["log", "--no-graph", "-r", "@-", "-T", "commit_id"]);
     assert_ne!(hand_made, fixture.target(BASE));
     assert_eq!(
-        fixture.vcs.latest_commit(&dir),
+        JjVcs.latest_commit(&dir),
         Ok(CommitId::from(hand_made.as_str()))
     );
-    // Uncommitted work is not a commit `push` would move the bookmark to.
+    // Uncommitted work is not a commit a bookmark would move to.
     write(&dir, "wip.txt", "wip\n");
     assert_eq!(
-        fixture.vcs.latest_commit(&dir),
+        JjVcs.latest_commit(&dir),
         Ok(CommitId::from(hand_made.as_str()))
     );
     jj(&dir, &["commit", "-m", "Finished"]);
-    // It is the commit `publish` moves the bookmark to, by the id the remote knows it by.
-    let latest = fixture.vcs.latest_commit(&dir).expect("latest commit");
+    let latest = JjVcs.latest_commit(&dir).expect("latest commit");
     assert_ne!(latest.to_string(), hand_made);
-    assert_eq!(fixture.vcs.publish(&slice), Ok(Publication::Published));
-    assert_eq!(fixture.remote_target(SLICE), latest.to_string());
     assert!(matches!(
-        fixture.vcs.latest_commit(&dir.join("no-workspace")),
+        JjVcs.latest_commit(&dir.join("no-workspace")),
         Err(PortError::NotFound(_))
-    ));
-}
-
-#[test]
-fn publish_of_uncommitted_work_is_rejected_and_pushes_nothing() {
-    let fixture = Fixture::new(false);
-    let (slice, _base) = fixture.slice();
-    let dir = fixture.slice_dir(&slice);
-    write(&dir, "wip.txt", "wip\n");
-    assert!(matches!(
-        fixture.vcs.publish(&slice),
-        Err(PortError::Rejected(_))
-    ));
-    let git_dir = fixture.remote.to_string_lossy();
-    let reference = format!("refs/heads/{SLICE}");
-    let lookup = Command::new("git")
-        .args([
-            "--git-dir",
-            &git_dir,
-            "rev-parse",
-            "--verify",
-            "-q",
-            &reference,
-        ])
-        .output()
-        .expect("spawn");
-    assert!(!lookup.status.success(), "the remote must not have {SLICE}");
-}
-
-#[test]
-fn publish_refuses_to_move_the_bookmark_backwards() {
-    let fixture = Fixture::new(false);
-    let (slice, _base) = fixture.slice();
-    let dir = fixture.slice_dir(&slice);
-    write(&dir, "a.txt", "a\n");
-    fixture.vcs.commit(&slice, "Add a").expect("commit");
-    let before = fixture.target(SLICE);
-    // The workspace now sits on a sibling of the slice's tip.
-    jj(&dir, &["new", &bookmark(BASE)]);
-    assert!(matches!(
-        fixture.vcs.publish(&slice),
-        Err(PortError::Conflict(_))
-    ));
-    assert_eq!(fixture.target(SLICE), before);
-}
-
-#[test]
-fn publish_never_overwrites_work_the_remote_has() {
-    let fixture = Fixture::new(false);
-    let (slice, _base) = fixture.slice();
-    write(&fixture.slice_dir(&slice), "a.txt", "a\n");
-    fixture.vcs.commit(&slice, "Add a").expect("commit");
-    assert_eq!(fixture.vcs.publish(&slice), Ok(Publication::Published));
-    let temp = fixture.root.parent().expect("temp").to_owned();
-    let remote_text = fixture.remote.to_string_lossy();
-    run(&temp, "git", &["clone", "-q", &remote_text, "other"]);
-    let other = temp.join("other");
-    run(&other, "git", &["checkout", "-q", SLICE]);
-    write(&other, "b.txt", "b\n");
-    run(&other, "git", &["add", "b.txt"]);
-    run(
-        &other,
-        "git",
-        &[
-            "-c",
-            "user.name=Other",
-            "-c",
-            "user.email=other@example.com",
-            "commit",
-            "-qm",
-            "Add b elsewhere",
-        ],
-    );
-    run(&other, "git", &["push", "-q", "origin", SLICE]);
-    let remote_work = fixture.remote_target(SLICE);
-    write(&fixture.slice_dir(&slice), "c.txt", "c\n");
-    fixture.vcs.commit(&slice, "Add c").expect("commit");
-    assert!(matches!(
-        fixture.vcs.publish(&slice),
-        Err(PortError::Conflict(_))
-    ));
-    assert_eq!(fixture.remote_target(SLICE), remote_work);
-}
-
-#[test]
-fn base_merges_report_their_outcome() {
-    let fixture = Fixture::new(false);
-    let (slice, _base) = fixture.slice();
-    assert_eq!(fixture.vcs.merge_base(&slice), Ok(BaseMerge::UpToDate));
-    fixture.advance_base("base-1.txt", "1\n");
-    assert_eq!(fixture.vcs.merge_base(&slice), Ok(BaseMerge::Merged));
-    assert_eq!(fixture.target(SLICE), fixture.target(BASE));
-    assert!(fixture.slice_dir(&slice).join("base-1.txt").is_file());
-    assert_eq!(fixture.vcs.merge_base(&slice), Ok(BaseMerge::UpToDate));
-    write(&fixture.slice_dir(&slice), "slice.txt", "s\n");
-    let own = fixture
-        .vcs
-        .commit(&slice, "Add slice work")
-        .expect("commit");
-    fixture.advance_base("base-2.txt", "2\n");
-    assert_eq!(fixture.vcs.merge_base(&slice), Ok(BaseMerge::Merged));
-    let merge = fixture.target(SLICE);
-    assert_ne!(merge, own.as_ref());
-    let parents = jj(
-        &fixture.root,
-        &[
-            "--ignore-working-copy",
-            "log",
-            "--no-graph",
-            "-r",
-            &format!("{}-", bookmark(SLICE)),
-            "-T",
-            r#"commit_id ++ "\n""#,
-        ],
-    );
-    assert_eq!(parents.lines().count(), 2);
-    assert!(fixture.slice_dir(&slice).join("base-2.txt").is_file());
-    assert_eq!(fixture.vcs.is_clean(&slice), Ok(true));
-    assert_eq!(fixture.vcs.merge_base(&slice), Ok(BaseMerge::UpToDate));
-}
-
-#[test]
-fn a_base_pushed_from_elsewhere_is_merged_without_a_manual_fetch() {
-    let fixture = Fixture::new(false);
-    let (slice, _base) = fixture.slice();
-    let before = fixture.target(BASE);
-    fixture.advance_base_elsewhere("elsewhere.txt", "e\n");
-    let pushed = fixture.remote_target(BASE);
-    assert_ne!(pushed, before.trim());
-    assert_eq!(fixture.target(BASE), before);
-    assert_eq!(fixture.vcs.merge_base(&slice), Ok(BaseMerge::Merged));
-    assert_eq!(fixture.target(BASE), pushed);
-    assert_eq!(fixture.target(SLICE), pushed);
-    assert!(fixture.slice_dir(&slice).join("elsewhere.txt").is_file());
-    assert_eq!(fixture.vcs.merge_base(&slice), Ok(BaseMerge::UpToDate));
-}
-
-#[test]
-fn a_remote_base_is_merged_into_a_slice_with_work_of_its_own() {
-    let fixture = Fixture::new(false);
-    let (slice, _base) = fixture.slice();
-    write(&fixture.slice_dir(&slice), "slice.txt", "s\n");
-    let own = fixture
-        .vcs
-        .commit(&slice, "Add slice work")
-        .expect("commit");
-    fixture.advance_base_elsewhere("elsewhere.txt", "e\n");
-    assert_eq!(fixture.vcs.merge_base(&slice), Ok(BaseMerge::Merged));
-    assert_ne!(fixture.target(SLICE), own.as_ref());
-    assert_eq!(fixture.target(BASE), fixture.remote_target(BASE));
-    assert!(fixture.slice_dir(&slice).join("slice.txt").is_file());
-    assert!(fixture.slice_dir(&slice).join("elsewhere.txt").is_file());
-}
-
-#[test]
-fn a_failed_fetch_is_a_backend_error_and_leaves_the_slice_unchanged() {
-    let fixture = Fixture::new(false);
-    let (slice, _base) = fixture.slice();
-    let before = fixture.target(SLICE);
-    std::fs::remove_dir_all(&fixture.remote).expect("remove remote");
-    assert!(matches!(
-        fixture.vcs.merge_base(&slice),
-        Err(PortError::Backend(_))
-    ));
-    assert_eq!(fixture.target(SLICE), before);
-    assert_eq!(fixture.vcs.is_clean(&slice), Ok(true));
-}
-
-#[test]
-fn a_conflicting_merge_leaves_the_slice_unchanged() {
-    let fixture = Fixture::new(false);
-    let (slice, _base) = fixture.slice();
-    let slice_notes = "one\nslice\nthree\n";
-    write(&fixture.slice_dir(&slice), "notes.txt", slice_notes);
-    fixture.vcs.commit(&slice, "Edit notes").expect("commit");
-    let before = fixture.target(SLICE);
-    fixture.advance_base("notes.txt", "one\nbase\nthree\n");
-    let conflicted = BaseMerge::Conflicted {
-        paths: vec!["notes.txt".to_owned()],
-    };
-    assert_eq!(fixture.vcs.merge_base(&slice), Ok(conflicted));
-    assert_eq!(fixture.target(SLICE), before);
-    assert_eq!(fixture.vcs.is_clean(&slice), Ok(true));
-    let notes = std::fs::read_to_string(fixture.slice_dir(&slice).join("notes.txt")).expect("read");
-    assert_eq!(notes, slice_notes);
-}
-
-#[test]
-fn merging_over_uncommitted_work_is_rejected() {
-    let fixture = Fixture::new(false);
-    let (slice, _base) = fixture.slice();
-    write(&fixture.slice_dir(&slice), "wip.txt", "wip\n");
-    fixture.advance_base("base-1.txt", "1\n");
-    assert!(matches!(
-        fixture.vcs.merge_base(&slice),
-        Err(PortError::Rejected(_))
     ));
 }
 
 #[test]
 fn diffs_come_as_stat_first_and_hunks_on_request() {
     let fixture = Fixture::new(false);
-    let (slice, base) = fixture.slice();
-    let dir = fixture.slice_dir(&slice);
+    let (dir, base) = fixture.slice();
     write(&dir, "notes.txt", "one\nTWO\nthree\n");
-    fixture.vcs.commit(&slice, "Shout").expect("commit");
+    jj(&dir, &["commit", "-m", "Shout"]);
     write(&dir, "src/a b.rs", "fn a() {}\nfn b() {}\n");
     fixture.advance_base("base-1.txt", "1\n");
-    let stat = fixture.vcs.diff_stat(&dir, &base).expect("stat");
+    let stat = JjVcs.diff_stat(&dir, &base).expect("stat");
     assert_eq!(
         stat.to_string(),
         "notes.txt +1 -1\nsrc/a b.rs +2 -0\n2 files +3 -1\n"
     );
-    let hunks = fixture
-        .vcs
-        .diff_hunks(&dir, &base, "src/a b.rs")
-        .expect("hunks");
+    let hunks = JjVcs.diff_hunks(&dir, &base, "src/a b.rs").expect("hunks");
     assert!(hunks.contains("+fn a() {}\n+fn b() {}"), "{hunks}");
     assert!(!hunks.contains("notes.txt"), "{hunks}");
     assert!(matches!(
-        fixture.vcs.diff_hunks(&dir, &base, "src/c.rs"),
+        JjVcs.diff_hunks(&dir, &base, "src/c.rs"),
         Err(PortError::NotFound(_))
     ));
-}
-
-#[test]
-fn diffs_read_no_jj_config_key() {
-    let fixture = Fixture::new(false);
-    let (slice, base) = fixture.slice();
-    let dir = fixture.slice_dir(&slice);
-    write(&dir, "a.txt", "a\n");
-    jj(&dir, &["config", "unset", "--workspace", BASE_KEY]);
-    let stat = fixture.vcs.diff_stat(&dir, &base).expect("stat");
-    assert_eq!(stat.to_string(), "a.txt +1 -0\n1 files +1 -0\n");
-    let hunks = fixture.vcs.diff_hunks(&dir, &base, "a.txt").expect("hunks");
-    assert!(hunks.contains("+a"), "{hunks}");
 }
 
 #[test]
 fn a_directory_that_is_no_workspace_is_not_found() {
     let fixture = Fixture::new(false);
-    let (_slice, base) = fixture.slice();
+    let (_dir, base) = fixture.slice();
     let nowhere = fixture.root.join("not-a-workspace");
     assert!(matches!(
-        fixture.vcs.diff_stat(&nowhere, &base),
+        JjVcs.diff_stat(&nowhere, &base),
         Err(PortError::NotFound(_))
     ));
 }
 
 #[test]
-fn a_colocated_repository_takes_slices_too() {
+fn a_colocated_repository_reads_too() {
     let fixture = Fixture::new(true);
-    let (slice, base) = fixture.slice();
-    write(&fixture.slice_dir(&slice), "a.txt", "a\n");
-    let commit = fixture.vcs.commit(&slice, "Add a").expect("commit");
-    assert_eq!(fixture.vcs.publish(&slice), Ok(Publication::Published));
-    assert_eq!(fixture.remote_target(SLICE), commit.as_ref());
-    assert_eq!(
-        fixture.vcs.open_slice(&slice, &base),
-        Ok(SliceOpening::AlreadyOpen)
-    );
-    fixture.vcs.drop_slice(&slice).expect("drop");
+    let (dir, base) = fixture.slice();
+    write(&dir, "a.txt", "a\n");
+    let stat = JjVcs.diff_stat(&dir, &base).expect("stat");
+    assert_eq!(stat.to_string(), "a.txt +1 -0\n1 files +1 -0\n");
+    jj(&dir, &["commit", "-m", "Add a"]);
+    assert!(JjVcs.latest_commit(&dir).is_ok());
 }
 
 #[test]
@@ -604,17 +237,4 @@ new file mode 100644
 fn header_paths_take_the_new_side() {
     assert_eq!(header_path("a/x y.rs b/x y.rs"), "x y.rs");
     assert_eq!(header_path("a/old.rs b/new.rs"), "new.rs");
-}
-
-#[test]
-fn resolve_list_lines_yield_their_paths() {
-    assert_eq!(
-        command::conflicted_path("d i/x y.txt    2-sided conflict"),
-        Some("d i/x y.txt".to_owned())
-    );
-    assert_eq!(
-        command::conflicted_path("f.txt  3-sided conflict including 1 deletion"),
-        Some("f.txt".to_owned())
-    );
-    assert_eq!(command::conflicted_path("Warning: nothing"), None);
 }

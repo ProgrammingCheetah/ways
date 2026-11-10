@@ -1,0 +1,150 @@
+#!/bin/sh
+# zaf description: ship the root checkout's change onto a base by pull request: describe it with the title when it has no description, set the bookmark on it and push, `pr-open`, `ci-wait`, squash `pr-merge` at the head CI passed, then `sync <base>`; hands back the pull request number
+# zaf 1: refused: the arguments are not <bookmark> <base> <title> [<body>], a name is not a usable bookmark, there is nothing to ship or the change is conflicted, the bookmark would move backwards or sideways, the remote moved, a check failed, or the merge was refused; once a pull request is open its number is the last line
+# zaf 2: a backend failed (jj or gh is missing or refused, or a step did not run); once a pull request is open its number is the last line
+# zaf 3: the checks were still running when the wait ended; the pull request is open and its number is the last line
+# zaf mode: 700
+bookmark=$1
+base=$2
+title=$3
+body=${4:-}
+
+if [ -z "$ZAF_ROOT" ] || [ "$#" -lt 3 ] || [ "$#" -gt 4 ]; then
+    echo "usage: ship <bookmark> <base> <title> [<body>], with ZAF_ROOT set" >&2
+    exit 1
+fi
+for name in "$bookmark" "$base"; do
+    case $name in
+        "" | -* | *\"* | *\\*)
+            echo "$name is not a usable bookmark name" >&2
+            exit 1
+            ;;
+    esac
+done
+if [ "$bookmark" = "$base" ]; then
+    echo "the bookmark cannot be the base itself" >&2
+    exit 1
+fi
+if [ -z "$title" ]; then
+    echo "a pull request needs a title" >&2
+    exit 1
+fi
+
+jj_run() {
+    jj --no-pager --color=never -R "$ZAF_ROOT" "$@"
+}
+
+# One field of a revision, or nothing when the revset names none; a jj that fails is status 2.
+field() {
+    out=$(jj_run --ignore-working-copy log --no-graph -r "$1" -T "$2 ++ \"\\n\"") || return 2
+    printf '%s\n' "$out" | awk 'NF { print; exit }'
+}
+
+# A step ends ship with its own code when it is 1 or 3. 125 is zaf's alone, a step that never
+# ran, so it is never passed on: ship declares 1, 2 and 3, and anything else is a backend
+# failure. Once a pull request is open, its number is the last line whatever the code.
+number=
+stop() {
+    if [ -n "$number" ]; then
+        echo "$number"
+    fi
+    case $1 in
+        1) exit 1 ;;
+        3) exit 3 ;;
+        *) exit 2 ;;
+    esac
+}
+
+# The change is the working copy's when it holds one (jj snapshots the files on disk first),
+# else its parent's.
+empty=$(jj_run log --no-graph -r @ -T empty) || exit 2
+if [ "$empty" = "true" ]; then
+    tip=@-
+else
+    tip=@
+fi
+change=$(field "$tip" change_id) || exit 2
+
+# Nothing to ship: the change is already in the base as the remote has it, or in the local base.
+jj_run git fetch || exit 2
+inside=$(jj_run --ignore-working-copy log --no-graph -r "$change & ::(bookmarks(exact:\"$base\") | remote_bookmarks(exact:\"$base\"))" -T 'commit_id ++ "\n"') || exit 2
+if [ -n "$inside" ]; then
+    echo "nothing to ship: the change is already in $base" >&2
+    exit 1
+fi
+conflicted=$(field "$change" conflict) || exit 2
+if [ "$conflicted" = "true" ]; then
+    echo "the change $change is conflicted; resolve it first" >&2
+    exit 1
+fi
+
+# jj refuses to push a change with no description: the title is the one it gets.
+description=$(field "$change" 'description.first_line()') || exit 2
+if [ -z "$description" ]; then
+    jj_run describe -r "$change" -m "$title" || exit 2
+fi
+# Leave the working copy off the change, so an edit after this does not rewrite what was pushed.
+if [ "$tip" = "@" ]; then
+    jj_run new || exit 2
+fi
+
+# `bookmark set` creates the bookmark, moves it forward or stays, and refuses a backward or
+# sideways move on its own.
+if ! moved=$(jj_run bookmark set "$bookmark" -r "$change" 2>&1); then
+    printf '%s\n' "$moved" >&2
+    case $moved in
+        *backwards* | *sideways*) exit 1 ;;
+    esac
+    exit 2
+fi
+
+# A plain push, never forced: a remote whose bookmark moved past what jj last saw refuses it.
+if ! pushed=$(jj_run git push --bookmark "exact:$bookmark" 2>&1); then
+    printf '%s\n' "$pushed" >&2
+    case $pushed in
+        *"unexpectedly moved on the remote"*)
+            echo "the remote has work $bookmark lacks" >&2
+            exit 1
+            ;;
+    esac
+    exit 2
+fi
+printf '%s\n' "$pushed" >&2
+
+# A successful `zaf do` prints nothing, so `--more` brings each step's whole log back; its last
+# non-empty line is the value the step hands back. A failed step's log is passed on to ship's
+# own, or the reason it failed would be lost in the variable.
+last_line() {
+    printf '%s\n' "$1" | awk 'NF { line = $0 } END { print line }'
+}
+
+log=$(zaf do --more pr-open "$bookmark" "$base" "$title" "$body") || {
+    code=$?
+    printf '%s\n' "$log" >&2
+    stop "$code"
+}
+number=$(last_line "$log")
+case $number in
+    "" | *[!0-9]*)
+        echo "pr-open handed back no pull request number" >&2
+        number=
+        exit 2
+        ;;
+esac
+
+log=$(zaf do --more ci-wait "$number") || {
+    code=$?
+    printf '%s\n' "$log" >&2
+    stop "$code"
+}
+head=$(last_line "$log")
+case $head in
+    "" | *[!0-9a-f]*)
+        echo "ci-wait handed back no head commit" >&2
+        stop 2
+        ;;
+esac
+
+zaf do pr-merge "$number" --squash --match-head-commit "$head" || stop $?
+zaf do sync "$base" || stop $?
+echo "$number"

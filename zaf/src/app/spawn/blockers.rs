@@ -1,9 +1,10 @@
 //! The blockers a task body names, and the ones the spawner can never see closed.
 //!
-//! A blocker closes when its issue is labelled `done`. Three kinds never do: a
-//! cycle among open tasks (each waits for the next), a number that is not an
-//! issue, and an issue closed without `done` (not planned, or folded into a
-//! unit). [`read`] walks the `Blocked by:` lines from the ready tasks, asking the
+//! A blocker closes when its issue closes as completed, or is labelled `done`;
+//! no label has to follow the close by hand. Three kinds never close: a cycle
+//! among open tasks (each waits for the next), a number that is not an issue,
+//! and an issue closed as not planned or as a duplicate (dropped, or folded into
+//! a unit). [`read`] walks the `Blocked by:` lines from the ready tasks, asking the
 //! board for each blocker's [`IssueState`]; [`cycles`] and [`dead`] name what the
 //! walk found. Both are pure, so the tick, the dry run and `zaf status` agree.
 
@@ -36,9 +37,9 @@ pub enum DeadReason {
     /// No such issue, or a pull request.
     #[strum(to_string = "not an issue")]
     NotAnIssue,
-    /// The issue is closed, but not labelled `done`.
-    #[strum(to_string = "closed without done")]
-    ClosedWithoutDone,
+    /// The issue is closed as not planned or as a duplicate.
+    #[strum(to_string = "closed as not planned")]
+    ClosedNotPlanned,
 }
 
 /// A blocker named on a task that can never close.
@@ -67,7 +68,7 @@ impl fmt::Display for DeadBlocker {
 pub struct Blockers {
     /// The open tasks reached (the ready ones and every open blocker, transitively).
     pub graph: Graph,
-    /// Blockers labelled `done`.
+    /// Blockers that are done: closed as completed, or labelled `done`.
     pub closed: BTreeSet<IssueNumber>,
     /// Blockers that never close.
     pub dead: BTreeMap<IssueNumber, DeadReason>,
@@ -94,8 +95,8 @@ pub fn read(board: &dyn Board, ready: &[Ticket]) -> Result<Blockers, PortError> 
             IssueState::Done => {
                 found.closed.insert(number);
             }
-            IssueState::ClosedNotDone => {
-                found.dead.insert(number, DeadReason::ClosedWithoutDone);
+            IssueState::ClosedNotPlanned => {
+                found.dead.insert(number, DeadReason::ClosedNotPlanned);
             }
             IssueState::Missing => {
                 found.dead.insert(number, DeadReason::NotAnIssue);
@@ -194,7 +195,7 @@ pub struct DeadLine {
     pub blocker: u64,
     /// The task that names it.
     pub on: u64,
-    /// Why it never closes: `not an issue` or `closed without done`.
+    /// Why it never closes: `not an issue` or `closed as not planned`.
     pub reason: String,
 }
 
