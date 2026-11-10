@@ -9,10 +9,11 @@ epic; `ZAF_INSTANCE` and `ZAF_VERSION` are set for every `zaf` verb you run.
 3. Draft each task in the task template: Goal, Scope, Out of scope, Interfaces,
    Design pages, Architecture, Acceptance, Tests, Security trigger, Model, Size,
    Blocked by.
-4. File each: `zaf board file <epic> "<title>" --group <name> --body-file - <<'EOF'`
-   with the body on stdin; add `--blocked` when its `Blocked by` names a task not
-   yet done. A refusal names the field at fault: fix it and file again. A title
-   already filed is not filed twice.
+4. File each: `zaf board file <epic> "<title>" [--group <name>] [--type <name>] [--blocked] --body-file -`
+   with the body on stdin (`<<'EOF'`); give `--blocked` when its `Blocked by` names a
+   task not yet done. `--type` names the issue type and defaults to `Task`; a type the
+   repository lacks is refused with the types it has. A refusal names the field
+   at fault: fix it and file again. A title already filed is not filed twice.
 5. Each door or design gap: `zaf board question <epic> "<question>" [--door]`.
 6. `zaf board report <epic> "<tasks filed; what could not be scoped and why>"`, then end.
 

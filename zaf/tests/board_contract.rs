@@ -376,6 +376,7 @@ fn a_filed_task_reads_back_under_its_epic(arrange: &dyn Arrange) {
             body: BODY.into(),
             state: TicketState::Blocked,
             group: Some("contract".into()),
+            kind: TicketType::task(),
         })
         .expect("the task is filed");
     arrange.adopt(filed);
@@ -402,6 +403,34 @@ fn a_filed_task_reads_back_under_its_epic(arrange: &dyn Arrange) {
         })
         .collect();
     assert_eq!(listed, [(filed, "filed", Some("contract"))]);
+}
+
+/// Files a task of `kind` under a new epic and reads it back.
+fn filed_as(arrange: &dyn Arrange, kind: TicketType) -> Ticket {
+    let epic = arrange.epic("contract epic to file under");
+    let board = arrange.board();
+    let filed = board
+        .file_task(&NewTask {
+            epic,
+            title: "filed".into(),
+            body: BODY.into(),
+            state: TicketState::Ready,
+            group: None,
+            kind,
+        })
+        .expect("the task is filed");
+    arrange.adopt(filed);
+    board.task(filed).expect("the task reads")
+}
+
+fn a_filed_task_is_a_task_by_default(arrange: &dyn Arrange) {
+    let ticket = filed_as(arrange, TicketType::task());
+    assert_eq!(ticket.kind, Some(TicketType::from("Task")));
+}
+
+fn a_filed_task_takes_the_named_type(arrange: &dyn Arrange) {
+    let ticket = filed_as(arrange, TicketType::from("Bug"));
+    assert_eq!(ticket.kind, Some(TicketType::from("Bug")));
 }
 
 // The backends.
@@ -730,4 +759,6 @@ contract![
     a_challengers_report_challenges_its_epic,
     a_ticket_that_is_no_open_epic_is_not_one,
     a_filed_task_reads_back_under_its_epic,
+    a_filed_task_is_a_task_by_default,
+    a_filed_task_takes_the_named_type,
 ];
