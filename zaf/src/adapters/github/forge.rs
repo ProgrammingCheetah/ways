@@ -6,12 +6,13 @@ use serde::Deserialize;
 
 use super::GhCommand;
 use super::rows::{
-    CheckBucket, CheckRow, FileRow, LineCommentRow, PrHeadRow, PrStateRow, ReviewRow, UserRow,
+    CheckBucket, CheckRow, FileRow, LineCommentRow, PrHeadRow, PrStateRow, PrTimesRow, ReviewRow,
+    UserRow,
 };
 use crate::domain::Location;
 use crate::ports::{
-    Author, Check, CheckName, CheckState, Forge, PortError, PrNumber, ReviewComment, RuleId,
-    ScanningAlert,
+    Author, Check, CheckName, CheckState, CommitId, Forge, PortError, PrNumber, PullRequest,
+    ReviewComment, RuleId, ScanningAlert,
 };
 
 /// The author shown for a comment whose account was deleted, as GitHub shows it.
@@ -44,9 +45,23 @@ fn author(user: Option<UserRow>) -> Author {
     user.map_or_else(|| Author::from(GHOST), |user| Author::from(user.login))
 }
 
-fn parse_time(text: &str) -> Result<SystemTime, PortError> {
-    humantime::parse_rfc3339(text)
-        .map_err(|error| PortError::Backend(format!("gh printed a bad time `{text}`: {error}")))
+/// The zero time gh prints for a run that has not finished.
+const ZERO_TIME: &str = "0001-01-01T00:00:00Z";
+
+/// The time gh gave for `what` on a pull request; a time gh left out, or printed as the zero
+/// time or in a form that does not parse, is an error naming the pull request.
+fn time_of(pr: PrNumber, what: &str, text: Option<&str>) -> Result<SystemTime, PortError> {
+    let text = text.filter(|text| !text.is_empty() && *text != ZERO_TIME);
+    let Some(text) = text else {
+        return Err(PortError::Backend(format!(
+            "pull request {pr}: gh gave no time for {what}"
+        )));
+    };
+    humantime::parse_rfc3339(text).map_err(|error| {
+        PortError::Backend(format!(
+            "pull request {pr}: gh printed a bad time `{text}` for {what}: {error}"
+        ))
+    })
 }
 
 /// An alert as `repos/{repo}/code-scanning/alerts` prints it.
@@ -101,26 +116,53 @@ impl Forge for GithubForge {
         let rows: Vec<CheckRow> =
             match self
                 .gh
-                .json(&["pr", "checks", &number, "--json", "name,bucket"])
+                .json(&["pr", "checks", &number, "--json", "name,bucket,completedAt"])
             {
                 Err(PortError::Backend(stderr)) if stderr.contains(NO_CHECKS) => Vec::new(),
                 other => other?,
             };
-        let checks = rows
-            .into_iter()
-            .map(|row| Check {
-                name: CheckName::from(row.name),
-                state: CheckState::from(row.bucket),
+        rows.into_iter()
+            .map(|row| {
+                let state = CheckState::from(row.bucket);
+                // A running check has no finish time, whatever gh prints in its place.
+                let finished_at = match state {
+                    CheckState::Pending => None,
+                    CheckState::Passed | CheckState::Failed => {
+                        let what = format!("the finish of check `{}`", row.name);
+                        Some(time_of(pr, &what, row.completed_at.as_deref())?)
+                    }
+                };
+                Ok(Check {
+                    name: CheckName::from(row.name),
+                    state,
+                    finished_at,
+                })
             })
-            .collect();
-        Ok(checks)
+            .collect()
+    }
+
+    fn pull_request(&self, pr: PrNumber) -> Result<PullRequest, PortError> {
+        let number = bare(pr);
+        let row: PrTimesRow =
+            self.gh
+                .json(&["pr", "view", &number, "--json", "state,createdAt,mergedAt"])?;
+        let opened_at = time_of(pr, "its opening", row.created_at.as_deref())?;
+        let merged_at = if row.state == "MERGED" {
+            Some(time_of(pr, "its merge", row.merged_at.as_deref())?)
+        } else {
+            None
+        };
+        Ok(PullRequest {
+            opened_at,
+            merged_at,
+        })
     }
 
     fn review_comments(&self, pr: PrNumber) -> Result<Vec<ReviewComment>, PortError> {
         let number = bare(pr);
         let lines: Vec<LineCommentRow> = self.gh.api_list(&format!("pulls/{number}/comments"))?;
         let reviews: Vec<ReviewRow> = self.gh.api_list(&format!("pulls/{number}/reviews"))?;
-        let mut dated: Vec<(SystemTime, ReviewComment)> = Vec::new();
+        let mut comments: Vec<ReviewComment> = Vec::new();
         for review in reviews {
             let (Some(submitted_at), Some(body)) = (review.submitted_at, review.body) else {
                 continue;
@@ -132,9 +174,10 @@ impl Forge for GithubForge {
                 author: author(review.user),
                 body,
                 location: None,
-                head: review.commit_id,
+                head: review.commit_id.map(CommitId::from),
+                posted_at: time_of(pr, "a review's posting", Some(&submitted_at))?,
             };
-            dated.push((parse_time(&submitted_at)?, comment));
+            comments.push(comment);
         }
         for line in lines {
             let location = Location {
@@ -145,12 +188,13 @@ impl Forge for GithubForge {
                 author: author(line.user),
                 body: line.body,
                 location: Some(location),
-                head: line.commit_id,
+                head: line.commit_id.map(CommitId::from),
+                posted_at: time_of(pr, "a comment's posting", line.created_at.as_deref())?,
             };
-            dated.push((parse_time(&line.created_at)?, comment));
+            comments.push(comment);
         }
-        dated.sort_by_key(|(at, _)| *at);
-        Ok(dated.into_iter().map(|(_, comment)| comment).collect())
+        comments.sort_by_key(|comment| comment.posted_at);
+        Ok(comments)
     }
 
     fn head(&self, pr: PrNumber) -> Result<Option<String>, PortError> {

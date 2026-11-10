@@ -1,5 +1,6 @@
 use std::path::Path;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use super::*;
 use crate::app::check::{Engine, EngineSettings, Shell, StepPorts, Verdict};
@@ -7,8 +8,8 @@ use crate::domain::{Location, Severity};
 use crate::fakes::{FakeForge, FakeRunner, PrRequest};
 use crate::manifest::RunnerName;
 use crate::ports::{
-    Author, BaseName, Check, Forge, GateRun, GateVerdict, ReviewComment, RuleId, RunOutput,
-    RunRequest, Runner, ScanningAlert, SliceName,
+    Author, BaseName, Check, CommitId, Forge, GateRun, GateVerdict, PullRequest, ReviewComment,
+    RuleId, RunOutput, RunRequest, Runner, ScanningAlert, SliceName,
 };
 
 #[test]
@@ -120,6 +121,10 @@ impl Forge for SharedForge {
         self.0.review_comments(pr)
     }
 
+    fn pull_request(&self, pr: PrNumber) -> Result<PullRequest, PortError> {
+        self.0.pull_request(pr)
+    }
+
     fn head(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
         self.0.head(pr)
     }
@@ -190,6 +195,7 @@ pub(super) fn located(author: &str, body: &str, path: &str, line: u32) -> Review
             line: Some(line),
         }),
         head: None,
+        posted_at: SystemTime::UNIX_EPOCH,
     }
 }
 
@@ -202,7 +208,7 @@ pub(super) fn located_on(
     head: &str,
 ) -> ReviewComment {
     ReviewComment {
-        head: Some(head.to_owned()),
+        head: Some(CommitId::from(head)),
         ..located(author, body, path, line)
     }
 }

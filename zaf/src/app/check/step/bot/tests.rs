@@ -4,7 +4,7 @@ use crate::app::check::{Engine, EngineSettings, StepStatus, Verdict};
 use crate::domain::Location;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 fn source() -> FindingSource {
     FindingSource::from("bot:review-bot")
@@ -60,6 +60,7 @@ fn a_review_gives_one_must_fix_and_one_note() {
         body: "Actionable comments posted: 2".to_owned(),
         location: None,
         head: None,
+        posted_at: SystemTime::UNIX_EPOCH,
     };
     for comment in [
         located("review-bot", must, "src/export.rs", 40),

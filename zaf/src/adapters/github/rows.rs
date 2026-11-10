@@ -80,11 +80,24 @@ pub(super) struct PrStateRow {
     pub state: String,
 }
 
-/// A check run as `gh pr checks --json name,bucket` prints it.
+/// A pull request read for the times it opened and merged.
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct PrTimesRow {
+    pub state: String,
+    #[serde(rename = "createdAt", default)]
+    pub created_at: Option<String>,
+    #[serde(rename = "mergedAt", default)]
+    pub merged_at: Option<String>,
+}
+
+/// A check run as `gh pr checks --json name,bucket,completedAt` prints it.
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct CheckRow {
     pub name: String,
     pub bucket: CheckBucket,
+    /// gh prints the zero time for a run that has not finished.
+    #[serde(rename = "completedAt", default)]
+    pub completed_at: Option<String>,
 }
 
 /// gh's grouping of a check run's state and conclusion.
@@ -111,7 +124,8 @@ pub(super) struct LineCommentRow {
     pub body: String,
     pub path: String,
     pub line: Option<u32>,
-    pub created_at: String,
+    #[serde(default)]
+    pub created_at: Option<String>,
     #[serde(default)]
     pub commit_id: Option<String>,
 }

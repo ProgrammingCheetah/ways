@@ -13,8 +13,8 @@ use crate::domain::{
 };
 use crate::manifest::RepoName;
 use crate::ports::{
-    Author, Board, Check, CheckName, CheckState, ClaimOutcome, ClaimRecord, Forge, NewQuestion,
-    PortError, PrNumber, QUESTION_TITLE_LIMIT, ReviewComment, RuleId, ScanningAlert,
+    Author, Board, Check, CheckName, CheckState, ClaimOutcome, ClaimRecord, CommitId, Forge,
+    NewQuestion, PortError, PrNumber, QUESTION_TITLE_LIMIT, ReviewComment, RuleId, ScanningAlert,
 };
 
 const REPO: &str = "example/tracker";
@@ -1222,32 +1222,182 @@ fn questions_and_rulings_on_an_epic_and_unsigned_tasks_change_no_label() {
 fn checks_map_gh_buckets_and_none_reported_is_empty() {
     let fake = FakeGh::new();
     let checks = r#"[
-        {"name":"ci","bucket":"pass"},
-        {"name":"lint","bucket":"fail"},
-        {"name":"scan","bucket":"pending"},
-        {"name":"docs","bucket":"skipping"},
-        {"name":"bench","bucket":"cancel"}
+        {"name":"ci","bucket":"pass","completedAt":"2027-01-15T08:00:00Z"},
+        {"name":"lint","bucket":"fail","completedAt":"2027-01-15T08:01:00Z"},
+        {"name":"scan","bucket":"pending","completedAt":"0001-01-01T00:00:00Z"},
+        {"name":"docs","bucket":"skipping","completedAt":"2027-01-15T08:02:00Z"},
+        {"name":"bench","bucket":"cancel","completedAt":"2027-01-15T08:03:00Z"}
     ]"#;
     fake.on("pr checks 7 *", checks).fail_on(
         "pr checks 8 *",
         "no checks reported on the 'feature/v1-export-2' branch",
     );
-    let check = |name: &str, state: CheckState| Check {
+    let check = |name: &str, state: CheckState, finished_at: Option<&str>| Check {
         name: CheckName::from(name),
         state,
+        finished_at: finished_at.map(time),
     };
     let expected_checks = vec![
-        check("ci", CheckState::Passed),
-        check("lint", CheckState::Failed),
-        check("scan", CheckState::Pending),
-        check("docs", CheckState::Passed),
-        check("bench", CheckState::Failed),
+        check("ci", CheckState::Passed, Some("2027-01-15T08:00:00Z")),
+        check("lint", CheckState::Failed, Some("2027-01-15T08:01:00Z")),
+        check("scan", CheckState::Pending, None),
+        check("docs", CheckState::Passed, Some("2027-01-15T08:02:00Z")),
+        check("bench", CheckState::Failed, Some("2027-01-15T08:03:00Z")),
     ];
     let forge = fake.forge();
     assert_eq!(forge.checks(PrNumber::from(7)), Ok(expected_checks));
     assert_eq!(forge.checks(PrNumber::from(8)), Ok(Vec::new()));
-    let expected_call = argv(&["pr", "checks", "7", "--json", "name,bucket", "--repo", REPO]);
+    let expected_call = argv(&[
+        "pr",
+        "checks",
+        "7",
+        "--json",
+        "name,bucket,completedAt",
+        "--repo",
+        REPO,
+    ]);
     assert_eq!(fake.calls()[0], expected_call);
+}
+
+/// A time as the forge prints it.
+fn time(text: &str) -> SystemTime {
+    humantime::parse_rfc3339(text).expect("a time")
+}
+
+#[test]
+fn a_finished_check_has_its_time() {
+    let fake = FakeGh::new();
+    let checks = r#"[
+        {"name":"ci","bucket":"pass","completedAt":"2027-01-15T08:00:00Z"},
+        {"name":"lint","bucket":"fail","completedAt":"2027-01-15T08:04:30Z"}
+    ]"#;
+    fake.on("pr checks 7 *", checks);
+    let read = fake.forge().checks(PrNumber::from(7)).expect("checks");
+    assert_eq!(read[0].finished_at, Some(time("2027-01-15T08:00:00Z")));
+    assert_eq!(read[1].finished_at, Some(time("2027-01-15T08:04:30Z")));
+}
+
+#[test]
+fn a_running_check_has_none() {
+    let fake = FakeGh::new();
+    let checks = r#"[
+        {"name":"ci","bucket":"pending","completedAt":"0001-01-01T00:00:00Z"},
+        {"name":"scan","bucket":"pending"}
+    ]"#;
+    fake.on("pr checks 7 *", checks);
+    let read = fake.forge().checks(PrNumber::from(7)).expect("checks");
+    assert_eq!(read.len(), 2);
+    assert!(read.iter().all(|check| check.finished_at.is_none()));
+}
+
+#[test]
+fn a_review_comment_has_its_time_and_head() {
+    let fake = FakeGh::new();
+    let lines = r#"[[
+        {"user":{"login":"reviewer"},"body":"Name this.","path":"src/a.rs","line":3,"created_at":"2027-01-15T08:10:00Z","commit_id":"abc123"}
+    ]]"#;
+    let reviews = r#"[[
+        {"user":{"login":"reviewer"},"body":"Two nits.","submitted_at":"2027-01-15T08:05:00Z","commit_id":"def456"}
+    ]]"#;
+    fake.on(&format!("api repos/{REPO}/pulls/7/comments *"), lines)
+        .on(&format!("api repos/{REPO}/pulls/7/reviews *"), reviews);
+    let read = fake
+        .forge()
+        .review_comments(PrNumber::from(7))
+        .expect("comments");
+    assert_eq!(read.len(), 2);
+    assert_eq!(read[0].posted_at, time("2027-01-15T08:05:00Z"));
+    assert_eq!(read[0].head, Some(CommitId::from("def456")));
+    assert_eq!(read[1].posted_at, time("2027-01-15T08:10:00Z"));
+    assert_eq!(read[1].head, Some(CommitId::from("abc123")));
+}
+
+#[test]
+fn a_pr_has_its_open_and_merge_times() {
+    let fake = FakeGh::new();
+    fake.on(
+        "pr view 7 *",
+        r#"{"state":"MERGED","createdAt":"2027-01-15T08:00:00Z","mergedAt":"2027-01-15T09:30:00Z"}"#,
+    )
+    .on(
+        "pr view 8 *",
+        r#"{"state":"OPEN","createdAt":"2027-01-16T08:00:00Z","mergedAt":null}"#,
+    )
+    .on(
+        "pr view 9 *",
+        r#"{"state":"CLOSED","createdAt":"2027-01-17T08:00:00Z","mergedAt":null}"#,
+    );
+    let forge = fake.forge();
+    let merged = forge.pull_request(PrNumber::from(7)).expect("merged");
+    assert_eq!(merged.opened_at, time("2027-01-15T08:00:00Z"));
+    assert_eq!(merged.merged_at, Some(time("2027-01-15T09:30:00Z")));
+    let open = forge.pull_request(PrNumber::from(8)).expect("open");
+    assert_eq!(open.opened_at, time("2027-01-16T08:00:00Z"));
+    assert_eq!(open.merged_at, None);
+    let closed = forge.pull_request(PrNumber::from(9)).expect("closed");
+    assert_eq!(closed.merged_at, None);
+    let expected_call = argv(&[
+        "pr",
+        "view",
+        "7",
+        "--json",
+        "state,createdAt,mergedAt",
+        "--repo",
+        REPO,
+    ]);
+    assert_eq!(fake.calls()[0], expected_call);
+}
+
+#[test]
+fn a_missing_time_is_an_error() {
+    let fake = FakeGh::new();
+    fake.on(
+        "pr checks 7 *",
+        r#"[{"name":"ci","bucket":"pass","completedAt":"0001-01-01T00:00:00Z"}]"#,
+    )
+    .on("pr checks 8 *", r#"[{"name":"ci","bucket":"fail"}]"#)
+    .on(
+        &format!("api repos/{REPO}/pulls/9/comments *"),
+        r#"[[{"user":null,"body":"Late.","path":"src/a.rs","line":1}]]"#,
+    )
+    .on(&format!("api repos/{REPO}/pulls/9/reviews *"), "[[]]")
+    .on("pr view 10 *", r#"{"state":"OPEN","createdAt":null}"#)
+    .on(
+        "pr view 11 *",
+        r#"{"state":"MERGED","createdAt":"2027-01-15T08:00:00Z","mergedAt":null}"#,
+    );
+    let forge = fake.forge();
+    let errors = [
+        (7, forge.checks(PrNumber::from(7)).expect_err("zero time")),
+        (8, forge.checks(PrNumber::from(8)).expect_err("no time")),
+        (
+            9,
+            forge
+                .review_comments(PrNumber::from(9))
+                .expect_err("no post time"),
+        ),
+        (
+            10,
+            forge
+                .pull_request(PrNumber::from(10))
+                .expect_err("no opening"),
+        ),
+        (
+            11,
+            forge
+                .pull_request(PrNumber::from(11))
+                .expect_err("no merge time"),
+        ),
+    ];
+    for (number, error) in errors {
+        let PortError::Backend(message) = &error else {
+            panic!("pull request #{number}: {error:?} is not a backend error");
+        };
+        assert!(
+            message.contains(&format!("pull request #{number}")),
+            "{message}"
+        );
+    }
 }
 
 #[test]
@@ -1274,12 +1424,14 @@ fn review_comments_merge_reviews_and_line_comments_oldest_first() {
                 line: None,
             }),
             head: None,
+            posted_at: time("2027-01-15T08:00:00Z"),
         },
         ReviewComment {
             author: Author::from("reviewer"),
             body: "Close; two nits.".to_owned(),
             location: None,
-            head: Some("def456".to_owned()),
+            head: Some(CommitId::from("def456")),
+            posted_at: time("2027-01-15T08:05:00Z"),
         },
         ReviewComment {
             author: Author::from("reviewer"),
@@ -1288,7 +1440,8 @@ fn review_comments_merge_reviews_and_line_comments_oldest_first() {
                 path: "src/export.rs".to_owned(),
                 line: Some(12),
             }),
-            head: Some("abc123".to_owned()),
+            head: Some(CommitId::from("abc123")),
+            posted_at: time("2027-01-15T08:10:00Z"),
         },
     ];
     assert_eq!(

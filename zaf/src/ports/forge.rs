@@ -1,6 +1,8 @@
 //! The forge: pull requests, their checks and review comments, and the merge.
 
-use super::PortError;
+use std::time::SystemTime;
+
+use super::{CommitId, PortError};
 use crate::domain::Location;
 use crate::newtype::text_newtype;
 
@@ -58,6 +60,8 @@ pub struct Check {
     pub name: CheckName,
     /// Where it stands.
     pub state: CheckState,
+    /// When it finished; none while it runs.
+    pub finished_at: Option<SystemTime>,
 }
 
 /// One review comment on a pull request.
@@ -70,7 +74,18 @@ pub struct ReviewComment {
     /// Where it points, when it is on a line.
     pub location: Option<Location>,
     /// The commit it was made on, when the forge says.
-    pub head: Option<String>,
+    pub head: Option<CommitId>,
+    /// When it was posted.
+    pub posted_at: SystemTime,
+}
+
+/// A pull request's own times.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PullRequest {
+    /// When it was opened.
+    pub opened_at: SystemTime,
+    /// When it merged; none while it is open or if it closed unmerged.
+    pub merged_at: Option<SystemTime>,
 }
 
 text_newtype! {
@@ -89,11 +104,17 @@ pub struct ScanningAlert {
 
 /// The forge that hosts the code and its reviews; zaf only reads it.
 pub trait Forge {
-    /// The pull request's check runs.
+    /// The pull request's check runs, each with the time it finished. A finished check the
+    /// forge gives no time for is an error naming the pull request, never a guess.
     fn checks(&self, pr: PrNumber) -> Result<Vec<Check>, PortError>;
 
-    /// The pull request's review comments, oldest first.
+    /// The pull request's review comments, oldest first, each with its post time. A comment the
+    /// forge gives no time for is an error naming the pull request.
     fn review_comments(&self, pr: PrNumber) -> Result<Vec<ReviewComment>, PortError>;
+
+    /// When the pull request opened and, once merged, when it merged. A time the forge does not
+    /// give is an error naming the pull request.
+    fn pull_request(&self, pr: PrNumber) -> Result<PullRequest, PortError>;
 
     /// The commit id the pull request's head is at now, when the forge reports one.
     fn head(&self, pr: PrNumber) -> Result<Option<String>, PortError>;

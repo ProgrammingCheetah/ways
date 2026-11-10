@@ -1,4 +1,5 @@
 use std::sync::Mutex;
+use std::time::SystemTime;
 
 use super::*;
 use crate::app::check::{CheckRecord, Target};
@@ -6,8 +7,8 @@ use crate::domain::{Location, Profile, RoleName};
 use crate::fakes::{FakeForge, FakeRunner, PrRequest};
 use crate::manifest::CommandLine;
 use crate::ports::{
-    BaseName, Check, CheckName, CheckState, GateRun, GateVerdict, ReviewComment, RunOutput,
-    RunRequest, ScanningAlert, SliceName,
+    BaseName, Check, CheckName, CheckState, GateRun, GateVerdict, PullRequest, ReviewComment,
+    RunOutput, RunRequest, ScanningAlert, SliceName,
 };
 
 /// Lends a shared fake forge to a step's thread.
@@ -20,6 +21,10 @@ impl Forge for SharedForge {
 
     fn review_comments(&self, pr: PrNumber) -> Result<Vec<ReviewComment>, PortError> {
         self.0.review_comments(pr)
+    }
+
+    fn pull_request(&self, pr: PrNumber) -> Result<PullRequest, PortError> {
+        self.0.pull_request(pr)
     }
 
     fn head(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
@@ -409,10 +414,12 @@ fn ci_turns_each_failed_check_into_a_must_fix() {
         Check {
             name: CheckName::from("build"),
             state: CheckState::Passed,
+            finished_at: Some(SystemTime::UNIX_EPOCH),
         },
         Check {
             name: CheckName::from("test"),
             state: CheckState::Failed,
+            finished_at: Some(SystemTime::UNIX_EPOCH),
         },
     ];
     ports.forge.set_checks(pr, checks).expect("set");
@@ -433,6 +440,7 @@ fn ci_waits_on_pending_checks_and_gives_up_at_the_deadline() {
     let pending = vec![Check {
         name: CheckName::from("build"),
         state: CheckState::Pending,
+        finished_at: None,
     }];
     ports.forge.set_checks(pr, pending).expect("set");
     let dir = temp_dir();

@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use super::*;
 use crate::app::check::step::tests::{ForgePorts, SharedForge, context, forge_with_pr};
@@ -8,7 +8,7 @@ use crate::app::check::{Shell, StepPorts};
 use crate::fakes::FakeForge;
 use crate::manifest::{CommandLine, RunnerName};
 use crate::ports::{
-    Check, CheckName, Forge, GateRun, PrNumber, ReviewComment, Runner, ScanningAlert,
+    Check, CheckName, Forge, GateRun, PrNumber, PullRequest, ReviewComment, Runner, ScanningAlert,
 };
 
 fn source() -> FindingSource {
@@ -16,9 +16,14 @@ fn source() -> FindingSource {
 }
 
 fn check(name: &str, state: CheckState) -> Check {
+    let finished_at = match state {
+        CheckState::Pending => None,
+        CheckState::Passed | CheckState::Failed => Some(SystemTime::UNIX_EPOCH),
+    };
     Check {
         name: CheckName::from(name),
         state,
+        finished_at,
     }
 }
 
@@ -44,6 +49,10 @@ impl Forge for ScriptedForge {
 
     fn review_comments(&self, pr: PrNumber) -> Result<Vec<ReviewComment>, PortError> {
         self.inner.review_comments(pr)
+    }
+
+    fn pull_request(&self, pr: PrNumber) -> Result<PullRequest, PortError> {
+        self.inner.pull_request(pr)
     }
 
     fn head(&self, pr: PrNumber) -> Result<Option<String>, PortError> {

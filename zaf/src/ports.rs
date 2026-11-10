@@ -19,7 +19,8 @@ pub use board::{Board, ClaimOutcome, ClaimRecord, NewQuestion, QUESTION_TITLE_LI
 pub use design::{Design, Page};
 pub use errors::PortError;
 pub use forge::{
-    Author, Check, CheckName, CheckState, Forge, PrNumber, ReviewComment, RuleId, ScanningAlert,
+    Author, Check, CheckName, CheckState, Forge, PrNumber, PullRequest, ReviewComment, RuleId,
+    ScanningAlert,
 };
 pub use gate::{Gate, GateLevel, GateRun, GateVerdict};
 pub use releases::Releases;
