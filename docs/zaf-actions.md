@@ -67,6 +67,10 @@ zaf board done "$1"
 | `phases` | no | the Team Phases the action may run in, comma-separated; default any; requires `target: task` |
 | `timeout` | no | minutes before the run is killed; default `[actions] timeout_minutes` (30) |
 | `kind` | no | `model` (running it starts a model and costs the task's size), `wait` (it waits on the outside and costs nothing) or `zaf` (zaf runs it alone and it costs nothing); any other value, or the key twice, is refused; optional for an action no phase list names (§5.1) |
+| `ends` | whenever `kind` is set | the fact that ends the phase: `pr-open`, `review-posted`, `ci-done`, `merged` or `exit` (the phase's process exited 0); one value, refused without `kind`, and any other value, or the key twice, is refused naming the five (§5.1) |
+| `on-fail` | no | an action name, only with `kind: wait`: the model action the tick starts when the wait fails; without it a failed wait raises a question on its task; `zaf doctor` names one that resolves to no action or to one whose kind is not `model` (§5.1) |
+
+The phase keys, written as an action file carries them: `# zaf ends: pr-open | review-posted | ci-done | merged | exit` and `# zaf on-fail: <action>`. The parser holds them as `ActionMetadata.ends: Option<PhaseEnd>` and `ActionMetadata.on_fail: Option<ActionName>`.
 
 A file with no metadata, no description or no declared code, or one that declares `125`, is refused by `zaf do` (`NOT_RUN`, exit 125, naming the line) and reported by `zaf doctor`. A comment marker is any run of non-alphanumeric characters (`#`, `//`, `--`, `;`, `REM`), so the format is the same in every language.
 

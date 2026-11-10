@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use super::phase::Phase;
+use crate::newtype::text_newtype;
 
 /// The mode an action declares nothing for.
 const DEFAULT_MODE: u16 = 0o755;
@@ -47,6 +48,32 @@ impl ActionKind {
     pub fn costs_budget(self) -> bool {
         matches!(self, Self::Model)
     }
+}
+
+/// The fact that ends a phase: the value of `# zaf ends: pr-open | review-posted | ci-done |
+/// merged | exit` (docs/zaf-actions.md §5.1). The first four are answered by the forge; `exit` is
+/// the phase's process exiting 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display, strum::EnumString)]
+#[strum(serialize_all = "kebab-case")]
+pub enum PhaseEnd {
+    /// The task's pull request is open.
+    PrOpen,
+    /// A review is posted at the pull request's head.
+    ReviewPosted,
+    /// The pull request's checks are done at its head.
+    CiDone,
+    /// The pull request is merged.
+    Merged,
+    /// The phase's process exited 0.
+    Exit,
+}
+
+/// The five values of `ends`, as a refusal names them.
+const END_NAMES: &str = "pr-open, review-posted, ci-done, merged, exit";
+
+text_newtype! {
+    /// The name of an action, as `on-fail` names the one to run when a wait fails.
+    ActionName
 }
 
 /// One digit of a mode: the `r`, `w` and `x` bits for one subject.
@@ -138,6 +165,12 @@ pub struct ActionMetadata {
     /// waits or is run by zaf alone; none when it declares no kind, as an
     /// action no phase list names need not.
     pub kind: Option<ActionKind>,
+    /// The fact that ends the phase the action stands for; required whenever `kind` is set and
+    /// refused without it.
+    pub ends: Option<PhaseEnd>,
+    /// The model action the tick starts when a wait fails; only on `kind: wait`, and optional
+    /// there. Whether it names a model action is for `zaf doctor`, which resolves it.
+    pub on_fail: Option<ActionName>,
 }
 
 /// A parsed action file: its metadata and where its body starts.
@@ -210,8 +243,12 @@ pub fn parse(file: &Path, text: &str) -> Result<ParsedAction, MetadataError> {
                 .into(),
         });
     }
+    let action = file.file_name().map_or_else(
+        || file.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    );
     fields
-        .finish()
+        .finish(&action)
         .map(|metadata| ParsedAction {
             metadata,
             body_line,
@@ -263,6 +300,8 @@ struct Fields {
     phases: Option<(usize, Vec<Phase>)>,
     timeout: Option<u64>,
     kind: Option<ActionKind>,
+    ends: Option<(usize, PhaseEnd)>,
+    on_fail: Option<(usize, ActionName)>,
 }
 
 impl Fields {
@@ -339,12 +378,30 @@ impl Fields {
                 })?;
                 self.kind = Some(kind);
             }
+            "ends" => {
+                if self.ends.is_some() {
+                    return Err(repeated());
+                }
+                let end = PhaseEnd::from_str(value).map_err(|_| {
+                    format!("`ends: {value}` is not one of the five ends: {END_NAMES}")
+                })?;
+                self.ends = Some((line, end));
+            }
+            "on-fail" => {
+                if self.on_fail.is_some() {
+                    return Err(repeated());
+                }
+                if value.is_empty() || value.contains(char::is_whitespace) {
+                    return Err(format!("`on-fail: {value}` is not one action name"));
+                }
+                self.on_fail = Some((line, ActionName::from(value)));
+            }
             _ if key.starts_with(|c: char| c.is_ascii_digit() || c == '-' || c == '+') => {
                 self.code(key, value)?;
             }
             _ => {
                 return Err(format!(
-                    "unknown key `{key}`; the keys are description, an exit code, mode, group, target, phases, timeout and kind"
+                    "unknown key `{key}`; the keys are description, an exit code, mode, group, target, phases, timeout, kind, ends and on-fail"
                 ));
             }
         }
@@ -375,7 +432,7 @@ impl Fields {
 
     /// The metadata, or the line (none for the block as a whole) and reason it
     /// is incomplete.
-    fn finish(self) -> Result<ActionMetadata, (Option<usize>, String)> {
+    fn finish(self, action: &str) -> Result<ActionMetadata, (Option<usize>, String)> {
         let Some(description) = self.description else {
             return Err((None, "`description` is required".into()));
         };
@@ -390,6 +447,32 @@ impl Fields {
             Some((_, phases)) => phases,
             None => Vec::new(),
         };
+        let ends = match (self.kind, self.ends) {
+            (Some(_), None) => {
+                return Err((
+                    None,
+                    format!(
+                        "action `{action}` declares a kind but no `ends`; declare one of {END_NAMES}"
+                    ),
+                ));
+            }
+            (None, Some((line, _))) => {
+                return Err((
+                    Some(line),
+                    format!("action `{action}` declares `ends` without a `kind`"),
+                ));
+            }
+            (_, ends) => ends.map(|(_, end)| end),
+        };
+        let on_fail = match self.on_fail {
+            Some((line, _)) if self.kind != Some(ActionKind::Wait) => {
+                return Err((
+                    Some(line),
+                    format!("action `{action}`: `on-fail` is only for `kind: wait`"),
+                ));
+            }
+            on_fail => on_fail.map(|(_, name)| name),
+        };
         Ok(ActionMetadata {
             description,
             codes: self.codes,
@@ -399,6 +482,8 @@ impl Fields {
             phases,
             timeout: self.timeout,
             kind: self.kind,
+            ends,
+            on_fail,
         })
     }
 }
