@@ -10,6 +10,7 @@ mod design;
 mod errors;
 mod forge;
 mod gate;
+mod releases;
 mod runner;
 mod shell;
 mod vcs;
@@ -24,6 +25,7 @@ pub use forge::{
     Author, Check, CheckName, CheckState, Forge, PrNumber, ReviewComment, RuleId, ScanningAlert,
 };
 pub use gate::{Gate, GateLevel, GateRun, GateVerdict};
+pub use releases::Releases;
 pub use runner::{Holder, RunOutput, RunRequest, Runner};
 pub use shell::Shell;
 pub use vcs::{BaseName, CommitId, DiffStat, FileStat, SliceName, Vcs};
