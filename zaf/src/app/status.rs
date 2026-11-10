@@ -10,6 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use super::guard::{self, GuardError, GuardState};
+use super::profile::StaleProfile;
 use super::spawn::{self, blockers, blockers::DeadLine};
 use crate::domain::{IssueNumber, SLOTS_DIR, SlotRecord};
 use crate::ports::{Board, ClaimRecord, Holder, PortError, Ticket};
@@ -122,6 +123,9 @@ pub struct Status {
     pub guard: Option<GuardState>,
     /// Questions still waiting for the Engineer.
     pub questions: Vec<TicketLine>,
+    /// Generated profiles older than the manifest or zaf, or with no stamp; `zaf spawn`
+    /// refuses them. [`status`] leaves it empty, [`Status::with_stale`] fills it.
+    pub stale: Vec<StaleProfile>,
     /// Blocker cycles among the open tasks reached from the ready ones, each from its
     /// lowest task: the first waits for the second, the last for the first.
     pub cycles: Vec<Vec<u64>>,
@@ -201,6 +205,7 @@ pub fn status(
         running: state.launches,
         guard: guard::read(state_dir)?,
         questions,
+        stale: Vec::new(),
         cycles,
         dead_blockers,
     })
@@ -257,6 +262,13 @@ fn numbers(lines: impl Iterator<Item = u64>) -> String {
 }
 
 impl Status {
+    /// The screen with the profiles `profile::stale` names.
+    #[must_use]
+    pub fn with_stale(mut self, stale: Vec<StaleProfile>) -> Self {
+        self.stale = stale;
+        self
+    }
+
     /// The screen as text.
     pub fn render_text(&self) -> String {
         let mut out = String::new();
@@ -312,6 +324,9 @@ impl Status {
                 GuardState::line
             )
         ));
+        for stale in &self.stale {
+            line(stale.line());
+        }
         for cycle in &self.cycles {
             let tasks: Vec<IssueNumber> = cycle.iter().copied().map(IssueNumber::from).collect();
             line(format!("blocker cycle: {}", blockers::render_cycle(&tasks)));
