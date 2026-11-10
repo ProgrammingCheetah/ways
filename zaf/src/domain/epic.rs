@@ -10,7 +10,7 @@ use std::time::SystemTime;
 
 use sha2::{Digest, Sha256};
 
-use super::{Standing, TicketBody, TicketId, TicketState, TicketTitle};
+use super::{Standing, TicketBody, TicketId, TicketState, TicketTitle, TicketType};
 use crate::newtype::text_newtype;
 
 /// The role whose report on an epic means the epic was challenged.
@@ -35,6 +35,8 @@ pub struct EpicTask {
     pub standing: Standing,
     /// Its group, if it has one.
     pub group: Option<GroupName>,
+    /// Its type, the forge's issue type; none when the issue has no type.
+    pub kind: Option<TicketType>,
 }
 
 impl EpicTask {

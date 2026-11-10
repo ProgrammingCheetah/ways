@@ -55,6 +55,7 @@ impl Scene {
             body: BODY.into(),
             state: Some(TicketState::Claimed),
             url: "".into(),
+            kind: None,
         });
         let design = FakeDesign::default();
         design.add_page(page("1001", PageStatus::Decided, EXPORT_PAGE));
@@ -345,6 +346,7 @@ fn a_second_ask_on_another_task_appends_its_own_lines() {
         body: BODY.into(),
         state: Some(TicketState::Claimed),
         url: "".into(),
+        kind: None,
     });
     let not_settled = "q1: not settled\n    next: question ticket on #12 (door: no)\n";
     Scene::record(&scene.local, not_settled);
@@ -877,6 +879,7 @@ fn scene_naming_no_pages() -> Scene {
             .into(),
         state: Some(TicketState::Claimed),
         url: "".into(),
+        kind: None,
     });
     let design = FakeDesign::default();
     design.add_page(titled(

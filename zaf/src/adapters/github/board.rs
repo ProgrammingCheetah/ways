@@ -13,11 +13,13 @@ use super::notes::{
     LeaseNote, RULING_MARKER, SIGNATURE_TEXT, marked, read_signature, release_line, report_author,
     report_marker, signature_marker, unmarked,
 };
-use super::rows::{ISSUE_FIELDS, IssueRow, NameRow, STANDING_FIELDS, StandingRow};
+use super::rows::{
+    ISSUE_FIELDS, IssueRow, NameRow, STANDING_FIELDS, StandingRow, TICKET_LIST_FIELDS,
+};
 use super::state::{LabelState, ProjectRef, ProjectState, StateStore};
 use crate::domain::{
     CHALLENGER_ROLE, Epic, EpicTask, Instance, NewTask, Signature, Standing, Ticket, TicketId,
-    TicketState,
+    TicketState, TicketType,
 };
 use crate::manifest::RepoName;
 use crate::ports::{Board, ClaimOutcome, ClaimRecord, NewQuestion, PortError};
@@ -222,7 +224,15 @@ impl IssueRow {
             body: self.body.clone().into(),
             state,
             url: format!("https://github.com/{repo}/issues/{}", self.number).into(),
+            kind: self.kind(),
         }
+    }
+
+    /// The name of the issue's type; none for an issue without one.
+    fn kind(&self) -> Option<TicketType> {
+        self.issue_type
+            .as_ref()
+            .map(|issue_type| TicketType::from(issue_type.name.as_str()))
     }
 
     /// The live claim, while the issue is `claimed`: the latest claim comment, touched by
@@ -300,7 +310,7 @@ impl<S: StateStore> Board for GithubBoard<S> {
             "--limit",
             LIST_LIMIT,
             "--json",
-            "number,title,labels,parent,state,stateReason",
+            "number,title,labels,parent,state,stateReason,issueType",
         ])?;
         tasks.sort_by_key(|row| row.number);
         let states = self.states_of(&tasks)?;
@@ -328,6 +338,7 @@ impl<S: StateStore> Board for GithubBoard<S> {
                                 state == Some(TicketState::Done),
                             ),
                             group: task.group().map(Into::into),
+                            kind: task.kind(),
                         }
                     })
                     .collect(),
@@ -415,7 +426,7 @@ impl<S: StateStore> Board for GithubBoard<S> {
             &self.gh,
             TicketState::Ready,
             Some(TASK_LABEL),
-            "number,title,body,labels,parent",
+            TICKET_LIST_FIELDS,
         )?;
         rows.sort_by_key(|row| row.number);
         Ok(rows
@@ -538,7 +549,7 @@ impl<S: StateStore> Board for GithubBoard<S> {
             "--limit",
             LIST_LIMIT,
             "--json",
-            "number,title,body,labels,parent",
+            TICKET_LIST_FIELDS,
         ])?;
         rows.retain(|row| !row.has_label(TASK_LABEL));
         rows.sort_by_key(|row| row.number);
@@ -558,7 +569,7 @@ impl<S: StateStore> Board for GithubBoard<S> {
             "--limit",
             LIST_LIMIT,
             "--json",
-            "number,title,body,labels,parent,state,comments",
+            "number,title,body,labels,parent,state,comments,issueType",
         ])?;
         rows.retain(|row| {
             !row.has_label(TASK_LABEL) && NewQuestion::raised_on(&row.body) == Some(task)

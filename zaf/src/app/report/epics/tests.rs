@@ -21,6 +21,7 @@ fn ticket(n: u64, epic: Option<u64>, state: Option<TicketState>) -> Ticket {
         body: "".into(),
         state,
         url: "".into(),
+        kind: None,
     }
 }
 

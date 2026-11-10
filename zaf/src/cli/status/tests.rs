@@ -35,6 +35,7 @@ fn the_screen_exits_ok_over_a_fake_board_and_a_scripted_spawn_state() {
             body: "".into(),
             state: Some(label),
             url: "".into(),
+            kind: None,
         });
     }
     assert_eq!(print_status(&cli(&["status"]), &composition, &board), OK);

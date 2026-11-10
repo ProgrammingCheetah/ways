@@ -251,6 +251,7 @@ const PROJECT_ITEMS: &str =
           number title body state
           labels(first: 100) { nodes { name } }
           parent { number }
+          issueType { name }
           repository { nameWithOwner }
         } }
       }
@@ -412,6 +413,8 @@ struct ItemIssue {
     labels: Option<Nodes<NameRow>>,
     #[serde(default)]
     parent: Option<NumberRow>,
+    #[serde(default, rename = "issueType")]
+    issue_type: Option<NameRow>,
     #[serde(default)]
     repository: Option<NameWithOwner>,
 }
@@ -611,6 +614,7 @@ impl ProjectState {
                     state: issue.state,
                     state_reason: None,
                     comments: Vec::new(),
+                    issue_type: issue.issue_type,
                 };
                 found.push(OnProject { state, row });
             }

@@ -118,6 +118,28 @@ fn ready_reads_the_field_over_every_page_and_only_open_tasks_of_the_repository()
 }
 
 #[test]
+fn a_ready_task_carries_its_issue_type_and_an_untyped_one_has_none() {
+    let fake = FakeGh::new();
+    let typed = item(5, "Ready", true, &["task"], REPO).replace(
+        r#""state":"OPEN""#,
+        r#""state":"OPEN","issueType":{"name":"Bug"}"#,
+    );
+    let untyped = item(6, "Ready", true, &["task"], REPO)
+        .replace(r#""state":"OPEN""#, r#""state":"OPEN","issueType":null"#);
+    let bare = item(7, "Ready", true, &["task"], REPO);
+    fake.on(
+        "api graphql *items(first: $page*",
+        &page(&[typed, untyped, bare], None),
+    );
+    let ready = project_board(&fake).ready().expect("ready reads");
+    let kinds: Vec<Option<&str>> = ready
+        .iter()
+        .map(|ticket| ticket.kind.as_ref().map(|kind| kind.as_str()))
+        .collect();
+    assert_eq!(kinds, [Some("Bug"), None, None]);
+}
+
+#[test]
 fn a_new_state_sets_the_items_option_on_the_boards_project() {
     let fake = FakeGh::new();
     fake.on("issue view 7 *", &issue(7, &["task"], &[], "OPEN"))

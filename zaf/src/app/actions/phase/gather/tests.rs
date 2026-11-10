@@ -55,6 +55,7 @@ impl Scene {
             body: "".into(),
             state: Some(label),
             url: "".into(),
+            kind: None,
         });
         Self {
             _dir: dir,
@@ -359,6 +360,7 @@ fn another_tasks_lease_is_not_this_ones() {
         body: "".into(),
         state: Some(TicketState::Ready),
         url: "".into(),
+        kind: None,
     });
     let instance: Instance = "team instance 33 on #103".parse().expect("instance");
     scene.board.claim(other, &instance).expect("claim");

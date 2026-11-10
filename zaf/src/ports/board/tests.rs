@@ -10,6 +10,7 @@ fn ticket(number: u64, label: TicketState) -> Ticket {
         body: "".into(),
         state: Some(label),
         url: "".into(),
+        kind: None,
     }
 }
 
@@ -222,6 +223,7 @@ fn a_question_body_followed_by_its_text_still_names_the_issue() {
         body: asked.body().into(),
         state: None,
         url: "".into(),
+        kind: None,
     };
     assert_eq!(NewQuestion::text_of(&ticket), asked.text);
     assert!(asked.is_asked_by(&ticket));

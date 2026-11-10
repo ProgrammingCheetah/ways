@@ -3,7 +3,10 @@
 use serde::Deserialize;
 
 /// The fields every issue read asks `gh issue view` and `gh issue list` for.
-pub(super) const ISSUE_FIELDS: &str = "number,title,body,labels,parent,state,comments";
+pub(super) const ISSUE_FIELDS: &str = "number,title,body,labels,parent,state,comments,issueType";
+
+/// The fields a list of tickets asks for: [`ISSUE_FIELDS`] less what a list has no use for.
+pub(super) const TICKET_LIST_FIELDS: &str = "number,title,body,labels,parent,issueType";
 
 /// An issue as `gh issue view --json` prints it.
 #[derive(Debug, Clone, Deserialize)]
@@ -25,6 +28,9 @@ pub struct IssueRow {
     pub state_reason: Option<String>,
     #[serde(default)]
     pub comments: Vec<IssueCommentRow>,
+    /// The issue's type; `null` when it has none, absent from a read that did not ask.
+    #[serde(default, rename = "issueType")]
+    pub issue_type: Option<NameRow>,
 }
 
 /// The fields a blocker's standing is read from.

@@ -117,6 +117,7 @@ fn a_ticket_that_is_no_open_epic_is_refused() {
         body: "Goal: g".into(),
         state: Some(TicketState::Ready),
         url: "".into(),
+        kind: None,
     });
     let guard = SignGuard {
         state_dir: dir.path(),
@@ -152,9 +153,11 @@ fn show_lists_the_epics_tasks_closed_ones_too_in_id_order() {
             body: "Goal: g".into(),
             state: Some(state),
             url: "".into(),
+            kind: None,
         });
     }
     board.set_group(TicketId::from(11), "export");
+    board.set_type(TicketId::from(11), "Task");
     board.close_not_planned(TicketId::from(12));
     let view = show(&board, TicketId::from(EPIC)).expect("shows");
     assert_eq!(
@@ -165,6 +168,8 @@ fn show_lists_the_epics_tasks_closed_ones_too_in_id_order() {
     assert_eq!(printed["number"], 10);
     assert_eq!(printed["tasks"][0]["group"], "export");
     assert_eq!(printed["tasks"][1]["closed"], "not_planned");
+    assert_eq!(printed["tasks"][0]["type"], "Task");
+    assert_eq!(printed["tasks"][1]["type"], serde_json::Value::Null);
 }
 
 #[test]
