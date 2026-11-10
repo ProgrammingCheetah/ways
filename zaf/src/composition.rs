@@ -16,6 +16,7 @@ use crate::adapters::github::{GhCommand, GithubBoard, GithubForge};
 use crate::adapters::jj::JjVcs;
 use crate::adapters::runner::{ProcessRunner, single_quote};
 use crate::adapters::shell::SystemShell;
+use crate::adapters::slot::{self, Slot};
 use crate::app::profile::{self, CONFIG_DIR_VAR};
 use crate::domain::{Profile, RoleName};
 use crate::manifest::{
@@ -322,7 +323,9 @@ impl Composition {
                 port: "Gate",
                 section: "gate",
             })?;
-        Ok(Box::new(ShellGate::new(&self.root, section)))
+        Ok(Box::new(
+            ShellGate::new(&self.root, section).with_slot(self.slot()),
+        ))
     }
 
     /// The directory of a slice's workspace, open or not: the project root, the
@@ -343,7 +346,9 @@ impl Composition {
                 port: "Gate",
                 section: "gate",
             })?;
-        Ok(Box::new(ShellGate::new(dir, section)))
+        Ok(Box::new(
+            ShellGate::new(dir, section).with_slot(self.slot()),
+        ))
     }
 
     /// [`gate_in`](Self::gate_in) with `env` set on every run, on top of the inherited
@@ -361,7 +366,38 @@ impl Composition {
                 port: "Gate",
                 section: "gate",
             })?;
-        Ok(Box::new(ShellGate::new(dir, section).with_env(env.clone())))
+        Ok(Box::new(
+            ShellGate::new(dir, section)
+                .with_env(env.clone())
+                .with_slot(self.slot()),
+        ))
+    }
+
+    /// The build slot `[gate] slot` names, or none: when the manifest names none, or when
+    /// this process already runs inside a held slot (`ZAF_SLOT_HELD` is set), so a nested
+    /// run takes no second one.
+    pub fn slot(&self) -> Option<Slot> {
+        self.slot_unless(slot::held_here(), &slot::holder_here())
+    }
+
+    /// [`slot`](Self::slot) with whether a slot is already held and who the holder is given.
+    pub fn slot_unless(&self, held: bool, holder: &str) -> Option<Slot> {
+        let prefix = self.manifest.gate.as_ref()?.slot.as_ref()?;
+        (!held).then(|| Slot::new(prefix.as_ref(), &self.state_dir(), holder))
+    }
+
+    /// The shell that runs a task's named tests in `dir` with `env` set: the `[gate] tests`
+    /// level, so inside the build slot when `[gate] slot` names one.
+    pub fn tests_shell_in_with_env(
+        &self,
+        dir: &Path,
+        env: &BTreeMap<String, String>,
+    ) -> Box<dyn Shell> {
+        Box::new(
+            SystemShell::new(dir, SHELL_TIMEOUT)
+                .with_env(env.clone())
+                .with_slot(self.slot(), "tests"),
+        )
     }
 
     /// The manifest's `[env]` table with `{root}` the absolute project root and `{version}`

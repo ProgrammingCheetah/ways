@@ -282,7 +282,7 @@ No project word in the binary, no assumed language, VCS, forge or design source.
 [design]         kind = "git-sibling"  repo = "ZurNetwork/zurfur-design"  path = "../zurfur-design"  index = "docs/design-index.md"   # path is relative to the project root; absent = ../<repo name>
 [workspaces]     path = "../zurfur-workspaces"
 [branches]       integration = "feature/{version}"  task = "feature/{version}-{epic}-{task}"
-[gate]           full = "just gate"  light = "just gate-light"  tests = "cargo test -p {crate} {name}"
+[gate]           full = "just gate"  light = "just gate-light"  tests = "cargo test -p {crate} {name}"  slot = "build-slot.sh" # optional: the machine's build-slot command prefix; each gate line runs as `<slot> sh -c '<line>'`
 [style]          path = "docs/style.md"      # optional, pasted into every brief
 [runners.claude] command = "claude -p {prompt} --model {model} --add-dir {root}"  timeout_minutes = 45
 [runners.gemini] command = "agy -p {prompt} --add-dir {root} --model gemini-4-argon-high --print-timeout 60m"
@@ -299,6 +299,8 @@ No project word in the binary, no assumed language, VCS, forge or design source.
 ```
 
 **`[env]`.** Each key is a variable name and each value a string, which may use `{root}` (the absolute project root) and `{version}` (the epic's version). No name may start with `ZAF_`, whatever its case, because those are zaf's own and a manifest setting `ZAF_INSTANCE` would dodge the action modes; `CLAUDE_CONFIG_DIR` is refused too, because zaf sets it for each profile and a manifest pointing it elsewhere would take an instance out of its profile's denies. The check runs when the manifest loads, so a bad table never reaches a child.
+
+**`[gate] slot`.** `[gate] slot = "<command prefix>"` is optional: the machine's build slot. With it every gate level (`full`, `light` and the named `tests`) runs as `<slot> sh -c '<line>'`, so zaf, not the caller, takes the slot. Inside the slot zaf exports `ZAF_SLOT_HELD=1` to the line and everything it starts; a gate run that finds it set runs its line without the prefix, so a gate nested in a held slot takes no second one (`[env]` cannot set it, being a `ZAF_` name). While a slotted run lasts zaf keeps `.zaf/slots/<pid>` (the holder from `ZAF_INSTANCE`, else `the Engineer`; the level; the start time), and `zaf status` prints `slot: <holder> <level> since <time>` for each live record and drops one whose process is gone. The slot command itself is the machine's; zaf owning the lock is §7.6's open question.
 
 Absent sections take the pack's defaults. `zaf init` writes a minimal manifest by asking; `zaf doctor` validates it against the schema; `.zaf/local.toml` overrides only what belongs to the machine.
 

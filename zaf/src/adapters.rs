@@ -10,3 +10,4 @@ pub mod jj;
 pub mod process;
 pub mod runner;
 pub mod shell;
+pub mod slot;

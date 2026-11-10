@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use super::guard::{self, GuardError, GuardState};
 use super::spawn::{self, blockers, blockers::DeadLine};
-use crate::domain::IssueNumber;
+use crate::domain::{IssueNumber, SLOTS_DIR, SlotRecord};
 use crate::ports::{Board, ClaimRecord, Holder, PortError, Ticket};
 
 /// The spawner's state file under the state folder.
@@ -87,6 +87,17 @@ pub struct Slots {
     pub free: u32,
 }
 
+/// A build slot a gate run holds now, read from `.zaf/slots/<pid>`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SlotLine {
+    /// The instance that runs the gate, or `the Engineer`.
+    pub holder: String,
+    /// The gate level: `full`, `light` or `tests`.
+    pub level: String,
+    /// When the run took the slot, RFC 3339.
+    pub since: String,
+}
+
 /// The whole screen.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Status {
@@ -105,6 +116,8 @@ pub struct Status {
     pub running: Vec<Launch>,
     /// The slots.
     pub slots: Slots,
+    /// The build slots gate runs hold now, one per live record in `.zaf/slots/`.
+    pub held_slots: Vec<SlotLine>,
     /// The guard as last computed; none if `zaf guard` never ran.
     pub guard: Option<GuardState>,
     /// Questions still waiting for the Engineer.
@@ -182,6 +195,7 @@ pub fn status(
             total: slots,
             free: slots.saturating_sub(u32::try_from(in_use).unwrap_or(u32::MAX)),
         },
+        held_slots: read_slots(state_dir, alive),
         running_count: in_use,
         instances,
         running: state.launches,
@@ -190,6 +204,40 @@ pub fn status(
         cycles,
         dead_blockers,
     })
+}
+
+/// The live records of `.zaf/slots/`, oldest first. A record whose process is gone is
+/// dropped: its file is removed, best effort, so it never shows again.
+fn read_slots(state_dir: &Path, alive: &dyn Fn(&Holder) -> bool) -> Vec<SlotLine> {
+    let Ok(entries) = std::fs::read_dir(state_dir.join(SLOTS_DIR)) else {
+        return Vec::new();
+    };
+    let mut live = Vec::new();
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        let pid = entry.file_name().to_string_lossy().parse::<u32>().ok();
+        let record = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<SlotRecord>(&text).ok());
+        // Not a record (or one still being written): shown nowhere, removed never.
+        if let (Some(pid), Some(record)) = (pid, record) {
+            let holder = Holder {
+                pid,
+                start: record.start.clone(),
+            };
+            if alive(&holder) {
+                live.push(SlotLine {
+                    holder: record.holder,
+                    level: record.level,
+                    since: record.since,
+                });
+            } else {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+    live.sort_by(|a, b| a.since.cmp(&b.since).then_with(|| a.holder.cmp(&b.holder)));
+    live
 }
 
 fn ticket_line(ticket: Ticket) -> TicketLine {
@@ -251,6 +299,12 @@ impl Status {
             "slots     {} free of {}",
             self.slots.free, self.slots.total
         ));
+        for held in &self.held_slots {
+            line(format!(
+                "slot: {} {} since {}",
+                held.holder, held.level, held.since
+            ));
+        }
         line(format!(
             "guard     {}",
             self.guard.as_ref().map_or(
