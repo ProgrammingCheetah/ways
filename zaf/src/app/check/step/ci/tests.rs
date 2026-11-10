@@ -70,6 +70,14 @@ impl Forge for ScriptedForge {
     fn scanning_alerts(&self, pr: PrNumber) -> Result<Vec<ScanningAlert>, PortError> {
         self.inner.scanning_alerts(pr)
     }
+
+    fn handoff(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
+        self.inner.handoff(pr)
+    }
+
+    fn set_handoff(&self, pr: PrNumber, text: &str) -> Result<(), PortError> {
+        self.inner.set_handoff(pr, text)
+    }
 }
 
 struct ScriptedPorts {

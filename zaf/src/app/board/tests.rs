@@ -506,7 +506,18 @@ fn new_task(title: &str, body: &str, state: TicketState) -> NewTask {
         body: body.into(),
         state,
         group: Some("export".into()),
+        kind: TicketType::task(),
     }
+}
+
+fn kind_of(board: &FakeBoard, id: TicketId) -> Option<TicketType> {
+    let epic = board.epic(TicketId::from(1)).expect("the epic");
+    epic.tasks
+        .iter()
+        .find(|t| t.number == id)
+        .expect("listed")
+        .kind
+        .clone()
 }
 
 fn board_with_epic() -> FakeBoard {
@@ -551,6 +562,89 @@ fn a_body_outside_the_template_or_a_state_a_task_cannot_open_in_files_nothing() 
             .tasks
             .is_empty()
     );
+}
+
+#[test]
+fn a_filed_task_is_a_task_by_default() {
+    let board = board_with_epic();
+    let task = new_task("export as CSV", TASK_BODY, TicketState::Ready);
+    assert_eq!(task.kind, TicketType::task());
+    let id = file(&board, &task).expect("files").task();
+    assert_eq!(kind_of(&board, id), Some(TicketType::from("Task")));
+}
+
+#[test]
+fn a_filed_task_takes_the_named_type() {
+    let board = board_with_epic();
+    let mut task = new_task("export as CSV", TASK_BODY, TicketState::Ready);
+    task.kind = "Bug".into();
+    let id = file(&board, &task).expect("files").task();
+    assert_eq!(kind_of(&board, id), Some(TicketType::from("Bug")));
+}
+
+#[test]
+fn an_unknown_type_is_refused_before_filing() {
+    let board = board_with_epic();
+    let mut task = new_task("export as CSV", TASK_BODY, TicketState::Ready);
+    task.kind = "Nope".into();
+    let refused = file(&board, &task).expect_err("refused");
+    assert_eq!(
+        refused.to_string(),
+        "board.invalid/repo has no issue type Nope; it has Task, Bug, Feature"
+    );
+    assert!(
+        board
+            .epic(TicketId::from(1))
+            .expect("the epic")
+            .tasks
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_repository_with_no_issue_types_says_so() {
+    let board = board_with_epic();
+    board.set_issue_types(&[]);
+    let refused = file(
+        &board,
+        &new_task("export as CSV", TASK_BODY, TicketState::Ready),
+    )
+    .expect_err("refused");
+    assert_eq!(
+        refused.to_string(),
+        "board.invalid/repo has no issue type Task; it has none"
+    );
+}
+
+#[test]
+fn board_handoff_twice_leaves_the_second_text_on_the_recorded_pr() {
+    let scene = Scene::landable();
+    let pr = scene.records().pr(scene.task()).expect("a pull request");
+    let write = |text: &str| handoff(&scene.forge, &scene.records(), scene.task(), text);
+    assert_eq!(write("first"), Ok(pr));
+    assert_eq!(write("second"), Ok(pr));
+    assert_eq!(scene.forge.handoff(pr), Ok(Some("second".to_owned())));
+}
+
+#[test]
+fn no_pr_no_handoff() {
+    let scene = Scene::landable();
+    let pr = scene.records().pr(scene.task()).expect("a pull request");
+    std::fs::remove_file(scene.root.join(".zaf/slices/319.pr")).expect("remove");
+    let refusal = handoff(&scene.forge, &scene.records(), scene.task(), "text");
+    assert_eq!(refusal, Err(BoardError::NoPullRequest(scene.task())));
+    assert_eq!(scene.forge.handoff(pr), Ok(None), "nothing was written");
+}
+
+#[test]
+fn a_forge_that_fails_is_a_port_error() {
+    let scene = Scene::landable();
+    scene.forge.fail_handoffs();
+    let failure = handoff(&scene.forge, &scene.records(), scene.task(), "text");
+    assert!(matches!(
+        failure,
+        Err(BoardError::Port(PortError::Backend(_)))
+    ));
 }
 
 #[test]

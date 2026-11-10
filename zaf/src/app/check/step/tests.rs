@@ -140,6 +140,14 @@ impl Forge for SharedForge {
     fn scanning_alerts(&self, pr: PrNumber) -> Result<Vec<ScanningAlert>, PortError> {
         self.0.scanning_alerts(pr)
     }
+
+    fn handoff(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
+        self.0.handoff(pr)
+    }
+
+    fn set_handoff(&self, pr: PrNumber, text: &str) -> Result<(), PortError> {
+        self.0.set_handoff(pr, text)
+    }
 }
 
 /// The ports of a forge-only step: a shared fake forge, no shell and no runner.

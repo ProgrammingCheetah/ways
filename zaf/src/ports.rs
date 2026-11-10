@@ -15,7 +15,7 @@ mod runner;
 mod shell;
 mod vcs;
 
-pub use board::{Board, ClaimOutcome, ClaimRecord, NewQuestion, QUESTION_TITLE_LIMIT};
+pub use board::{Board, ClaimOutcome, ClaimRecord, IssueTypes, NewQuestion, QUESTION_TITLE_LIMIT};
 pub use design::{Design, Page};
 pub use errors::PortError;
 pub use forge::{

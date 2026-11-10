@@ -47,7 +47,7 @@ The environment the verbs read (the spawner sets both; by hand, set them yoursel
 | `zaf board report <issue> "<body>"` | write your one status comment on an issue; calling again replaces it |
 | `zaf board question <issue> "<text>" [--door]` | raise a question for the Engineer; the issue waits |
 | `zaf board done <task>` | mark a task done; refused unless the task is in `land` or its pull request has merged |
-| `zaf board file <epic> "<title>" --body-file <file> [--group <name>] [--blocked]` | file a task under an epic, its body in the task template (`--body "<text>"` works too; `--body-file -` reads stdin); refused if the body is not a task; a title the epic already has is not filed twice |
+| `zaf board file <epic> "<title>" --body-file <file> [--group <name>] [--type <name>] [--blocked]` | file a task under an epic, its body in the task template (`--body "<text>"` works too; `--body-file -` reads stdin); `--type` is its issue type, `Task` unless named; refused if the body is not a task or the repository has no such type; a title the epic already has is not filed twice |
 | `zaf epic show <epic>` | see one epic: its stage, then each task, closed ones too, with its state and group |
 | `zaf brief <task>` | write the task's pack (ticket, named pages, owned paths, style, this page) and print its path |
 | `zaf ask -t <task> "<kind>: <question>" ...` | ask the keeper one to five design questions in one call; kinds are `fact`, `rule`, `term`, `exists`, `where` |
@@ -102,6 +102,6 @@ Asking well:
 1. `zaf epic show <epic>` for the epic and every task already filed. Read the epic and what it links, then the objectives, the design documents and the pages they cite. For a re-plan, also the rulings.
 2. `zaf ask -t <epic>` for whether a decision exists or where it lives, five at a time.
 3. Draft each task in the template, the fields `zaf brief` reads: Goal, Scope, Out of scope, Interfaces, Design pages, Architecture, Acceptance, Tests, Security trigger, Model, Size, Blocked by.
-4. File each with `zaf board file <epic> "<title>" --group <name> --body-file -`, the body on stdin; add `--blocked` when its `Blocked by` names a task not yet done. The group names the piece of work it belongs to, reusing a group that fits; `zaf hub` shows a bar per group. A refusal names the template field at fault: fix it and file again. A title the epic already has is not filed twice.
+4. File each with `zaf board file <epic> "<title>" --group <name> [--type <name>] --body-file -`, the body on stdin; `--type` is the issue type, `Task` unless named, and a type the repository lacks is refused with the ones it has; add `--blocked` when its `Blocked by` names a task not yet done. The group names the piece of work it belongs to, reusing a group that fits; `zaf hub` shows a bar per group. A refusal names the template field at fault: fix it and file again. A title the epic already has is not filed twice.
 5. Each door or design gap: `zaf board question <epic> "<question>" [--door]`.
 6. `zaf board report <epic> "<tasks filed, what could not be scoped and why>"`. Then end.

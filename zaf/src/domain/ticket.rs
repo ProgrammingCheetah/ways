@@ -27,6 +27,16 @@ text_newtype! {
     TicketType
 }
 
+/// The type a task is filed as when its filer names none.
+pub const DEFAULT_TASK_TYPE: &str = "Task";
+
+impl TicketType {
+    /// The type of a task filed with no `--type`: [`DEFAULT_TASK_TYPE`].
+    pub fn task() -> Self {
+        Self::from(DEFAULT_TASK_TYPE)
+    }
+}
+
 /// A ticket as zaf presents it, whichever backend holds it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ticket {
@@ -79,6 +89,9 @@ pub struct NewTask {
     pub state: TicketState,
     /// Its group, if it has one.
     pub group: Option<GroupName>,
+    /// Its type, the forge issue type it opens with (`NewTask.kind: TicketType`); a backend
+    /// opens it with this type or fails.
+    pub kind: TicketType,
 }
 
 /// A ticket as every verb's `--json` prints it (see [`Ticket::summary`]): the id and the epic

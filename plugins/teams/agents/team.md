@@ -48,7 +48,7 @@ The environment the verbs read (the spawner sets both; by hand, set them yoursel
 | `zaf board report <issue> "<body>"` | write your one status comment on an issue; calling again replaces it |
 | `zaf board question <issue> "<text>" [--door]` | raise a question for the Engineer; the issue waits |
 | `zaf board done <task>` | mark a task done; refused unless the task is in `land` or its pull request has merged |
-| `zaf board file <epic> "<title>" --body-file <file> [--group <name>] [--blocked]` | file a task under an epic, its body in the task template (`--body "<text>"` works too; `--body-file -` reads stdin); refused if the body is not a task; a title the epic already has is not filed twice |
+| `zaf board file <epic> "<title>" --body-file <file> [--group <name>] [--type <name>] [--blocked]` | file a task under an epic, its body in the task template (`--body "<text>"` works too; `--body-file -` reads stdin); `--type` is its issue type, `Task` unless named; refused if the body is not a task or the repository has no such type; a title the epic already has is not filed twice |
 | `zaf epic show <epic>` | see one epic: its stage, then each task, closed ones too, with its state and group |
 | `zaf brief <task>` | write the task's pack (ticket, named pages, owned paths, style, this page) and print its path |
 | `zaf ask -t <task> "<kind>: <question>" ...` | ask the keeper one to five design questions in one call; kinds are `fact`, `rule`, `term`, `exists`, `where` |

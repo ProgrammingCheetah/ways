@@ -139,6 +139,32 @@ fn a_pull_request_reads_back_its_open_and_merge_times() {
 }
 
 #[test]
+fn the_handoff_reads_back() {
+    let forge = FakeForge::default();
+    let port: &dyn Forge = &forge;
+    let pr = forge
+        .open_pr(&request("feature/v1-export-2"))
+        .expect("open");
+    assert_eq!(port.handoff(pr), Ok(None), "a new pull request has none");
+    port.set_handoff(pr, "Tests pass; the CSV header is still open.")
+        .expect("write");
+    assert_eq!(
+        port.handoff(pr),
+        Ok(Some("Tests pass; the CSV header is still open.".to_owned()))
+    );
+    port.set_handoff(pr, "Header done.").expect("replace");
+    assert_eq!(port.handoff(pr), Ok(Some("Header done.".to_owned())));
+    assert!(matches!(
+        port.handoff(PrNumber::from(99)),
+        Err(PortError::NotFound(_))
+    ));
+    assert!(matches!(
+        port.set_handoff(PrNumber::from(99), "x"),
+        Err(PortError::NotFound(_))
+    ));
+}
+
+#[test]
 fn merge_is_idempotent() {
     let forge = FakeForge::default();
     let pr = forge
