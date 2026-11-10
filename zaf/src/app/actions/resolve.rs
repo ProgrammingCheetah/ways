@@ -8,7 +8,8 @@
 //! the root.
 //!
 //! A file in a tier's `hooks` folder is a hook, never an action: a name under `hooks/` resolves to
-//! nothing and is refused by name ([`ResolveError::Hook`]), the listing leaves the folder out, and
+//! nothing and is refused by name ([`ResolveError::Hook`]; `zaf do hooks/pre-tick` exits 125 and
+//! its body never runs), the listing leaves the folder out, and
 //! [`hook`] finds one by its event under the same precedence as an action.
 //!
 //! Finding the file reads no metadata: [`can_shadow`] is what a run holds the shadowed file's mode
@@ -186,7 +187,8 @@ pub fn resolve(
     file_in_tiers(project_root, machine_home, name)
 }
 
-/// The hook of `event`: the project's `hooks/<event>`, else the machine's, under the precedence and
+/// `hook(root, home, event) -> Option<ResolvedAction>`, where the ticket's `ResolvedAction` is
+/// [`Resolved`]: the hook of `event`, the project's `hooks/<event>`, else the machine's, under the precedence and
 /// the shadowing of an action. None when neither tier has one, when `event` is not one of
 /// [`HOOK_EVENTS`], and when a folder cannot be read: a hook that cannot be found is not run. The
 /// tick and the launcher find a hook through this alone.
