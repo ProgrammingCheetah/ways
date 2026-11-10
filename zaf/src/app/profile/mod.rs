@@ -40,6 +40,11 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value, json};
 
+mod stamp;
+#[cfg(test)]
+pub use stamp::write_stamps;
+pub use stamp::{PARTS, Reason, STAMP_FILE, StaleProfile, stale, stale_homes};
+
 use crate::app::actions::forbidden_action;
 use crate::app::brief::INTERFACE_PAGE;
 use crate::composition::HOME_VAR;
@@ -271,6 +276,9 @@ fn init_with(
                 record(state_dir, &home.join(name), bytes, &mut report)?;
             }
         }
+        // Last: a profile whose generation failed above keeps no stamp, or its old one.
+        let stamp = stamp::bytes(manifest, project.as_deref());
+        record(state_dir, &home.join(STAMP_FILE), &stamp, &mut report)?;
         report.profiles.push(profile.to_string());
     }
     Ok(report)

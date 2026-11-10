@@ -35,6 +35,15 @@ fn project(manifest: &str) -> (Project, PathBuf) {
     (project, config)
 }
 
+/// A project like [`project`] whose profiles are generated, so a tick finds them current: the
+/// spawner refuses a profile with no stamp.
+fn generated(manifest: &str) -> (Project, PathBuf) {
+    let (project, config) = project(manifest);
+    let (code, stdout, stderr) = outcome(&project.zaf(&["profile", "init"]));
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    (project, config)
+}
+
 /// A one-turn transcript with this first prompt.
 fn transcript(prompt: &str) -> String {
     let user = serde_json::json!({
@@ -168,7 +177,7 @@ fn concurrent_ingest_both_succeed() {
 
 #[test]
 fn spawn_tick_ingests() {
-    let (mut project, _config) = project(SPAWN_MANIFEST);
+    let (mut project, _config) = generated(SPAWN_MANIFEST);
     project.on("*", "[]");
     write_profile_session(&project, "profiled", "hello");
     let (code, stdout, stderr) = outcome(&project.zaf(&["spawn", "--once", "--version", "0.2.0"]));
@@ -179,7 +188,7 @@ fn spawn_tick_ingests() {
 
 #[test]
 fn a_dry_run_writes_no_ledger() {
-    let (mut project, _config) = project(SPAWN_MANIFEST);
+    let (mut project, _config) = generated(SPAWN_MANIFEST);
     project.on("*", "[]");
     write_profile_session(&project, "profiled", "hello");
     let args = ["spawn", "--once", "--version", "0.2.0", "--dry-run"];
@@ -191,11 +200,11 @@ fn a_dry_run_writes_no_ledger() {
 #[test]
 fn spawn_ledger_failure_only_warns() {
     let args = ["spawn", "--once", "--version", "0.2.0"];
-    let (mut healthy, _config) = project(SPAWN_MANIFEST);
+    let (mut healthy, _config) = generated(SPAWN_MANIFEST);
     healthy.on("*", "[]");
     let (healthy_code, healthy_stdout, _) = outcome(&healthy.zaf(&args));
 
-    let (mut broken, _config) = project(SPAWN_MANIFEST);
+    let (mut broken, _config) = generated(SPAWN_MANIFEST);
     broken.on("*", "[]");
     let db = broken.home.join(LEDGER_FILE);
     fs::create_dir(&db).expect("a directory where the file belongs");
