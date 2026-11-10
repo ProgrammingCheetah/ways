@@ -132,7 +132,18 @@ fn other_verbs_never_move_the_manifest() {
         .expect("the Engineer's own rename");
         let (new_code, new_stdout, new_stderr) = outcome(&project.zaf(verb));
         assert_eq!(new_stderr, "", "{verb:?}: no warning once it is moved");
-        assert_eq!((code, stdout), (new_code, new_stdout), "{verb:?}");
+        // Except that `zaf doctor` names the manifest file it read, which is the one that moved.
+        let unnamed = |text: &str| {
+            text.lines()
+                .filter(|line| !line.starts_with("manifest: "))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        assert_eq!(
+            (code, unnamed(&stdout)),
+            (new_code, unnamed(&new_stdout)),
+            "{verb:?}"
+        );
     }
 }
 

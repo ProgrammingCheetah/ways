@@ -23,7 +23,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::app::actions::ACTIONS_DIR;
 use crate::app::profile::{self, CONFIG_DIR_VAR, CREDENTIALS_FILE};
 use crate::composition::STATE_DIR;
-use crate::manifest::{DesignSection, Manifest, Requirement, ToolName};
+use crate::manifest::{DesignSection, Manifest, Requirement, ToolName, files_read};
 
 mod actions;
 pub mod fake;
@@ -270,6 +270,11 @@ pub struct Report {
     /// One entry per action name the project needs, in name order, with the tier that provides it;
     /// a name with no provider fails the report.
     pub needed: Vec<NeededCheck>,
+    /// The manifest files the load read, highest layer first; informational.
+    pub manifest: Vec<PathBuf>,
+    /// The other `.toml` files directly inside the project's `.zaf/` folder, which nothing
+    /// reads; a warning, it never fails the report.
+    pub unread: Vec<PathBuf>,
 }
 
 impl Report {
@@ -307,8 +312,40 @@ impl Report {
         lines.extend(self.actions_error.clone());
         lines.extend(self.needed.iter().flat_map(NeededCheck::lines));
         lines.push(self.workspaces.line());
+        if !self.manifest.is_empty() {
+            let files: Vec<String> = self
+                .manifest
+                .iter()
+                .map(|file| file.display().to_string())
+                .collect();
+            lines.push(format!("manifest: {}", files.join(", ")));
+        }
+        for file in &self.unread {
+            if let Some(name) = file.file_name() {
+                lines.push(format!("unread: {STATE_DIR}/{}", name.to_string_lossy()));
+            }
+        }
         lines
     }
+}
+
+/// The `.toml` files directly inside `<root>/.zaf/` that no load reads: every one but the
+/// project's `config.toml` and `local.toml`, in name order.
+fn unread_tomls(root: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(root.join(STATE_DIR)) else {
+        return Vec::new();
+    };
+    let mut files: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "toml"))
+        .filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name != "config.toml" && name != "local.toml")
+        })
+        .collect();
+    files.sort();
+    files
 }
 
 impl PathCheck {
@@ -578,6 +615,8 @@ pub fn doctor_with(
         actions,
         actions_error,
         needed,
+        manifest: files_read(root, zaf_home),
+        unread: unread_tomls(root),
     }
 }
 
