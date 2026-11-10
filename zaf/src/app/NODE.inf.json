@@ -67,6 +67,16 @@
       "node": false
     },
     {
+      "name": "epic.rs",
+      "role": "zaf epic list|sign: the open epics with their stage, and the signature refused when an instance runs above this process (process ancestry against the run folders)",
+      "node": false
+    },
+    {
+      "name": "epic/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
       "name": "guard.rs",
       "role": "`zaf guard`: weekly budget level to .zaf/guard.json",
       "node": false
@@ -128,7 +138,7 @@
     },
     {
       "name": "status.rs",
-      "role": "`zaf status`: board, instances, slots, guard on one screen",
+      "role": "`zaf status`: epics with their stage, board, instances, slots, guard on one screen",
       "node": false
     },
     {

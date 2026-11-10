@@ -45,6 +45,11 @@
       "node": false
     },
     {
+      "name": "epic.rs",
+      "role": "zaf epic list|sign: one line per open epic, or `signed #<n> sha256:<hex>`; exit 1 inside an instance or for no open epic",
+      "node": false
+    },
+    {
       "name": "exit.rs",
       "role": "exit codes, port and composition error mapping",
       "node": false

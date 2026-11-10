@@ -1,16 +1,16 @@
 //! The comments the board adapter writes and reads back: claims, heartbeats,
-//! status reports and rulings.
+//! status reports, rulings and signatures.
 //!
 //! Claims and heartbeats are plain lines a person can read:
 //! `claimed by <instance> at <rfc3339>` and `heartbeat <instance> <rfc3339>`.
-//! Reports and rulings open with an HTML comment marker, invisible on the page,
+//! Reports, rulings and signatures open with an HTML comment marker, invisible on the page,
 //! so the adapter finds its own comment again.
 
 use std::fmt;
 use std::str::FromStr;
 use std::time::SystemTime;
 
-use crate::domain::Instance;
+use crate::domain::{Instance, Signature};
 
 /// A comment that is not a claim or a heartbeat.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -100,6 +100,41 @@ pub(super) fn release_line(instance: &Instance, at: SystemTime) -> String {
 /// The first line of an instance's status report on a task.
 pub(super) fn report_marker(instance: &Instance) -> String {
     format!("<!-- zaf:report {instance} -->")
+}
+
+/// The instance whose status report a comment is, when it opens with a report marker.
+pub(super) fn report_author(comment: &str) -> Option<Instance> {
+    let first_line = comment.lines().next()?.trim_end();
+    let instance = first_line
+        .strip_prefix("<!-- zaf:report ")?
+        .strip_suffix(" -->")?;
+    instance.parse().ok()
+}
+
+/// What a signature comment says under its marker.
+pub(super) const SIGNATURE_TEXT: &str = "Signed: zaf plans and builds this epic as its body reads now. \
+     An edit to the body voids this signature until the epic is signed again.";
+
+/// The first line of a signature: `<!-- zaf:signature sha256=<hex> at=<rfc3339> -->`.
+pub(super) fn signature_marker(signature: &Signature) -> String {
+    format!(
+        "<!-- zaf:signature sha256={} at={} -->",
+        signature.hash,
+        humantime::format_rfc3339_seconds(signature.at)
+    )
+}
+
+/// The signature a comment records, when it opens with a signature marker that reads.
+pub(super) fn read_signature(comment: &str) -> Option<Signature> {
+    let first_line = comment.lines().next()?.trim_end();
+    let inner = first_line
+        .strip_prefix("<!-- zaf:signature ")?
+        .strip_suffix(" -->")?;
+    let (hash, at) = inner.split_once(' ')?;
+    Some(Signature {
+        hash: hash.strip_prefix("sha256=")?.parse().ok()?,
+        at: parse_time(at.strip_prefix("at=")?).ok()?,
+    })
 }
 
 /// The first line of the ruling on a question.

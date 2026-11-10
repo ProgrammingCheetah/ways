@@ -42,7 +42,12 @@
     },
     {
       "name": "epic.rs",
-      "role": "epic",
+      "role": "the Epic entity and its stage derived on read (unsigned, signed, planned, challenged, done), its tasks, and the BodyHash a signature holds",
+      "node": false
+    },
+    {
+      "name": "epic/",
+      "role": "tests.rs",
       "node": false
     },
     {

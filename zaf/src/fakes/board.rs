@@ -4,10 +4,11 @@ use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::SystemTime;
 
-use crate::domain::{Instance, Ticket, TicketId, TicketState};
-use crate::ports::{
-    Board, ClaimOutcome, ClaimRecord, EpicTask, EpicTree, NewQuestion, PortError, Standing,
+use crate::domain::{
+    CHALLENGER_ROLE, Epic, EpicTask, GroupName, Instance, Signature, Standing, Ticket, TicketId,
+    TicketState,
 };
+use crate::ports::{Board, ClaimOutcome, ClaimRecord, NewQuestion, PortError};
 
 /// One issue and everything written on it.
 #[derive(Debug, Clone)]
@@ -23,7 +24,24 @@ struct Issue {
     /// Closed as not planned (or as a duplicate), not as completed.
     not_planned: bool,
     epic: bool,
-    group: Option<String>,
+    group: Option<GroupName>,
+    signature: Option<Signature>,
+}
+
+impl Issue {
+    /// Where it stands: `done` by its label, else open, else closed as not planned, else
+    /// closed as completed and so done.
+    fn standing(&self) -> Standing {
+        if self.ticket.state == Some(TicketState::Done) {
+            Standing::Done
+        } else if !self.closed {
+            Standing::Open
+        } else if self.not_planned {
+            Standing::ClosedNotPlanned
+        } else {
+            Standing::Done
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -58,11 +76,12 @@ impl FakeBoard {
             not_planned: false,
             epic: false,
             group: None,
+            signature: None,
         };
         self.state().issues.insert(ticket.id, issue);
     }
 
-    /// Puts an open epic on the board, as [`Board::epic_trees`] lists it.
+    /// Puts an open epic on the board, as [`Board::epics`] lists it.
     pub fn add_epic(&self, number: TicketId, title: &str) {
         self.add_ticket(Ticket {
             id: number,
@@ -77,10 +96,17 @@ impl FakeBoard {
         }
     }
 
+    /// Replaces a ticket's body, as editing it on the forge would.
+    pub fn set_body(&self, id: TicketId, body: &str) {
+        if let Some(issue) = self.state().issues.get_mut(&id) {
+            issue.ticket.body = body.into();
+        }
+    }
+
     /// Gives a task the `group:<name>` label.
     pub fn set_group(&self, task: TicketId, group: &str) {
         if let Some(issue) = self.state().issues.get_mut(&task) {
-            issue.group = Some(group.to_owned());
+            issue.group = Some(group.into());
         }
     }
 
@@ -163,15 +189,16 @@ impl State {
 }
 
 impl Board for FakeBoard {
-    fn epic_trees(&self) -> Result<Vec<EpicTree>, PortError> {
+    fn epics(&self) -> Result<Vec<Epic>, PortError> {
         let state = self.state();
-        let trees = state
+        let epics = state
             .issues
             .values()
             .filter(|issue| issue.epic && !issue.closed)
-            .map(|epic| EpicTree {
-                number: epic.ticket.id,
+            .map(|epic| Epic {
+                id: epic.ticket.id,
                 title: epic.ticket.title.clone(),
+                body: epic.ticket.body.clone(),
                 tasks: state
                     .issues
                     .values()
@@ -179,29 +206,32 @@ impl Board for FakeBoard {
                     .map(|task| EpicTask {
                         number: task.ticket.id,
                         state: task.ticket.state,
-                        closed: task.closed,
+                        standing: task.standing(),
                         group: task.group.clone(),
                     })
                     .collect(),
+                signature: epic.signature.clone(),
+                challenged: epic
+                    .reports
+                    .iter()
+                    .any(|(instance, _)| instance.role.as_str() == CHALLENGER_ROLE),
             })
             .collect();
-        Ok(trees)
+        Ok(epics)
+    }
+
+    fn sign(&self, epic: TicketId, signature: &Signature) -> Result<(), PortError> {
+        let mut state = self.state();
+        state.issue_mut(epic)?.signature = Some(signature.clone());
+        Ok(())
     }
 
     fn standing(&self, number: TicketId) -> Result<Standing, PortError> {
         let state = self.state();
-        let Some(issue) = state.issues.get(&number) else {
-            return Ok(Standing::Missing);
-        };
-        Ok(if issue.ticket.state == Some(TicketState::Done) {
-            Standing::Done
-        } else if issue.closed && issue.not_planned {
-            Standing::ClosedNotPlanned
-        } else if issue.closed {
-            Standing::Done
-        } else {
-            Standing::Open
-        })
+        Ok(state
+            .issues
+            .get(&number)
+            .map_or(Standing::Missing, Issue::standing))
     }
 
     fn ready(&self) -> Result<Vec<Ticket>, PortError> {
@@ -372,6 +402,7 @@ impl Board for FakeBoard {
             not_planned: false,
             epic: false,
             group: None,
+            signature: None,
         };
         state.issues.insert(number, issue);
         Ok(number)

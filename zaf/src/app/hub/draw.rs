@@ -44,7 +44,8 @@ fn epic_lines(epic: &EpicRow, width: usize, lines: &mut Vec<String>) {
         width,
     ));
     lines.push(format!(
-        "  {} of {} slots free · {} ready · {}",
+        "  {} · {} of {} slots free · {} ready · {}",
+        epic.stage,
         epic.slots_free,
         epic.slots_total,
         epic.ready,

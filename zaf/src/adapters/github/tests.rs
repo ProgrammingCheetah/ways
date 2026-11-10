@@ -4,7 +4,9 @@ use std::io::Write;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-use super::notes::LeaseNote;
+use super::notes::{
+    LeaseNote, SIGNATURE_TEXT, marked, read_signature, report_marker, signature_marker,
+};
 use super::*;
 use crate::domain::{Instance, InstanceNumber, Location, RoleName, Ticket, TicketId, TicketState};
 use crate::manifest::RepoName;
@@ -304,7 +306,7 @@ fn closed_for(number: u64, reason: &str) -> String {
 
 #[test]
 fn issue_state_tells_open_done_closed_and_missing_apart() {
-    use crate::ports::Standing;
+    use crate::domain::Standing;
 
     let fake = FakeGh::new();
     fake.on(
@@ -1454,5 +1456,91 @@ fn releases_list_stable_tags_and_download_by_pattern() {
             "--repo",
             REPO,
         ])
+    );
+}
+
+#[test]
+fn epics_read_the_latest_signature_and_a_challengers_report() {
+    use crate::domain::{BodyHash, EpicStage, Signature, Standing};
+
+    let body = "Goal: one ticket shape.";
+    let old = Signature::of(&"Goal: an older body.".into(), at(1_000));
+    let current = Signature::of(&body.into(), at(2_000));
+    let challenger = Instance {
+        role: RoleName::from("challenger"),
+        epic: TicketId::from(1),
+        number: InstanceNumber::from(9),
+    };
+    let comments = [
+        marked(&signature_marker(&old), SIGNATURE_TEXT),
+        marked(&report_marker(&instance(4)), "a programmer's report"),
+        marked(&signature_marker(&current), SIGNATURE_TEXT),
+        marked(&report_marker(&challenger), "every task is exact"),
+    ];
+    let epics = serde_json::json!([{
+        "number": 1,
+        "title": "tickets",
+        "body": body,
+        "labels": [{"name": "epic"}],
+        "comments": comments.iter().map(|text| serde_json::json!({"body": text})).collect::<Vec<_>>(),
+    }]);
+    let tasks = serde_json::json!([
+        {"number": 2, "title": "t", "labels": [{"name": "task"}, {"name": "ready"}],
+         "parent": {"number": 1}, "state": "OPEN"},
+        {"number": 3, "title": "t", "labels": [{"name": "task"}],
+         "parent": {"number": 1}, "state": "CLOSED", "stateReason": "NOT_PLANNED"},
+        {"number": 4, "title": "t", "labels": [{"name": "task"}],
+         "parent": {"number": 1}, "state": "CLOSED", "stateReason": "COMPLETED"},
+    ]);
+    let fake = FakeGh::new();
+    fake.on("issue list --label epic *", &epics.to_string())
+        .on("issue list --label task *", &tasks.to_string());
+
+    let read = fake.board().epics().expect("epics read");
+    assert_eq!(read.len(), 1);
+    let epic = &read[0];
+    assert_eq!(
+        epic.signature.as_ref().map(|signature| &signature.hash),
+        Some(&BodyHash::of(&body.into()))
+    );
+    assert!(epic.challenged);
+    let standings: Vec<Standing> = epic.tasks.iter().map(|task| task.standing).collect();
+    assert_eq!(
+        standings,
+        [Standing::Open, Standing::ClosedNotPlanned, Standing::Done]
+    );
+    assert_eq!(epic.stage(), EpicStage::Challenged);
+    let task_list = &fake.calls()[1];
+    assert!(
+        task_list.iter().any(|word| word.contains("stateReason")),
+        "the task list reads how each task closed: {task_list:?}"
+    );
+}
+
+#[test]
+fn a_signature_is_one_marked_comment_on_the_epic() {
+    use crate::domain::Signature;
+
+    let fake = FakeGh::new();
+    fake.on(
+        "issue comment *",
+        "https://github.com/example/tracker/issues/1#issuecomment-1",
+    );
+    let signature = Signature::of(&"Goal: g".into(), at(1_000));
+    fake.board()
+        .sign(TicketId::from(1), &signature)
+        .expect("signs");
+    let calls = fake.calls();
+    assert_eq!(calls.len(), 1);
+    let comment = calls[0]
+        .iter()
+        .find(|word| word.starts_with("<!-- zaf:signature "))
+        .expect("the comment body");
+    assert_eq!(
+        read_signature(comment),
+        Some(Signature {
+            hash: signature.hash.clone(),
+            at: at(1_000),
+        })
     );
 }

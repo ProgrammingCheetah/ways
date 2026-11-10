@@ -20,6 +20,44 @@ pub fn this() -> Option<Holder> {
     holder_of(std::process::id())
 }
 
+/// The most parents [`ancestors`] walks; a deeper chain is cut there.
+const MAX_ANCESTORS: usize = 64;
+
+/// This process and every process above it, nearest first, each as a holder, up to the
+/// first process (pid 1) or one the OS no longer reports.
+pub fn ancestors() -> Vec<Holder> {
+    let mut chain = Vec::new();
+    let mut pid = std::process::id();
+    while chain.len() < MAX_ANCESTORS {
+        let Some(holder) = holder_of(pid) else {
+            break;
+        };
+        chain.push(holder);
+        match parent_of(pid) {
+            Some(parent) if parent > 1 && parent != pid => pid = parent,
+            _ => break,
+        }
+    }
+    chain
+}
+
+/// The pid of a process's parent: field 4 of `/proc/<pid>/stat` on Linux, else
+/// `ps -o ppid=`.
+fn parent_of(pid: u32) -> Option<u32> {
+    if Path::new("/proc/self/stat").exists() {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let (_, after) = stat.rsplit_once(')')?;
+        return after.split_whitespace().nth(1)?.parse().ok();
+    }
+    let output = Command::new("ps")
+        .args(["-o", "ppid=", "-p", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+}
+
 /// Whether the recorded process still runs: the pid exists and started when recorded.
 pub fn alive(holder: &Holder) -> bool {
     start_of(holder.pid).is_some_and(|start| start == holder.start)
@@ -59,6 +97,26 @@ fn proc_start(stat: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_ancestors_start_with_this_process_and_hold_its_parent() {
+        let chain = ancestors();
+        assert_eq!(chain.first(), this().as_ref());
+        let parent = parent_of(std::process::id()).expect("this process has a parent");
+        if parent > 1 {
+            assert_eq!(chain.get(1).map(|holder| holder.pid), Some(parent));
+        }
+        assert!(chain.iter().all(alive));
+    }
+
+    #[test]
+    fn a_child_sees_this_process_above_it() {
+        let me = this().expect("this process has a start time");
+        let mut child = Command::new("sleep").arg("5").spawn().expect("runs sleep");
+        assert_eq!(parent_of(child.id()), Some(me.pid));
+        let _ = child.kill();
+        let _ = child.wait();
+    }
 
     #[test]
     fn this_process_is_alive() {

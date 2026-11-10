@@ -73,5 +73,22 @@ pub struct TicketSummary {
     pub url: TicketUrl,
 }
 
+/// Where an issue stands as a blocker: whether it can still close, and how.
+///
+/// Read from the issue itself, so a blocker counts as done the moment its issue closes, with
+/// no label to add by hand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Standing {
+    /// The issue is open and not labelled `done`: it may still close.
+    Open,
+    /// The issue is labelled `done`, or closed as completed.
+    Done,
+    /// The issue is closed as not planned or as a duplicate (a task folded into a unit is
+    /// closed so): its work will never be done here.
+    ClosedNotPlanned,
+    /// There is no such issue, or the number is a pull request.
+    Missing,
+}
+
 #[cfg(test)]
 mod tests;
