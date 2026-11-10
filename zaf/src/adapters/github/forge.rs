@@ -5,8 +5,10 @@ use std::time::SystemTime;
 use serde::Deserialize;
 
 use super::GhCommand;
+use super::notes::{HANDOFF_MARKER, marked, unmarked};
 use super::rows::{
-    CheckBucket, CheckRow, FileRow, LineCommentRow, PrHeadRow, PrStateRow, ReviewRow, UserRow,
+    CheckBucket, CheckRow, ConversationCommentRow, FileRow, LineCommentRow, PrHeadRow, PrStateRow,
+    ReviewRow, UserRow,
 };
 use crate::domain::Location;
 use crate::ports::{
@@ -178,5 +180,44 @@ impl Forge for GithubForge {
         let endpoint = format!("code-scanning/alerts?ref=refs/pull/{number}/head&state=open");
         let rows: Vec<AlertRow> = self.gh.api_list(&endpoint)?;
         Ok(rows.into_iter().map(ScanningAlert::from).collect())
+    }
+
+    fn handoff(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
+        let comments = self.conversation(pr)?;
+        let latest = comments
+            .iter()
+            .rev()
+            .find_map(|comment| unmarked(HANDOFF_MARKER, &comment.body));
+        Ok(latest.map(str::to_owned))
+    }
+
+    fn set_handoff(&self, pr: PrNumber, text: &str) -> Result<(), PortError> {
+        let handoff = marked(HANDOFF_MARKER, text);
+        let comments = self.conversation(pr)?;
+        let existing = comments
+            .iter()
+            .rev()
+            .find(|comment| unmarked(HANDOFF_MARKER, &comment.body).is_some());
+        match existing {
+            Some(comment) if comment.body == handoff => Ok(()),
+            Some(comment) => {
+                let endpoint = format!("issues/comments/{}", comment.id);
+                let field = format!("body={handoff}");
+                self.gh
+                    .api_text(&endpoint, &["--method", "PATCH", "-f", &field])
+                    .map(drop)
+            }
+            None => self
+                .gh
+                .text(&["pr", "comment", &bare(pr), "--body", &handoff])
+                .map(drop),
+        }
+    }
+}
+
+impl GithubForge {
+    /// The pull request's conversation comments, oldest first.
+    fn conversation(&self, pr: PrNumber) -> Result<Vec<ConversationCommentRow>, PortError> {
+        self.gh.api_list(&format!("issues/{}/comments", bare(pr)))
     }
 }

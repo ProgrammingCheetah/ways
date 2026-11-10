@@ -617,6 +617,37 @@ fn a_repository_with_no_issue_types_says_so() {
 }
 
 #[test]
+fn board_handoff_twice_leaves_the_second_text_on_the_recorded_pr() {
+    let scene = Scene::landable();
+    let pr = scene.records().pr(scene.task()).expect("a pull request");
+    let write = |text: &str| handoff(&scene.forge, &scene.records(), scene.task(), text);
+    assert_eq!(write("first"), Ok(pr));
+    assert_eq!(write("second"), Ok(pr));
+    assert_eq!(scene.forge.handoff(pr), Ok(Some("second".to_owned())));
+}
+
+#[test]
+fn no_pr_no_handoff() {
+    let scene = Scene::landable();
+    let pr = scene.records().pr(scene.task()).expect("a pull request");
+    std::fs::remove_file(scene.root.join(".zaf/slices/319.pr")).expect("remove");
+    let refusal = handoff(&scene.forge, &scene.records(), scene.task(), "text");
+    assert_eq!(refusal, Err(BoardError::NoPullRequest(scene.task())));
+    assert_eq!(scene.forge.handoff(pr), Ok(None), "nothing was written");
+}
+
+#[test]
+fn a_forge_that_fails_is_a_port_error() {
+    let scene = Scene::landable();
+    scene.forge.fail_handoffs();
+    let failure = handoff(&scene.forge, &scene.records(), scene.task(), "text");
+    assert!(matches!(
+        failure,
+        Err(BoardError::Port(PortError::Backend(_)))
+    ));
+}
+
+#[test]
 fn a_task_filed_under_no_open_epic_is_refused() {
     let board = FakeBoard::default();
     let task = new_task("export", TASK_BODY, TicketState::Blocked);

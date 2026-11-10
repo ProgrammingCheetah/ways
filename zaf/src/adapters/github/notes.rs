@@ -140,6 +140,9 @@ pub(super) fn read_signature(comment: &str) -> Option<Signature> {
 /// The first line of the ruling on a question.
 pub(super) const RULING_MARKER: &str = "<!-- zaf:ruling -->";
 
+/// The first line of a pull request's hand-off comment.
+pub(super) const HANDOFF_MARKER: &str = "<!-- zaf:handoff -->";
+
 /// A comment body that opens with `marker` on its own line.
 pub(super) fn marked(marker: &str, body: &str) -> String {
     format!("{marker}\n{body}")
