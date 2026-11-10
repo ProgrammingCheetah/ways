@@ -397,6 +397,68 @@ fn unknown_name_resolves_to_nothing() {
 }
 
 #[test]
+fn the_listing_leaves_hooks_out() {
+    let tiers = Tiers::new();
+    tiers.project("land");
+    tiers.project("hooks/pre-tick");
+    tiers.machine("hooks/post-tick");
+    tiers.machine("hooks/on-merge");
+
+    let names: Vec<_> = tiers.list().into_iter().map(|found| found.name).collect();
+    assert_eq!(names, ["land"]);
+
+    // A name under `hooks/` is no action, in either tier, however it is asked for.
+    for name in ["hooks/pre-tick", "hooks/post-tick", "hooks/on-merge"] {
+        assert!(
+            matches!(
+                resolve(&tiers.root, &tiers.home, name),
+                Err(ResolveError::Hook)
+            ),
+            "{name}"
+        );
+        for tier in [Tier::Project, Tier::Machine] {
+            assert!(
+                matches!(
+                    resolve_in(tier, &tiers.root, &tiers.home, name),
+                    Err(ResolveError::Hook)
+                ),
+                "{name}"
+            );
+        }
+    }
+    // Only the folder is reserved: a name that merely starts with its letters is an action.
+    assert!(check_name("hooks").is_ok());
+    assert!(check_name("hooks-up").is_ok());
+}
+
+#[test]
+fn the_project_hook_wins() {
+    let tiers = Tiers::new();
+    assert_eq!(hook(&tiers.root, &tiers.home, "post-tick"), None, "none");
+
+    let machine = tiers.machine("hooks/post-tick");
+    let found = hook(&tiers.root, &tiers.home, "post-tick").expect("the machine's");
+    assert_eq!(
+        (found.tier, found.path.as_path(), found.shadows),
+        (Tier::Machine, machine.as_path(), None)
+    );
+
+    let project = tiers.project("hooks/post-tick");
+    let found = hook(&tiers.root, &tiers.home, "post-tick").expect("the project's");
+    assert_eq!(
+        (found.tier, found.path.as_path(), found.shadows),
+        (Tier::Project, project.as_path(), Some(Tier::Machine))
+    );
+    assert_eq!(found.name, "hooks/post-tick");
+
+    // Another event's hook is another file, and a file that is no event is no hook.
+    assert_eq!(hook(&tiers.root, &tiers.home, "pre-tick"), None);
+    tiers.project("hooks/on-merge");
+    assert_eq!(hook(&tiers.root, &tiers.home, "on-merge"), None);
+    assert_eq!(hook(&tiers.root, &tiers.home, "../actions/land"), None);
+}
+
+#[test]
 fn action_name_rules() {
     let tiers = Tiers::new();
     for name in [

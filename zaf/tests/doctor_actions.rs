@@ -125,6 +125,52 @@ fn doctor_fails_on_bad_metadata() {
 }
 
 #[test]
+fn an_unknown_hook_event_is_named() {
+    let project = project();
+    let hooks = project_actions(&project).join("hooks");
+    let machine_hooks = project.home.join("actions/hooks");
+    let meta = ["description: a hook", "1: failed"];
+    put(&hooks, "pre-tick", &meta, true);
+    put(&machine_hooks, "post-phase", &meta, true);
+    put(&hooks, "on-merge", &meta, true);
+
+    let (code, text) = doctor(&project);
+
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        text.contains(&format!(
+            "{}:1: unknown hook event on-merge",
+            hooks.join("on-merge").display()
+        )),
+        "{text}"
+    );
+    assert!(
+        text.contains("action hooks/on-merge (project): invalid"),
+        "{text}"
+    );
+    // A known event is checked as an action is, and passes.
+    assert!(
+        text.contains("action hooks/pre-tick (project): ok, mode 755"),
+        "{text}"
+    );
+    assert!(
+        text.contains("action hooks/post-phase (machine): ok, mode 755"),
+        "{text}"
+    );
+
+    // Its metadata is held to an action's: no description, no hook.
+    fs::remove_file(hooks.join("on-merge")).expect("remove");
+    put(&hooks, "post-tick", &["1: failed"], true);
+    let (code, text) = doctor(&project);
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        text.contains(&format!("{}:", hooks.join("post-tick").display())),
+        "{text}"
+    );
+    assert!(!text.contains("unknown hook event"), "{text}");
+}
+
+#[test]
 fn doctor_fails_on_a_declared_125() {
     let project = project();
     let actions = project_actions(&project);
