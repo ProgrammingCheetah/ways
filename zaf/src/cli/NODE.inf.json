@@ -83,6 +83,11 @@
       "name": "tests.rs",
       "role": "parsing and exit-64 tests",
       "node": false
+    },
+    {
+      "name": "update.rs",
+      "role": "zaf update [--check]: GitHub releases of ProgrammingCheetah/ways, one line on a change, exit 1 on a check that finds a newer release",
+      "node": false
     }
   ],
   "notes": [

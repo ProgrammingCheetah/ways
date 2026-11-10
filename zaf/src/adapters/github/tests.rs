@@ -1415,3 +1415,49 @@ fn a_missing_gh_is_unavailable_and_bad_json_a_backend_error() {
         Err(PortError::Backend(_))
     ));
 }
+
+#[test]
+fn releases_list_stable_tags_and_download_by_pattern() {
+    use crate::ports::Releases;
+
+    let fake = FakeGh::new();
+    fake.on(
+        "release list *",
+        r#"[{"tagName":"zaf-v0.2.1","isDraft":false,"isPrerelease":false},
+            {"tagName":"zaf-v0.3.0","isDraft":true,"isPrerelease":false},
+            {"tagName":"zaf-v0.3.0-rc.1","isDraft":false,"isPrerelease":true},
+            {"tagName":"zaf-v0.2.0","isDraft":false,"isPrerelease":false}]"#,
+    )
+    .on("release download *", "");
+    let releases = super::GithubReleases::from(fake.gh());
+
+    assert_eq!(
+        releases.tags().expect("lists"),
+        ["zaf-v0.2.1", "zaf-v0.2.0"]
+    );
+    let dir = Path::new("/tmp/zaf-update");
+    releases
+        .download(
+            "zaf-v0.2.1",
+            &["a.tar.gz".to_owned(), "a.tar.gz.sha256".to_owned()],
+            dir,
+        )
+        .expect("downloads");
+    assert_eq!(
+        fake.calls()[1],
+        argv(&[
+            "release",
+            "download",
+            "zaf-v0.2.1",
+            "--dir",
+            "/tmp/zaf-update",
+            "--clobber",
+            "--pattern",
+            "a.tar.gz",
+            "--pattern",
+            "a.tar.gz.sha256",
+            "--repo",
+            REPO,
+        ])
+    );
+}

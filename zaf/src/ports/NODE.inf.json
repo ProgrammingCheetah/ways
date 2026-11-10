@@ -66,6 +66,11 @@
       "node": false
     },
     {
+      "name": "releases.rs",
+      "role": "Releases: zaf's published release tags and their files, for zaf update",
+      "node": false
+    },
+    {
       "name": "runner.rs",
       "role": "run a role with a profile, capture output",
       "node": false

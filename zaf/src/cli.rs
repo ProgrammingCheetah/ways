@@ -31,6 +31,7 @@ pub mod setup;
 pub mod slice;
 pub mod spawn;
 pub mod status;
+pub mod update;
 
 pub use exit::NOT_IMPLEMENTED;
 
@@ -158,6 +159,12 @@ pub enum Verb {
         /// What to do with the phases.
         #[command(subcommand)]
         action: ProgressAction,
+    },
+    /// Replace this zaf with the newest release; up to date prints nothing.
+    Update {
+        /// Only say whether a newer release is out (exit 1 when one is); change nothing.
+        #[arg(long)]
+        check: bool,
     },
 }
 
@@ -312,7 +319,9 @@ where
                     ..
                 }
             );
-            if !cfg!(test) && !hook && !matches!(cli.verb, Verb::Setup) {
+            // Updating the binary touches no project and makes no home.
+            let homeless = matches!(cli.verb, Verb::Setup | Verb::Update { .. });
+            if !cfg!(test) && !hook && !homeless {
                 first_run();
             }
             dispatch(&cli)
@@ -390,6 +399,7 @@ fn run_verb(cli: &Cli) -> u8 {
         Verb::Do(args) => do_action::run(cli, args),
         Verb::Hub { action, port } => hub::run(cli, action.as_ref(), *port),
         Verb::Progress { action } => progress::run(cli, action),
+        Verb::Update { check } => update::run(cli, *check),
     }
 }
 
