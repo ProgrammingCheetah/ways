@@ -66,6 +66,7 @@ zaf board done "$1"
 | `target` | no | what the first argument names: `task` (its phase is checked) or nothing; default nothing |
 | `phases` | no | the Team Phases the action may run in, comma-separated; default any; requires `target: task` |
 | `timeout` | no | minutes before the run is killed; default `[actions] timeout_minutes` (30) |
+| `kind` | no | `model` (running it starts a model and costs the task's size), `wait` (it waits on the outside and costs nothing) or `zaf` (zaf runs it alone and it costs nothing); any other value, or the key twice, is refused; optional for an action no phase list names (§5.1) |
 
 A file with no metadata, no description or no declared code, or one that declares `125`, is refused by `zaf do` (`NOT_RUN`, exit 125, naming the line) and reported by `zaf doctor`. A comment marker is any run of non-alphanumeric characters (`#`, `//`, `--`, `;`, `REM`), so the format is the same in every language.
 
