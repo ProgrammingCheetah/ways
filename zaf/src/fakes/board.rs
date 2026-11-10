@@ -6,9 +6,9 @@ use std::time::SystemTime;
 
 use crate::domain::{
     CHALLENGER_ROLE, Epic, EpicTask, GroupName, Instance, NewTask, Signature, Standing, Ticket,
-    TicketId, TicketState,
+    TicketId, TicketState, TicketType,
 };
-use crate::ports::{Board, ClaimOutcome, ClaimRecord, NewQuestion, PortError};
+use crate::ports::{Board, ClaimOutcome, ClaimRecord, IssueTypes, NewQuestion, PortError};
 
 /// One issue and everything written on it.
 #[derive(Debug, Clone)]
@@ -47,7 +47,16 @@ impl Issue {
 #[derive(Debug, Default)]
 struct State {
     issues: BTreeMap<TicketId, Issue>,
+    /// The issue types the repository defines; none until [`FakeBoard::set_issue_types`],
+    /// when it defines [`DEFAULT_ISSUE_TYPES`].
+    types: Option<Vec<TicketType>>,
 }
+
+/// The issue types the in-memory repository defines until told otherwise: GitHub's own.
+pub const DEFAULT_ISSUE_TYPES: [&str; 3] = ["Task", "Bug", "Feature"];
+
+/// What the in-memory board calls its repository.
+pub const REPO: &str = "board.invalid/repo";
 
 /// Where the in-memory board says a ticket it opened can be seen: an address that leads
 /// nowhere, so nothing mistakes it for a real link.
@@ -125,6 +134,11 @@ impl FakeBoard {
         if let Some(issue) = self.state().issues.get_mut(&id) {
             issue.ticket.kind = Some(kind.into());
         }
+    }
+
+    /// Sets the issue types the repository defines, replacing [`DEFAULT_ISSUE_TYPES`].
+    pub fn set_issue_types(&self, names: &[&str]) {
+        self.state().types = Some(names.iter().map(|name| TicketType::from(*name)).collect());
     }
 
     /// Gives a task the `group:<name>` label.
@@ -246,7 +260,27 @@ impl Board for FakeBoard {
         Ok(epics)
     }
 
+    fn issue_types(&self) -> Result<IssueTypes, PortError> {
+        let names = self.state().types.clone().unwrap_or_else(|| {
+            DEFAULT_ISSUE_TYPES
+                .iter()
+                .map(|name| TicketType::from(*name))
+                .collect()
+        });
+        Ok(IssueTypes {
+            repo: REPO.to_owned(),
+            names,
+        })
+    }
+
     fn file_task(&self, task: &NewTask) -> Result<TicketId, PortError> {
+        let types = self.issue_types()?;
+        if !types.defines(&task.kind) {
+            return Err(PortError::Rejected(format!(
+                "{} has no issue type {}",
+                types.repo, task.kind
+            )));
+        }
         let id = {
             let mut state = self.state();
             state.issue_mut(task.epic)?;
@@ -260,7 +294,7 @@ impl Board for FakeBoard {
             body: task.body.clone(),
             state: Some(task.state),
             url: link(id).into(),
-            kind: None,
+            kind: Some(task.kind.clone()),
         });
         if let Some(group) = &task.group {
             self.set_group(id, group.as_str());

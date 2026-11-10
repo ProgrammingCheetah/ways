@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use crate::app::setup::ensure_homes;
 use crate::composition::Composition;
-use crate::domain::TicketId;
+use crate::domain::{DEFAULT_TASK_TYPE, TicketId};
 use crate::manifest::ProjectFiles;
 
 pub mod ask;
@@ -288,6 +288,9 @@ pub enum BoardAction {
         /// The task's group (its `group:<name>` label on GitHub).
         #[arg(long)]
         group: Option<String>,
+        /// The task's issue type, by the forge's name; the repository must define it.
+        #[arg(long = "type", value_name = "NAME", default_value = DEFAULT_TASK_TYPE)]
+        kind: String,
         /// Open it blocked, not ready: its `Blockers` are not done yet.
         #[arg(long)]
         blocked: bool,

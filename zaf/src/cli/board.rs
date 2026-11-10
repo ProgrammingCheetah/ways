@@ -131,6 +131,7 @@ pub fn run(cli: &Cli, action: &BoardAction) -> u8 {
             body,
             body_file,
             group,
+            kind,
             blocked,
         } => {
             let body = match read_body(&path, body.as_deref(), body_file.as_deref()) {
@@ -147,6 +148,7 @@ pub fn run(cli: &Cli, action: &BoardAction) -> u8 {
                     TicketState::Ready
                 },
                 group: group.as_deref().map(Into::into),
+                kind: kind.as_str().into(),
             };
             board::file(board, &task).map(|outcome| {
                 let (word, terse) = match outcome {
@@ -209,7 +211,8 @@ pub(super) fn exit_code(error: &BoardError) -> u8 {
         BoardError::BatchFull { .. }
         | BoardError::NotInLand { .. }
         | BoardError::NotATask(_)
-        | BoardError::NotAnOpeningState(_) => REFUSED,
+        | BoardError::NotAnOpeningState(_)
+        | BoardError::NoSuchType { .. } => REFUSED,
         // A read that failed is no answer about the task: exit 2, never a refusal.
         BoardError::Unreadable(_) => BACKEND,
         BoardError::Port(error) => code_for(error),

@@ -7,7 +7,9 @@
 use std::time::SystemTime;
 
 use super::PortError;
-use crate::domain::{Epic, Instance, NewTask, Signature, Standing, Ticket, TicketId, TicketState};
+use crate::domain::{
+    Epic, Instance, NewTask, Signature, Standing, Ticket, TicketId, TicketState, TicketType,
+};
 
 /// What a claim did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,6 +40,22 @@ pub struct NewQuestion {
     pub text: String,
     /// Whether it is a one-way decision.
     pub door: bool,
+}
+
+/// The issue types a repository defines (see [`Board::issue_types`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IssueTypes {
+    /// The repository, as the board names it.
+    pub repo: String,
+    /// Its issue types, by name.
+    pub names: Vec<TicketType>,
+}
+
+impl IssueTypes {
+    /// Whether the repository defines the type `kind`, by its exact name.
+    pub fn defines(&self, kind: &TicketType) -> bool {
+        self.names.contains(kind)
+    }
 }
 
 /// The most characters a question's title holds; GitHub refuses a title over 256.
@@ -154,7 +172,18 @@ pub trait Board {
         )))
     }
 
-    /// Files a task under its epic, in its state and group, and returns its id.
+    /// The issue types the board's repository defines, with the repository's name.
+    ///
+    /// A board that cannot list them answers [`PortError::Rejected`] unless it overrides this.
+    fn issue_types(&self) -> Result<IssueTypes, PortError> {
+        Err(PortError::Rejected(
+            "this board cannot list its issue types".to_owned(),
+        ))
+    }
+
+    /// Files a task under its epic, in its state, group and type, and returns its id.
+    /// The issue opens with the task's type; a board that does not define it fails the call
+    /// before anything is opened.
     ///
     /// A board that cannot file one answers [`PortError::Rejected`] unless it overrides this.
     fn file_task(&self, task: &NewTask) -> Result<TicketId, PortError> {

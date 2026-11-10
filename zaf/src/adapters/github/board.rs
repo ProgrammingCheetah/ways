@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::time::SystemTime;
 
 use super::GhCommand;
-use super::command::number_from_url;
+use super::command::{GraphqlValue, number_from_url};
 use super::notes::{
     LeaseNote, RULING_MARKER, SIGNATURE_TEXT, marked, read_signature, release_line, report_author,
     report_marker, signature_marker, unmarked,
@@ -22,7 +22,7 @@ use crate::domain::{
     TicketState, TicketType,
 };
 use crate::manifest::RepoName;
-use crate::ports::{Board, ClaimOutcome, ClaimRecord, NewQuestion, PortError};
+use crate::ports::{Board, ClaimOutcome, ClaimRecord, IssueTypes, NewQuestion, PortError};
 
 /// The label every task carries.
 const TASK_LABEL: &str = "task";
@@ -48,6 +48,29 @@ const DUPLICATE: &str = "DUPLICATE";
 const GROUP_PREFIX: &str = "group:";
 /// The colour a group label is created in.
 const GROUP_COLOR: &str = "ededed";
+
+/// The issue types a repository defines.
+const ISSUE_TYPES: &str = "query($owner: String!, $name: String!) { \
+    repository(owner: $owner, name: $name) { issueTypes(first: 50) { nodes { name } } } }";
+
+/// What [`ISSUE_TYPES`] returns.
+#[derive(Debug, serde::Deserialize)]
+struct TypesData {
+    repository: Option<TypesRepository>,
+}
+
+/// The repository of a [`TypesData`]; an owner without issue types returns none.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TypesRepository {
+    issue_types: Option<TypeNodes>,
+}
+
+/// The nodes of the `issueTypes` connection.
+#[derive(Debug, serde::Deserialize)]
+struct TypeNodes {
+    nodes: Vec<NameRow>,
+}
 
 /// A board kept as the issues of one GitHub repository.
 ///
@@ -356,9 +379,37 @@ impl<S: StateStore> Board for GithubBoard<S> {
         Ok(epics)
     }
 
-    /// Opens the issue labelled `task` (and `group:<name>`, created when the repository lacks
-    /// it), files it as a sub-issue of its epic, then gives it its state where the board keeps
-    /// states.
+    /// The issue types the repository defines, one GraphQL read.
+    fn issue_types(&self) -> Result<IssueTypes, PortError> {
+        let repo = self.gh.repo().as_ref();
+        let (owner, name) = repo
+            .split_once('/')
+            .ok_or_else(|| PortError::Backend(format!("`{repo}` is not owner/name")))?;
+        let data: TypesData = self.gh.graphql(
+            ISSUE_TYPES,
+            &[
+                ("owner", GraphqlValue::Text(owner.to_owned())),
+                ("name", GraphqlValue::Text(name.to_owned())),
+            ],
+        )?;
+        let repository = data
+            .repository
+            .ok_or_else(|| PortError::NotFound(format!("no repository {repo}")))?;
+        Ok(IssueTypes {
+            repo: repo.to_owned(),
+            names: repository
+                .issue_types
+                .map(|types| types.nodes)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|row| TicketType::from(row.name))
+                .collect(),
+        })
+    }
+
+    /// Opens the issue with the task's type and the label `task` (and `group:<name>`, created
+    /// when the repository lacks it), files it as a sub-issue of its epic, then gives it its
+    /// state where the board keeps states.
     fn file_task(&self, task: &NewTask) -> Result<TicketId, PortError> {
         let mut labels = vec![TASK_LABEL.to_owned()];
         if let Some(group) = &task.group {
@@ -376,6 +427,8 @@ impl<S: StateStore> Board for GithubBoard<S> {
             task.body.as_str(),
             "--label",
             &joined,
+            "--type",
+            task.kind.as_str(),
         ])?;
         let number = number_from_url(&stdout)?;
         let database_id = self

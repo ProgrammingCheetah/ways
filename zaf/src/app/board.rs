@@ -1,7 +1,9 @@
 //! `zaf board ready|claim|report|question|ruling|done|file`: reading and writing the board.
 
 use crate::app::actions::{Phase, PhaseUnreadable, SliceRecords, derive_phase, gather_phase_facts};
-use crate::domain::{Instance, NewTask, TaskTemplateError, Ticket, TicketId, TicketState};
+use crate::domain::{
+    Instance, NewTask, TaskTemplateError, Ticket, TicketId, TicketState, TicketType,
+};
 use crate::ports::{Board, ClaimOutcome, Forge, NewQuestion, PortError, Vcs};
 
 /// Why a board verb stopped.
@@ -34,9 +36,28 @@ pub enum BoardError {
     /// `board file` was given a state a task does not open in.
     #[error("a task opens ready or blocked, not {0}")]
     NotAnOpeningState(TicketState),
+    /// `board file` was given a type the repository does not define; nothing was filed. It
+    /// prints as `zaf board file: <repo> has no issue type <name>; it has <types>`.
+    #[error("{repo} has no issue type {name}; it has {}", type_list(types))]
+    NoSuchType {
+        /// The repository, as the board names it.
+        repo: String,
+        /// The type asked for.
+        name: TicketType,
+        /// The types the repository does define.
+        types: Vec<TicketType>,
+    },
     /// The board refused or failed.
     #[error(transparent)]
     Port(#[from] PortError),
+}
+
+fn type_list(types: &[TicketType]) -> String {
+    if types.is_empty() {
+        return "none".to_owned();
+    }
+    let names: Vec<&str> = types.iter().map(TicketType::as_str).collect();
+    names.join(", ")
 }
 
 fn list(numbers: &[TicketId]) -> String {
@@ -216,14 +237,23 @@ impl FileOutcome {
 
 /// `zaf board file`: opens a task under an open epic, in the task template, ready or blocked.
 ///
-/// A body outside the template is refused before anything is written. Filing a title the epic
-/// already counts (open or done) returns that task, so a planning instance run again files
-/// nothing twice.
+/// A body outside the template, or a type the repository does not define
+/// ([`BoardError::NoSuchType`], naming the types it does), is refused before anything is
+/// written. Filing a title the epic already counts (open or done) returns that task, so a
+/// planning instance run again files nothing twice.
 pub fn file(board: &dyn Board, task: &NewTask) -> Result<FileOutcome, BoardError> {
     if !matches!(task.state, TicketState::Ready | TicketState::Blocked) {
         return Err(BoardError::NotAnOpeningState(task.state));
     }
     task.body.as_str().parse::<crate::domain::TaskTemplate>()?;
+    let types = board.issue_types()?;
+    if !types.defines(&task.kind) {
+        return Err(BoardError::NoSuchType {
+            repo: types.repo,
+            name: task.kind.clone(),
+            types: types.names,
+        });
+    }
     let epic = board.epic(task.epic)?;
     if let Some(filed) = epic
         .tasks
