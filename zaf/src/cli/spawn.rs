@@ -20,7 +20,7 @@ use crate::app::spawn::{
     self, DryLaunch, LaunchContext, LaunchPorts, Launched, Prepared, SpawnError, TEAM_ROLE,
 };
 use crate::composition::Composition;
-use crate::domain::{Instance, RoleName};
+use crate::domain::{CHALLENGER_ROLE, Instance, RoleName};
 use crate::ports::{PortError, RunRequest};
 
 /// Runs one tick; refuses without `--once` or `--version`. With `dry_run`, launches
@@ -43,10 +43,11 @@ pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool) -> u8 {
         Ok(board) => board,
         Err(error) => return exit::fail_composition(&path, &error),
     };
-    let team = RoleName::from(TEAM_ROLE);
     // Each launch thread builds its own runner; a missing one stops the tick here, before planning.
-    if let Err(error) = composition.runner_for_role(&team) {
-        return exit::fail_composition(&path, &error);
+    for role in [TEAM_ROLE, spawn::PLANNING_ROLE, CHALLENGER_ROLE] {
+        if let Err(error) = composition.runner_for_role(&RoleName::from(role)) {
+            return exit::fail_composition(&path, &error);
+        }
     }
     let manifest = composition.manifest();
     let state_dir = composition.state_dir();
@@ -86,12 +87,12 @@ pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool) -> u8 {
         print!("{}", prepared.plan.render_text());
     }
     let jobs = jobs(&composition, &prepared, version, &project_env);
-    let ports = || -> Result<LaunchPorts, PortError> {
+    let ports = |role: &RoleName| -> Result<LaunchPorts, PortError> {
         let board = composition
             .board()
             .map_err(|error| PortError::Unavailable(error.to_string()))?;
         let runner = composition
-            .runner_for_role(&team)
+            .runner_for_role(role)
             .map_err(|error| PortError::Unavailable(error.to_string()))?;
         Ok((board, runner))
     };
@@ -145,7 +146,6 @@ fn jobs<'a>(
     project_env: &BTreeMap<String, String>,
 ) -> Vec<(&'a spawn::PlannedLaunch, LaunchContext)> {
     let manifest = composition.manifest();
-    let profile = spawn::team_profile(manifest);
     prepared
         .plan
         .launches
@@ -154,7 +154,7 @@ fn jobs<'a>(
             let context = LaunchContext {
                 state_dir: composition.state_dir(),
                 project: manifest.project.name.to_string(),
-                profile,
+                profile: spawn::role_profile(manifest, &planned.instance.role),
                 env: with_project_env(project_env, launch_env(&planned.instance, version)),
             };
             (planned, context)
@@ -190,7 +190,7 @@ fn dry(
             .role_launch(request)
             .map_err(|error| PortError::Unavailable(error.to_string()))
     };
-    let profile_dir = composition.profile_dir(spawn::team_profile(manifest));
+    let profile_dir = |profile| composition.profile_dir(profile);
     let launches: Vec<DryLaunch> = match spawn::dry_run(&jobs, &profile_dir, &describe) {
         Ok(launches) => launches,
         Err(error) => return exit::fail(path, &error),

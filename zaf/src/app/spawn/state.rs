@@ -78,13 +78,14 @@ impl SpawnState {
         self.launches
             .iter()
             .filter(|launch| launch.instance == name)
-            .map(|launch| launch.task)
+            .filter_map(|launch| launch.task)
             .collect()
     }
 }
 
 /// The saved counter with the launches that run now, read from `runs`: one [`Launch`] per
-/// task of each run whose holder `alive` confirms. The counter never falls behind a run
+/// task of each run whose holder `alive` confirms, and one with no task for a run launched
+/// with none. The counter never falls behind a run
 /// folder already there, so an instance number is never used twice.
 pub fn with_runs(saved: &SpawnState, runs: &[Run], alive: &dyn Fn(&Holder) -> bool) -> SpawnState {
     let mut launches = Vec::new();
@@ -92,11 +93,18 @@ pub fn with_runs(saved: &SpawnState, runs: &[Run], alive: &dyn Fn(&Holder) -> bo
         let Some(record) = &run.record else {
             continue;
         };
-        for task in &record.tasks {
+        let pid = run.holder.as_ref().map(|holder| holder.pid);
+        // A launch with no task still holds a slot: one entry with no task stands for it.
+        let tasks: Vec<Option<u64>> = if record.tasks.is_empty() {
+            vec![None]
+        } else {
+            record.tasks.iter().copied().map(Some).collect()
+        };
+        for task in tasks {
             launches.push(Launch {
-                task: *task,
+                task,
                 instance: record.instance.clone(),
-                pid: run.holder.as_ref().map(|holder| holder.pid),
+                pid,
                 started_at: record.started_at.clone(),
             });
         }

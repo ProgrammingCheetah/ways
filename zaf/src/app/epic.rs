@@ -13,7 +13,10 @@ use std::time::SystemTime;
 
 use super::spawn::SpawnError;
 use super::spawn::runs::{self, Run};
-use crate::domain::{BodyHash, Epic, EpicStage, Signature, TicketId, TicketTitle};
+use crate::domain::{
+    BodyHash, Epic, EpicStage, EpicTask, GroupName, Signature, Standing, TicketId, TicketState,
+    TicketTitle,
+};
 use crate::ports::{Board, Holder, PortError};
 
 /// Why an epic verb could not do its work.
@@ -80,6 +83,89 @@ impl EpicLine {
             self.number, self.stage, self.done, self.total, self.title
         )
     }
+}
+
+/// One task of an epic as `zaf epic show` prints it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct TaskLine {
+    /// Its id.
+    pub number: TicketId,
+    /// Its title.
+    pub title: TicketTitle,
+    /// Its state, if it has one.
+    pub state: Option<TicketState>,
+    /// Whether it is closed: done, or not planned.
+    pub closed: Option<&'static str>,
+    /// Its group, if it has one.
+    pub group: Option<GroupName>,
+}
+
+impl From<&EpicTask> for TaskLine {
+    fn from(task: &EpicTask) -> Self {
+        Self {
+            number: task.number,
+            title: task.title.clone(),
+            state: task.state,
+            closed: match task.standing {
+                Standing::Open | Standing::Missing => None,
+                Standing::Done => Some("done"),
+                Standing::ClosedNotPlanned => Some("not_planned"),
+            },
+            group: task.group.clone(),
+        }
+    }
+}
+
+impl TaskLine {
+    /// One line: `#13 ready  <title>`, `#14 closed not planned  <title>`, with `[group]`.
+    pub fn render(&self) -> String {
+        let state = match (self.closed, self.state) {
+            (Some("not_planned"), _) => "closed not planned".to_owned(),
+            (Some(word), _) => word.to_owned(),
+            (None, Some(state)) => state.to_string(),
+            (None, None) => "no state".to_owned(),
+        };
+        let group = self
+            .group
+            .as_ref()
+            .map(|group| format!(" [{group}]"))
+            .unwrap_or_default();
+        format!("{} {state}{group}  {}", self.number, self.title)
+    }
+}
+
+/// An open epic as `zaf epic show` prints it: its line, then one line per task.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct EpicView {
+    /// The epic's line.
+    #[serde(flatten)]
+    pub epic: EpicLine,
+    /// Its tasks, closed ones too, in id order.
+    pub tasks: Vec<TaskLine>,
+}
+
+impl EpicView {
+    /// The epic's line, then each task indented under it.
+    pub fn render(&self) -> String {
+        let mut lines = vec![self.epic.render()];
+        lines.extend(self.tasks.iter().map(|task| format!("  {}", task.render())));
+        lines.join("\n")
+    }
+}
+
+/// One open epic with its tasks, closed ones too; a ticket that is no open epic is refused.
+pub fn show(board: &dyn Board, id: TicketId) -> Result<EpicView, EpicError> {
+    let epic = match board.epic(id) {
+        Ok(epic) => epic,
+        Err(PortError::NotFound(_)) => return Err(EpicError::NotAnEpic(id)),
+        Err(error) => return Err(EpicError::Board(error)),
+    };
+    let mut tasks: Vec<TaskLine> = epic.tasks.iter().map(TaskLine::from).collect();
+    tasks.sort_by_key(|task| task.number);
+    Ok(EpicView {
+        epic: EpicLine::from(&epic),
+        tasks,
+    })
 }
 
 /// Every open epic and where it stands.

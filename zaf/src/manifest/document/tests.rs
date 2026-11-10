@@ -317,10 +317,13 @@ fn project_and_board_alone_load_with_the_pack_defaults() {
     assert_eq!(manifest.isolation.kind, IsolationKind::Process);
     assert!(manifest.forbidden.commands.is_empty());
     let role_names: Vec<&str> = manifest.roles.keys().map(AsRef::as_ref).collect();
-    assert_eq!(role_names, ["programmer", "team"]);
+    assert_eq!(role_names, ["challenger", "planning", "programmer", "team"]);
     let team = &manifest.roles[&RoleName::from("team")];
     assert_eq!(team.profile, Profile::Build);
     assert_eq!(team.batch, Some(4));
+    let planning = &manifest.roles[&RoleName::from("planning")];
+    assert_eq!((planning.profile, planning.turns), (Profile::Build, 80));
+    assert_eq!(manifest.roles[&RoleName::from("challenger")].turns, 60);
 }
 
 #[test]

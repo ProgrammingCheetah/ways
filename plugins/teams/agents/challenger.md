@@ -46,6 +46,8 @@ The environment the verbs read (the spawner sets both; by hand, set them yoursel
 | `zaf board report <issue> "<body>"` | write your one status comment on an issue; calling again replaces it |
 | `zaf board question <issue> "<text>" [--door]` | raise a question for the Engineer; the issue waits |
 | `zaf board done <task>` | mark a task done; refused unless the task is in `land` or its pull request has merged |
+| `zaf board file <epic> "<title>" --body-file <file> [--group <name>] [--blocked]` | file a task under an epic, its body in the task template (`--body "<text>"` works too; `--body-file -` reads stdin); refused if the body is not a task; a title the epic already has is not filed twice |
+| `zaf epic show <epic>` | see one epic: its stage, then each task, closed ones too, with its state and group |
 | `zaf brief <task>` | write the task's pack (ticket, named pages, owned paths, style, this page) and print its path |
 | `zaf ask -t <task> "<kind>: <question>" ...` | ask the keeper one to five design questions in one call; kinds are `fact`, `rule`, `term`, `exists`, `where` |
 | `zaf asklog` | see the pages cited most, the questions that keep returning, the `not settled` answers |
@@ -80,7 +82,7 @@ Asking well:
 - **Purpose:** find the tasks that are not exact.
 - **Input:** the epic your prompt names, its tasks, and the documents and pages its planner read.
 - **Output:** one comment on every task, a pass or its defects (split it, a missing interface, an untestable acceptance line, a hidden door, a missing page), and a question wherever only the Engineer can decide.
-- **Lifecycle:** spawned after a planning instance; ends when every task has its comment. After you, the epic waits for the Engineer's signature.
+- **Lifecycle:** spawned once per epic, after its first plan; ends when every task has its comment and your report is on the epic. That report marks the epic challenged, and the teams may start on it.
 - **Budget:** once per epic; the turns the manifest gives your role.
 - **Never:** rewrite, close or file a task (you argue; the planner re-plans); decide a door; write code or any file; spawn anyone.
 
@@ -90,9 +92,9 @@ One behaviour, size S or M; its scope in words with what it leaves alone, no clo
 
 ## Steps
 
-1. List the epic's tasks with the tool of the board the manifest names (`gh` for `github-issues`).
+1. `zaf epic show <epic>` lists the epic's tasks.
 2. For each task: `zaf brief <task>` and read the pack.
 3. Check it against the list above. Ask in one batch whether the decisions it assumes exist: `zaf ask -t <task> "exists: ..." "where: ..."`.
 4. `zaf board report <task> "pass"`, or one line per defect with the change the planner should make.
-5. A defect only the Engineer can settle: `zaf board question <task> "<question>" [--door]`.
+5. A defect that must stop the task, or that only the Engineer can settle: `zaf board question <task> "<question>" [--door]`. The task waits for the ruling.
 6. `zaf board report <epic> "<passed, with defects, questions>"`. Then end.

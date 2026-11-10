@@ -1,4 +1,5 @@
-//! `zaf spawn --once`: one tick of the spawner, the team-instance branch.
+//! `zaf spawn --once`: one tick of the spawner: planning, challenger and team launches, each
+//! open epic getting the one its stage calls for ([`tick`]); the release branch is not built.
 //!
 //! Nothing the tick plans from is kept in step by hand: each read derives it.
 //! Whether a launch still runs comes from its run folder and the process table
@@ -11,7 +12,7 @@
 //! board and the guard, plans the tick with [`tick::plan`] and reserves each planned
 //! launch in its run folder, held by the tick until the instance starts. [`launch`]
 //! then runs one through the Runner port: it records the launch on the epic, runs
-//! the `team` role in `.zaf/runs/<instance slug>/`, where the runner records the
+//! the instance's role in `.zaf/runs/<instance slug>/`, where the runner records the
 //! instance's own process, keeps the instance's output as `report.md` there and
 //! records the exit in the run folder and on the epic. Launch and exit are HTML
 //! comments on the epic: `<!-- zaf:launch <instance> -->` and
@@ -34,13 +35,14 @@ use std::time::SystemTime;
 use runs::Run;
 pub use state::{SpawnState, derive, load, save};
 pub use tick::{
-    EpicSkip, NOT_BUILT, Plan, PlannedLaunch, Settings, SlotCount, Snapshot, TEAM_ROLE, TaskSkip,
+    EpicSkip, NOT_BUILT, PLANNING_ROLE, PastLaunch, Plan, PlannedLaunch, Settings, SlotCount,
+    Snapshot, TEAM_ROLE, TaskSkip,
 };
 
 use super::guard::{GUARD_FILE, Level};
-use crate::domain::{Instance, Profile, RoleName, TicketId};
+use crate::domain::{CHALLENGER_ROLE, Instance, Profile, RoleName, TicketId};
 use crate::manifest::{Manifest, ManifestError};
-use crate::ports::{Board, ClaimRecord, Holder, PortError, RunRequest, Runner};
+use crate::ports::{Board, ClaimRecord, Holder, NewQuestion, PortError, RunRequest, Runner};
 
 /// The one-line launch prompt of a team instance, with `{instance}`, `{epic}`,
 /// `{project}`, `{tasks}` and `{brief}` placeholders.
@@ -54,6 +56,35 @@ pub const TEAM_BRIEF: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/assets/spawn/team-brief.md"
 ));
+
+/// The one-line launch prompt of an instance launched with no task (planning, the
+/// challenger), with `{instance}`, `{role}`, `{epic}`, `{project}` and `{brief}` placeholders.
+pub const EPIC_PROMPT: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/spawn/epic-prompt.txt"
+));
+
+/// The planning instance's standing brief when the project keeps none of its own.
+pub const PLANNING_BRIEF: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/spawn/planning-brief.md"
+));
+
+/// The challenger's standing brief when the project keeps none of its own.
+pub const CHALLENGER_BRIEF: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/spawn/challenger-brief.md"
+));
+
+/// The pack's standing brief for `role`: the planning instance's, the challenger's, or the
+/// team instance's for any other role the tick launches.
+pub fn pack_brief(role: &RoleName) -> &'static str {
+    match role.as_str() {
+        PLANNING_ROLE => PLANNING_BRIEF,
+        CHALLENGER_ROLE => CHALLENGER_BRIEF,
+        _ => TEAM_BRIEF,
+    }
+}
 
 /// The folder under the state folder holding one run folder per instance.
 pub const RUNS_DIR: &str = "runs";
@@ -120,8 +151,9 @@ pub fn read_guard(state_dir: &Path) -> Result<Level, SpawnError> {
 
 /// Reads what the tick needs from the board: the ready tasks, the live claims, which of
 /// their blockers are closed (closed as completed, or labelled `done`), the open tasks the blockers lead to, and
-/// the blockers that can never close (see [`blockers`]).
-pub fn snapshot(board: &dyn Board) -> Result<Snapshot, PortError> {
+/// the blockers that can never close (see [`blockers`]); the open epics and the issues an
+/// open question waits on; and, from `runs`, every launch recorded so far.
+pub fn snapshot(board: &dyn Board, runs: &[Run]) -> Result<Snapshot, PortError> {
     let ready = board.ready()?;
     let claimed = board
         .claims()?
@@ -133,12 +165,29 @@ pub fn snapshot(board: &dyn Board) -> Result<Snapshot, PortError> {
     for ticket in &ready {
         open.remove(&ticket.id);
     }
+    let questioned = board
+        .questions()?
+        .iter()
+        .filter_map(|question| NewQuestion::raised_on(question.body.as_str()))
+        .collect();
     Ok(Snapshot {
         ready,
         claimed,
         closed: found.closed,
         open,
         dead: found.dead,
+        epics: board.epics()?,
+        questioned,
+        launched: runs.iter().filter_map(past_launch).collect(),
+    })
+}
+
+/// A run folder's launch, when it records the instance and a readable reservation time.
+fn past_launch(run: &Run) -> Option<PastLaunch> {
+    let record = run.record.as_ref()?;
+    Some(PastLaunch {
+        instance: record.instance.parse().ok()?,
+        reserved_at: humantime::parse_rfc3339_weak(&record.reserved_at).ok()?,
     })
 }
 
@@ -234,7 +283,7 @@ pub fn prepare(
             instance: claim.instance.clone(),
         });
     }
-    let snapshot = snapshot(board)?;
+    let snapshot = snapshot(board, &found)?;
     let level = read_guard(state_dir)?;
     let plan = tick::plan(&snapshot, &state, level, Settings::from(manifest));
     let now = humantime::format_rfc3339_seconds(SystemTime::now()).to_string();
@@ -296,12 +345,19 @@ pub fn slug(instance: &Instance) -> String {
 }
 
 /// The launch prompt: one line naming the instance, the epic, the project and the tasks,
-/// pointing at the standing brief.
+/// pointing at the standing brief. A team instance gets [`TEAM_PROMPT`], a role launched with
+/// no task [`EPIC_PROMPT`].
 pub fn prompt(launch: &PlannedLaunch, project: &str, brief: &Path) -> String {
     let tasks: Vec<String> = launch.tasks.iter().map(ToString::to_string).collect();
-    TEAM_PROMPT
+    let template = if launch.instance.role.as_str() == TEAM_ROLE {
+        TEAM_PROMPT
+    } else {
+        EPIC_PROMPT
+    };
+    template
         .trim_end()
         .replace("{instance}", &launch.instance.to_string())
+        .replace("{role}", launch.instance.role.as_str())
         .replace("{epic}", &launch.instance.epic.to_string())
         .replace("{project}", project)
         .replace("{tasks}", &tasks.join(" "))
@@ -315,7 +371,7 @@ pub struct LaunchContext {
     pub state_dir: PathBuf,
     /// The project's name, for the prompt.
     pub project: String,
-    /// The team role's profile.
+    /// The launched role's profile.
     pub profile: Profile,
     /// The environment the launch's process runs with, on its [`RunRequest`].
     pub env: BTreeMap<String, String>,
@@ -438,8 +494,8 @@ pub fn launch(
     })
 }
 
-/// A way to get a board and a runner of one's own, for a launch thread.
-pub type PortsFn<'a> = dyn Fn() -> Result<LaunchPorts, PortError> + Sync + 'a;
+/// A way to get a board and a runner of one's own for a role, for a launch thread.
+pub type PortsFn<'a> = dyn Fn(&RoleName) -> Result<LaunchPorts, PortError> + Sync + 'a;
 
 /// The board and the runner one launch thread works with.
 pub type LaunchPorts = (Box<dyn Board>, Box<dyn Runner>);
@@ -459,7 +515,7 @@ pub fn launch_all(
         let handles: Vec<_> = jobs
             .iter()
             .map(|(planned, context)| {
-                scope.spawn(move || match ports() {
+                scope.spawn(move || match ports(&planned.instance.role) {
                     Ok((board, runner)) => {
                         launch(board.as_ref(), runner.as_ref(), context, planned)
                     }
@@ -509,7 +565,8 @@ fn start(
         source,
     })?;
     if brief.starts_with(&run_dir) {
-        std::fs::write(&brief, TEAM_BRIEF).map_err(|source| SpawnError::Write {
+        let text = pack_brief(&planned.instance.role);
+        std::fs::write(&brief, text).map_err(|source| SpawnError::Write {
             path: brief.clone(),
             source,
         })?;
@@ -522,22 +579,23 @@ fn start(
 
 /// A launch's run folder, its standing brief and its request, touching nothing.
 ///
-/// The brief is `<state dir>/roles/team.md` when present, else the pack's, which
+/// The brief is `<state dir>/roles/<role>.md` when present, else the pack's, which
 /// [`start`] writes into the run folder. The runner records the instance's process in
 /// the run folder's `pid`.
 fn request_for(context: &LaunchContext, planned: &PlannedLaunch) -> (PathBuf, PathBuf, RunRequest) {
     let run_dir = run_dir(context, planned);
+    let role = &planned.instance.role;
     let own = context
         .state_dir
         .join(ROLES_DIR)
-        .join(format!("{TEAM_ROLE}.md"));
+        .join(format!("{}.md", role.as_str()));
     let brief = if own.is_file() {
         own
     } else {
         run_dir.join(BRIEF_FILE)
     };
     let request = RunRequest {
-        role: RoleName::from(TEAM_ROLE),
+        role: role.clone(),
         profile: context.profile,
         prompt: prompt(planned, &context.project, &brief),
         dir: run_dir.clone(),
@@ -562,7 +620,7 @@ pub fn plan_only(
         .filter_map(Run::instance)
         .map(|instance| instance.to_string())
         .collect();
-    let snapshot = snapshot(board)?;
+    let snapshot = snapshot(board, &found)?;
     let level = read_guard(state_dir)?;
     let plan = tick::plan(&snapshot, &state, level, Settings::from(manifest));
     Ok(Prepared {
@@ -618,7 +676,7 @@ impl DryLaunch {
 /// Describes each planned launch with `describe`, launching nothing and writing nothing.
 pub fn dry_run(
     jobs: &[(&PlannedLaunch, LaunchContext)],
-    profile_dir: &Path,
+    profile_dir: &dyn Fn(Profile) -> PathBuf,
     describe: &DescribeFn<'_>,
 ) -> Result<Vec<DryLaunch>, PortError> {
     jobs.iter()
@@ -629,7 +687,7 @@ pub fn dry_run(
                 instance: planned.instance.to_string(),
                 epic: planned.instance.epic.get(),
                 tasks: planned.tasks.iter().map(|task| task.get()).collect(),
-                profile_dir: profile_dir.to_owned(),
+                profile_dir: profile_dir(context.profile),
                 env,
                 command,
             })
@@ -637,12 +695,17 @@ pub fn dry_run(
         .collect()
 }
 
-/// The team role's profile from the manifest; the pack's `build` when the role is absent.
-pub fn team_profile(manifest: &Manifest) -> Profile {
+/// A role's profile from the manifest; the pack's `build` when the role is absent.
+pub fn role_profile(manifest: &Manifest, role: &RoleName) -> Profile {
     manifest
         .roles
-        .get(&RoleName::from(TEAM_ROLE))
-        .map_or(Profile::Build, |role| role.profile)
+        .get(role)
+        .map_or(Profile::Build, |section| section.profile)
+}
+
+/// The team role's profile from the manifest; the pack's `build` when the role is absent.
+pub fn team_profile(manifest: &Manifest) -> Profile {
+    role_profile(manifest, &RoleName::from(TEAM_ROLE))
 }
 
 impl Plan {
@@ -777,13 +840,20 @@ impl Plan {
             }
             TaskSkip::Claimed => "claimed".to_owned(),
             TaskSkip::Running(instance) => format!("carried by {instance}"),
-            TaskSkip::NoEpic => "no epic".to_owned(),
+            TaskSkip::NoEpic => "no open epic".to_owned(),
         }
     }
 }
 
 fn epic_reason(skip: EpicSkip) -> &'static str {
     match skip {
+        EpicSkip::Unsigned => "not signed (zaf epic sign is the Engineer's)",
+        EpicSkip::Questioned => "a question is open on it",
+        EpicSkip::PlanningRuns => "a planning instance runs on it",
+        EpicSkip::PlannedNothing => "planning ran since the signature and filed no task",
+        EpicSkip::ChallengerRuns => "the challenger runs on it",
+        EpicSkip::ChallengerEnded => "the challenger ran and left no report",
+        EpicSkip::Done => "every task is finished",
         EpicSkip::NothingLaunchable => "no ready, unblocked, unclaimed task",
         EpicSkip::NoFreeSlot => "no free slot",
         EpicSkip::GuardRed => "guard red",

@@ -1,6 +1,8 @@
-//! `zaf epic list|sign`: the open epics and where each stands, and the Engineer's signature.
+//! `zaf epic list|show|sign`: the open epics and where each stands, and the Engineer's signature.
 //!
-//! `list` prints one line per open epic, `#<n> <stage> <done> of <total>  <title>`. `sign`
+//! `list` prints one line per open epic, `#<n> <stage> <done> of <total>  <title>`; `show`
+//! prints that line for one epic and then one indented line per task,
+//! `#<t> <state> [<group>]  <title>`. `sign`
 //! prints `signed #<n> sha256:<hex>`, or `#<n> is already signed` when the signature holds the
 //! body; it exits 1 inside an instance or for a ticket that is no open epic.
 
@@ -33,6 +35,13 @@ pub fn run(cli: &Cli, action: &EpicAction) -> u8 {
                 for line in &lines {
                     println!("{}", line.render());
                 }
+            }
+        }),
+        EpicAction::Show { epic } => epic::show(board.as_ref(), *epic).map(|view| {
+            if cli.json {
+                println!("{}", json!(view));
+            } else {
+                println!("{}", view.render());
             }
         }),
         EpicAction::Sign { epic } => {

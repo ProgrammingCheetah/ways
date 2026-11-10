@@ -1,6 +1,6 @@
 use super::*;
 use crate::app::status::Launch;
-use crate::domain::TicketState;
+use crate::domain::{EpicTask, Signature, Standing, TicketState};
 
 fn task(number: u64, epic: u64, body: &str) -> Ticket {
     Ticket {
@@ -13,9 +13,42 @@ fn task(number: u64, epic: u64, body: &str) -> Ticket {
     }
 }
 
+/// An open epic in `stage`'s conditions, with `tasks` as its open tasks.
+fn epic_in(number: u64, signed: bool, challenged: bool, tasks: &[u64]) -> Epic {
+    let body: crate::domain::TicketBody = format!("Goal: epic {number}").into();
+    Epic {
+        id: TicketId::from(number),
+        title: format!("Epic {number}").into(),
+        signature: signed.then(|| Signature::of(&body, SystemTime::UNIX_EPOCH)),
+        body,
+        tasks: tasks
+            .iter()
+            .map(|task| EpicTask {
+                number: TicketId::from(*task),
+                title: format!("Task {task}").into(),
+                state: Some(TicketState::Ready),
+                standing: Standing::Open,
+                group: None,
+            })
+            .collect(),
+        challenged,
+    }
+}
+
+/// The ready tasks, each of its epic signed and challenged, so the teams may build them.
 fn snapshot(ready: Vec<Ticket>) -> Snapshot {
+    let mut epics: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
+    for ticket in &ready {
+        if let Some(epic) = ticket.epic {
+            epics.entry(epic.get()).or_default().push(ticket.id.get());
+        }
+    }
     Snapshot {
         ready,
+        epics: epics
+            .iter()
+            .map(|(epic, tasks)| epic_in(*epic, true, true, tasks))
+            .collect(),
         ..Snapshot::default()
     }
 }
@@ -26,7 +59,7 @@ fn settings(slots: u32) -> Settings {
 
 fn running(task: u64, instance: &str) -> Launch {
     Launch {
-        task,
+        task: Some(task),
         instance: instance.to_owned(),
         pid: Some(4242),
         started_at: None,
@@ -318,4 +351,144 @@ fn the_json_carries_the_cycles_and_marks_a_task_in_one() {
         json["skipped"]["tasks"][0],
         serde_json::json!({ "task": 3, "reason": "in_cycle", "detail": [3, 4, 5] })
     );
+}
+
+fn past(role: &str, epic: u64, number: u32, at: u64) -> PastLaunch {
+    PastLaunch {
+        instance: format!("{role} instance {number} on #{epic}")
+            .parse()
+            .expect("an instance"),
+        reserved_at: SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(at),
+    }
+}
+
+fn board_of(epics: Vec<Epic>) -> Snapshot {
+    Snapshot {
+        epics,
+        ..Snapshot::default()
+    }
+}
+
+fn launched(plan: &Plan) -> Vec<String> {
+    plan.launches
+        .iter()
+        .map(|launch| launch.instance.to_string())
+        .collect()
+}
+
+#[test]
+fn an_unsigned_epic_launches_nothing_whatever_its_tasks() {
+    let mut board = snapshot(vec![task(3, 2, "")]);
+    board.epics = vec![epic_in(2, false, true, &[3])];
+    let plan = plan(&board, &SpawnState::default(), Level::Green, settings(2));
+    assert!(plan.launches.is_empty());
+    assert_eq!(plan.epics, [(TicketId::from(2), EpicSkip::Unsigned)]);
+}
+
+#[test]
+fn a_signed_epic_with_no_task_gets_one_planning_instance_per_signature() {
+    let board = board_of(vec![epic_in(2, true, false, &[])]);
+    let plan = plan(&board, &SpawnState::default(), Level::Green, settings(2));
+    assert_eq!(launched(&plan), ["planning instance 1 on #2"]);
+    assert!(plan.launches[0].tasks.is_empty());
+
+    // The signature is at the epoch: a planning run reserved after it has answered it.
+    let mut planned = board.clone();
+    planned.launched = vec![past(PLANNING_ROLE, 2, 1, 60)];
+    let plan = super::plan(&planned, &SpawnState::default(), Level::Green, settings(2));
+    assert!(plan.launches.is_empty());
+    assert_eq!(plan.epics, [(TicketId::from(2), EpicSkip::PlannedNothing)]);
+}
+
+#[test]
+fn a_planned_epic_gets_the_challenger_once() {
+    let board = board_of(vec![epic_in(2, true, false, &[3])]);
+    let plan = plan(&board, &SpawnState::default(), Level::Green, settings(2));
+    assert_eq!(launched(&plan), ["challenger instance 1 on #2"]);
+
+    let running_state = SpawnState {
+        launches: vec![Launch {
+            task: None,
+            instance: "challenger instance 1 on #2".to_owned(),
+            pid: Some(4242),
+            started_at: None,
+        }],
+        ..SpawnState::default()
+    };
+    let plan = super::plan(&board, &running_state, Level::Green, settings(2));
+    assert_eq!(plan.epics, [(TicketId::from(2), EpicSkip::ChallengerRuns)]);
+
+    let mut ended = board.clone();
+    ended.launched = vec![past(CHALLENGER_ROLE, 2, 1, 60)];
+    let plan = super::plan(&ended, &SpawnState::default(), Level::Green, settings(2));
+    assert_eq!(plan.epics, [(TicketId::from(2), EpicSkip::ChallengerEnded)]);
+}
+
+#[test]
+fn a_running_planning_instance_holds_its_epic_whatever_its_stage() {
+    let board = board_of(vec![epic_in(2, true, false, &[3])]);
+    let state = SpawnState {
+        launches: vec![Launch {
+            task: None,
+            instance: "planning instance 1 on #2".to_owned(),
+            pid: Some(4242),
+            started_at: None,
+        }],
+        ..SpawnState::default()
+    };
+    let plan = plan(&board, &state, Level::Green, settings(2));
+    assert!(plan.launches.is_empty());
+    assert_eq!(plan.epics, [(TicketId::from(2), EpicSkip::PlanningRuns)]);
+    assert_eq!(plan.slots.running, 1, "a launch with no task holds a slot");
+}
+
+#[test]
+fn a_question_on_the_epic_holds_every_launch() {
+    let mut board = snapshot(vec![task(3, 2, "")]);
+    board.questioned.insert(TicketId::from(2));
+    let plan = plan(&board, &SpawnState::default(), Level::Green, settings(2));
+    assert!(plan.launches.is_empty());
+    assert_eq!(plan.epics, [(TicketId::from(2), EpicSkip::Questioned)]);
+}
+
+#[test]
+fn a_done_epic_launches_nothing() {
+    let mut epic = epic_in(2, true, true, &[3]);
+    epic.tasks[0].standing = Standing::Done;
+    let plan = plan(
+        &board_of(vec![epic]),
+        &SpawnState::default(),
+        Level::Green,
+        settings(2),
+    );
+    assert_eq!(plan.epics, [(TicketId::from(2), EpicSkip::Done)]);
+}
+
+#[test]
+fn a_ready_task_of_no_open_epic_is_left_out() {
+    let mut board = snapshot(vec![task(3, 2, "")]);
+    board.epics.clear();
+    let plan = plan(&board, &SpawnState::default(), Level::Green, settings(2));
+    assert!(plan.launches.is_empty());
+    assert_eq!(plan.tasks, [(TicketId::from(3), TaskSkip::NoEpic)]);
+}
+
+#[test]
+fn each_epic_takes_the_launch_its_stage_calls_for_in_one_tick() {
+    let mut board = snapshot(vec![task(9, 8, "")]);
+    board.epics.extend([
+        epic_in(2, true, false, &[]),
+        epic_in(4, true, false, &[5]),
+        epic_in(6, false, false, &[]),
+    ]);
+    let plan = plan(&board, &SpawnState::default(), Level::Green, settings(4));
+    assert_eq!(
+        launched(&plan),
+        [
+            "planning instance 1 on #2",
+            "challenger instance 2 on #4",
+            "team instance 3 on #8",
+        ]
+    );
+    assert_eq!(plan.epics, [(TicketId::from(6), EpicSkip::Unsigned)]);
 }

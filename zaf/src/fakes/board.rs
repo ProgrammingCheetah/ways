@@ -96,6 +96,22 @@ impl FakeBoard {
         }
     }
 
+    /// Puts an open epic on the board that the teams may build: signed on its body and
+    /// challenged (a challenger's report is on it).
+    pub fn add_challenged_epic(&self, number: TicketId, title: &str) {
+        self.add_epic(number, title);
+        let mut state = self.state();
+        if let Some(issue) = state.issues.get_mut(&number) {
+            issue.signature = Some(Signature::of(&issue.ticket.body, SystemTime::UNIX_EPOCH));
+            let challenger = Instance {
+                role: CHALLENGER_ROLE.into(),
+                epic: number,
+                number: 1.into(),
+            };
+            issue.reports.push((challenger, "pass".to_owned()));
+        }
+    }
+
     /// Replaces a ticket's body, as editing it on the forge would.
     pub fn set_body(&self, id: TicketId, body: &str) {
         if let Some(issue) = self.state().issues.get_mut(&id) {

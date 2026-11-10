@@ -109,24 +109,17 @@ fn ticket(number: u64, epic: Option<u64>, body: &str, label: TicketState) -> Tic
     }
 }
 
-fn epic(number: u64) -> Ticket {
-    Ticket {
-        state: None,
-        ..ticket(number, None, "", TicketState::Ready)
-    }
-}
-
 /// Epic #2 with ready tasks #3, #4, #5 (#5 blocked by the open #6) and a
 /// closed blocker #7 on #4; epic #12 with ready task #13.
 fn board() -> FakeBoard {
     let board = FakeBoard::default();
-    board.add_ticket(epic(2));
+    board.add_challenged_epic(TicketId::from(2), "Issue 2");
     board.add_ticket(ticket(3, Some(2), "Blocked by: —", TicketState::Ready));
     board.add_ticket(ticket(4, Some(2), "Blocked by: #7", TicketState::Ready));
     board.add_ticket(ticket(5, Some(2), "Blocked by: #6", TicketState::Ready));
     board.add_ticket(ticket(6, Some(2), "", TicketState::Blocked));
     board.add_ticket(ticket(7, Some(2), "", TicketState::Done));
-    board.add_ticket(epic(12));
+    board.add_challenged_epic(TicketId::from(12), "Issue 12");
     board.add_ticket(ticket(13, Some(12), "", TicketState::Ready));
     board
 }
@@ -199,7 +192,7 @@ fn a_launch_through_the_runner_records_launch_and_exit_and_frees_its_slot() {
     assert_eq!(Holder::parse(&held), Some(tick()));
     let screen = status::status(&board, &state_dir, 2, &|_| true).expect("status reads the state");
     assert_eq!(screen.running.len(), 3);
-    assert_eq!(screen.running[0].task, 3);
+    assert_eq!(screen.running[0].task, Some(3));
     assert_eq!(screen.running[0].pid, Some(OWN_PID));
 
     let done = launch(&board, &runner, &context(&state_dir), first).expect("launches");
@@ -481,7 +474,7 @@ fn a_missing_blocker_is_dead() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state_dir = dir.path().join(".zaf");
     let board = FakeBoard::default();
-    board.add_ticket(epic(2));
+    board.add_challenged_epic(TicketId::from(2), "Issue 2");
     board.add_ticket(ticket(3, Some(2), "Blocked by: #99", TicketState::Ready));
 
     let prepared = plan_only(&board, &state_dir, &manifest(), &|_| true).expect("plans");
@@ -507,7 +500,7 @@ fn a_blocker_closed_as_not_planned_is_dead() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state_dir = dir.path().join(".zaf");
     let board = FakeBoard::default();
-    board.add_ticket(epic(2));
+    board.add_challenged_epic(TicketId::from(2), "Issue 2");
     board.add_ticket(ticket(3, Some(2), "Blocked by: #6 #7", TicketState::Ready));
     board.add_ticket(ticket(6, Some(2), "", TicketState::Blocked));
     board.close_not_planned(TicketId::from(6));
@@ -529,7 +522,7 @@ fn a_blocker_closed_without_the_done_label_lets_its_dependent_launch() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state_dir = dir.path().join(".zaf");
     let board = FakeBoard::default();
-    board.add_ticket(epic(2));
+    board.add_challenged_epic(TicketId::from(2), "Issue 2");
     board.add_ticket(ticket(3, Some(2), "Blocked by: #6", TicketState::Ready));
     board.add_ticket(ticket(6, Some(2), "", TicketState::Claimed));
     board.close(TicketId::from(6));
@@ -548,12 +541,12 @@ fn a_blocker_closed_without_the_done_label_lets_its_dependent_launch() {
 #[test]
 fn the_snapshot_reads_a_cycle_through_open_tasks_that_are_not_ready() {
     let board = FakeBoard::default();
-    board.add_ticket(epic(2));
+    board.add_challenged_epic(TicketId::from(2), "Issue 2");
     board.add_ticket(ticket(3, Some(2), "Blocked by: #4", TicketState::Ready));
     board.add_ticket(ticket(4, Some(2), "Blocked by: #5", TicketState::Blocked));
     board.add_ticket(ticket(5, Some(2), "Blocked by: #4", TicketState::Blocked));
 
-    let read = snapshot(&board).expect("snapshot");
+    let read = snapshot(&board, &[]).expect("snapshot");
     assert_eq!(
         read.open.keys().copied().collect::<Vec<_>>(),
         [TicketId::from(4), TicketId::from(5)]
@@ -698,22 +691,28 @@ fn the_guard_file_sets_the_level_and_its_absence_is_green() {
 }
 
 #[test]
-fn the_unbuilt_branches_print_skipped_and_launch_nothing() {
+fn a_signed_epic_with_no_task_launches_planning_and_only_release_is_unbuilt() {
     let dir = tempfile::tempdir().expect("temp dir");
     let board = FakeBoard::default();
-    board.add_ticket(epic(2));
+    board.add_challenged_epic(TicketId::from(2), "Issue 2");
     let prepared = prepare(&board, dir.path(), &manifest(), &|_| true, &tick()).expect("prepares");
-    assert!(prepared.plan.launches.is_empty());
+    let launched: Vec<String> = prepared
+        .plan
+        .launches
+        .iter()
+        .map(|launch| launch.instance.to_string())
+        .collect();
+    assert_eq!(launched, ["planning instance 1 on #2"]);
+    assert!(prepared.plan.launches[0].tasks.is_empty());
     let text = prepared.plan.render_text();
-    for branch in ["planning", "challenger", "release"] {
-        assert!(
-            text.contains(&format!("{branch}: skipped: not built")),
-            "{text}"
-        );
-    }
+    assert!(text.contains("release: skipped: not built"), "{text}");
+    assert!(!text.contains("planning: skipped"), "{text}");
     let json = prepared.plan.to_json(&[], &[]);
-    assert_eq!(json["skipped"]["branches"][0]["reason"], "not built");
-    assert_eq!(json["launched"], serde_json::json!([]));
+    assert_eq!(json["skipped"]["branches"][0]["branch"], "release");
+    assert_eq!(
+        json["skipped"]["branches"].as_array().map(Vec::len),
+        Some(1)
+    );
 }
 
 #[test]
@@ -852,7 +851,7 @@ fn launches_run_in_parallel_threads_and_all_are_joined() {
             )
         })
         .collect();
-    let ports = || -> Result<LaunchPorts, PortError> {
+    let ports = |_: &RoleName| -> Result<LaunchPorts, PortError> {
         Ok((
             Box::new(SharedBoard(Arc::clone(&board))),
             Box::new(SharedRunner(Arc::clone(&runner))),
@@ -893,8 +892,9 @@ fn a_thread_without_ports_frees_its_slot_and_reports() {
         .iter()
         .map(|planned| (planned, context(&state_dir)))
         .collect();
-    let ports =
-        || -> Result<LaunchPorts, PortError> { Err(PortError::Unavailable("no gh".to_owned())) };
+    let ports = |_: &RoleName| -> Result<LaunchPorts, PortError> {
+        Err(PortError::Unavailable("no gh".to_owned()))
+    };
     let results = launch_all(&jobs, &ports);
     assert!(
         results
@@ -916,7 +916,8 @@ fn a_panicking_launch_thread_frees_its_slot() {
         .iter()
         .map(|planned| (planned, context(&state_dir)))
         .collect();
-    let ports = || -> Result<LaunchPorts, PortError> { panic!("a launch thread panics") };
+    let ports =
+        |_: &RoleName| -> Result<LaunchPorts, PortError> { panic!("a launch thread panics") };
     let results = launch_all(&jobs, &ports);
     assert!(
         results
@@ -953,7 +954,8 @@ fn a_dry_run_names_each_launch_and_its_command_line_and_writes_nothing() {
         env.insert("CLAUDE_CONFIG_DIR".to_owned(), home.clone());
         Ok((format!("claude -p '{}' --model opus", request.prompt), env))
     };
-    let dry = dry_run(&jobs, &profile_dir, &describe).expect("describes");
+    let dir_of = |_| profile_dir.clone();
+    let dry = dry_run(&jobs, &dir_of, &describe).expect("describes");
     let text: String = dry.iter().map(DryLaunch::render_text).collect();
     let brief = state_dir
         .join(RUNS_DIR)
@@ -1094,4 +1096,73 @@ fn a_lost_launch_is_recorded_once() {
         .filter(|comment| comment.ends_with(" lost -->"))
         .count();
     assert_eq!(lost_comments, 1);
+}
+
+#[test]
+fn a_planning_launch_runs_its_role_with_the_planning_brief_and_no_task() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let board = FakeBoard::default();
+    board.add_challenged_epic(TicketId::from(2), "Issue 2");
+    let planning = RoleName::from(PLANNING_ROLE);
+    let runner = FakeRunner::default();
+    runner.record(
+        planning.clone(),
+        RunOutput {
+            exit_code: 0,
+            transcript: "filed #3\n".to_owned(),
+        },
+    );
+    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
+    let planned = &prepared.plan.launches[0];
+    assert_eq!(planned.instance.role, planning);
+    let (reserved, _) = derive(&state_dir, &|_| true).expect("derives");
+    assert_eq!(
+        reserved.running(),
+        1,
+        "a launch with no task holds its slot"
+    );
+
+    let done = launch(&board, &runner, &context(&state_dir), planned).expect("launches");
+    assert_eq!(done.exit, LaunchExit::Code(0));
+    let requests = runner.requests();
+    let request = &requests[0];
+    assert_eq!(request.role, planning);
+    let run_dir = state_dir.join(RUNS_DIR).join("planning-instance-1-on-2");
+    let brief = run_dir.join(BRIEF_FILE);
+    assert_eq!(
+        request.prompt,
+        format!(
+            "You are planning instance 1 on #2, the planning instance for epic #2 of project \
+             bookshelf. Read {} first and follow it exactly.",
+            brief.display()
+        )
+    );
+    assert_eq!(
+        std::fs::read_to_string(&brief).expect("brief"),
+        PLANNING_BRIEF
+    );
+
+    // The run ended after the signature, so the next tick does not plan the epic again.
+    let again = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
+    assert!(again.plan.launches.is_empty());
+    assert_eq!(
+        again.plan.epics,
+        [(TicketId::from(2), EpicSkip::PlannedNothing)]
+    );
+}
+
+#[test]
+fn each_role_has_its_pack_brief() {
+    assert_eq!(pack_brief(&RoleName::from(PLANNING_ROLE)), PLANNING_BRIEF);
+    assert_eq!(
+        pack_brief(&RoleName::from(CHALLENGER_ROLE)),
+        CHALLENGER_BRIEF
+    );
+    assert_eq!(pack_brief(&team()), TEAM_BRIEF);
+    for brief in [PLANNING_BRIEF, CHALLENGER_BRIEF] {
+        assert!(brief.contains("zaf epic show <epic>"), "{brief}");
+        assert!(brief.contains("zaf board report <epic>"), "{brief}");
+    }
+    assert!(PLANNING_BRIEF.contains("zaf board file <epic>"));
 }

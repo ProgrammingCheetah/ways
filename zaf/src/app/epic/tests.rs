@@ -137,3 +137,39 @@ fn the_list_shows_each_open_epic_with_its_stage_and_tally() {
     assert_eq!(printed["number"], 10);
     assert_eq!(printed["stage"], "unsigned");
 }
+
+#[test]
+fn show_lists_the_epics_tasks_closed_ones_too_in_id_order() {
+    let board = board();
+    for (id, title, state) in [
+        (12, "second", TicketState::Blocked),
+        (11, "first", TicketState::Ready),
+    ] {
+        board.add_ticket(Ticket {
+            id: TicketId::from(id),
+            epic: Some(TicketId::from(EPIC)),
+            title: title.into(),
+            body: "Goal: g".into(),
+            state: Some(state),
+            url: "".into(),
+        });
+    }
+    board.set_group(TicketId::from(11), "export");
+    board.close_not_planned(TicketId::from(12));
+    let view = show(&board, TicketId::from(EPIC)).expect("shows");
+    assert_eq!(
+        view.render(),
+        "#10 unsigned 0 of 1  tickets\n  #11 ready [export]  first\n  #12 closed not planned  second"
+    );
+    let printed = serde_json::to_value(&view).expect("serializes");
+    assert_eq!(printed["number"], 10);
+    assert_eq!(printed["tasks"][0]["group"], "export");
+    assert_eq!(printed["tasks"][1]["closed"], "not_planned");
+}
+
+#[test]
+fn show_refuses_a_ticket_that_is_no_open_epic() {
+    let board = board();
+    let refused = show(&board, TicketId::from(99));
+    assert!(matches!(refused, Err(EpicError::NotAnEpic(id)) if id == TicketId::from(99)));
+}
