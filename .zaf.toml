@@ -8,9 +8,12 @@ name = "ways"
 jj = "*"
 gh = "*"
 
+# Tasks live on the "Zaf Feature Release" Project (owner: the repo's), each one's state in its
+# `zaf state` field, which zaf creates on its first write.
 [board]
-kind = "github-issues"
+kind = "github-projects"
 repo = "ProgrammingCheetah/ways"
+project = 2
 
 [vcs]
 kind = "jj"
