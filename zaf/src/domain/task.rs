@@ -4,6 +4,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
+use strum::VariantArray;
+
 use super::TicketId;
 
 /// A field of the task template, by the label it carries in the ticket.
@@ -54,7 +56,7 @@ pub enum TaskField {
     /// `Model`: `sonnet` or `opus`.
     #[strum(to_string = "Model")]
     Model,
-    /// `Size`: `S` or `M`.
+    /// `Size`: `XS`, `S`, `M`, `L`, `XL` or `E`.
     #[strum(to_string = "Size")]
     Size,
     /// `Blocked by`: issue numbers, or `—` for none.
@@ -77,15 +79,52 @@ pub enum TaskModel {
     Opus,
 }
 
-/// How big a task is; anything larger is split before it reaches the board.
+/// How big a task is, ordered from `XS` to `E`.
+///
+/// A planner files `XS`, `S` or `M`; `L`, `XL` and `E` are costs of the size table and of a
+/// release launch, not ticket sizes. The name is the key of the size table and the value of
+/// `ZAF_SIZE`.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, strum::Display, strum::EnumString, strum::VariantArray,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    strum::Display,
+    strum::EnumString,
+    strum::VariantArray,
 )]
 pub enum TaskSize {
+    /// Extra small.
+    XS,
     /// Small.
     S,
     /// Medium.
     M,
+    /// Large.
+    L,
+    /// Extra large.
+    XL,
+    /// The budget minus the reserve.
+    E,
+}
+
+impl TaskSize {
+    /// The size as written in a ticket: `XS`, `S`, `M`, `L`, `XL` or `E`.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::XS => "XS",
+            Self::S => "S",
+            Self::M => "M",
+            Self::L => "L",
+            Self::XL => "XL",
+            Self::E => "E",
+        }
+    }
 }
 
 /// Whether a task touches a security trigger, and which one.
@@ -171,6 +210,16 @@ pub enum TaskTemplateError {
         field: TaskField,
         /// The value as written.
         value: String,
+    },
+    /// A typed field whose value is not one of the allowed values.
+    #[error("`{field}` has an invalid value `{value}`: allowed values are {allowed}")]
+    NotAllowed {
+        /// The field.
+        field: TaskField,
+        /// The value as written.
+        value: String,
+        /// The allowed values, as written in a ticket, joined with `, `.
+        allowed: String,
     },
 }
 
@@ -395,14 +444,19 @@ fn take_required(
         .ok_or(TaskTemplateError::MissingField(field))
 }
 
-fn parse_vocabulary<T: FromStr>(
+fn parse_vocabulary<T: FromStr + fmt::Display + VariantArray>(
     values: &mut BTreeMap<TaskField, String>,
     field: TaskField,
 ) -> Result<T, TaskTemplateError> {
     let value = take_required(values, field)?;
-    value
-        .parse::<T>()
-        .map_err(|_| TaskTemplateError::InvalidValue { field, value })
+    value.parse::<T>().map_err(|_| {
+        let allowed: Vec<String> = T::VARIANTS.iter().map(ToString::to_string).collect();
+        TaskTemplateError::NotAllowed {
+            field,
+            value,
+            allowed: allowed.join(", "),
+        }
+    })
 }
 
 fn parse_blockers(value: &str) -> Result<Vec<TicketId>, TaskTemplateError> {

@@ -157,7 +157,7 @@ The ask log is the corpus's own analytics: the pages consulted most, the questio
 7. **Re-plan on ruling.** A comment labelled `ruling` on an epic, at any time, triggers a fresh planning instance before the next team instance.
 
 ### 4.2 Rules of exactness
-- One behaviour per task: the Goal is one sentence with no "and". Size S expects a pull request under 200 lines and M under 400; anything larger is a planning defect and splits. These are planning targets read against the merged pull request, not gates.
+- One behaviour per task: the Goal is one sentence with no "and". A ticket is XS, S or M: S expects a pull request under 200 lines and M under 400; anything larger is a planning defect and splits. L, XL and E are costs of the size table and of a release launch, not ticket sizes. These are planning targets read against the merged pull request, not gates.
 - Every task names its corpus pages by id, and the module and interface ids from the architecture package it implements. A task that needs a page or an interface it does not name is a design gap.
 - Acceptance criteria are checkable by `zaf verify`: named tests, named HTTP outcomes, named UI states.
 - The security trigger flag follows `.claude/TEAMS.md › Reviews › security triggers`.
@@ -177,9 +177,11 @@ Acceptance:
 Tests: <unit and integration tests to add, by name>
 Security trigger: yes <which> | no
 Model: sonnet | opus
-Size: S | M
+Size: XS | S | M | L | XL | E
 Blocked by: #<n>, #<m>
 ```
+
+The typed fields take only the values listed; `zaf board file` and `zaf check` refuse any other, naming the field and the allowed values. Sizes are ordered XS to E; a planner files XS, S or M.
 
 ## 5. Workflow B: building from tickets
 

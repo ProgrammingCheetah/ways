@@ -89,7 +89,7 @@ Asking well:
 
 ## Rules of exactness
 
-- One behaviour per task: the Goal is one sentence with no "and". Size S expects a pull request under 200 lines, M under 400. Anything larger is a planning defect: split it.
+- One behaviour per task: the Goal is one sentence with no "and". A ticket is XS, S or M: S expects a pull request under 200 lines, M under 400. Anything larger is a planning defect: split it. L, XL and E are costs of the size table and of a release launch, not ticket sizes.
 - State scope, not files: the capability the task changes, in words, with a file or folder only as a place to start, and what it leaves alone. Order tasks that touch the same area with `Blocked by`.
 - Every task names its design pages by id, and the module and interface ids it implements. A task that needs a page or an interface it does not name is a design gap: a question, not a guess.
 - Acceptance is checkable by `zaf check <task>`: named tests, named HTTP outcomes, named UI states.
@@ -101,7 +101,13 @@ Asking well:
 
 1. `zaf epic show <epic>` for the epic and every task already filed. Read the epic and what it links, then the objectives, the design documents and the pages they cite. For a re-plan, also the rulings.
 2. `zaf ask -t <epic>` for whether a decision exists or where it lives, five at a time.
-3. Draft each task in the template, the fields `zaf brief` reads: Goal, Scope, Out of scope, Interfaces, Design pages, Architecture, Acceptance, Tests, Security trigger, Model, Size, Blocked by.
+3. Draft each task in the template, the fields `zaf brief` reads: Goal, Scope, Out of scope, Interfaces, Design pages, Architecture, Acceptance, Tests, Security trigger, Model, Size, Blocked by. The typed fields take only these values, and `zaf board file` and `zaf check` refuse any other, naming the field and the allowed values:
+
+   ```
+   Security trigger: yes <which> | no
+   Model: sonnet | opus
+   Size: XS | S | M | L | XL | E
+   ```
 4. File each with `zaf board file <epic> "<title>" --group <name> [--type <name>] --body-file -`, the body on stdin; `--type` is the issue type, `Task` unless named, and a type the repository lacks is refused with the ones it has; add `--blocked` when its `Blocked by` names a task not yet done. The group names the piece of work it belongs to, reusing a group that fits; `zaf hub` shows a bar per group. A refusal names the template field at fault: fix it and file again. A title the epic already has is not filed twice.
 5. Each door or design gap: `zaf board question <epic> "<question>" [--door]`.
 6. `zaf board report <epic> "<tasks filed, what could not be scoped and why>"`. Then end.
