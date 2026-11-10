@@ -38,7 +38,7 @@ pub use tick::{
 };
 
 use super::guard::{GUARD_FILE, Level};
-use crate::domain::{Instance, IssueNumber, Profile, RoleName};
+use crate::domain::{Instance, IssueNumber, Profile, RoleName, TaskProblem, TaskTemplate};
 use crate::manifest::{Manifest, ManifestError};
 use crate::ports::{Board, ClaimRecord, Holder, PortError, RunRequest, Runner};
 
@@ -133,12 +133,26 @@ pub fn snapshot(board: &dyn Board) -> Result<Snapshot, PortError> {
     for ticket in &ready {
         open.remove(&ticket.number);
     }
+    let unparsed = ready
+        .iter()
+        .filter_map(|ticket| {
+            let problems = TaskTemplate::problems(&ticket.body);
+            let mut fields: Vec<String> = Vec::new();
+            for name in problems.iter().map(TaskProblem::name) {
+                if !fields.contains(&name) {
+                    fields.push(name);
+                }
+            }
+            (!fields.is_empty()).then_some((ticket.number, fields))
+        })
+        .collect();
     Ok(Snapshot {
         ready,
         claimed,
         closed: found.closed,
         open,
         dead: found.dead,
+        unparsed,
     })
 }
 
@@ -717,6 +731,7 @@ impl Plan {
                     TaskSkip::Claimed => ("claimed", serde_json::Value::Null),
                     TaskSkip::Running(instance) => ("running", serde_json::json!(instance)),
                     TaskSkip::NoEpic => ("no_epic", serde_json::Value::Null),
+                    TaskSkip::DoesNotParse(fields) => ("does_not_parse", serde_json::json!(fields)),
                 };
                 serde_json::json!({ "task": task.get(), "reason": reason, "detail": detail })
             })
@@ -778,6 +793,7 @@ impl Plan {
             TaskSkip::Claimed => "claimed".to_owned(),
             TaskSkip::Running(instance) => format!("carried by {instance}"),
             TaskSkip::NoEpic => "no epic".to_owned(),
+            TaskSkip::DoesNotParse(fields) => format!("does not parse: {}", fields.join(", ")),
         }
     }
 }

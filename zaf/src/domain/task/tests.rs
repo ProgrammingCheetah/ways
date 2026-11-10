@@ -329,3 +329,93 @@ fn field_labels_are_pinned() {
         ]
     );
 }
+
+fn lines(text: &str) -> Vec<String> {
+    TaskTemplate::problems(text)
+        .iter()
+        .map(ToString::to_string)
+        .collect()
+}
+
+#[test]
+fn a_body_that_parses_has_no_problems() {
+    assert!(TaskTemplate::problems(FILLED_TEMPLATE).is_empty());
+    assert!(TaskTemplate::problems(&scoped_text()).is_empty());
+}
+
+#[test]
+fn problems_name_a_bad_value_as_written_with_what_the_field_accepts() {
+    let text =
+        FILLED_TEMPLATE.replace("Security trigger: no", "Security trigger: no, it removes x");
+    assert_eq!(
+        lines(&text),
+        ["Security trigger: no, it removes x (accepts: no | yes <which>)"]
+    );
+}
+
+#[test]
+fn problems_report_every_bad_field_not_only_the_first() {
+    let text = FILLED_TEMPLATE
+        .replace("Model: sonnet", "Model: gpt")
+        .replace("Size: S", "Size: XL")
+        .replace("Blocked by: #3, #5", "Blocked by: soon");
+    assert_eq!(
+        lines(&text),
+        [
+            "Model: gpt (accepts: sonnet | opus)",
+            "Size: XL (accepts: S | M)",
+            "Blocked by: soon (accepts: — | #<issue>, #<issue>)",
+        ]
+    );
+}
+
+#[test]
+fn problems_name_a_missing_field_an_unknown_label_and_a_stray_line() {
+    let text = FILLED_TEMPLATE
+        .replace("Model: sonnet\n", "")
+        .replace("Tests:", "Tets:")
+        .replace("Size: S", "Size: S\nwhat is this");
+    assert_eq!(
+        lines(&text),
+        [
+            "line 9: unknown field Tets",
+            "line 12: what is this (accepts: Field: value | - item under Acceptance)",
+            "Tests: missing",
+            "Model: missing",
+        ]
+    );
+}
+
+#[test]
+fn problems_name_a_missing_scope_and_an_empty_acceptance() {
+    let text = "Goal: g\nInterfaces: i\nDesign pages: d\nAcceptance:\nTests: t\n\
+                Security trigger: no\nModel: opus\nSize: M\nBlocked by: —\n";
+    assert_eq!(
+        lines(text),
+        ["Scope or Owned paths: missing", "Acceptance: missing"]
+    );
+}
+
+#[test]
+fn a_body_parses_exactly_when_it_has_no_problems() {
+    let bodies = [
+        FILLED_TEMPLATE.to_owned(),
+        scoped_text(),
+        FILLED_TEMPLATE.replace("Size: S", "Size: L"),
+        FILLED_TEMPLATE.replace("Goal: Members", "Goal:"),
+        FILLED_TEMPLATE.replace("Tests:", "Tets:"),
+        FILLED_TEMPLATE.replace("Size: S", "Size: S\nSize: M"),
+        FILLED_TEMPLATE.replace("Acceptance:", "Acceptance: none"),
+        FILLED_TEMPLATE.replace("Security trigger: no", "Security trigger: yes"),
+        FILLED_TEMPLATE.replace("  - an empty", "- an empty"),
+        "  indented first\nGoal: g".to_owned(),
+        String::new(),
+    ];
+    for body in bodies {
+        assert_eq!(
+            body.parse::<TaskTemplate>().is_ok(),
+            TaskTemplate::problems(&body).is_empty(),
+            "{body}"
+        );
+    }
+}
