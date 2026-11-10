@@ -1,8 +1,8 @@
 //! The stamp a generated profile carries: what it was made from.
 //!
-//! `profile init` writes `<home>/.zaf-stamp.json` last, `{"zaf": "<version>", "parts": {...}}`:
-//! the version of zaf that generated the profile and one digest per input the generator
-//! reads ([`PARTS`]). [`stale`] compares each generated profile's stamp with the live manifest
+//! `zaf profile init` writes `.zaf/profiles/<name>/.zaf-stamp.json` last:
+//! `{"zaf": "<version>", "parts": {"<part>": "<digest>", ...}}`, the version of zaf that
+//! generated the profile and one digest per input the generator reads ([`PARTS`]). [`stale`] compares each generated profile's stamp with the live manifest
 //! and this zaf; doctor, status and the spawner call it, so a profile built from an older
 //! manifest (or by another zaf) is named instead of run with yesterday's deny list.
 //!
@@ -119,7 +119,7 @@ pub enum Reason {
     NoStamp,
     /// Another zaf wrote it, this version.
     Zaf(String),
-    /// This input changed since the profile was made.
+    /// This input changed since the profile was made; it reads `<part> changed`.
     Changed(String),
 }
 
@@ -182,8 +182,10 @@ impl StaleProfile {
     }
 }
 
-/// The generated profiles whose stamp is missing or differs from what this zaf would write now
-/// from `manifest` and the project's rules under `state_dir`, in profile order.
+/// `profile::stale(state_dir, manifest) -> Vec<StaleProfile>`: the generated profiles whose stamp
+/// is missing or differs from what this zaf would write now from `manifest` and the project's
+/// rules under `state_dir`, in profile order, each with its reasons: `no stamp`,
+/// `written by zaf <old>`, `<part> changed`.
 ///
 /// A stamp from another zaf version is stale for that alone: its digests mean nothing here.
 pub fn stale(state_dir: &Path, manifest: &Manifest) -> Vec<StaleProfile> {
