@@ -1,8 +1,9 @@
-//! `zaf board ready|claim|report|question|ruling|done|file`: reading and writing the board.
+//! `zaf board ready|claim|report|handoff|question|ruling|done|file`: reading and writing the
+//! board, and the hand-off on a task's pull request.
 
 use crate::app::actions::{Phase, PhaseUnreadable, SliceRecords, derive_phase, gather_phase_facts};
 use crate::domain::{Instance, NewTask, TaskTemplateError, Ticket, TicketId, TicketState};
-use crate::ports::{Board, ClaimOutcome, Forge, NewQuestion, PortError, Vcs};
+use crate::ports::{Board, ClaimOutcome, Forge, NewQuestion, PortError, PrNumber, Vcs};
 
 /// Why a board verb stopped.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -28,6 +29,9 @@ pub enum BoardError {
     /// The task's phase could not be read, so nothing was changed.
     #[error(transparent)]
     Unreadable(#[from] PhaseUnreadable),
+    /// `board handoff` found no pull request recorded for the task; nothing was written.
+    #[error("{0} has no recorded pull request")]
+    NoPullRequest(TicketId),
     /// `board file` was given a body outside the task template; nothing was filed.
     #[error("the body is not a task: {0}")]
     NotATask(#[from] TaskTemplateError),
@@ -114,6 +118,21 @@ pub fn report(board: &dyn Board, command: &ReportCommand) -> Result<ReportOutcom
         Err(error) => return Err(error.into()),
     };
     Ok(ReportOutcome { heartbeat })
+}
+
+/// `zaf board handoff`: writes the one hand-off comment on the task's recorded pull request,
+/// replacing the one it has, and returns that pull request.
+///
+/// A task with no recorded pull request is [`BoardError::NoPullRequest`] and nothing is written.
+pub fn handoff(
+    forge: &dyn Forge,
+    records: &SliceRecords,
+    task: TicketId,
+    text: &str,
+) -> Result<PrNumber, BoardError> {
+    let pr = records.pr(task).ok_or(BoardError::NoPullRequest(task))?;
+    forge.set_handoff(pr, text)?;
+    Ok(pr)
 }
 
 /// `zaf board question`: opens a question ticket for the Engineer and labels

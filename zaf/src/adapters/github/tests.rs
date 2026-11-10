@@ -1439,6 +1439,108 @@ fn head_reads_the_pull_requests_head_commit() {
     assert_eq!(fake.calls()[0], expected_call);
 }
 
+const HANDOFF: &str = "<!-- zaf:handoff -->";
+
+/// The pages `gh api --paginate --slurp` prints for a pull request's conversation: one page,
+/// its comments numbered 50, 51, ….
+fn conversation(bodies: &[&str]) -> String {
+    let comments: Vec<serde_json::Value> = bodies
+        .iter()
+        .enumerate()
+        .map(|(index, body)| serde_json::json!({ "id": 50 + index, "body": body }))
+        .collect();
+    serde_json::json!([comments]).to_string()
+}
+
+fn conversation_call() -> Vec<String> {
+    let endpoint = format!("repos/{REPO}/issues/7/comments");
+    argv(&["api", &endpoint, "--paginate", "--slurp"])
+}
+
+#[test]
+fn a_second_handoff_replaces_the_first() {
+    let pr = PrNumber::from(7);
+    // The first hand-off finds no comment of its own and posts one.
+    let first = FakeGh::new();
+    first
+        .on("api *", &conversation(&["LGTM"]))
+        .on("pr comment *", "");
+    first
+        .forge()
+        .set_handoff(pr, "Ran the tests.")
+        .expect("first");
+    let posted = format!("{HANDOFF}\nRan the tests.");
+    let post = argv(&["pr", "comment", "7", "--body", &posted, "--repo", REPO]);
+    assert_eq!(first.calls(), [conversation_call(), post]);
+
+    // The second finds it and edits it in place: no second comment.
+    let second = FakeGh::new();
+    second
+        .on(
+            "api *issues/7/comments --paginate*",
+            &conversation(&["LGTM", &posted]),
+        )
+        .on("api *issues/comments/51 *", "{}");
+    second
+        .forge()
+        .set_handoff(pr, "Fixed the CI.")
+        .expect("second");
+    let field = format!("body={HANDOFF}\nFixed the CI.");
+    let endpoint = format!("repos/{REPO}/issues/comments/51");
+    let edit = argv(&["api", &endpoint, "--method", "PATCH", "-f", &field]);
+    assert_eq!(second.calls(), [conversation_call(), edit]);
+
+    // The same text again changes nothing.
+    let third = FakeGh::new();
+    third.on(
+        "api *",
+        &conversation(&[&format!("{HANDOFF}\nFixed the CI.")]),
+    );
+    third
+        .forge()
+        .set_handoff(pr, "Fixed the CI.")
+        .expect("third");
+    assert_eq!(third.calls(), [conversation_call()]);
+}
+
+#[test]
+fn the_github_handoff_reads_the_latest_marked_comment_and_none_without() {
+    let fake = FakeGh::new();
+    fake.on(
+        "api *issues/7/comments*",
+        &conversation(&[
+            "LGTM",
+            &format!("{HANDOFF}\nold"),
+            "thanks",
+            &format!("{HANDOFF}\nnew\nover two lines"),
+        ]),
+    )
+    .on(
+        "api *issues/8/comments*",
+        &conversation(&["LGTM", "mentions <!-- zaf:handoff --> inline"]),
+    )
+    .on("api *issues/9/comments*", "[]");
+    let forge = fake.forge();
+    assert_eq!(
+        forge.handoff(PrNumber::from(7)),
+        Ok(Some("new\nover two lines".to_owned()))
+    );
+    assert_eq!(forge.handoff(PrNumber::from(8)), Ok(None));
+    assert_eq!(forge.handoff(PrNumber::from(9)), Ok(None));
+    assert_eq!(fake.calls().len(), 3, "reads only: nothing was written");
+
+    let broken = FakeGh::new();
+    broken.fail_on("api *", "HTTP 502");
+    assert!(matches!(
+        broken.forge().handoff(PrNumber::from(7)),
+        Err(PortError::Backend(_))
+    ));
+    assert!(matches!(
+        broken.forge().set_handoff(PrNumber::from(7), "x"),
+        Err(PortError::Backend(_))
+    ));
+}
+
 #[test]
 fn a_missing_gh_is_unavailable_and_bad_json_a_backend_error() {
     let empty = tempfile::tempdir().expect("empty directory");

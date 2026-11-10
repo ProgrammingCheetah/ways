@@ -38,6 +38,7 @@ struct PullRequest {
     head: Option<String>,
     files: Vec<String>,
     merged: bool,
+    handoff: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -45,6 +46,7 @@ struct State {
     pulls: BTreeMap<PrNumber, PullRequest>,
     next_number: u64,
     merged_fails: bool,
+    handoff_fails: bool,
 }
 
 /// A forge held in memory. Arrange reviews with [`FakeForge::set_checks`]
@@ -103,6 +105,11 @@ impl FakeForge {
         self.state().merged_fails = true;
     }
 
+    /// Makes every [`Forge::handoff`] and [`Forge::set_handoff`] call fail with a backend error.
+    pub fn fail_handoffs(&self) {
+        self.state().handoff_fails = true;
+    }
+
     /// The request a pull request was opened with.
     pub fn request(&self, pr: PrNumber) -> Option<PrRequest> {
         self.state().pulls.get(&pr).map(|pull| pull.request.clone())
@@ -144,6 +151,7 @@ impl FakeForge {
             head: None,
             files: Vec::new(),
             merged: false,
+            handoff: None,
         };
         state.pulls.insert(number, pull);
         Ok(number)
@@ -193,5 +201,22 @@ impl Forge for FakeForge {
     fn scanning_alerts(&self, pr: PrNumber) -> Result<Vec<ScanningAlert>, PortError> {
         let mut state = self.state();
         Ok(state.pull_mut(pr)?.alerts.clone())
+    }
+
+    fn handoff(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
+        let mut state = self.state();
+        if state.handoff_fails {
+            return Err(PortError::Backend("the forge is down".to_owned()));
+        }
+        Ok(state.pull_mut(pr)?.handoff.clone())
+    }
+
+    fn set_handoff(&self, pr: PrNumber, text: &str) -> Result<(), PortError> {
+        let mut state = self.state();
+        if state.handoff_fails {
+            return Err(PortError::Backend("the forge is down".to_owned()));
+        }
+        state.pull_mut(pr)?.handoff = Some(text.to_owned());
+        Ok(())
     }
 }
