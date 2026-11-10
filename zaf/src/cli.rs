@@ -247,6 +247,7 @@ pub enum BoardAction {
         /// The report.
         body: String,
     },
+    // The verb as typed: zaf board handoff <task> "<text>"
     /// Leave the hand-off comment on a task's recorded pull request; a second call replaces it.
     Handoff {
         /// The task.

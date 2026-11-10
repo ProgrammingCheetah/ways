@@ -110,8 +110,9 @@ pub trait Forge {
     /// The open code scanning alerts for the pull request's head ref.
     fn scanning_alerts(&self, pr: PrNumber) -> Result<Vec<ScanningAlert>, PortError>;
 
-    /// The hand-off the pull request carries: the text of its hand-off comment, the latest when
-    /// a forge somehow holds several; none when it has none.
+    /// `Forge::handoff(pr) -> Result<Option<String>, PortError>`: the hand-off the pull request
+    /// carries, the text of its hand-off comment, the latest when a forge somehow holds several;
+    /// none when it has none.
     fn handoff(&self, pr: PrNumber) -> Result<Option<String>, PortError>;
 
     /// Writes the pull request's hand-off comment, replacing the one it has: after it the
