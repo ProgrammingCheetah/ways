@@ -906,7 +906,12 @@ fn do_lists_with_tiers() {
 fn do_json_shows_a_declared_kind() {
     let project = project();
     action(&project, "plain", "", "true");
-    action(&project, "waiter", "# zaf kind: wait\n", "true");
+    action(
+        &project,
+        "waiter",
+        "# zaf kind: wait\n# zaf ends: exit\n",
+        "true",
+    );
 
     let (code, stdout, stderr) = outcome(&zaf(&project, &["do", "--json"]));
     assert_eq!(code, 0, "{stdout}{stderr}");

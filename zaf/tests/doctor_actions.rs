@@ -714,3 +714,97 @@ fn doctor_lists_machine_dependencies() {
         serde_json::json!([])
     );
 }
+
+#[test]
+fn doctor_names_a_bad_on_fail() {
+    let project = project();
+    let actions = project_actions(&project);
+    let wait = |name: &str, fix: &str| {
+        put(
+            &actions,
+            name,
+            &[
+                "description: wait",
+                "1: failed",
+                "kind: wait",
+                "ends: ci-done",
+                &format!("on-fail: {fix}"),
+            ],
+            true,
+        );
+    };
+    put(
+        &actions,
+        "fix",
+        &[
+            "description: fix it",
+            "1: failed",
+            "kind: model",
+            "ends: exit",
+        ],
+        true,
+    );
+    put(
+        &actions,
+        "ci",
+        &[
+            "description: ci",
+            "1: failed",
+            "kind: wait",
+            "ends: ci-done",
+        ],
+        true,
+    );
+    put(
+        &actions,
+        "plain",
+        &["description: plain", "1: failed"],
+        true,
+    );
+    wait("good", "fix");
+    wait("missing", "nobody");
+    wait("to-wait", "ci");
+    wait("to-plain", "plain");
+    put(
+        &actions,
+        "no-fail",
+        &[
+            "description: no fail",
+            "1: failed",
+            "kind: wait",
+            "ends: merged",
+        ],
+        true,
+    );
+
+    let (code, text) = doctor(&project);
+
+    assert_eq!(code, 1, "{text}");
+    let named = |name: &str| actions.join(name).display().to_string();
+    for (name, reason) in [
+        ("missing", "on-fail `nobody` names no action"),
+        (
+            "to-wait",
+            "on-fail `ci` names an action of kind wait, not model",
+        ),
+        (
+            "to-plain",
+            "on-fail `plain` names an action with no kind, not model",
+        ),
+    ] {
+        assert!(
+            text.contains(&format!("{}: {reason}", named(name))),
+            "{name}: {text}"
+        );
+        assert!(
+            text.contains(&format!("action {name} (project): invalid")),
+            "{name}: {text}"
+        );
+    }
+    for name in ["good", "no-fail", "fix", "ci"] {
+        assert!(
+            text.contains(&format!("action {name} (project): ok")),
+            "{name}: {text}"
+        );
+    }
+}
