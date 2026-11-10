@@ -49,8 +49,10 @@ pub struct ClaimLine {
 /// One task of a launch that runs now, read from its run folder.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Launch {
-    /// The task it works on.
-    pub task: u64,
+    /// The task it works on; none for an instance launched with no task (planning, the
+    /// challenger), which holds its slot all the same.
+    #[serde(default)]
+    pub task: Option<u64>,
     /// The instance, as `<role> instance <n> on #<epic>`.
     pub instance: String,
     /// The process holding it, when known: the tick until the instance starts, then the instance.

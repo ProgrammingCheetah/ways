@@ -37,7 +37,7 @@ fn the_file_holds_the_counter_and_nothing_a_live_source_answers() {
     let state = SpawnState {
         next_instance: 3,
         launches: vec![Launch {
-            task: 3,
+            task: Some(3),
             instance: "team instance 1 on #2".to_owned(),
             pid: Some(100),
             started_at: None,
@@ -119,4 +119,17 @@ fn the_counter_never_falls_behind_a_run_folder() {
     .expect("saves");
     let (state, _) = derive(dir.path(), &|_| true).expect("derives");
     assert_eq!(state.next_instance, 30, "a counter past every folder stays");
+}
+
+#[test]
+fn a_launch_with_no_task_holds_a_slot_and_carries_nothing() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut planning = planned(1, 2, &[]);
+    planning.instance.role = RoleName::from("planning");
+    runs::reserve(dir.path(), &planning, &holder(100), AT).expect("reserves");
+    let (state, _) = derive(dir.path(), &|_| true).expect("derives");
+    assert_eq!(state.running(), 1);
+    assert_eq!(state.instances(), ["planning instance 1 on #2"]);
+    assert_eq!(state.launches[0].task, None);
+    assert!(state.tasks_of(&planning.instance).is_empty());
 }

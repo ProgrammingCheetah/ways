@@ -302,8 +302,8 @@ pub struct RoleSection {
 }
 
 impl RoleSection {
-    /// The pack's roles: a programmer and a team instance.
-    pub(crate) fn pack_defaults() -> [(&'static str, Self); 2] {
+    /// The pack's roles: a programmer, a team instance, a planning instance and the challenger.
+    pub(crate) fn pack_defaults() -> [(&'static str, Self); 4] {
         let programmer = Self {
             model: ModelName::from("sonnet"),
             effort: Effort::High,
@@ -318,7 +318,23 @@ impl RoleSection {
             turns: 200,
             batch: Some(4),
         };
-        [("programmer", programmer), ("team", team)]
+        let planning = Self {
+            model: ModelName::from("opus"),
+            effort: Effort::Xhigh,
+            profile: Profile::Build,
+            turns: 80,
+            batch: None,
+        };
+        let challenger = Self {
+            turns: 60,
+            ..planning.clone()
+        };
+        [
+            ("programmer", programmer),
+            ("team", team),
+            ("planning", planning),
+            ("challenger", challenger),
+        ]
     }
 }
 

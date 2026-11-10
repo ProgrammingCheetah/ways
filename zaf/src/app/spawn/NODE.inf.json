@@ -1,8 +1,8 @@
 {
   "path": "zaf/src/app/spawn",
-  "charted": "2026-11-03",
+  "charted": "2026-11-10",
   "short": "spawner tick: plan, reserve, launch",
-  "is": "One tick of the spawner, split into a pure planner, the run folders that record each launch and the process holding it, the counter-only .zaf/spawn.state, and the I/O that reserves launches, runs team instances through the Runner port and records them in their run folders and on the epic. Nothing it plans from is kept in step by hand: running instances, slots and live claims are derived on every read.",
+  "is": "One tick of the spawner, split into a pure planner, the run folders that record each launch and the process holding it, the counter-only .zaf/spawn.state, and the I/O that reserves launches, runs planning, challenger and team instances through the Runner port and records them in their run folders and on the epic. Nothing it plans from is kept in step by hand: running instances, slots, live claims and each epic's stage are derived on every read.",
   "type": "code",
   "tags": [
     "category:source",
@@ -70,9 +70,9 @@
     }
   ],
   "notes": [
-    "Only the team-instance branch is built; tick.rs names planning, challenger and release as NOT_BUILT and skips them, and the teams README says so",
+    "Each open epic gets at most one launch a tick, by its stage: planning for a signed epic with no tasks (once per signature), the challenger for a planned one (once per epic), a team instance for a challenged one; tick.rs names release alone as NOT_BUILT",
     "The verb never loops; an external timer runs `zaf spawn --once`",
-    "The launch prompt and standing brief are assets/spawn/team-prompt.txt and team-brief.md",
-    "Slots and guard thresholds come from ZAF.toml [spawn]; the guard level is read from .zaf/guard.json; a batch of tasks shares one instance and one slot"
+    "Launch prompts are assets/spawn/team-prompt.txt (team) and epic-prompt.txt (planning, challenger); the pack's standing briefs are team-brief.md, planning-brief.md and challenger-brief.md, and .zaf/roles/<role>.md wins over them",
+    "Slots and guard thresholds come from the manifest's [spawn]; the guard level is read from .zaf/guard.json; a batch of tasks shares one instance and one slot, and a launch with no task holds one too"
   ]
 }

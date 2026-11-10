@@ -181,6 +181,11 @@ pub enum Verb {
 pub enum EpicAction {
     /// List the open epics, each with its stage and its tasks done.
     List,
+    /// Show one open epic and its tasks, closed ones too, each with its state and group.
+    Show {
+        /// The epic.
+        epic: TicketId,
+    },
     /// Sign an epic as its body reads now; an edit voids it. Refused inside an instance.
     Sign {
         /// The epic.
