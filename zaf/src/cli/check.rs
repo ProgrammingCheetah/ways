@@ -611,6 +611,10 @@ HOME = "/overridden"
             self.0.review_comments(pr)
         }
 
+        fn pull_request(&self, pr: PrNumber) -> Result<crate::ports::PullRequest, PortError> {
+            self.0.pull_request(pr)
+        }
+
         fn head(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
             self.0.head(pr)
         }

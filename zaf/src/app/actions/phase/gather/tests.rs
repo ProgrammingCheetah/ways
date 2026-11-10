@@ -14,7 +14,7 @@ use crate::app::check::{CheckRecord, Verdict};
 use crate::domain::{Instance, Ticket};
 use crate::fakes::{FakeBoard, FakeForge, FakeVcs, PrRequest};
 use crate::ports::{
-    BaseName, Check, ClaimOutcome, ClaimRecord, NewQuestion, PrNumber, ReviewComment,
+    BaseName, Check, ClaimOutcome, ClaimRecord, NewQuestion, PrNumber, PullRequest, ReviewComment,
     ScanningAlert, SliceName,
 };
 
@@ -535,6 +535,10 @@ impl Forge for BrokenForge<'_> {
 
     fn review_comments(&self, pr: PrNumber) -> Result<Vec<ReviewComment>, PortError> {
         self.0.review_comments(pr)
+    }
+
+    fn pull_request(&self, pr: PrNumber) -> Result<PullRequest, PortError> {
+        self.0.pull_request(pr)
     }
 
     fn head(&self, _pr: PrNumber) -> Result<Option<String>, PortError> {
