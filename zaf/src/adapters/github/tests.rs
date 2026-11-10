@@ -282,8 +282,21 @@ fn standing(number: u64, labels: &[&str], state: &str, kind: &str) -> String {
     serde_json::json!({
         "number": number,
         "state": state,
+        "stateReason": if state == "CLOSED" { serde_json::json!("COMPLETED") } else { serde_json::Value::Null },
         "labels": labels,
         "url": format!("https://github.com/{REPO}/{kind}/{number}"),
+    })
+    .to_string()
+}
+
+/// An issue closed for `reason`, read only for where it stands.
+fn closed_for(number: u64, reason: &str) -> String {
+    serde_json::json!({
+        "number": number,
+        "state": "CLOSED",
+        "stateReason": reason,
+        "labels": [{ "name": "task" }],
+        "url": format!("https://github.com/{REPO}/issues/{number}"),
     })
     .to_string()
 }
@@ -305,10 +318,9 @@ fn issue_state_tells_open_done_closed_and_missing_apart() {
         "issue view 5 *",
         &standing(5, &["task", "done"], "OPEN", "issues"),
     )
-    .on(
-        "issue view 6 *",
-        &standing(6, &["task"], "CLOSED", "issues"),
-    )
+    .on("issue view 6 *", &closed_for(6, "NOT_PLANNED"))
+    .on("issue view 8 *", &closed_for(8, "COMPLETED"))
+    .on("issue view 11 *", &closed_for(11, "DUPLICATE"))
     .on("issue view 7 *", &standing(7, &[], "OPEN", "pull"))
     .fail_on(
         "issue view 9 *",
@@ -321,7 +333,13 @@ fn issue_state_tells_open_done_closed_and_missing_apart() {
     assert_eq!(state(3), Ok(IssueState::Open));
     assert_eq!(state(4), Ok(IssueState::Done));
     assert_eq!(state(5), Ok(IssueState::Done));
-    assert_eq!(state(6), Ok(IssueState::ClosedNotDone));
+    assert_eq!(state(6), Ok(IssueState::ClosedNotPlanned));
+    assert_eq!(
+        state(8),
+        Ok(IssueState::Done),
+        "closed as completed is done without the label"
+    );
+    assert_eq!(state(11), Ok(IssueState::ClosedNotPlanned));
     assert_eq!(
         state(7),
         Ok(IssueState::Missing),
@@ -340,14 +358,14 @@ fn issue_state_tells_open_done_closed_and_missing_apart() {
             "view",
             number,
             "--json",
-            "number,state,labels,url",
+            "number,state,stateReason,labels,url",
             "--repo",
             REPO,
         ])
     };
     assert_eq!(
         fake.calls(),
-        ["3", "4", "5", "6", "7", "9", "10"].map(standing_view)
+        ["3", "4", "5", "6", "8", "11", "7", "9", "10"].map(standing_view)
     );
 }
 

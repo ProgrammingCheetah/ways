@@ -704,6 +704,7 @@ fn try_rung(
         prompt: prompt.to_owned(),
         dir,
         env: std::collections::BTreeMap::new(),
+        holder_file: None,
     };
     let output = match runner.run(&request) {
         Ok(output) => output,

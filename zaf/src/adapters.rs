@@ -7,5 +7,6 @@ pub mod design;
 pub mod gate;
 pub mod github;
 pub mod jj;
+pub mod process;
 pub mod runner;
 pub mod shell;

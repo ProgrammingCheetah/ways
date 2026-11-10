@@ -23,13 +23,17 @@ pub(super) struct IssueRow {
 }
 
 /// The fields a blocker's standing is read from.
-pub(super) const STANDING_FIELDS: &str = "number,state,labels,url";
+pub(super) const STANDING_FIELDS: &str = "number,state,stateReason,labels,url";
 
 /// An issue read only for where it stands as a blocker.
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct StandingRow {
     #[serde(default)]
     pub state: String,
+    /// Why a closed issue was closed: `COMPLETED`, `NOT_PLANNED` or `DUPLICATE`; empty when
+    /// GitHub kept no reason.
+    #[serde(default, rename = "stateReason")]
+    pub state_reason: Option<String>,
     #[serde(default)]
     pub labels: Vec<NameRow>,
     /// Holds `/pull/` for a pull request.

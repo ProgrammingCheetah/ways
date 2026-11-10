@@ -24,6 +24,6 @@ pub use forge::{
     Author, Check, CheckName, CheckState, Forge, PrNumber, ReviewComment, RuleId, ScanningAlert,
 };
 pub use gate::{Gate, GateLevel, GateRun, GateVerdict};
-pub use runner::{RunOutput, RunRequest, Runner};
+pub use runner::{Holder, RunOutput, RunRequest, Runner};
 pub use shell::Shell;
 pub use vcs::{BaseName, CommitId, DiffStat, FileStat, SliceName, Vcs};

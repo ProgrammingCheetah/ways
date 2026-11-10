@@ -190,7 +190,6 @@ fn a_second_epic_launches_beside_a_running_two_task_instance() {
             running(47, "team instance 3 on #37"),
         ],
         next_instance: 4,
-        ..SpawnState::default()
     };
     let board = snapshot(vec![task(60, 50, "")]);
     let plan = plan(&board, &state, Level::Green, settings(2));
@@ -286,17 +285,17 @@ fn the_plan_names_dead_blockers_in_text_and_json() {
         .insert(IssueNumber::from(7), DeadReason::NotAnIssue);
     board
         .dead
-        .insert(IssueNumber::from(8), DeadReason::ClosedWithoutDone);
+        .insert(IssueNumber::from(8), DeadReason::ClosedNotPlanned);
     let plan = plan(&board, &SpawnState::default(), Level::Green, settings(2));
     let text = plan.render_text();
     assert!(text.contains("dead blocker #7 on #3: not an issue\n"));
-    assert!(text.contains("dead blocker #8 on #3: closed without done\n"));
+    assert!(text.contains("dead blocker #8 on #3: closed as not planned\n"));
     let json = plan.to_json(&[], &[]);
     assert_eq!(
         json["dead_blockers"],
         serde_json::json!([
             { "blocker": 7, "on": 3, "reason": "not an issue" },
-            { "blocker": 8, "on": 3, "reason": "closed without done" },
+            { "blocker": 8, "on": 3, "reason": "closed as not planned" },
         ])
     );
     assert_eq!(json["cycles"], serde_json::json!([]));

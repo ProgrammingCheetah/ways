@@ -136,14 +136,18 @@ pub struct EpicTree {
 }
 
 /// Where an issue stands as a blocker: whether it can still close, and how.
+///
+/// Read from the issue itself, so a blocker counts as done the moment its issue closes, with
+/// no label to add by hand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IssueState {
     /// The issue is open and not labelled `done`: it may still close.
     Open,
-    /// The issue is labelled `done`.
+    /// The issue is labelled `done`, or closed as completed.
     Done,
-    /// The issue is closed without `done`: not planned, or folded into a unit.
-    ClosedNotDone,
+    /// The issue is closed as not planned or as a duplicate (a task folded into a unit is
+    /// closed so): its work will never be done here.
+    ClosedNotPlanned,
     /// There is no such issue, or the number is a pull request.
     Missing,
 }
@@ -154,9 +158,10 @@ pub trait Board {
     ///
     /// Interface: `Board::issue_state(number) -> Result<IssueState, PortError>`.
     ///
-    /// An issue with no such number is [`IssueState::Missing`], not an error. A board that
-    /// does not override this answers from [`Board::task`]: `done` when the ticket is labelled
-    /// so, `missing` when there is no such ticket, else `open`; it cannot see a closed issue.
+    /// An issue with no such number is [`IssueState::Missing`], not an error. A closed issue
+    /// is done unless it was closed as not planned or as a duplicate. A board that does not
+    /// override this answers from [`Board::task`]: `done` when the ticket is labelled so,
+    /// `missing` when there is no such ticket, else `open`; it cannot see a closed issue.
     fn issue_state(&self, number: IssueNumber) -> Result<IssueState, PortError> {
         match self.task(number) {
             Ok(ticket) if ticket.label == Some(TaskLabel::Done) => Ok(IssueState::Done),

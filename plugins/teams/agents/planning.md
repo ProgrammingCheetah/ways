@@ -81,7 +81,7 @@ Asking well:
 - **Purpose:** turn a signed epic into exact tasks.
 - **Input:** the epic your prompt names; the release's objectives and design documents it links; the design pages they cite; `nodes chain <path>` for each area the tasks touch, when `nodes` is on PATH.
 - **Output:** Task and Spike sub-issues of the epic in the task template, and your report comment on the epic listing what you could not scope and why.
-- **Lifecycle:** spawned for a signed epic with no tasks, or for one whose newest ruling is newer than its last plan: then re-plan (close, rewrite or add tasks; a claimed task is never touched). Ends when the tasks are filed.
+- **Lifecycle:** spawned for a signed epic with no tasks, or for one whose newest ruling is newer than its last plan: then re-plan (close, rewrite or add tasks; a claimed task is never touched). A task dropped or folded into a unit is closed as not planned (`gh issue close <n> --reason "not planned"`): zaf counts a blocker closed as completed as done. Ends when the tasks are filed.
 - **Budget:** 80 turns.
 - **Never:** write code; decide a door (ask it); file a task larger than M (split it); leave a task without acceptance criteria; touch a claimed task; spawn anyone.
 

@@ -1,4 +1,6 @@
 use super::*;
+use crate::app::spawn::runs;
+use crate::app::spawn::tick::PlannedLaunch;
 use crate::domain::{Instance, InstanceNumber, IssueNumber, RoleName};
 
 fn planned(number: u32, epic: u64, tasks: &[u64]) -> PlannedLaunch {
@@ -12,6 +14,15 @@ fn planned(number: u32, epic: u64, tasks: &[u64]) -> PlannedLaunch {
     }
 }
 
+fn holder(pid: u32) -> Holder {
+    Holder {
+        pid,
+        start: "1000".to_owned(),
+    }
+}
+
+const AT: &str = "2026-11-09T08:00:00Z";
+
 #[test]
 fn an_absent_file_is_the_empty_state() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -21,23 +32,22 @@ fn an_absent_file_is_the_empty_state() {
 }
 
 #[test]
-fn the_state_round_trips_in_the_shape_status_reads() {
+fn the_file_holds_the_counter_and_nothing_a_live_source_answers() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let mut state = SpawnState::default();
-    state.reserve(&[planned(1, 2, &[3, 4]), planned(2, 12, &[13])], 4242);
-    state.start("team instance 1 on #2", "2026-10-28T01:00:00Z");
+    let state = SpawnState {
+        next_instance: 3,
+        launches: vec![Launch {
+            task: 3,
+            instance: "team instance 1 on #2".to_owned(),
+            pid: Some(100),
+            started_at: None,
+        }],
+    };
     save(dir.path(), &state).expect("saves");
-
-    assert_eq!(load(dir.path()).expect("loads"), state);
     let text = std::fs::read_to_string(dir.path().join(SPAWN_STATE_FILE)).expect("reads");
     let json: serde_json::Value = serde_json::from_str(&text).expect("json");
-    assert_eq!(json["next_instance"], 3);
-    assert_eq!(json["questions"], serde_json::json!([]));
-    assert_eq!(json["launches"][0]["task"], 3);
-    assert_eq!(json["launches"][0]["instance"], "team instance 1 on #2");
-    assert_eq!(json["launches"][0]["pid"], 4242);
-    assert_eq!(json["launches"][0]["started_at"], "2026-10-28T01:00:00Z");
-    assert_eq!(json["launches"][2]["task"], 13);
+    assert_eq!(json, serde_json::json!({ "next_instance": 3 }));
+    assert_eq!(load(dir.path()).expect("loads").next_instance, 3);
 }
 
 #[test]
@@ -49,44 +59,37 @@ fn a_garbled_file_is_an_error_naming_it() {
 }
 
 #[test]
-fn questions_written_by_others_are_kept() {
+fn an_older_files_launches_and_questions_are_ignored() {
     let dir = tempfile::tempdir().expect("temp dir");
     std::fs::write(
         dir.path().join(SPAWN_STATE_FILE),
-        r#"{"launches": [], "questions": [9]}"#,
+        r#"{"next_instance": 18, "launches": [{"task": 72, "instance": "team instance 16 on #71", "pid": 368333}], "questions": [9]}"#,
     )
     .expect("writes");
-    let state = load(dir.path()).expect("loads");
-    assert_eq!(state.questions, [9]);
-    assert_eq!(state.next_instance, 1);
+    let (state, _) = derive(dir.path(), &|_| true).expect("derives");
+    assert_eq!(state.next_instance, 18);
+    assert_eq!(state.running(), 0, "a dead record holds no slot");
 }
 
 #[test]
-fn prune_drops_instances_whose_process_is_gone() {
-    let mut state = SpawnState::default();
-    state.reserve(&[planned(1, 2, &[3, 4])], 100);
-    state.reserve(&[planned(2, 12, &[13])], 200);
-    state.launches.push(Launch {
-        task: 23,
-        instance: "team instance 3 on #22".to_owned(),
-        pid: None,
-        started_at: None,
-    });
-    let lost = state.prune(&|pid| pid == 200);
-    assert_eq!(lost, ["team instance 1 on #2", "team instance 3 on #22"]);
+fn only_launches_whose_holder_lives_are_running() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    runs::reserve(dir.path(), &planned(1, 2, &[3, 4]), &holder(100), AT).expect("reserves");
+    runs::reserve(dir.path(), &planned(2, 12, &[13]), &holder(200), AT).expect("reserves");
+    let (state, found) = derive(dir.path(), &|holder| holder.pid == 200).expect("derives");
+    assert_eq!(found.len(), 2);
     assert_eq!(state.instances(), ["team instance 2 on #12"]);
+    assert_eq!(state.launches[0].pid, Some(200));
 }
 
 #[test]
 fn an_instance_with_two_tasks_is_one_running_instance() {
-    let mut state = SpawnState::default();
-    assert_eq!(state.running(), 0);
-    state.reserve(&[planned(1, 2, &[3, 4])], 100);
-    assert_eq!(state.launches.len(), 2);
-    assert_eq!(state.running(), 1);
-    state.reserve(&[planned(2, 12, &[13])], 200);
+    let dir = tempfile::tempdir().expect("temp dir");
+    runs::reserve(dir.path(), &planned(1, 2, &[3, 4]), &holder(100), AT).expect("reserves");
+    runs::reserve(dir.path(), &planned(2, 12, &[13]), &holder(100), AT).expect("reserves");
+    let (state, _) = derive(dir.path(), &|_| true).expect("derives");
+    assert_eq!(state.launches.len(), 3);
     assert_eq!(state.running(), 2);
-
     let names: Vec<String> = state
         .running_instances()
         .iter()
@@ -97,31 +100,23 @@ fn an_instance_with_two_tasks_is_one_running_instance() {
 }
 
 #[test]
-fn a_pruned_instance_is_gone_from_both() {
-    let mut state = SpawnState::default();
-    state.reserve(&[planned(1, 2, &[3, 4]), planned(2, 12, &[13])], 100);
-    state.prune(&|_| false);
-    assert_eq!(state.running(), 0);
-    assert!(state.running_instances().is_empty());
+fn the_counter_never_falls_behind_a_run_folder() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    std::fs::create_dir_all(dir.path().join("runs/team-instance-17-on-96")).expect("creates");
+    let (state, _) = derive(dir.path(), &|_| true).expect("derives");
+    assert_eq!(
+        state.next_instance, 18,
+        "no saved counter, one old run folder"
+    );
 
-    state.reserve(&[planned(3, 2, &[3, 4]), planned(4, 12, &[13])], 100);
-    state.prune(&|pid| pid == 100);
-    assert_eq!(state.running(), 2);
-    state.finish("team instance 3 on #2");
-    assert_eq!(state.running(), 1);
-    let names: Vec<String> = state
-        .running_instances()
-        .iter()
-        .map(ToString::to_string)
-        .collect();
-    assert_eq!(names, ["team instance 4 on #12"]);
-}
-
-#[test]
-fn finish_frees_the_instance_and_keeps_the_counter() {
-    let mut state = SpawnState::default();
-    state.reserve(&[planned(1, 2, &[3, 4])], 100);
-    state.finish("team instance 1 on #2");
-    assert!(state.launches.is_empty());
-    assert_eq!(state.next_instance, 2);
+    save(
+        dir.path(),
+        &SpawnState {
+            next_instance: 30,
+            launches: Vec::new(),
+        },
+    )
+    .expect("saves");
+    let (state, _) = derive(dir.path(), &|_| true).expect("derives");
+    assert_eq!(state.next_instance, 30, "a counter past every folder stays");
 }
