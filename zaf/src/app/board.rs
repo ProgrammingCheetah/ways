@@ -1,7 +1,7 @@
-//! `zaf board ready|claim|report|question|ruling|done`: reading and writing the board.
+//! `zaf board ready|claim|report|question|ruling|done|lint`: reading and writing the board.
 
 use crate::app::actions::{Phase, PhaseUnreadable, SliceRecords, derive_phase, gather_phase_facts};
-use crate::domain::{Instance, IssueNumber, TaskLabel};
+use crate::domain::{Instance, IssueNumber, TaskLabel, TaskProblem, TaskTemplate};
 use crate::ports::{Board, ClaimOutcome, Forge, NewQuestion, PortError, Ticket, Vcs};
 
 /// Why a board verb stopped.
@@ -41,6 +41,13 @@ fn list(numbers: &[IssueNumber]) -> String {
 /// `zaf board ready`: the tasks open for a claim, in issue order.
 pub fn ready(board: &dyn Board) -> Result<Vec<Ticket>, BoardError> {
     Ok(board.ready()?)
+}
+
+/// `zaf board lint`: every problem the body of a task has against the template; none when it
+/// parses. A task the board cannot read is an error, not a clean body.
+pub fn lint(board: &dyn Board, issue: IssueNumber) -> Result<Vec<TaskProblem>, BoardError> {
+    let ticket = board.task(issue)?;
+    Ok(TaskTemplate::problems(&ticket.body))
 }
 
 /// The command `zaf board claim` runs.

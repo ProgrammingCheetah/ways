@@ -38,6 +38,7 @@ The environment the verbs read (the spawner sets both; by hand, set them yoursel
 | `zaf board report <issue> "<body>"` | write your one status comment on an issue; calling again replaces it |
 | `zaf board question <issue> "<text>" [--door]` | raise a question for the Engineer; the issue waits |
 | `zaf board done <task>` | mark a task done; refused unless the task is in `land` or its pull request has merged |
+| `zaf board lint <issue>` | name every field of a task's body that does not follow the template, one line each; exit 1 when any is bad, no output when it parses |
 | `zaf brief <task>` | write the task's pack (ticket, named pages, owned paths, style, this page) and print its path |
 | `zaf ask -t <task> "<kind>: <question>" ...` | ask the keeper one to five design questions in one call; kinds are `fact`, `rule`, `term`, `exists`, `where` |
 | `zaf asklog` | see the pages cited most, the questions that keep returning, the `not settled` answers |

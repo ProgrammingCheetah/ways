@@ -98,12 +98,28 @@ fn manifest() -> Manifest {
     MANIFEST.parse().expect("manifest parses")
 }
 
+/// A task body that follows the template, blocked as `blocked_by` says.
+fn task_body(blocked_by: &str) -> String {
+    format!(
+        "Goal: do it\nOwned paths: src/\nInterfaces: none\nDesign pages: none\n\
+         Acceptance:\n  - it works\nTests: it_works\nSecurity trigger: no\n\
+         Model: sonnet\nSize: S\nBlocked by: {blocked_by}\n"
+    )
+}
+
+/// A ticket; a ready one gets a body that follows the template, with the `Blocked by:` line
+/// of `body` when it has one.
 fn ticket(number: u64, epic: Option<u64>, body: &str, label: TaskLabel) -> Ticket {
+    let body = match (label, body.strip_prefix("Blocked by: ")) {
+        (TaskLabel::Ready, Some(blocked_by)) => task_body(blocked_by),
+        (TaskLabel::Ready, None) if body.is_empty() => task_body("—"),
+        _ => body.to_owned(),
+    };
     Ticket {
         number: IssueNumber::from(number),
         epic: epic.map(IssueNumber::from),
         title: format!("Issue {number}"),
-        body: body.to_owned(),
+        body,
         label: Some(label),
     }
 }
@@ -111,7 +127,7 @@ fn ticket(number: u64, epic: Option<u64>, body: &str, label: TaskLabel) -> Ticke
 fn epic(number: u64) -> Ticket {
     Ticket {
         label: None,
-        ..ticket(number, None, "", TaskLabel::Ready)
+        ..ticket(number, None, "", TaskLabel::Blocked)
     }
 }
 
@@ -482,6 +498,36 @@ fn prepare_skips_blocked_and_claimed_tasks_read_from_the_board() {
 }
 
 #[test]
+fn spawn_skips_a_task_that_does_not_parse() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let board = FakeBoard::default();
+    board.add_ticket(epic(2));
+    board.add_ticket(ticket(3, Some(2), "Blocked by: —", TaskLabel::Ready));
+    board.add_ticket(Ticket {
+        body: task_body("—").replace("Security trigger: no", "Security trigger: no, it removes x"),
+        ..ticket(4, Some(2), "", TaskLabel::Ready)
+    });
+
+    let skipped = "#4 skipped: does not parse: Security trigger\n";
+    let dry = plan_only(&board, &state_dir, &manifest(), &|_| true).expect("plans");
+    assert!(dry.plan.render_text().contains(skipped));
+    assert_eq!(dry.plan.launches[0].tasks, [IssueNumber::from(3)]);
+
+    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
+    assert!(prepared.plan.render_text().contains(skipped));
+    assert_eq!(prepared.plan.launches[0].tasks, [IssueNumber::from(3)]);
+    assert_eq!(
+        prepared.plan.to_json(&[], &[])["skipped"]["tasks"],
+        serde_json::json!([{
+            "task": 4,
+            "reason": "does_not_parse",
+            "detail": ["Security trigger"],
+        }])
+    );
+}
+
+#[test]
 fn a_missing_blocker_is_dead() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state_dir = dir.path().join(".zaf");
@@ -513,7 +559,7 @@ fn a_blocker_closed_as_not_planned_is_dead() {
     let state_dir = dir.path().join(".zaf");
     let board = FakeBoard::default();
     board.add_ticket(epic(2));
-    board.add_ticket(ticket(3, Some(2), "Blocked by: #6 #7", TaskLabel::Ready));
+    board.add_ticket(ticket(3, Some(2), "Blocked by: #6, #7", TaskLabel::Ready));
     board.add_ticket(ticket(6, Some(2), "", TaskLabel::Blocked));
     board.close_not_planned(IssueNumber::from(6));
     board.add_ticket(ticket(7, Some(2), "", TaskLabel::Done));

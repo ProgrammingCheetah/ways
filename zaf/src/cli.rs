@@ -244,6 +244,11 @@ pub enum BoardAction {
         /// The task.
         task: IssueNumber,
     },
+    /// Name every field of a task's body that does not follow the template.
+    Lint {
+        /// The task.
+        issue: IssueNumber,
+    },
 }
 
 /// `zaf slice …`.
