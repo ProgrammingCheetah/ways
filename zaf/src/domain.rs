@@ -33,4 +33,6 @@ pub use labels::{PageStatus, TicketState};
 pub use profile::Profile;
 pub use quote::Quote;
 pub use task::{SecurityTrigger, TaskField, TaskModel, TaskSize, TaskTemplate, TaskTemplateError};
-pub use ticket::{NewTask, Standing, Ticket, TicketBody, TicketSummary, TicketTitle, TicketUrl};
+pub use ticket::{
+    NewTask, Standing, Ticket, TicketBody, TicketSummary, TicketTitle, TicketType, TicketUrl,
+};

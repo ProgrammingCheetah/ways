@@ -14,6 +14,7 @@ fn ticket(number: u64, label: TicketState) -> Ticket {
         body: "".into(),
         state: Some(label),
         url: "".into(),
+        kind: None,
     }
 }
 

@@ -22,6 +22,11 @@ text_newtype! {
     TicketUrl
 }
 
+text_newtype! {
+    /// A ticket's type, the name of its forge issue type as the forge spells it (`Task`, `Bug`).
+    TicketType
+}
+
 /// A ticket as zaf presents it, whichever backend holds it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ticket {
@@ -37,6 +42,9 @@ pub struct Ticket {
     pub state: Option<TicketState>,
     /// Where a person opens it.
     pub url: TicketUrl,
+    /// Its type, the forge's issue type (`Ticket.kind: Option<TicketType>`); none when the
+    /// issue has no type.
+    pub kind: Option<TicketType>,
 }
 
 impl Ticket {
@@ -45,7 +53,7 @@ impl Ticket {
         self.body.as_str().parse()
     }
 
-    /// The ticket as it leaves zaf: its id (as `number`), epic, title, state and link.
+    /// The ticket as it leaves zaf: its id (as `number`), epic, title, state, link and type.
     pub fn summary(&self) -> TicketSummary {
         TicketSummary {
             number: self.id,
@@ -53,6 +61,7 @@ impl Ticket {
             title: self.title.clone(),
             state: self.state,
             url: self.url.clone(),
+            kind: self.kind.clone(),
         }
     }
 }
@@ -73,7 +82,7 @@ pub struct NewTask {
 }
 
 /// A ticket as every verb's `--json` prints it (see [`Ticket::summary`]): the id and the epic
-/// as bare numbers, the state as its snake_case word.
+/// as bare numbers, the state as its snake_case word, the type as its name or `null`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct TicketSummary {
     /// zaf's id.
@@ -86,6 +95,9 @@ pub struct TicketSummary {
     pub state: Option<TicketState>,
     /// Where a person opens it.
     pub url: TicketUrl,
+    /// Its type's name, `null` when it has none; printed as `"type": "<name>"`.
+    #[serde(rename = "type")]
+    pub kind: Option<TicketType>,
 }
 
 /// Where an issue stands as a blocker: whether it can still close, and how.

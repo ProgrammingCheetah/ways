@@ -104,6 +104,7 @@ fn board() -> FakeBoard {
         body: "".into(),
         state: None,
         url: "".into(),
+        kind: None,
     });
     board
 }

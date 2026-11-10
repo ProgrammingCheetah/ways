@@ -106,6 +106,7 @@ fn ticket(number: u64, epic: Option<u64>, body: &str, label: TicketState) -> Tic
         body: body.into(),
         state: Some(label),
         url: "".into(),
+        kind: None,
     }
 }
 

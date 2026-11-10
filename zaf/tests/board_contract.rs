@@ -24,7 +24,7 @@ use zaf::adapters::github::{GhCommand, GithubBoard, GithubProjectBoard, ProjectR
 
 use zaf::domain::{
     BodyHash, Epic, EpicStage, Instance, NewTask, Signature, Standing, Ticket, TicketId,
-    TicketState,
+    TicketState, TicketType,
 };
 use zaf::fakes::FakeBoard;
 use zaf::manifest::{DEFAULT_STATE_FIELD, RepoName};
@@ -47,6 +47,8 @@ trait Arrange {
     fn task(&self, epic: TicketId, title: &str, body: &str, state: TicketState) -> TicketId;
     /// Closes a ticket, as completed or as not planned.
     fn close(&self, id: TicketId, completed: bool);
+    /// Gives a ticket the issue type `kind`, as a person choosing it on the forge would.
+    fn set_type(&self, id: TicketId, kind: &str);
     /// Replaces a ticket's body, as a person editing it would.
     fn edit_body(&self, id: TicketId, body: &str);
     /// Takes a ticket the board itself opened into the arranger's care, to close at the end.
@@ -96,6 +98,25 @@ fn a_task_reads_back_as_arranged(arrange: &dyn Arrange) {
     assert_eq!(ticket.body.as_str().trim(), BODY);
     assert_eq!(ticket.state, Some(TicketState::Ready));
     assert!(!ticket.url.as_str().is_empty(), "a ticket carries its link");
+}
+
+fn a_ticket_reads_its_issue_type(arrange: &dyn Arrange) {
+    let epic = arrange.epic("contract epic");
+    let task = arrange.task(epic, "a task", BODY, TicketState::Ready);
+    let bug = arrange.task(epic, "a bug", BODY, TicketState::Ready);
+    arrange.set_type(task, "Task");
+    arrange.set_type(bug, "Bug");
+    let read = |id| arrange.board().task(id).expect("the ticket reads").kind;
+    assert_eq!(read(task), Some(TicketType::from("Task")));
+    assert_eq!(read(bug), Some(TicketType::from("Bug")));
+}
+
+fn an_untyped_ticket_has_no_type(arrange: &dyn Arrange) {
+    let epic = arrange.epic("contract epic");
+    let task = arrange.task(epic, "untyped", BODY, TicketState::Ready);
+    let ticket = arrange.board().task(task).expect("the task reads");
+    assert_eq!(ticket.kind, None);
+    assert_eq!(ticket.summary().kind, None);
 }
 
 fn a_missing_ticket_is_not_found(arrange: &dyn Arrange) {
@@ -426,8 +447,13 @@ impl Arrange for FakeArrange {
             body: body.into(),
             state: Some(state),
             url: zaf::fakes::board_link(id).into(),
+            kind: None,
         });
         id
+    }
+
+    fn set_type(&self, id: TicketId, kind: &str) {
+        self.board.set_type(id, kind);
     }
 
     fn close(&self, id: TicketId, completed: bool) {
@@ -597,6 +623,11 @@ impl Arrange for GithubArrange {
         ]);
     }
 
+    fn set_type(&self, id: TicketId, kind: &str) {
+        let issue = format!("repos/{}/issues/{}", self.repo, id.get());
+        gh(&["api", "-X", "PATCH", &issue, "-f", &format!("type={kind}")]);
+    }
+
     fn edit_body(&self, id: TicketId, body: &str) {
         let number = id.get().to_string();
         gh(&[
@@ -685,6 +716,8 @@ macro_rules! contract {
 
 contract![
     a_task_reads_back_as_arranged,
+    a_ticket_reads_its_issue_type,
+    an_untyped_ticket_has_no_type,
     a_missing_ticket_is_not_found,
     ready_lists_ready_tasks_only_in_id_order,
     a_claim_is_held_by_one_instance,

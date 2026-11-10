@@ -90,6 +90,7 @@ impl FakeBoard {
             body: "".into(),
             state: None,
             url: "".into(),
+            kind: None,
         });
         if let Some(issue) = self.state().issues.get_mut(&number) {
             issue.epic = true;
@@ -116,6 +117,13 @@ impl FakeBoard {
     pub fn set_body(&self, id: TicketId, body: &str) {
         if let Some(issue) = self.state().issues.get_mut(&id) {
             issue.ticket.body = body.into();
+        }
+    }
+
+    /// Gives an issue a type, as setting its issue type on the forge would.
+    pub fn set_type(&self, id: TicketId, kind: &str) {
+        if let Some(issue) = self.state().issues.get_mut(&id) {
+            issue.ticket.kind = Some(kind.into());
         }
     }
 
@@ -225,6 +233,7 @@ impl Board for FakeBoard {
                         state: task.ticket.state,
                         standing: task.standing(),
                         group: task.group.clone(),
+                        kind: task.ticket.kind.clone(),
                     })
                     .collect(),
                 signature: epic.signature.clone(),
@@ -251,6 +260,7 @@ impl Board for FakeBoard {
             body: task.body.clone(),
             state: Some(task.state),
             url: link(id).into(),
+            kind: None,
         });
         if let Some(group) = &task.group {
             self.set_group(id, group.as_str());
@@ -427,6 +437,7 @@ impl Board for FakeBoard {
             body: question.body().into(),
             state: Some(TicketState::Question),
             url: link(number).into(),
+            kind: None,
         };
         let issue = Issue {
             ticket,

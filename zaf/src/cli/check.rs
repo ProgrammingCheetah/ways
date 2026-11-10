@@ -420,6 +420,7 @@ mod tests {
             body: body.into(),
             state: None,
             url: "".into(),
+            kind: None,
         }
     }
 

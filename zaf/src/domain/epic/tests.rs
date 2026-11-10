@@ -11,6 +11,7 @@ fn task(n: u64, state: TicketState, standing: Standing) -> EpicTask {
         state: Some(state),
         standing,
         group: None,
+        kind: None,
     }
 }
 

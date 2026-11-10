@@ -8,7 +8,9 @@ use super::notes::{
     LeaseNote, SIGNATURE_TEXT, marked, read_signature, report_marker, signature_marker,
 };
 use super::*;
-use crate::domain::{Instance, InstanceNumber, Location, RoleName, Ticket, TicketId, TicketState};
+use crate::domain::{
+    Instance, InstanceNumber, Location, RoleName, Ticket, TicketId, TicketState, TicketType,
+};
 use crate::manifest::RepoName;
 use crate::ports::{
     Author, Board, Check, CheckName, CheckState, ClaimOutcome, ClaimRecord, Forge, NewQuestion,
@@ -16,7 +18,7 @@ use crate::ports::{
 };
 
 const REPO: &str = "example/tracker";
-const ISSUE_FIELDS: &str = "number,title,body,labels,parent,state,comments";
+const ISSUE_FIELDS: &str = "number,title,body,labels,parent,state,comments,issueType";
 
 /// A scene for the fake `gh` in `tests/fixtures/`: its rules, responses and recorded calls.
 struct FakeGh {
@@ -233,11 +235,41 @@ fn ready_lists_ready_tasks_in_issue_order() {
         "--limit",
         "1000",
         "--json",
-        "number,title,body,labels,parent",
+        "number,title,body,labels,parent,issueType",
         "--repo",
         REPO,
     ]);
     assert_eq!(fake.calls(), [expected_call]);
+}
+
+#[test]
+fn a_ticket_reads_its_issue_type() {
+    let fake = FakeGh::new();
+    let typed = issue(3, &["task", "ready"], &[], "OPEN").replace(
+        "\"labels\"",
+        "\"issueType\":{\"name\":\"Bug\",\"id\":\"IT_1\"},\"labels\"",
+    );
+    fake.on("issue view 3 *", &typed);
+    let ticket = fake.board().task(TicketId::from(3)).expect("task");
+    assert_eq!(ticket.kind, Some(TicketType::from("Bug")));
+    assert_eq!(
+        ticket.summary().kind.as_ref().map(TicketType::as_str),
+        Some("Bug")
+    );
+}
+
+#[test]
+fn an_untyped_ticket_has_no_type() {
+    let fake = FakeGh::new();
+    let untyped = issue(3, &["task", "ready"], &[], "OPEN")
+        .replace("\"labels\"", "\"issueType\":null,\"labels\"");
+    fake.on("issue view 3 *", &untyped);
+    let ticket = fake.board().task(TicketId::from(3)).expect("task");
+    assert_eq!(ticket.kind, None);
+    let absent = FakeGh::new();
+    absent.on("issue view 3 *", &issue(3, &["task", "ready"], &[], "OPEN"));
+    let ticket = absent.board().task(TicketId::from(3)).expect("task");
+    assert_eq!(ticket.kind, None);
 }
 
 #[test]
@@ -259,6 +291,7 @@ fn task_reads_one_issue_and_a_failure_carries_stderr() {
         body: "Goal: export the list".into(),
         state: Some(TicketState::Blocked),
         url: format!("https://github.com/{REPO}/issues/3").into(),
+        kind: None,
     };
     assert_eq!(fake.board().task(TicketId::from(3)), Ok(expected_ticket));
     let missing_issue_error = PortError::NotFound(
@@ -865,7 +898,7 @@ fn questions_lists_open_question_issues_and_skips_tasks_waiting_on_one() {
         "--limit",
         "1000",
         "--json",
-        "number,title,body,labels,parent",
+        "number,title,body,labels,parent,issueType",
         "--repo",
         REPO,
     ]);

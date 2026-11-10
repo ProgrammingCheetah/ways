@@ -128,6 +128,7 @@ fn board_done_exit(pr: &str, forge_down: bool) -> u8 {
         body: "".into(),
         state: Some(TicketState::Ready),
         url: "".into(),
+        kind: None,
     });
     let forge = FakeForge::default();
     let request = PrRequest {
