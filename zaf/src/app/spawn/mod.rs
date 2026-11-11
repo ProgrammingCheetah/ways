@@ -29,10 +29,15 @@
 //!
 //! A dry run ([`plan_only`] and [`dry_run`]) plans the same tick and describes
 //! each launch it would make, writing nothing: no state, no run folder, no comment.
+//!
+//! [`phase`] starts one phase action of a task (`zaf spawn phase`): it takes the next instance
+//! number from the same counter, under the same lock, and writes a phase run folder in
+//! `.zaf/phases/` rather than `.zaf/runs/`.
 
 pub mod blockers;
 pub mod inline;
 pub mod outcome;
+pub mod phase;
 pub mod question;
 pub mod runs;
 mod state;
