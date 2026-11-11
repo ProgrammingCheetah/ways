@@ -39,7 +39,7 @@ Every release runs the phases in order. Each has one owner, one artifact, one ex
 | 0 | Objectives | Engineer + design session | the corpus, the last release | `objectives.md`, signed | signed |
 | 1 | Architecture | Architect instance, then a fresh architecture critique | objectives, the corpus | the **architecture package**: module map (where things go), interface list (traits, ports, types, routes, lexicons and protos, each with an id), data-shape changes with doors flagged, the architecture diagram (layered view + fixture tree), the epic list derived from the modules; filed as corpus pages | the Engineer approves the diagram and the epic list |
 | 2 | Planning | planning instance + challenger per epic | the architecture package | tasks that cite module and interface ids | every epic `signed` |
-| 3 | Implementation | team instances | tickets, `zaf brief` | merged task PRs on the integration branch | every task `done` |
+| 3 | Implementation | task phases (§5.2) | tickets, `zaf brief` | merged task PRs on the integration branch | every task `done` |
 | 4 | Verification | the review layer, `zaf verify`, mutants | PRs, the integration branch | findings resolved, mutant score above the threshold | no open must-fix |
 | 5 | Release | release instance | the milestone | per-must results, release reviews, corpus pages synced to as-built, the squash into `main`, the tag | tagged |
 
@@ -65,7 +65,7 @@ Each role is defined by the same eight lines. "Never" is the scope fence.
 - **Model:** none. A script (§7, `zaf spawn`), on a timer or on demand.
 - **Input:** the board, the slot lock (`build-slot.sh`), the budget guard.
 - **Output:** instances, each logged as a comment on its epic.
-- **Lifecycle:** one pass per tick: for each signed epic with ready, unblocked, unclaimed tasks and a free slot, launch a team instance; for a signed epic with no tasks, a planning instance; for a planned epic, a challenger; for a milestone whose epics are all done, a release instance.
+- **Lifecycle:** one pass per tick: for a signed epic with no tasks, launch a planning instance; for a planned epic, a challenger; for a milestone whose epics are all done, a release instance. It launches no team instance: ready tasks are started by their phases (§5.2).
 - **Budget:** two slots; batch size two; the guard (§8) lowers both.
 - **Never:** reads a report, writes a brief, answers a question, chooses what to build.
 
@@ -86,7 +86,9 @@ Each role is defined by the same eight lines. "Never" is the scope fence.
 - **Lifecycle:** spawned after a planning instance; ends when every task has a comment or a pass. The epic is ready for the Engineer's `signed` label after this.
 - **Never:** rewrites tasks itself; it argues, the planner re-plans.
 
-### 3.5 The Team instance
+### 3.5 The Team instance (retired by #421 ruling 16)
+The spawner no longer launches a team instance (#449): a task is built by its phases (§5.2), each phase action starting the worker it needs. What follows is the old design, kept until #429 rewrites this page.
+
 - **Purpose:** build a batch of tasks end to end and merge them.
 - **Model:** Opus 5.5 lead, effort xhigh.
 - **Input:** `zaf board ready <epic>`; `zaf brief <task>` for each claimed task.
@@ -100,7 +102,7 @@ Each role is defined by the same eight lines. "Never" is the scope fence.
 - **Model:** Sonnet 5.5 effort high by default; Opus 5.5 when the task is security-flagged, when the ticket says `model: opus`, or on the third round.
 - **Input:** `zaf brief <task>`; `zaf ask` for anything beyond it.
 - **Output:** commits on the task branch that pass `zaf check <task>` and the light gate; a one-paragraph hand-back.
-- **Lifecycle:** spawned by a team instance; ends on hand-back. A fix round is a fresh programmer with the task plus `zaf findings <pr>`.
+- **Lifecycle:** started by a task's implement phase (§5.2); ends on hand-back. A fix round is a fresh programmer with the task plus `zaf findings <pr>`.
 - **Budget:** 60 turns; two Sonnet rounds, then one Opus round, then the task goes to `question`.
 - **Never:** touches a path it does not own, pushes, opens a PR, reads another task, edits the corpus.
 
@@ -116,7 +118,7 @@ Each role is defined by the same eight lines. "Never" is the scope fence.
 - **Model:** Opus 5.5 lead; its checks run on Gemini.
 - **Input:** the milestone's epics, `objectives.md`, the integration branch, last night's mutant report.
 - **Output:** per must, pass or a filed task; the compliance, architecture and security release reviews as comments on the milestone; the squash merge into `main`; the tag; a retrospective comment from board statistics.
-- **Lifecycle:** spawned when every epic in the milestone is done; files tasks and ends if anything fails (the spawner sends them through team instances and tries again); merges and tags if everything passes.
+- **Lifecycle:** spawned when every epic in the milestone is done; files tasks and ends if anything fails (the spawner sends them through task phases and tries again); merges and tags if everything passes.
 - **Never:** edits code, waives a must.
 
 ### 3.9 The Design session
@@ -154,7 +156,7 @@ The ask log is the corpus's own analytics: the pages consulted most, the questio
 4. **Planning.** Per epic, a planning instance writes the tasks (§3.3).
 5. **Challenge.** A challenger comments (§3.4). Questions reach the Engineer.
 6. **Sign.** The Engineer runs `zaf epic sign <epic>`, which records the hash of the epic's body as it reads now; an edit voids it until the epic is signed again, and an instance cannot sign. Tasks whose blockers are closed become `ready`.
-7. **Re-plan on ruling.** A comment labelled `ruling` on an epic, at any time, triggers a fresh planning instance before the next team instance.
+7. **Re-plan on ruling.** A comment labelled `ruling` on an epic, at any time, triggers a fresh planning instance before the next task phase starts.
 
 ### 4.2 Rules of exactness
 - One behaviour per task: the Goal is one sentence with no "and". A ticket is XS, S or M: S expects a pull request under 200 lines and M under 400; anything larger is a planning defect and splits. L, XL and E are costs of the size table and of a release launch, not ticket sizes. These are planning targets read against the merged pull request, not gates.
@@ -187,7 +189,7 @@ The typed fields take only the values listed; `zaf board file` and `zaf check` r
 
 ### 5.0 Topology: who is whose parent
 - **Instances are processes.** The spawner launches each planning, challenger, team and release instance as its own headless `claude -p` (or `agy -p`) process under the logged-in Max account, with `--model`, `--max-turns`, `--output-format json` and the role's standing brief. The script is the parent. No model holds another instance's output; it goes to the log and the board.
-- **Programmers are subagents of their team instance.** The lead spawns them with the Agent tool, as today, because it drives their fix rounds and needs their one-paragraph hand-back. That hand-back is the only thing that enters the lead's context.
+- **A programmer is started by its task's implement phase (§5.2).** There is no team lead: the phase action starts the programmer, and its one-paragraph hand-back is all that comes back. A fix round is a fresh model started by the `on-fail` action.
 - **Keepers are processes.** `zaf ask` launches one wherever it is called, so a programmer can ask without nested spawning.
 - **Nothing is ever resumed.** A new instance is a new process reading the board.
 - **The interface is the only door.** Each role's permissions allow `zaf`, the read-only commands and its editor, and deny raw `jj git push`, `gh pr merge`, workspace commands and the like. The script does those inside its verbs, so a model cannot do them by hand even by mistake.
@@ -244,7 +246,7 @@ One binary, `zaf` (§11.5), one page of help pasted into every standing brief, e
 | `zaf changes <task>` | raw `jj diff` (1.2M tokens last week) | stat first, hunks on request |
 | `zaf verify <task>` | ad-hoc test runs and reading their logs | the task-kind steps of `check`: pass or fail per acceptance line and per declared interface id, output captured to a file first; `zaf check <task>` is its alias |
 | `zaf slice open|pr|merge|drop` | the machinery lane | workspace, branch, PR, merge, cleanup, each one call; `pr` and `merge` publish the workspace's latest commit, hand-made or not, by moving the slice bookmark forward to it before the push; `pr` and `merge` merge the integration branch as the remote has it, after a fetch |
-| `zaf spawn --once --version <v>` | the Orchestrator | one tick of §5.1: gives each open epic at most one launch by its stage while a slot is free (planning for a signed epic with no tasks, the challenger for a planned one, a team instance for a challenged one with ready, unblocked, unclaimed tasks; nothing for an unsigned or done epic or one with an open question), sets `ZAF_INSTANCE` and `ZAF_VERSION` for them, records launch and exit on the epic and in the instance's run folder; a slot is one running instance whatever its batch, read from the process each run folder records (the instance's own once it starts, so a killed tick loses nothing); a launch that ended with nobody to record it is recorded `lost`, and a task claimed by an instance that no longer runs returns to `ready`; the loop is a timer's job |
+| `zaf spawn --once --version <v>` | the Orchestrator | one tick of §5.1: gives each open epic at most one launch by its stage while a slot is free (planning for a signed epic with no tasks, the challenger for a planned one; nothing for an unsigned or done epic, one with an open question, or a challenged one, whose tasks their phases build and no team instance is launched), sets `ZAF_INSTANCE` and `ZAF_VERSION` for them, records launch and exit on the epic and in the instance's run folder; a slot is one running instance whatever its batch, read from the process each run folder records (the instance's own once it starts, so a killed tick loses nothing); a launch that ended with nobody to record it is recorded `lost`, and a task claimed by an instance that no longer runs returns to `ready`; the loop is a timer's job |
 | `zaf asklog` | nothing today | the ask log: top pages, recurring questions, gaps |
 | `zaf status` | reading the board and the process list by hand | each open epic with its stage, board, running instances, slots, guard, open questions, one screen |
 | `zaf epic list\|sign <epic>` | a `signed` label set by hand | `list`: one line per open epic, `#<n> <stage> <done> of <total>  <title>`, the stage derived on read (unsigned, signed, planned, challenged, done; ruling 48); `sign`: records the hash of the epic's body as it reads now, so an edit voids it, and is refused when a running instance is this process or above it |
@@ -302,7 +304,7 @@ Absent sections take the pack's defaults. `zaf init` writes a minimal manifest b
 ### 7.0 Per-project isolation
 The binary and the pack are the only shared things. Everything else lives in the project, and one project's instances never see another's:
 - The manifest (`.zaf.toml` or `.zaf/config.toml`), committed: board repo, branch patterns, gate and light gate, slot script, runner commands, corpus dir and index, trigger list, the `check` step lists per target kind, the ask ladder, batch size, slots, the escalation ladder, previews. Absent keys take the pack's defaults, so two projects run the same binary with different pipelines.
-- `.zaf/`, git-ignored: `local.toml` (the manifest's top layer for machine facts only: `[spawn] slots` and `[gate] slot`; plus its own tables, the weekly budget `[budget]`, `[report.prices]` and `[auth]`, which their readers take and the manifest never sees; any other setting fails the load, §7.7), `roles/` (per-role project instructions pasted into briefs, what TEAMS › Config did; `keeper.md` and `team.md` override the pack's briefs, `project.md` goes into every profile's CLAUDE.md), `profiles/<name>/`, `asklog.jsonl`, `runs/<instance slug>/` (briefs, asks, check results, instance reports, and the launch record: `launch.json`, the holding process in `pid`, the `exit`), `slices/<task>.pr`, `spawn.state` (the instance counter alone), `spawn.lock`, `guard.json`.
+- `.zaf/`, git-ignored: `local.toml` (the manifest's top layer for machine facts only: `[spawn] slots` and `[gate] slot`; plus its own tables, the weekly budget `[budget]`, `[report.prices]` and `[auth]`, which their readers take and the manifest never sees; any other setting fails the load, §7.7), `roles/` (per-role project instructions pasted into briefs, what TEAMS › Config did; `keeper.md` and the planning and challenger briefs override the pack's briefs, `project.md` goes into every profile's CLAUDE.md), `profiles/<name>/`, `asklog.jsonl`, `runs/<instance slug>/` (briefs, asks, check results, instance reports, and the launch record: `launch.json`, the holding process in `pid`, the `exit`), `slices/<task>.pr`, `spawn.state` (the instance counter alone), `spawn.lock`, `guard.json`.
 - One spawner timer per project, running `zaf spawn --once` from that project's root with that project's slots, budget and board.
 - Nothing secret in the manifest, so a public repo can commit it; everything private sits in `.zaf/`, which a private-papers check can guard.
 

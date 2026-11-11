@@ -3,14 +3,13 @@ use crate::app::spawn::runs;
 use crate::app::spawn::tick::PlannedLaunch;
 use crate::domain::{Instance, InstanceNumber, RoleName, TicketId};
 
-fn planned(number: u32, epic: u64, tasks: &[u64]) -> PlannedLaunch {
+fn planned(number: u32, epic: u64, _tasks: &[u64]) -> PlannedLaunch {
     PlannedLaunch {
         instance: Instance {
             role: RoleName::from("team"),
             epic: TicketId::from(epic),
             number: InstanceNumber::from(number),
         },
-        tasks: tasks.iter().copied().map(TicketId::from).collect(),
     }
 }
 
@@ -88,7 +87,7 @@ fn an_instance_with_two_tasks_is_one_running_instance() {
     runs::reserve(dir.path(), &planned(1, 2, &[3, 4]), &holder(100), AT).expect("reserves");
     runs::reserve(dir.path(), &planned(2, 12, &[13]), &holder(100), AT).expect("reserves");
     let (state, _) = derive(dir.path(), &|_| true).expect("derives");
-    assert_eq!(state.launches.len(), 3);
+    assert_eq!(state.launches.len(), 2, "a launch carries no task");
     assert_eq!(state.running(), 2);
     let names: Vec<String> = state
         .running_instances()
@@ -96,7 +95,7 @@ fn an_instance_with_two_tasks_is_one_running_instance() {
         .map(ToString::to_string)
         .collect();
     assert_eq!(names, ["team instance 1 on #2", "team instance 2 on #12"]);
-    assert_eq!(state.tasks_of(&state.running_instances()[0]), [3, 4]);
+    assert!(state.tasks_of(&state.running_instances()[0]).is_empty());
 }
 
 #[test]

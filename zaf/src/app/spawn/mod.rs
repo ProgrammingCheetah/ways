@@ -1,5 +1,6 @@
-//! `zaf spawn --once`: one tick of the spawner: planning, challenger and team launches, each
-//! open epic getting the one its stage calls for ([`tick`]); the release branch is not built.
+//! `zaf spawn --once`: one tick of the spawner: planning and challenger launches, each open
+//! epic getting the one its stage calls for ([`tick`]); a challenged epic's tasks are built by
+//! their phases, never by a launched instance; the release branch is not built.
 //!
 //! Nothing the tick plans from is kept in step by hand: each read derives it.
 //! Whether a launch still runs comes from its run folder and the process table
@@ -32,8 +33,8 @@
 //! never waiting for it; it fills `started`. [`phase_tick`] assembles them: it derives the
 //! standing of every claimed or ready task whose type has a `[phases]` list from the forge and
 //! the phase run folders, storing none of it, and runs steps 3 to 6 on them in that order into
-//! one outcome. Such a task is the phase steps', so the team plan leaves it out
-//! ([`TaskSkip::Phased`]). Step 7 ([`post_tick`]) runs the `post-tick` hook with the whole
+//! one outcome. Such a task is the phase steps' alone: the tick's plan launches no instance
+//! for a task. Step 7 ([`post_tick`]) runs the `post-tick` hook with the whole
 //! outcome as JSON on its stdin.
 //!
 //! A dry run ([`plan_only`] and [`dry_run`]) plans the same tick and describes
@@ -74,34 +75,19 @@ pub use start::{
 pub use state::{SpawnState, derive, load, save};
 pub use tick::{
     EpicCandidate, EpicSkip, NOT_BUILT, PLANNING_ROLE, PastLaunch, Plan, PlannedLaunch, Settings,
-    SlotCount, Snapshot, TEAM_ROLE, TaskSkip,
+    SlotCount, Snapshot,
 };
 pub use waits::{launch_outcome, launch_waits};
 
 use super::actions::{PHASES_DIR, SliceRecords, running_tasks};
 use super::guard::{GUARD_FILE, Level};
-use crate::domain::{
-    CHALLENGER_ROLE, Instance, Profile, RoleName, TaskProblem, TaskSize, TaskTemplate, TicketId,
-};
+use crate::domain::{CHALLENGER_ROLE, Instance, Profile, RoleName, TaskSize, TicketId};
 use crate::manifest::{Manifest, ManifestError};
 use crate::ports::{
     Board, ClaimRecord, Holder, NewQuestion, PortError, RUN_VAR, RunRequest, Runner, SIZE_VAR,
 };
 
-/// The one-line launch prompt of a team instance, with `{instance}`, `{epic}`,
-/// `{project}`, `{tasks}` and `{brief}` placeholders.
-pub const TEAM_PROMPT: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/assets/spawn/team-prompt.txt"
-));
-
-/// The team instance's standing brief when the project keeps none of its own.
-pub const TEAM_BRIEF: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/assets/spawn/team-brief.md"
-));
-
-/// The one-line launch prompt of an instance launched with no task (planning, the
+/// The one-line launch prompt of an instance the tick launches (planning, the
 /// challenger), with `{instance}`, `{role}`, `{epic}`, `{project}` and `{brief}` placeholders.
 pub const EPIC_PROMPT: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -120,13 +106,12 @@ pub const CHALLENGER_BRIEF: &str = include_str!(concat!(
     "/assets/spawn/challenger-brief.md"
 ));
 
-/// The pack's standing brief for `role`: the planning instance's, the challenger's, or the
-/// team instance's for any other role the tick launches.
+/// The pack's standing brief for `role`: the challenger's, or the planning instance's for any
+/// other role the tick launches.
 pub fn pack_brief(role: &RoleName) -> &'static str {
     match role.as_str() {
-        PLANNING_ROLE => PLANNING_BRIEF,
         CHALLENGER_ROLE => CHALLENGER_BRIEF,
-        _ => TEAM_BRIEF,
+        _ => PLANNING_BRIEF,
     }
 }
 
@@ -193,17 +178,11 @@ pub fn read_guard(state_dir: &Path) -> Result<Level, SpawnError> {
         })
 }
 
-/// Reads what the tick needs from the board: the ready tasks, the live claims, which of
-/// their blockers are closed (closed as completed, or labelled `done`), the open tasks the blockers lead to, and
-/// the blockers that can never close (see [`blockers`]); the open epics and the issues an
-/// open question waits on; and, from `runs`, every launch recorded so far.
+/// Reads what the tick needs from the board: the ready tasks, the open tasks their blockers
+/// lead to and the blockers that can never close (see [`blockers`]); the open epics and the
+/// issues an open question waits on; and, from `runs`, every launch recorded so far.
 pub fn snapshot(board: &dyn Board, runs: &[Run]) -> Result<Snapshot, PortError> {
     let ready = board.ready()?;
-    let claimed = board
-        .claims()?
-        .into_iter()
-        .map(|claim| claim.task)
-        .collect();
     let found = blockers::read(board, &ready)?;
     let mut open = found.graph;
     for ticket in &ready {
@@ -214,29 +193,12 @@ pub fn snapshot(board: &dyn Board, runs: &[Run]) -> Result<Snapshot, PortError> 
         .iter()
         .filter_map(|question| NewQuestion::raised_on(question.body.as_str()))
         .collect();
-    let unparsed = ready
-        .iter()
-        .filter_map(|ticket| {
-            let problems = TaskTemplate::problems(ticket.body.as_str());
-            let mut fields: Vec<String> = Vec::new();
-            for name in problems.iter().map(TaskProblem::name) {
-                if !fields.contains(&name) {
-                    fields.push(name);
-                }
-            }
-            (!fields.is_empty()).then_some((ticket.id, fields))
-        })
-        .collect();
     Ok(Snapshot {
         ready,
-        claimed,
-        closed: found.closed,
         open,
         dead: found.dead,
         epics: board.epics()?,
         questioned,
-        unparsed,
-        phased: BTreeSet::new(),
         launched: runs.iter().filter_map(past_launch).collect(),
     })
 }
@@ -388,7 +350,7 @@ pub fn prepare(
             instance: claim.instance.clone(),
         });
     }
-    let snapshot = with_phased(snapshot(board, &found)?, manifest);
+    let snapshot = snapshot(board, &found)?;
     let level = read_guard(state_dir)?;
     let plan = tick::plan(&snapshot, &state, level, Settings::from(manifest));
     let now = humantime::format_rfc3339_seconds(SystemTime::now()).to_string();
@@ -449,23 +411,15 @@ pub fn slug(instance: &Instance) -> String {
     slug
 }
 
-/// The launch prompt: one line naming the instance, the epic, the project and the tasks,
-/// pointing at the standing brief. A team instance gets [`TEAM_PROMPT`], a role launched with
-/// no task [`EPIC_PROMPT`].
+/// The launch prompt: one line naming the instance, the role, the epic and the project,
+/// pointing at the standing brief ([`EPIC_PROMPT`]).
 pub fn prompt(launch: &PlannedLaunch, project: &str, brief: &Path) -> String {
-    let tasks: Vec<String> = launch.tasks.iter().map(ToString::to_string).collect();
-    let template = if launch.instance.role.as_str() == TEAM_ROLE {
-        TEAM_PROMPT
-    } else {
-        EPIC_PROMPT
-    };
-    template
+    EPIC_PROMPT
         .trim_end()
         .replace("{instance}", &launch.instance.to_string())
         .replace("{role}", launch.instance.role.as_str())
         .replace("{epic}", &launch.instance.epic.to_string())
         .replace("{project}", project)
-        .replace("{tasks}", &tasks.join(" "))
         .replace("{brief}", &brief.display().to_string())
 }
 
@@ -533,8 +487,6 @@ impl LaunchExit {
 pub struct Launched {
     /// The instance.
     pub instance: Instance,
-    /// Its tasks.
-    pub tasks: Vec<TicketId>,
     /// How it ended.
     pub exit: LaunchExit,
     /// Its run folder, holding `report.md`.
@@ -543,7 +495,7 @@ pub struct Launched {
 
 /// Runs one reserved launch to its exit and records how it ended in its run folder.
 ///
-/// The standing brief is `<state dir>/roles/team.md` when present, else the
+/// The standing brief is `<state dir>/roles/<role>.md` when present, else the
 /// pack's, written into the run folder. The runner writes the instance's own
 /// process into the run folder's `pid` once it starts, so the launch is held by
 /// the instance, not by this tick. A runner that cannot run is recorded
@@ -593,7 +545,6 @@ pub fn launch(
     }
     Ok(Launched {
         instance: planned.instance.clone(),
-        tasks: planned.tasks.clone(),
         exit,
         run_dir,
     })
@@ -713,7 +664,7 @@ fn request_for(context: &LaunchContext, planned: &PlannedLaunch) -> (PathBuf, Pa
 }
 
 /// The size a launch of `role` carries in [`SIZE_VAR`]: `XS` for a planning or challenger
-/// instance; none for a team instance, which reads with no size until #449 retires it.
+/// instance; none for any other role.
 pub fn launch_size(role: &RoleName) -> Option<TaskSize> {
     match role.as_str() {
         PLANNING_ROLE | CHALLENGER_ROLE => Some(TaskSize::XS),
@@ -747,7 +698,7 @@ pub fn plan_only(
         .filter_map(Run::instance)
         .map(|instance| instance.to_string())
         .collect();
-    let snapshot = with_phased(snapshot(board, &found)?, manifest);
+    let snapshot = snapshot(board, &found)?;
     let level = read_guard(state_dir)?;
     let plan = tick::plan(&snapshot, &state, level, Settings::from(manifest));
     Ok(Prepared {
@@ -755,18 +706,6 @@ pub fn plan_only(
         lost,
         released: Vec::new(),
     })
-}
-
-/// `snapshot` with its ready tasks whose type has a `[phases]` list marked phased, so the team
-/// plan leaves them to the phase steps.
-fn with_phased(mut snapshot: Snapshot, manifest: &Manifest) -> Snapshot {
-    snapshot.phased = snapshot
-        .ready
-        .iter()
-        .filter(|ticket| phased(manifest, ticket))
-        .map(|ticket| ticket.id)
-        .collect();
-    snapshot
 }
 
 /// What a runner would run for a request: the command line and the environment it sets.
@@ -780,8 +719,6 @@ pub struct DryLaunch {
     pub instance: String,
     /// Its epic.
     pub epic: u64,
-    /// Its tasks.
-    pub tasks: Vec<u64>,
     /// The profile it would run in.
     pub profile_dir: PathBuf,
     /// The environment its process would get, every layer applied.
@@ -793,11 +730,9 @@ pub struct DryLaunch {
 impl DryLaunch {
     /// The launch as indented lines under a heading.
     pub fn render_text(&self) -> String {
-        let tasks: Vec<String> = self.tasks.iter().map(|task| format!("#{task}")).collect();
         let mut lines = vec![
             format!("would launch {}", self.instance),
             format!("  epic #{}", self.epic),
-            format!("  tasks {}", tasks.join(" ")),
             format!("  profile {}", self.profile_dir.display()),
         ];
         lines.extend(
@@ -825,7 +760,6 @@ pub fn dry_run(
             Ok(DryLaunch {
                 instance: planned.instance.to_string(),
                 epic: planned.instance.epic.get(),
-                tasks: planned.tasks.iter().map(|task| task.get()).collect(),
                 profile_dir: profile_dir(context.profile),
                 env,
                 command,
@@ -840,11 +774,6 @@ pub fn role_profile(manifest: &Manifest, role: &RoleName) -> Profile {
         .roles
         .get(role)
         .map_or(Profile::Build, |section| section.profile)
-}
-
-/// The team role's profile from the manifest; the pack's `build` when the role is absent.
-pub fn team_profile(manifest: &Manifest) -> Profile {
-    role_profile(manifest, &RoleName::from(TEAM_ROLE))
 }
 
 impl Plan {
@@ -863,21 +792,12 @@ impl Plan {
         for (epic, skip) in &self.epics {
             lines.push(format!("{epic} skipped: {}", epic_reason(*skip)));
         }
-        for (task, skip) in &self.tasks {
-            lines.push(format!("{task} skipped: {}", self.task_reason(skip)));
-        }
-        // A cycle with a ready task is named by that task's skip line; the others only here.
-        for cycle in self.cycles.iter().filter(|cycle| !self.has_skipped(cycle)) {
+        for cycle in &self.cycles {
             lines.push(format!("blocker cycle: {}", blockers::render_cycle(cycle)));
         }
         lines.extend(self.dead.iter().map(ToString::to_string));
         for launch in &self.launches {
-            let tasks: Vec<String> = launch.tasks.iter().map(ToString::to_string).collect();
-            lines.push(format!(
-                "launching {}: {}",
-                launch.instance,
-                tasks.join(" ")
-            ));
+            lines.push(format!("launching {}", launch.instance));
         }
         let mut out = lines.join("\n");
         out.push('\n');
@@ -886,8 +806,6 @@ impl Plan {
 
     /// The plan as JSON, with the finished launches and the lost instances.
     pub fn to_json(&self, launched: &[Launched], lost: &[String]) -> serde_json::Value {
-        let numbers =
-            |tasks: &[TicketId]| -> Vec<u64> { tasks.iter().map(|task| task.get()).collect() };
         let launched: Vec<serde_json::Value> = launched
             .iter()
             .map(|launch| {
@@ -895,7 +813,6 @@ impl Plan {
                 serde_json::json!({
                     "instance": launch.instance.to_string(),
                     "epic": launch.instance.epic.get(),
-                    "tasks": numbers(&launch.tasks),
                     "exit": launch.exit.status(),
                     "error": error,
                     "report": launch.run_dir.join(REPORT_FILE),
@@ -907,22 +824,6 @@ impl Plan {
             .iter()
             .map(|(epic, skip)| {
                 serde_json::json!({ "epic": epic.get(), "reason": <&'static str>::from(*skip) })
-            })
-            .collect();
-        let tasks: Vec<serde_json::Value> = self
-            .tasks
-            .iter()
-            .map(|(task, skip)| {
-                let (reason, detail) = match skip {
-                    TaskSkip::Blocked(by) => ("blocked", serde_json::json!(numbers(by))),
-                    TaskSkip::InCycle(cycle) => ("in_cycle", serde_json::json!(numbers(cycle))),
-                    TaskSkip::Claimed => ("claimed", serde_json::Value::Null),
-                    TaskSkip::Running(instance) => ("running", serde_json::json!(instance)),
-                    TaskSkip::NoEpic => ("no_epic", serde_json::Value::Null),
-                    TaskSkip::DoesNotParse(fields) => ("does_not_parse", serde_json::json!(fields)),
-                    TaskSkip::Phased => ("phased", serde_json::Value::Null),
-                };
-                serde_json::json!({ "task": task.get(), "reason": reason, "detail": detail })
             })
             .collect();
         let branches: Vec<serde_json::Value> = NOT_BUILT
@@ -947,44 +848,10 @@ impl Plan {
             },
             "launched": launched,
             "lost": lost,
-            "skipped": { "epics": epics, "tasks": tasks, "branches": branches },
+            "skipped": { "epics": epics, "branches": branches },
             "cycles": cycles,
             "dead_blockers": dead,
         })
-    }
-
-    /// Whether a task of `cycle` is among the skipped tasks, so its skip line names the cycle.
-    fn has_skipped(&self, cycle: &[TicketId]) -> bool {
-        self.tasks
-            .iter()
-            .any(|(task, skip)| matches!(skip, TaskSkip::InCycle(_)) && cycle.contains(task))
-    }
-
-    /// Why a ready task was left out, in words.
-    fn task_reason(&self, skip: &TaskSkip) -> String {
-        match skip {
-            TaskSkip::Blocked(by) => {
-                let by: Vec<String> = by
-                    .iter()
-                    .map(|blocker| {
-                        if self.cycles.iter().any(|cycle| cycle.contains(blocker)) {
-                            format!("{blocker} (in a blocker cycle)")
-                        } else {
-                            blocker.to_string()
-                        }
-                    })
-                    .collect();
-                format!("blocked by {}", by.join(" "))
-            }
-            TaskSkip::InCycle(cycle) => {
-                format!("in a blocker cycle ({})", blockers::render_cycle(cycle))
-            }
-            TaskSkip::Claimed => "claimed".to_owned(),
-            TaskSkip::Running(instance) => format!("carried by {instance}"),
-            TaskSkip::NoEpic => "no open epic".to_owned(),
-            TaskSkip::DoesNotParse(fields) => format!("does not parse: {}", fields.join(", ")),
-            TaskSkip::Phased => "its type has a phase list: the phase steps run it".to_owned(),
-        }
     }
 }
 
@@ -997,7 +864,7 @@ fn epic_reason(skip: EpicSkip) -> &'static str {
         EpicSkip::ChallengerRuns => "the challenger runs on it",
         EpicSkip::ChallengerEnded => "the challenger ran and left no report",
         EpicSkip::Done => "every task is finished",
-        EpicSkip::NothingLaunchable => "no ready, unblocked, unclaimed task",
+        EpicSkip::BuiltByPhases => "challenged: its tasks are built by their phases",
         EpicSkip::NoFreeSlot => "no free slot",
         EpicSkip::GuardRed => "guard red",
     }

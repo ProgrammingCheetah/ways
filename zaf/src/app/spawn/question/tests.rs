@@ -213,14 +213,13 @@ fn only_a_failed_wait_asks() {
     assert_eq!(raised, vec![TicketId::from(441)]);
 }
 
-fn planned(number: u32, epic: u64, tasks: &[u64]) -> PlannedLaunch {
+fn planned(number: u32, epic: u64, _tasks: &[u64]) -> PlannedLaunch {
     PlannedLaunch {
         instance: Instance {
             role: RoleName::from("team"),
             epic: TicketId::from(epic),
             number: InstanceNumber::from(number),
         },
-        tasks: tasks.iter().copied().map(TicketId::from).collect(),
     }
 }
 

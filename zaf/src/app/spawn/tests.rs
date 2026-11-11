@@ -126,18 +126,19 @@ fn ticket(number: u64, epic: Option<u64>, body: &str, label: TicketState) -> Tic
     }
 }
 
-/// Epic #2 with ready tasks #3, #4, #5 (#5 blocked by the open #6) and a
-/// closed blocker #7 on #4; epic #12 with ready task #13.
+/// Epics #2 and #12, each signed with no task of its own, so each gets a planning launch; and
+/// the ready tasks #3, #4, #5 (#5 blocked by the open #6), a closed blocker #7 and #13, none
+/// of an epic here, for the tests that claim a task or read a blocker.
 fn board() -> FakeBoard {
     let board = FakeBoard::default();
     board.add_challenged_epic(TicketId::from(2), "Issue 2");
-    board.add_ticket(ticket(3, Some(2), "Blocked by: —", TicketState::Ready));
-    board.add_ticket(ticket(4, Some(2), "Blocked by: #7", TicketState::Ready));
-    board.add_ticket(ticket(5, Some(2), "Blocked by: #6", TicketState::Ready));
-    board.add_ticket(ticket(6, Some(2), "", TicketState::Blocked));
-    board.add_ticket(ticket(7, Some(2), "", TicketState::Done));
     board.add_challenged_epic(TicketId::from(12), "Issue 12");
-    board.add_ticket(ticket(13, Some(12), "", TicketState::Ready));
+    board.add_ticket(ticket(3, None, "Blocked by: —", TicketState::Ready));
+    board.add_ticket(ticket(4, None, "Blocked by: #7", TicketState::Ready));
+    board.add_ticket(ticket(5, None, "Blocked by: #6", TicketState::Ready));
+    board.add_ticket(ticket(6, None, "", TicketState::Blocked));
+    board.add_ticket(ticket(7, None, "", TicketState::Done));
+    board.add_ticket(ticket(13, None, "", TicketState::Ready));
     board
 }
 
@@ -161,13 +162,13 @@ fn running(state_dir: &Path) -> Vec<String> {
         .collect()
 }
 
-fn team() -> RoleName {
-    RoleName::from(TEAM_ROLE)
+fn planning() -> RoleName {
+    RoleName::from(PLANNING_ROLE)
 }
 
 fn instance(number: u32, epic: u64) -> Instance {
     Instance {
-        role: team(),
+        role: planning(),
         epic: TicketId::from(epic),
         number: InstanceNumber::from(number),
     }
@@ -180,7 +181,7 @@ fn a_launch_through_the_runner_records_launch_and_exit_and_frees_its_slot() {
     let board = board();
     let runner = FakeRunner::default();
     runner.record(
-        team(),
+        planning(),
         RunOutput {
             exit_code: 0,
             transcript: "merged #3 and #4\n".to_owned(),
@@ -190,7 +191,6 @@ fn a_launch_through_the_runner_records_launch_and_exit_and_frees_its_slot() {
     let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
     let first = &prepared.plan.launches[0];
     assert_eq!(first.instance, instance(1, 2));
-    assert_eq!(first.tasks, [TicketId::from(3), TicketId::from(4)]);
 
     // Reserved before running, held by the tick: `zaf status` reads the same run folders.
     let (reserved, _) = derive(&state_dir, &|_| true).expect("derives");
@@ -202,14 +202,14 @@ fn a_launch_through_the_runner_records_launch_and_exit_and_frees_its_slot() {
     );
     assert_eq!(
         reserved.instances(),
-        ["team instance 1 on #2", "team instance 2 on #12"]
+        ["planning instance 1 on #2", "planning instance 2 on #12"]
     );
-    let run_dir = state_dir.join(RUNS_DIR).join("team-instance-1-on-2");
+    let run_dir = state_dir.join(RUNS_DIR).join("planning-instance-1-on-2");
     let held = std::fs::read_to_string(run_dir.join(runs::HOLDER_FILE)).expect("holder");
     assert_eq!(Holder::parse(&held), Some(tick()));
     let screen = status::status(&board, &state_dir, 2, &|_| true).expect("status reads the state");
-    assert_eq!(screen.running.len(), 3);
-    assert_eq!(screen.running[0].task, Some(3));
+    assert_eq!(screen.running.len(), 2);
+    assert_eq!(screen.running[0].task, None);
     assert_eq!(screen.running[0].pid, Some(OWN_PID));
 
     let done = launch(&board, &runner, &context(&state_dir), first).expect("launches");
@@ -217,8 +217,8 @@ fn a_launch_through_the_runner_records_launch_and_exit_and_frees_its_slot() {
     assert_eq!(
         board.comments(TicketId::from(2)),
         [
-            "<!-- zaf:launch team instance 1 on #2 -->",
-            "<!-- zaf:exit team instance 1 on #2 0 -->",
+            "<!-- zaf:launch planning instance 1 on #2 -->",
+            "<!-- zaf:exit planning instance 1 on #2 0 -->",
         ]
     );
     assert_eq!(done.run_dir, run_dir);
@@ -238,7 +238,7 @@ fn a_launch_through_the_runner_records_launch_and_exit_and_frees_its_slot() {
     let requests = runner.requests();
     assert_eq!(requests.len(), 1);
     let request = &requests[0];
-    assert_eq!(request.role, team());
+    assert_eq!(request.role, planning());
     assert_eq!(request.profile, Profile::Build);
     assert_eq!(request.dir, run_dir);
     assert_eq!(
@@ -250,15 +250,18 @@ fn a_launch_through_the_runner_records_launch_and_exit_and_frees_its_slot() {
     assert_eq!(
         request.prompt,
         format!(
-            "You are team instance 1 on #2, the team instance for epic #2 of project bookshelf. \
-             Tasks: #3 #4. Read {} first and follow it exactly.",
+            "You are planning instance 1 on #2, the planning instance for epic #2 of project \
+             bookshelf. Read {} first and follow it exactly.",
             brief.display()
         )
     );
-    assert_eq!(std::fs::read_to_string(&brief).expect("brief"), TEAM_BRIEF);
+    assert_eq!(
+        std::fs::read_to_string(&brief).expect("brief"),
+        PLANNING_BRIEF
+    );
 
     let (after, _) = derive(&state_dir, &|_| true).expect("derives");
-    assert_eq!(after.instances(), ["team instance 2 on #12"]);
+    assert_eq!(after.instances(), ["planning instance 2 on #12"]);
     assert_eq!(after.next_instance, 3);
 }
 
@@ -289,12 +292,12 @@ fn a_launch_marks_its_start_in_the_state() {
     assert_eq!(
         board.comments(TicketId::from(12)),
         [
-            "<!-- zaf:launch team instance 2 on #12 -->",
-            "<!-- zaf:exit team instance 2 on #12 error -->",
+            "<!-- zaf:launch planning instance 2 on #12 -->",
+            "<!-- zaf:exit planning instance 2 on #12 error -->",
         ]
     );
-    assert_eq!(running(&state_dir), ["team instance 1 on #2"]);
-    let run_dir = state_dir.join(RUNS_DIR).join("team-instance-2-on-12");
+    assert_eq!(running(&state_dir), ["planning instance 1 on #2"]);
+    let run_dir = state_dir.join(RUNS_DIR).join("planning-instance-2-on-12");
     assert_eq!(
         std::fs::read_to_string(run_dir.join(runs::EXIT_FILE)).expect("exit"),
         "error\n"
@@ -366,7 +369,7 @@ fn timed_out_launch_releases_its_claims() {
     assert_eq!(done.exit.status(), "timeout");
     let epic_comments = board.comments(TicketId::from(2));
     assert!(
-        epic_comments.contains(&"<!-- zaf:exit team instance 1 on #2 timeout -->".to_owned()),
+        epic_comments.contains(&"<!-- zaf:exit planning instance 1 on #2 timeout -->".to_owned()),
         "{epic_comments:?}"
     );
     let label = |task| board.task(task).expect("task").state;
@@ -377,7 +380,7 @@ fn timed_out_launch_releases_its_claims() {
         let comments = board.comments(task);
         assert_eq!(comments.len(), 1, "{comments:?}");
         assert!(
-            comments[0].starts_with("released from team instance 1 on #2 at "),
+            comments[0].starts_with("released from planning instance 1 on #2 at "),
             "{comments:?}"
         );
     }
@@ -387,7 +390,7 @@ fn timed_out_launch_releases_its_claims() {
     assert_eq!(claims[0].task, other);
     assert_eq!(
         running(&state_dir),
-        ["team instance 2 on #12"],
+        ["planning instance 2 on #12"],
         "the slot is freed"
     );
 }
@@ -404,7 +407,7 @@ fn a_launch_that_did_not_time_out_keeps_its_claims() {
 
     let exited = FakeRunner::default();
     exited.record(
-        team(),
+        planning(),
         RunOutput {
             exit_code: 1,
             transcript: String::new(),
@@ -427,13 +430,13 @@ fn a_launch_that_did_not_time_out_keeps_its_claims() {
 fn the_projects_own_brief_wins_over_the_pack() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state_dir = dir.path().join(".zaf");
-    let own = state_dir.join(ROLES_DIR).join("team.md");
+    let own = state_dir.join(ROLES_DIR).join("planning.md");
     std::fs::create_dir_all(own.parent().expect("parent")).expect("dirs");
     std::fs::write(&own, "our own brief").expect("writes");
     let board = board();
     let runner = FakeRunner::default();
     runner.record(
-        team(),
+        planning(),
         RunOutput {
             exit_code: 3,
             transcript: String::new(),
@@ -457,98 +460,25 @@ fn the_projects_own_brief_wins_over_the_pack() {
     assert!(
         board
             .comments(TicketId::from(2))
-            .contains(&"<!-- zaf:exit team instance 1 on #2 3 -->".to_owned())
+            .contains(&"<!-- zaf:exit planning instance 1 on #2 3 -->".to_owned())
     );
 }
 
 #[test]
-fn prepare_skips_blocked_and_claimed_tasks_read_from_the_board() {
+fn ready_tasks_read_from_the_board_start_no_team_instance() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state_dir = dir.path().join(".zaf");
     let board = board();
-    let holder = instance(9, 2);
-    board.claim(TicketId::from(3), &holder).expect("claims #3");
     let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
     let plan = &prepared.plan;
-    assert_eq!(plan.launches[0].tasks, [TicketId::from(4)]);
     assert!(
         plan.launches
             .iter()
-            .all(|launch| !launch.tasks.contains(&TicketId::from(3)))
-    );
-    assert_eq!(
-        plan.tasks,
-        [(
-            TicketId::from(5),
-            TaskSkip::Blocked(vec![TicketId::from(6)])
-        )]
-    );
-    assert!(plan.render_text().contains("#5 skipped: blocked by #6"));
-}
-
-#[test]
-fn a_phased_task_gets_no_team() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let state_dir = dir.path().join(".zaf");
-    let board = board();
-    // #4 is a Bug, a type with no phase list: it keeps the team launch. #3 and #13 are Tasks.
-    board.set_type(TicketId::from(4), "Bug");
-    let manifest: Manifest = format!("{MANIFEST}\n[phases]\nTask = [\"implement\", \"merge\"]\n")
-        .parse()
-        .expect("manifest parses");
-    let prepared = prepare(&board, &state_dir, &manifest, &|_| true, &tick()).expect("prepares");
-    let plan = &prepared.plan;
-    assert_eq!(plan.launches.len(), 1, "{plan:?}");
-    assert_eq!(plan.launches[0].tasks, [TicketId::from(4)]);
-    for phased in [3, 13] {
-        assert!(
-            plan.tasks
-                .contains(&(TicketId::from(phased), TaskSkip::Phased)),
-            "{plan:?}"
-        );
-    }
-    assert!(
+            .all(|launch| launch.instance.role == planning()),
+        "{}",
         plan.render_text()
-            .contains("#3 skipped: its type has a phase list")
     );
-    let dry = plan_only(&board, &state_dir, &manifest, &|_| true).expect("plans");
-    assert!(
-        dry.plan
-            .tasks
-            .contains(&(TicketId::from(3), TaskSkip::Phased))
-    );
-}
-
-#[test]
-fn spawn_skips_a_task_that_does_not_parse() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let state_dir = dir.path().join(".zaf");
-    let board = FakeBoard::default();
-    board.add_challenged_epic(TicketId::from(2), "Issue 2");
-    board.add_ticket(ticket(3, Some(2), "Blocked by: —", TicketState::Ready));
-    board.add_ticket(Ticket {
-        body: task_body("—")
-            .replace("Security trigger: no", "Security trigger: no, it removes x")
-            .into(),
-        ..ticket(4, Some(2), "", TicketState::Ready)
-    });
-
-    let skipped = "#4 skipped: does not parse: Security trigger\n";
-    let dry = plan_only(&board, &state_dir, &manifest(), &|_| true).expect("plans");
-    assert!(dry.plan.render_text().contains(skipped));
-    assert_eq!(dry.plan.launches[0].tasks, [TicketId::from(3)]);
-
-    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
-    assert!(prepared.plan.render_text().contains(skipped));
-    assert_eq!(prepared.plan.launches[0].tasks, [TicketId::from(3)]);
-    assert_eq!(
-        prepared.plan.to_json(&[], &[])["skipped"]["tasks"],
-        serde_json::json!([{
-            "task": 4,
-            "reason": "does_not_parse",
-            "detail": ["Security trigger"],
-        }])
-    );
+    assert!(!plan.render_text().contains("team"));
 }
 
 #[test]
@@ -562,7 +492,6 @@ fn a_missing_blocker_is_dead() {
     let prepared = plan_only(&board, &state_dir, &manifest(), &|_| true).expect("plans");
     let text = prepared.plan.render_text();
     assert!(text.contains("dead blocker #99 on #3: not an issue\n"));
-    assert!(text.contains("#3 skipped: blocked by #99\n"));
 
     let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
     assert!(
@@ -596,11 +525,10 @@ fn a_blocker_closed_as_not_planned_is_dead() {
         !text.contains("dead blocker #7"),
         "a closed issue labelled done is closed for good"
     );
-    assert!(text.contains("#3 skipped: blocked by #6\n"));
 }
 
 #[test]
-fn a_blocker_closed_without_the_done_label_lets_its_dependent_launch() {
+fn a_blocker_closed_without_the_done_label_launches_no_team() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state_dir = dir.path().join(".zaf");
     let board = FakeBoard::default();
@@ -611,13 +539,11 @@ fn a_blocker_closed_without_the_done_label_lets_its_dependent_launch() {
 
     let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
 
-    assert_eq!(
-        prepared.plan.launches.len(),
-        1,
+    assert!(
+        prepared.plan.launches.is_empty(),
         "{}",
         prepared.plan.render_text()
     );
-    assert_eq!(prepared.plan.launches[0].tasks, [TicketId::from(3)]);
 }
 
 #[test]
@@ -640,7 +566,6 @@ fn the_snapshot_reads_a_cycle_through_open_tasks_that_are_not_ready() {
         Settings::from(&manifest()),
     )
     .render_text();
-    assert!(text.contains("#3 skipped: blocked by #4 (in a blocker cycle)\n"));
     assert!(text.contains("blocker cycle: #4 → #5 → #4\n"));
 }
 
@@ -671,14 +596,17 @@ fn a_launch_whose_process_is_gone_is_recorded_as_lost() {
     .expect("second tick");
     assert_eq!(
         second.lost,
-        ["team instance 1 on #2", "team instance 2 on #12"]
+        ["planning instance 1 on #2", "planning instance 2 on #12"]
     );
     assert!(
         board
             .comments(TicketId::from(2))
-            .contains(&"<!-- zaf:exit team instance 1 on #2 lost -->".to_owned())
+            .contains(&"<!-- zaf:exit planning instance 1 on #2 lost -->".to_owned())
     );
-    assert_eq!(second.plan.launches[0].instance, instance(3, 2));
+    assert!(
+        second.plan.launches.is_empty(),
+        "an epic is planned once, a lost launch included"
+    );
 }
 
 #[test]
@@ -725,7 +653,7 @@ fn a_lost_instances_tasks_are_released_and_a_question_is_kept() {
         let comments = board.comments(task);
         assert_eq!(comments.len(), 1, "{comments:?}");
         assert!(
-            comments[0].starts_with("released from team instance 1 on #2 at "),
+            comments[0].starts_with("released from planning instance 1 on #2 at "),
             "{comments:?}"
         );
     }
@@ -785,7 +713,6 @@ fn a_signed_epic_with_no_task_launches_planning_and_only_release_is_unbuilt() {
         .map(|launch| launch.instance.to_string())
         .collect();
     assert_eq!(launched, ["planning instance 1 on #2"]);
-    assert!(prepared.plan.launches[0].tasks.is_empty());
     let text = prepared.plan.render_text();
     assert!(text.contains("release: skipped: not built"), "{text}");
     assert!(!text.contains("planning: skipped"), "{text}");
@@ -809,27 +736,13 @@ fn json_names_every_launch_and_every_skipped_epic() {
     let json = prepared.plan.to_json(&[], &[]);
     assert_eq!(json["skipped"]["epics"][0]["epic"], 12);
     assert_eq!(json["skipped"]["epics"][0]["reason"], "no_free_slot");
-    assert_eq!(json["skipped"]["tasks"][0]["reason"], "blocked");
-    assert_eq!(
-        json["skipped"]["tasks"][0]["detail"],
-        serde_json::json!([6])
-    );
+    assert!(json["skipped"].get("tasks").is_none(), "{json}");
     assert_eq!(json["slots"]["free"], 1);
 }
 
 #[test]
 fn the_slug_turns_spaces_and_hashes_into_single_dashes() {
-    assert_eq!(slug(&instance(12, 16)), "team-instance-12-on-16");
-}
-
-#[test]
-fn the_team_profile_comes_from_the_manifest() {
-    let lean: Manifest = MANIFEST
-        .replace("profile = \"build\"", "profile = \"lean\"")
-        .parse()
-        .expect("manifest parses");
-    assert_eq!(team_profile(&lean), Profile::Lean);
-    assert_eq!(Settings::from(&lean).batch, 2);
+    assert_eq!(slug(&instance(12, 16)), "planning-instance-12-on-16");
 }
 
 #[test]
@@ -843,7 +756,7 @@ fn a_launch_puts_its_environment_on_the_request() {
         env: BTreeMap::from([
             (
                 "ZAF_INSTANCE".to_owned(),
-                "team instance 1 on #2".to_owned(),
+                "planning instance 1 on #2".to_owned(),
             ),
             ("ZAF_VERSION".to_owned(), "0.3.0".to_owned()),
         ]),
@@ -854,6 +767,7 @@ fn a_launch_puts_its_environment_on_the_request() {
     assert_eq!(requests.len(), 1);
     let mut expected = context.env.clone();
     expected.insert(RUN_VAR.to_owned(), requests[0].dir.display().to_string());
+    expected.insert(SIZE_VAR.to_owned(), "XS".to_owned());
     assert_eq!(requests[0].env, expected);
 }
 
@@ -867,26 +781,26 @@ fn a_launch_carries_its_run_and_size() {
     let context = LaunchContext {
         env: BTreeMap::from([(
             "ZAF_INSTANCE".to_owned(),
-            "team instance 1 on #2".to_owned(),
+            "planning instance 1 on #2".to_owned(),
         )]),
         ..context(&state_dir)
     };
     launch(&board, &runner, &context, &prepared.plan.launches[0]).expect("records the run");
     let requests = runner.requests();
     let env = &requests[0].env;
-    let run_dir = state_dir.join(RUNS_DIR).join("team-instance-1-on-2");
+    let run_dir = state_dir.join(RUNS_DIR).join("planning-instance-1-on-2");
     assert!(run_dir.is_absolute());
     assert_eq!(env[RUN_VAR], run_dir.display().to_string());
     assert_eq!(
-        env["ZAF_INSTANCE"], "team instance 1 on #2",
+        env["ZAF_INSTANCE"], "planning instance 1 on #2",
         "beside its name"
     );
     assert_eq!(
-        env.get(SIZE_VAR),
-        None,
-        "a team launch reads with no size until #449 retires it"
+        env.get(SIZE_VAR).map(String::as_str),
+        Some("XS"),
+        "a planning launch is the smallest size"
     );
-    assert_eq!(launch_size(&team()), None);
+    assert_eq!(launch_size(&planning()), Some(TaskSize::XS));
     assert_eq!(
         launch_size(&RoleName::from(CHALLENGER_ROLE)),
         Some(TaskSize::XS)
@@ -895,10 +809,10 @@ fn a_launch_carries_its_run_and_size() {
 
 #[test]
 fn a_launch_names_its_run_folder_absolutely_from_a_relative_state_folder() {
-    let env = run_env(Path::new(".zaf/runs/team-instance-1-on-2"), &team());
+    let env = run_env(Path::new(".zaf/runs/planning-instance-1-on-2"), &planning());
     let run = Path::new(&env[RUN_VAR]);
     assert!(run.is_absolute(), "{}", run.display());
-    assert!(run.ends_with(".zaf/runs/team-instance-1-on-2"));
+    assert!(run.ends_with(".zaf/runs/planning-instance-1-on-2"));
 }
 
 #[test]
@@ -954,6 +868,7 @@ fn spawn_launches_with_env() {
             ),
             ("HOME".to_owned(), "/from/manifest".to_owned()),
             (RUN_VAR.to_owned(), requests[0].dir.display().to_string()),
+            (SIZE_VAR.to_owned(), "XS".to_owned()),
         ])
     );
 }
@@ -976,7 +891,7 @@ fn launches_run_in_parallel_threads_and_all_are_joined() {
     let runner = Arc::new(FakeRunner::default());
     for _ in 0..2 {
         runner.record(
-            team(),
+            planning(),
             RunOutput {
                 exit_code: 0,
                 transcript: "done\n".to_owned(),
@@ -1024,7 +939,7 @@ fn launches_run_in_parallel_threads_and_all_are_joined() {
         .map(|request| request.env["ZAF_INSTANCE"].clone())
         .collect();
     seen.sort();
-    assert_eq!(seen, ["team instance 1 on #2", "team instance 2 on #12"]);
+    assert_eq!(seen, ["planning instance 1 on #2", "planning instance 2 on #12"]);
     assert_eq!(board.comments(TicketId::from(2)).len(), 2);
     assert_eq!(board.comments(TicketId::from(12)).len(), 2);
 }
@@ -1106,19 +1021,19 @@ fn a_dry_run_names_each_launch_and_its_command_line_and_writes_nothing() {
     let dir_of = |_| profile_dir.clone();
     let dry = dry_run(&jobs, &dir_of, &describe).expect("describes");
     let text: String = dry.iter().map(DryLaunch::render_text).collect();
-    let run_dir = state_dir.join(RUNS_DIR).join("team-instance-1-on-2");
+    let run_dir = state_dir.join(RUNS_DIR).join("planning-instance-1-on-2");
     let brief = run_dir.join(BRIEF_FILE);
     let first = format!(
-        "would launch team instance 1 on #2\n  epic #2\n  tasks #3 #4\n  profile {home}\n  \
-         env CLAUDE_CONFIG_DIR={home}\n  env ZAF_INSTANCE=team instance 1 on #2\n  \
-         env ZAF_RUN={}\n  \
-         command claude -p 'You are team instance 1 on #2, the team instance for epic #2 of \
-         project bookshelf. Tasks: #3 #4. Read {} first and follow it exactly.' --model opus\n",
+        "would launch planning instance 1 on #2\n  epic #2\n  profile {home}\n  \
+         env CLAUDE_CONFIG_DIR={home}\n  env ZAF_INSTANCE=planning instance 1 on #2\n  \
+         env ZAF_RUN={}\n  env ZAF_SIZE=XS\n  \
+         command claude -p 'You are planning instance 1 on #2, the planning instance for epic #2 of \
+         project bookshelf. Read {} first and follow it exactly.' --model opus\n",
         run_dir.display(),
         brief.display()
     );
     assert!(text.starts_with(&first), "{text}");
-    assert!(text.contains("would launch team instance 2 on #12\n  epic #12\n  tasks #13\n"));
+    assert!(text.contains("would launch planning instance 2 on #12\n  epic #12\n  profile"));
     assert!(
         !state_dir.join(status::SPAWN_STATE_FILE).exists(),
         "no state file"
@@ -1141,7 +1056,7 @@ fn a_dry_run_reports_a_dead_launch_as_lost_without_recording_it() {
     let dry = plan_only(&board, &state_dir, &manifest(), &|_| false).expect("plans");
     assert_eq!(
         dry.lost,
-        ["team instance 1 on #2", "team instance 2 on #12"]
+        ["planning instance 1 on #2", "planning instance 2 on #12"]
     );
     assert_eq!(
         std::fs::read(state_dir.join(status::SPAWN_STATE_FILE)).expect("state"),
@@ -1169,7 +1084,7 @@ fn a_killed_tick_leaves_its_running_instance_its_slot_and_its_claims() {
     let state_dir = dir.path().join(".zaf");
     let board = board();
     prepare(&board, &state_dir, &manifest(), &|_| true, &holder(100)).expect("first tick");
-    instance_holds(&state_dir, "team-instance-1-on-2", 500);
+    instance_holds(&state_dir, "planning-instance-1-on-2", 500);
     board
         .claim(TicketId::from(3), &instance(1, 2))
         .expect("the instance claims #3");
@@ -1178,7 +1093,7 @@ fn a_killed_tick_leaves_its_running_instance_its_slot_and_its_claims() {
     let table = |held: &Holder| held.pid == 500;
     let second = prepare(&board, &state_dir, &manifest(), &table, &tick()).expect("second tick");
 
-    assert_eq!(second.lost, ["team instance 2 on #12"]);
+    assert_eq!(second.lost, ["planning instance 2 on #12"]);
     assert!(second.released.is_empty(), "{:?}", second.released);
     assert_eq!(
         board.claims().expect("claims").len(),
@@ -1186,17 +1101,17 @@ fn a_killed_tick_leaves_its_running_instance_its_slot_and_its_claims() {
         "the claim is kept"
     );
     assert_eq!(second.plan.slots.running, 1, "instance 1 keeps its slot");
-    assert_eq!(second.plan.launches[0].instance, instance(3, 12));
+    assert!(second.plan.launches.is_empty());
 }
 
 #[test]
-fn a_tick_that_outlives_its_instance_holds_no_slot_and_the_next_tick_takes_its_task() {
+fn a_tick_that_outlives_its_instance_holds_no_slot_and_the_next_tick_releases_its_task() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state_dir = dir.path().join(".zaf");
     let board = board();
     prepare(&board, &state_dir, &manifest(), &|_| true, &holder(100)).expect("first tick");
-    instance_holds(&state_dir, "team-instance-1-on-2", 500);
-    instance_holds(&state_dir, "team-instance-2-on-12", 600);
+    instance_holds(&state_dir, "planning-instance-1-on-2", 500);
+    instance_holds(&state_dir, "planning-instance-2-on-12", 600);
     let stuck = TicketId::from(3);
     board
         .claim(stuck, &instance(1, 2))
@@ -1211,7 +1126,7 @@ fn a_tick_that_outlives_its_instance_holds_no_slot_and_the_next_tick_takes_its_t
     let second = prepare(&board, &state_dir, &manifest(), &table, &tick()).expect("second tick");
     assert_eq!(
         second.lost,
-        ["team instance 1 on #2", "team instance 2 on #12"]
+        ["planning instance 1 on #2", "planning instance 2 on #12"]
     );
     assert_eq!(
         second.released,
@@ -1221,11 +1136,6 @@ fn a_tick_that_outlives_its_instance_holds_no_slot_and_the_next_tick_takes_its_t
         }]
     );
     assert_eq!(second.plan.slots.running, 0);
-    assert_eq!(
-        second.plan.launches[0].tasks,
-        [TicketId::from(3), TicketId::from(4)],
-        "the freed task launches again"
-    );
 }
 
 #[test]
@@ -1308,7 +1218,6 @@ fn each_role_has_its_pack_brief() {
         pack_brief(&RoleName::from(CHALLENGER_ROLE)),
         CHALLENGER_BRIEF
     );
-    assert_eq!(pack_brief(&team()), TEAM_BRIEF);
     for brief in [PLANNING_BRIEF, CHALLENGER_BRIEF] {
         assert!(brief.contains("zaf epic show <epic>"), "{brief}");
         assert!(brief.contains("zaf board report <epic>"), "{brief}");

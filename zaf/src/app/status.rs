@@ -466,7 +466,11 @@ impl Status {
                 .iter()
                 .map(|task| format!("#{task}"))
                 .collect();
-            line(format!("  {}: {}", instance.instance, tasks.join(" ")));
+            if tasks.is_empty() {
+                line(format!("  {}", instance.instance));
+            } else {
+                line(format!("  {}: {}", instance.instance, tasks.join(" ")));
+            }
         }
         line(format!(
             "slots     {} free of {}",

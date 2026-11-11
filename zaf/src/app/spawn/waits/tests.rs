@@ -215,14 +215,13 @@ fn a_failed_wait_launch_does_not_stop_others() {
     assert_eq!(tasks[0].ready_wait_action(), Some(name("review")));
 }
 
-fn planned(number: u32, epic: u64, tasks: &[u64]) -> PlannedLaunch {
+fn planned(number: u32, epic: u64, _tasks: &[u64]) -> PlannedLaunch {
     PlannedLaunch {
         instance: Instance {
             role: RoleName::from("team"),
             epic: TicketId::from(epic),
             number: InstanceNumber::from(number),
         },
-        tasks: tasks.iter().copied().map(TicketId::from).collect(),
     }
 }
 

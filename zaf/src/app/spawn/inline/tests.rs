@@ -150,14 +150,13 @@ fn a_merge_that_never_ran_is_listed_with_its_125() {
     assert!(!ran[0].passed());
 }
 
-fn planned(number: u32, epic: u64, tasks: &[u64]) -> PlannedLaunch {
+fn planned(number: u32, epic: u64, _tasks: &[u64]) -> PlannedLaunch {
     PlannedLaunch {
         instance: Instance {
             role: RoleName::from("team"),
             epic: TicketId::from(epic),
             number: InstanceNumber::from(number),
         },
-        tasks: tasks.iter().copied().map(TicketId::from).collect(),
     }
 }
 

@@ -2,9 +2,10 @@
 //! settings in, a launch plan out. Nothing here touches a port or a file.
 //!
 //! Each open epic gets at most one launch a tick, chosen by its stage (ruling 48): a planning
-//! instance for a signed epic with no tasks, the challenger for a planned one, and a team
-//! instance for a challenged one with tasks to build. An unsigned epic, a done one and one
-//! with a question open on it launch nothing.
+//! instance for a signed epic with no tasks and the challenger for a planned one. A challenged
+//! epic launches nothing here: its tasks are built by their phases (docs/zaf-actions.md §5.1),
+//! never by a team instance. An unsigned epic, a done one and one with a question open on it
+//! launch nothing.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::SystemTime;
@@ -17,37 +18,22 @@ use crate::domain::{
 };
 use crate::manifest::Manifest;
 
-/// The role that builds a challenged epic's tasks.
-pub const TEAM_ROLE: &str = "team";
-
 pub use crate::domain::PLANNING_ROLE;
 
 /// The branches of the tick that are not built yet; each is skipped as `not built`.
 pub const NOT_BUILT: [&str; 1] = ["release"];
 
-/// How many tasks an instance takes when its role sets no batch.
-const UNBATCHED: u32 = 1;
-
 /// What the tick reads from the board.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Snapshot {
-    /// Tasks labelled `ready`, in issue order.
+    /// Tasks labelled `ready`, in issue order; the plan reads their blockers for cycles and
+    /// dead ones.
     pub ready: Vec<Ticket>,
-    /// Tasks with a live claim.
-    pub claimed: BTreeSet<TicketId>,
-    /// Blockers that are closed.
-    pub closed: BTreeSet<TicketId>,
     /// The open tasks the blockers lead to that are not ready, with the blockers each names;
     /// the ready tasks' own bodies are read from `ready`.
     pub open: Graph,
     /// Blockers that can never be seen closed, and why.
     pub dead: BTreeMap<TicketId, DeadReason>,
-    /// The ready tasks whose body does not follow the template, each with what is wrong
-    /// (the field names, or `line <n>`).
-    pub unparsed: BTreeMap<TicketId, Vec<String>>,
-    /// The ready tasks whose type has a `[phases]` list: the phase steps run them, so no team
-    /// launch takes them.
-    pub phased: BTreeSet<TicketId>,
     /// The open epics, with everything their stage is derived from.
     pub epics: Vec<Epic>,
     /// The issues an open question is raised on.
@@ -70,20 +56,12 @@ pub struct PastLaunch {
 pub struct Settings {
     /// `[spawn] slots`.
     pub slots: u32,
-    /// `[roles.team] batch`, or one.
-    pub batch: u32,
 }
 
 impl From<&Manifest> for Settings {
     fn from(manifest: &Manifest) -> Self {
-        let batch = manifest
-            .roles
-            .get(&RoleName::from(TEAM_ROLE))
-            .and_then(|role| role.batch)
-            .unwrap_or(UNBATCHED);
         Self {
             slots: manifest.spawn.slots,
-            batch: batch.max(UNBATCHED),
         }
     }
 }
@@ -108,8 +86,6 @@ pub struct SlotCount {
 pub struct PlannedLaunch {
     /// The instance, numbered from the state's counter.
     pub instance: Instance,
-    /// Its tasks, at most a batch, in issue order.
-    pub tasks: Vec<TicketId>,
 }
 
 /// Why an epic launched nothing this tick.
@@ -130,31 +106,12 @@ pub enum EpicSkip {
     ChallengerEnded,
     /// Every task is finished.
     Done,
-    /// It is challenged and has no task that is ready, unblocked and unclaimed.
-    NothingLaunchable,
+    /// It is challenged: its tasks are built by their phases, so no instance launches on it.
+    BuiltByPhases,
     /// Every slot the guard allows is taken.
     NoFreeSlot,
     /// The guard is red: the spawner launches nothing.
     GuardRed,
-}
-
-/// Why a ready task was left out.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TaskSkip {
-    /// A `Blocked by:` issue is still open; the open ones are named.
-    Blocked(Vec<TicketId>),
-    /// It is on a blocker cycle, each task waiting for the next; the cycle, from its lowest task.
-    InCycle(Vec<TicketId>),
-    /// Another instance holds a claim on it.
-    Claimed,
-    /// A running instance already carries it.
-    Running(String),
-    /// It belongs to no open epic.
-    NoEpic,
-    /// Its body does not follow the template; the fields at fault, or `line <n>`.
-    DoesNotParse(Vec<String>),
-    /// Its type has a `[phases]` list: the phase steps run it, not a team.
-    Phased,
 }
 
 /// What one tick decided.
@@ -166,8 +123,6 @@ pub struct Plan {
     pub launches: Vec<PlannedLaunch>,
     /// The epics that launched nothing, and why.
     pub epics: Vec<(TicketId, EpicSkip)>,
-    /// The ready tasks left out, and why.
-    pub tasks: Vec<(TicketId, TaskSkip)>,
     /// Every blocker cycle among the open tasks reached, each from its lowest task.
     pub cycles: Vec<Vec<TicketId>>,
     /// Every dead blocker the open tasks reached name.
@@ -184,14 +139,13 @@ pub fn allowed_slots(total: u32, level: Level) -> u32 {
     }
 }
 
-/// Which instance an epic's stage calls for, if any: the role and the tasks it takes.
+/// Which instance an epic's stage calls for, if any: planning or the challenger. A challenged
+/// epic calls for none, its tasks being built by their phases.
 fn next_launch(
     epic: &Epic,
-    launchable: &[TicketId],
     snapshot: &Snapshot,
     running: &[Instance],
-    batch: usize,
-) -> Result<(&'static str, Vec<TicketId>), EpicSkip> {
+) -> Result<&'static str, EpicSkip> {
     let runs = |role: &str| {
         running
             .iter()
@@ -219,16 +173,15 @@ fn next_launch(
             if launched_since(PLANNING_ROLE, signed_at) {
                 Err(EpicSkip::PlannedNothing)
             } else {
-                Ok((PLANNING_ROLE, Vec::new()))
+                Ok(PLANNING_ROLE)
             }
         }
         EpicStage::Planned if runs(CHALLENGER_ROLE) => Err(EpicSkip::ChallengerRuns),
         EpicStage::Planned if launched_since(CHALLENGER_ROLE, None) => {
             Err(EpicSkip::ChallengerEnded)
         }
-        EpicStage::Planned => Ok((CHALLENGER_ROLE, Vec::new())),
-        _ if launchable.is_empty() => Err(EpicSkip::NothingLaunchable),
-        _ => Ok((TEAM_ROLE, launchable.iter().copied().take(batch).collect())),
+        EpicStage::Planned => Ok(CHALLENGER_ROLE),
+        _ => Err(EpicSkip::BuiltByPhases),
     }
 }
 
@@ -248,15 +201,15 @@ pub struct EpicCandidate {
 }
 
 /// The epic launches the tick may start this tick, each as an [`EpicCandidate`]: the epics
-/// `next_launch` gives planning or the challenger. A team launch is not one (it is #449's),
-/// and an epic held by a question, a running instance or a launch already made is none.
+/// `next_launch` gives planning or the challenger, and an epic held by a question, a running
+/// instance or a launch already made is none.
 pub fn epic_candidates(snapshot: &Snapshot, state: &SpawnState) -> Vec<EpicCandidate> {
     let running = state.running_instances();
     snapshot
         .epics
         .iter()
         .filter_map(|epic| {
-            let (role, _) = next_launch(epic, &[], snapshot, &running, 1).ok()?;
+            let role = next_launch(epic, snapshot, &running).ok()?;
             let signed_at = epic.signature.as_ref().map(|signature| signature.at)?;
             let since = match role {
                 PLANNING_ROLE => signed_at,
@@ -283,12 +236,6 @@ pub fn plan(snapshot: &Snapshot, state: &SpawnState, level: Level, settings: Set
         running,
         free: allowed.saturating_sub(running),
     };
-    let carried: BTreeMap<u64, &str> = state
-        .launches
-        .iter()
-        .filter_map(|launch| Some((launch.task?, launch.instance.as_str())))
-        .collect();
-
     let mut graph = snapshot.open.clone();
     for ticket in &snapshot.ready {
         graph.insert(ticket.id, blockers(ticket.body.as_str()));
@@ -298,55 +245,24 @@ pub fn plan(snapshot: &Snapshot, state: &SpawnState, level: Level, settings: Set
 
     let open_epics: BTreeMap<TicketId, &Epic> =
         snapshot.epics.iter().map(|epic| (epic.id, epic)).collect();
-    let mut tasks = Vec::new();
-    let mut epics: BTreeMap<TicketId, Vec<TicketId>> = BTreeMap::new();
-    for ticket in &snapshot.ready {
-        let Some(epic) = ticket.epic.filter(|epic| open_epics.contains_key(epic)) else {
-            tasks.push((ticket.id, TaskSkip::NoEpic));
-            continue;
-        };
-        let launchable = epics.entry(epic).or_default();
-        let open: Vec<TicketId> = blockers(ticket.body.as_str())
-            .into_iter()
-            .filter(|blocker| !snapshot.closed.contains(blocker))
-            .collect();
-        if snapshot.phased.contains(&ticket.id) {
-            tasks.push((ticket.id, TaskSkip::Phased));
-        } else if snapshot.claimed.contains(&ticket.id) {
-            tasks.push((ticket.id, TaskSkip::Claimed));
-        } else if let Some(instance) = carried.get(&ticket.id.get()) {
-            tasks.push((ticket.id, TaskSkip::Running((*instance).to_owned())));
-        } else if let Some(fields) = snapshot.unparsed.get(&ticket.id) {
-            tasks.push((ticket.id, TaskSkip::DoesNotParse(fields.clone())));
-        } else if let Some(cycle) = cycles.iter().find(|cycle| cycle.contains(&ticket.id)) {
-            tasks.push((ticket.id, TaskSkip::InCycle(cycle.clone())));
-        } else if !open.is_empty() {
-            tasks.push((ticket.id, TaskSkip::Blocked(open)));
-        } else {
-            launchable.push(ticket.id);
-        }
-    }
 
     let running = state.running_instances();
-    let batch = usize::try_from(settings.batch).unwrap_or(usize::MAX);
     let mut free = slots.free;
     let mut next = state.next_instance;
     let mut launches = Vec::new();
     let mut skipped = Vec::new();
     for (id, epic) in open_epics {
-        let launchable = epics.get(&id).map_or(&[][..], Vec::as_slice);
-        match next_launch(epic, launchable, snapshot, &running, batch) {
+        match next_launch(epic, snapshot, &running) {
             Err(skip) => skipped.push((id, skip)),
             Ok(_) if level == Level::Red => skipped.push((id, EpicSkip::GuardRed)),
             Ok(_) if free == 0 => skipped.push((id, EpicSkip::NoFreeSlot)),
-            Ok((role, tasks)) => {
+            Ok(role) => {
                 launches.push(PlannedLaunch {
                     instance: Instance {
                         role: RoleName::from(role),
                         epic: id,
                         number: InstanceNumber::from(next),
                     },
-                    tasks,
                 });
                 next = next.saturating_add(1);
                 free -= 1;
@@ -357,7 +273,6 @@ pub fn plan(snapshot: &Snapshot, state: &SpawnState, level: Level, settings: Set
         slots,
         launches,
         epics: skipped,
-        tasks,
         cycles,
         dead,
     }

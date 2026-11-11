@@ -29,7 +29,6 @@ fn launch(number: u32) -> PlannedLaunch {
             epic: TicketId::from(EPIC),
             number: InstanceNumber::from(number),
         },
-        tasks: vec![TicketId::from(11)],
     }
 }
 

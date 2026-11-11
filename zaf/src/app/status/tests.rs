@@ -41,11 +41,8 @@ fn instance(number: u32, epic: u64) -> Instance {
 }
 
 /// A run folder for `instance` carrying `tasks`, held by pid 4242 started at `1000`.
-fn launched(state_dir: &Path, instance: Instance, tasks: &[u64]) {
-    let planned = PlannedLaunch {
-        instance,
-        tasks: tasks.iter().copied().map(TicketId::from).collect(),
-    };
+fn launched(state_dir: &Path, instance: Instance, _tasks: &[u64]) {
+    let planned = PlannedLaunch { instance };
     let holder = Holder {
         pid: 4242,
         start: "1000".to_owned(),
@@ -135,7 +132,7 @@ fn the_screen_joins_board_run_folders_and_guard() {
          claimed   1 (#5)\n\
          questions 1 (#9)\n\
          running   1\n\
-         \x20 team instance 1 on #2: #5\n\
+         \x20 team instance 1 on #2\n\
          slots     1 free of 2\n\
          machine: 0 instances in 0 projects, 0.0 units in use\n\
          budget: no machine cap\n\
@@ -471,7 +468,7 @@ fn a_batch_of_tasks_holds_one_slot() {
 
     let status = status(&board(), dir.path(), 4, &all_alive).expect("status");
 
-    assert_eq!(status.running.len(), 3, "every task is listed");
+    assert_eq!(status.running.len(), 2, "each instance is listed once");
     assert_eq!(status.running_count, 2);
     assert_eq!(
         status.slots,
@@ -481,7 +478,7 @@ fn a_batch_of_tasks_holds_one_slot() {
 }
 
 #[test]
-fn the_running_line_counts_instances_and_each_is_listed_once_with_its_tasks() {
+fn the_running_line_counts_instances_and_each_is_listed_once() {
     let dir = tempfile::tempdir().expect("tempdir");
     launched(dir.path(), instance(3, 37), &[46, 47]);
     launched(dir.path(), instance(4, 7), &[5]);
@@ -492,7 +489,7 @@ fn the_running_line_counts_instances_and_each_is_listed_once_with_its_tasks() {
 
     assert!(
         text.contains(
-            "running   2\n  team instance 3 on #37: #46 #47\n  team instance 4 on #7: #5\n\
+            "running   2\n  team instance 3 on #37\n  team instance 4 on #7\n\
              slots     0 free of 2\n"
         ),
         "{text}"

@@ -1,14 +1,13 @@
 use super::*;
 use crate::domain::{InstanceNumber, RoleName, TicketId};
 
-fn planned(number: u32, epic: u64, tasks: &[u64]) -> PlannedLaunch {
+fn planned(number: u32, epic: u64, _tasks: &[u64]) -> PlannedLaunch {
     PlannedLaunch {
         instance: Instance {
             role: RoleName::from("team"),
             epic: TicketId::from(epic),
             number: InstanceNumber::from(number),
         },
-        tasks: tasks.iter().copied().map(TicketId::from).collect(),
     }
 }
 
@@ -35,7 +34,7 @@ fn a_reserved_launch_runs_while_its_holder_lives() {
         run.record,
         Some(LaunchRecord {
             instance: "team instance 16 on #71".to_owned(),
-            tasks: vec![72, 85],
+            tasks: Vec::new(),
             reserved_at: AT.to_owned(),
             started_at: None,
         })

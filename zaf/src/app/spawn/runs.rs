@@ -2,7 +2,7 @@
 //!
 //! `<state dir>/runs/<instance slug>/` holds, beside the brief and the report:
 //!
-//! - `launch.json`: the instance, its tasks, when the tick reserved it and when it started.
+//! - `launch.json`: the instance, its (now empty) tasks, when the tick reserved it and when it started.
 //! - `pid`: the process holding the launch, as a [`Holder`]. The tick writes itself there
 //!   when it reserves the launch, the runner writes the instance's own process once it
 //!   starts, and the tick removes the file when the run ends.
@@ -39,7 +39,8 @@ pub const LOST: &str = "lost";
 pub struct LaunchRecord {
     /// The instance, as `<role> instance <n> on #<epic>`.
     pub instance: String,
-    /// The tasks it was launched with.
+    /// The tasks it was launched with: none now, since no launch builds a task; kept so run
+    /// folders written before then still read.
     pub tasks: Vec<u64>,
     /// When the tick reserved it, RFC 3339.
     pub reserved_at: String,
@@ -201,7 +202,7 @@ pub fn reserve(
     })?;
     let record = LaunchRecord {
         instance: planned.instance.to_string(),
-        tasks: planned.tasks.iter().map(|task| task.get()).collect(),
+        tasks: Vec::new(),
         reserved_at: at.to_owned(),
         started_at: None,
     };
