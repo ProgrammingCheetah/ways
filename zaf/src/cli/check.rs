@@ -129,7 +129,7 @@ fn check_task_with_board(
     let ports = TaskPorts {
         board,
         gate_in: &|dir| composition.gate_in_with_env(dir, env),
-        shell_in: &|dir| Box::new(DirShell(composition.shell_in_with_env(dir, env))),
+        shell_in: &|dir| Box::new(DirShell(composition.tests_shell_in_with_env(dir, env))),
     };
     check_task_in_slice(path, composition, &ports, target, task)
 }

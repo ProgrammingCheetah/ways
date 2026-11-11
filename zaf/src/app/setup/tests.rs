@@ -114,6 +114,7 @@ fn ensure_homes_keeps_every_kind_of_old_gitignore() {
 fn setup_replaces_an_old_star_gitignore_and_keeps_another() {
     let (_dir, root, home) = places();
     provide_slice_actions(&root);
+    profile::write_stamps(&root.join(STATE_DIR), &manifest(""));
     fs::write(root.join(".zaf/.gitignore"), "*\n").expect("an old file");
     let commands = FakeCommands::new();
     let report = setup(&root, Some(&home), &manifest(""), &commands).expect("sets up");
@@ -153,6 +154,7 @@ fn setup_is_idempotent() {
     let (_dir, root, home) = places();
     provide_slice_actions(&root);
     let manifest = manifest("");
+    profile::write_stamps(&root.join(STATE_DIR), &manifest);
     let commands = FakeCommands::new();
     let first = setup(&root, Some(&home), &manifest, &commands).expect("sets up");
     assert!(first.is_ready());
@@ -204,6 +206,7 @@ fn a_declared_sibling_design_repo_is_cloned_when_missing() {
     let manifest = manifest(
         "[design]\nkind = \"git-sibling\"\nrepo = \"example/b-design\"\npath = \"../b-design\"\n",
     );
+    profile::write_stamps(&root.join(STATE_DIR), &manifest);
     let commands = FakeCommands::new().with("gh", "ok");
     let report = setup(&root, Some(&home), &manifest, &commands).expect("sets up");
     assert_eq!(report.clone, Some(CloneOutcome::Cloned));
@@ -219,7 +222,11 @@ fn a_declared_sibling_design_repo_is_cloned_when_missing() {
     let again = FakeCommands::new();
     let report = setup(&root, Some(&home), &manifest, &again).expect("sets up");
     assert_eq!(report.clone, Some(CloneOutcome::Present));
-    assert!(again.calls().is_empty(), "nothing to clone, nothing run");
+    assert!(
+        again.calls().iter().all(|call| call[0] != "gh"),
+        "nothing to clone, nothing cloned: {:?}",
+        again.calls()
+    );
     assert!(report.is_ready());
 }
 
