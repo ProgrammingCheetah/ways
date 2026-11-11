@@ -1815,6 +1815,39 @@ fn epics_read_the_latest_signature_and_a_challengers_report() {
 }
 
 #[test]
+fn an_epic_is_planned_when_the_latest_planning_exit_was_posted() {
+    let planning = |number: u32| Instance {
+        role: RoleName::from("planning"),
+        epic: TicketId::from(1),
+        number: InstanceNumber::from(number),
+    };
+    let comment =
+        |text: String, created: &str| serde_json::json!({"body": text, "createdAt": created});
+    let epics = serde_json::json!([{
+        "number": 1,
+        "title": "tickets",
+        "body": "Goal: one.",
+        "labels": [{"name": "epic"}],
+        "comments": [
+            comment(format!("<!-- zaf:exit {} done -->\nfirst", planning(1)), "2026-11-01T10:00:00Z"),
+            comment(format!("<!-- zaf:exit {} done -->\nlast", planning(2)), "2026-11-02T11:30:00Z"),
+            // Not a planning exit: another role's exit and a plain comment.
+            comment(format!("<!-- zaf:exit {} done -->", instance(4)), "2026-11-03T00:00:00Z"),
+            comment("planning exit, said in words".to_owned(), "2026-11-04T00:00:00Z"),
+        ],
+    }]);
+    let fake = FakeGh::new();
+    fake.on("issue list --label epic *", &epics.to_string())
+        .on("issue list --label task *", "[]");
+
+    let read = fake.board().epics().expect("epics read");
+    assert_eq!(
+        read[0].planned_at,
+        Some(humantime::parse_rfc3339("2026-11-02T11:30:00Z").expect("a time"))
+    );
+}
+
+#[test]
 fn a_signature_is_one_marked_comment_on_the_epic() {
     use crate::domain::Signature;
 

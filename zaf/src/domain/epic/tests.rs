@@ -22,6 +22,7 @@ fn epic() -> Epic {
         body: BODY.into(),
         tasks: Vec::new(),
         signature: None,
+        planned_at: None,
         challenged: false,
     }
 }

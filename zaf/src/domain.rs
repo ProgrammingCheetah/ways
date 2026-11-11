@@ -28,7 +28,8 @@ pub use ask::{
 };
 pub use budget::{Budget, DEFAULT_RESERVE, Fit, SizeTable};
 pub use epic::{
-    BodyHash, CHALLENGER_ROLE, Epic, EpicStage, EpicTask, GroupName, Signature, SignatureError,
+    BodyHash, CHALLENGER_ROLE, Epic, EpicStage, EpicTask, GroupName, PLANNING_ROLE, Signature,
+    SignatureError,
 };
 pub use finding::{Finding, FindingSource, Location, Severity};
 pub use ids::{IdError, PageId, TicketId};
