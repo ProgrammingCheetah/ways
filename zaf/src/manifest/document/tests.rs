@@ -861,3 +861,126 @@ fn a_higher_layer_replaces_a_list() {
         "a type only the lower layer lists keeps its list"
     );
 }
+
+/// A project file that sets the slots to 2 and the guard thresholds, for the local layer to
+/// lay over.
+fn project_file() -> String {
+    format!("[project]\nname = \"p\"\n{BOARD}[spawn]\nslots = 2\nguard = [60, 80, 90]\n")
+}
+
+/// The failure of loading `local` as `.zaf/local.toml` over the project file, as text.
+fn local_refusal(local: &str) -> String {
+    let project = project_file();
+    load_layers(&[(".zaf.toml", &project), (".zaf/local.toml", local)], None)
+        .expect_err(local)
+        .to_string()
+}
+
+#[test]
+fn local_toml_overrides_the_project_slots() {
+    let project = project_file();
+    let folder = "[spawn]\nslots = 3\n";
+    let manifest = load_layers(
+        &[
+            (".zaf.toml", &project),
+            (".zaf/config.toml", folder),
+            (".zaf/local.toml", "[spawn]\nslots = 4\n"),
+        ],
+        None,
+    )
+    .expect("loads");
+    assert_eq!(manifest.spawn.slots, 4, "the local file is the top layer");
+    assert_eq!(
+        manifest.spawn.guard,
+        [60, 80, 90],
+        "what local leaves out stays"
+    );
+}
+
+#[test]
+fn local_toml_refuses_other_settings() {
+    for (local, key) in [
+        ("[forbidden]\ncommands = [\"x\"]\n", "[forbidden]"),
+        ("[requires]\njj = \"*\"\n", "[requires]"),
+        ("[spawn]\nguard = [1, 2, 3]\n", "[spawn] guard"),
+        ("[spawn]\nslots = 4\nguard = [1, 2, 3]\n", "[spawn] guard"),
+        ("[runners.x]\ncommand = \"x\"\n", "[runners]"),
+        ("[project]\nname = \"other\"\n", "[project]"),
+        ("[gate]\nfull = \"true\"\n", "[gate] full"),
+        ("[auth]\ntoken_env = \"X\"\n[env]\nA = \"b\"\n", "[env]"),
+        ("[report]\nother = 1\n", "[report] other"),
+        ("[forbidden]\n", "[forbidden]"),
+        ("stray = 1\n", "stray"),
+    ] {
+        let message = local_refusal(local);
+        assert!(
+            message.contains(&format!(
+                ".zaf/local.toml may set only [spawn] slots, [gate] slot and its own tables; \
+                 it sets {key}"
+            )),
+            "{local}: {message}"
+        );
+    }
+}
+
+#[test]
+fn local_toml_refuses_the_machine_budget() {
+    // The machine budget, reserve and size table are #414's and #434's: not yet allowed here.
+    for (local, key) in [
+        ("[spawn]\nbudget = 5\n", "[spawn] budget"),
+        ("[spawn]\nreserve = 10\n", "[spawn] reserve"),
+        ("[spawn.sizes]\nS = 1\n", "[spawn] sizes"),
+    ] {
+        let message = local_refusal(local);
+        assert!(message.contains(&format!("it sets {key}")), "{message}");
+        assert!(message.contains(".zaf/local.toml"), "{message}");
+    }
+}
+
+#[test]
+fn local_toml_keeps_the_weekly_budget() {
+    let project = project_file();
+    let with_local = load_layers(
+        &[
+            (".zaf.toml", &project),
+            (".zaf/local.toml", "[budget]\nweekly_usd = 100\n"),
+        ],
+        None,
+    )
+    .expect("a weekly budget loads");
+    let without = load_layers(&[(".zaf.toml", &project)], None).expect("loads");
+    assert_eq!(with_local, without, "[budget] never reaches the manifest");
+}
+
+#[test]
+fn local_toml_keeps_its_own_tables() {
+    let project = project_file();
+    let local = "[budget]\nweekly_usd = 100\n\
+                 [report.prices]\nclaude-opus-5-5 = [8.0, 10.0, 0.4, 40.0]\n\
+                 [auth]\ntoken_env = \"ZAF_TOKEN\"\n\
+                 [spawn]\nslots = 6\n";
+    let manifest = load_layers(&[(".zaf.toml", &project), (".zaf/local.toml", local)], None)
+        .expect("its own tables load");
+    assert_eq!(manifest.spawn.slots, 6);
+    let without = load_layers(&[(".zaf.toml", &project)], None).expect("loads");
+    assert_eq!(
+        Manifest {
+            spawn: without.spawn.clone(),
+            ..manifest
+        },
+        without,
+        "only the slots moved"
+    );
+}
+
+#[test]
+fn no_local_toml_loads_as_before() {
+    let project = project_file();
+    let manifest = load_layers(&[(".zaf.toml", &project)], None).expect("loads");
+    assert_eq!(manifest.spawn.slots, 2);
+    assert_eq!(manifest.spawn.guard, [60, 80, 90]);
+    // An empty local file changes nothing either.
+    let empty = load_layers(&[(".zaf.toml", &project), (".zaf/local.toml", "")], None)
+        .expect("an empty local file loads");
+    assert_eq!(empty, manifest);
+}

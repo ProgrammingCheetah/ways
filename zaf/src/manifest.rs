@@ -16,7 +16,8 @@ mod sections;
 pub use document::Manifest;
 pub use errors::ManifestError;
 pub use layers::{
-    FOLDER_FILE, HOME_FILE, LEGACY_FILE, ProjectFiles, ROOT_FILE, workspaces_path_lenient,
+    FOLDER_FILE, HOME_FILE, LEGACY_FILE, LOCAL_FILE, ProjectFiles, ROOT_FILE, files_read,
+    workspaces_path_lenient,
 };
 pub use requirement::{Requirement, RequirementError};
 pub use sections::{
