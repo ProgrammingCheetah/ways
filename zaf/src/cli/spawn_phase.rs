@@ -7,8 +7,10 @@
 //! `zaf do` from the project root with `ZAF_RUN` (the run folder), `ZAF_SIZE` (the task's size)
 //! and `ZAF_INSTANCE` (`<action> instance <n> on #<epic>`) set, records the child's process in
 //! the run folder's `pid`, waits on it, records its exit code in the run folder's `exit` file (a
-//! signal `n` records `128 + n`) as its first step once it has ended, and exits with that code.
-//! It serves a model action and a wait alike. The post-phase hook and the tick are later steps.
+//! signal `n` records `128 + n`) as its first step once it has ended, then runs the `post-phase`
+//! hook if there is one, told `{"task", "action", "exit"}` on stdin (a hook that fails is logged in
+//! the run folder's `post-phase.log` and changes nothing), and exits with the child's code. It
+//! serves a model action and a wait alike. The tick is a later step.
 
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
@@ -16,12 +18,19 @@ use std::process::{Command, Stdio};
 
 use super::Cli;
 use super::exit::{self, BACKEND, OK, REFUSED};
+use super::slice::VERSION_VAR;
 use crate::adapters::process;
-use crate::app::actions::{ACTION_VAR, CHAIN_VAR, DEPTH_VAR, LOG_VAR};
+use crate::app::actions::{
+    ACTION_VAR, CHAIN_VAR, Caller, DEPTH_VAR, HOOKS_DIR, LOG_VAR, MINUTE, Nesting,
+    RunRequest as ActionRequest, RunResult, hook, last_lines, run_hook_with_input,
+};
 use crate::app::spawn::phase::{self, PhaseError, Ports, Started};
 use crate::composition::{Composition, STATE_DIR, zaf_home};
 use crate::domain::TicketId;
 use crate::ports::{Holder, INSTANCE_VAR, RUN_VAR, SIZE_VAR};
+
+/// The lines of a failed hook's log that its run-folder log keeps.
+const HOOK_TAIL_LINES: usize = 10;
 
 /// Starts `action` as `task`'s phase and returns once its launcher is started.
 pub fn run(cli: &Cli, task: TicketId, action: &str) -> u8 {
@@ -120,6 +129,77 @@ fn clear_action_state(command: &mut Command) {
     }
 }
 
+/// Runs the `post-phase` hook, if there is one, once the exit is recorded (ruling 21): it is told
+/// the task, the action and the exit code on stdin. A hook that fails is logged in the run folder
+/// and changes nothing else; no hook file, nothing runs. The launcher's exit stays the child's.
+fn post_phase(path: &str, run_dir: &Path, launch: &phase::Launch, code: i32) {
+    let Ok(composition) = Composition::discover_here() else {
+        return;
+    };
+    let root = composition.root();
+    let home = match zaf_home().map(std::path::absolute) {
+        Some(Ok(home)) => home,
+        // With no home there is no machine tier, so the project's hook alone is looked for.
+        _ => root.join(STATE_DIR),
+    };
+    if hook(root, &home, "post-phase").is_none() {
+        return;
+    }
+    let name = format!("{HOOKS_DIR}/post-phase");
+    let failure = |text: String| {
+        if let Err(reason) = phase::record_hook_failure(run_dir, &text) {
+            eprintln!("zaf {path}: {reason}");
+        }
+    };
+    let nesting = match Nesting::from_env() {
+        Ok(nesting) => nesting,
+        Err(reason) => return failure(format!("NOT_RUN {name}: {reason}\n")),
+    };
+    let caller = match Caller::from_env() {
+        Ok(caller) => caller,
+        Err(reason) => return failure(format!("NOT_RUN {name}: {reason}\n")),
+    };
+    let version = std::env::var(VERSION_VAR).ok();
+    let env = match composition.manifest().env.resolve(root, version.as_deref()) {
+        Ok(env) => env,
+        Err(error) => return failure(format!("NOT_RUN {name}: {error}\n")),
+    };
+    let input = phase::post_phase_input(launch.task, &launch.action, code);
+    let outcome = run_hook_with_input(
+        &ActionRequest {
+            name: &name,
+            args: &[],
+            cwd: root,
+            project_root: Some(root),
+            home: &home,
+            timeout_minutes: composition.manifest().actions.timeout_minutes,
+            minute: MINUTE,
+            nesting,
+            caller,
+            only: None,
+            slice: None,
+            env,
+        },
+        Some(&input),
+    );
+    if outcome.result == RunResult::Ok {
+        return;
+    }
+    let mut text = outcome
+        .headline()
+        .unwrap_or_else(|| format!("{name} failed"));
+    text.push('\n');
+    if let Some(log) = &outcome.log
+        && let Ok(lines) = last_lines(log, HOOK_TAIL_LINES)
+    {
+        for line in lines {
+            text.push_str(&line);
+            text.push('\n');
+        }
+    }
+    failure(text);
+}
+
 /// The launcher: runs the action of the phase run folder `run_dir` and waits for it.
 pub fn launcher(cli: &Cli, run_dir: &Path) -> u8 {
     let path = cli.verb.path();
@@ -172,8 +252,9 @@ pub fn launcher(cli: &Cli, run_dir: &Path) -> u8 {
     match child.wait() {
         Ok(status) => {
             let code = phase::exit_code(status.code(), status.signal());
-            // The first step once the child has ended, before post-phase (#439) or a tick (#440).
-            if let Err(reason) = phase::end(&run_dir, code, &|| {}) {
+            // The exit first, then the post-phase hook; a tick (#440) comes after both.
+            let after = || post_phase(&path, &run_dir, &launch, code);
+            if let Err(reason) = phase::end(&run_dir, code, &after) {
                 eprintln!("zaf {path}: {reason}");
             }
             u8::try_from(code).unwrap_or(BACKEND)

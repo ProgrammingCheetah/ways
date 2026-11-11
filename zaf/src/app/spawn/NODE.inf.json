@@ -89,6 +89,16 @@
       "node": false
     },
     {
+      "name": "start.rs",
+      "role": "tick step 6: plan the one model phase to start, the longest ready (or failed wait's on-fail) that fits the budget, and start it without waiting",
+      "node": false
+    },
+    {
+      "name": "start/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
       "name": "state.rs",
       "role": ".zaf/spawn.state, the instance counter alone; derive() adds the launches that run now",
       "node": false
