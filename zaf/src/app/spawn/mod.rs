@@ -57,11 +57,11 @@ pub use inline::{TickTask, run_inline, run_zaf_actions};
 pub use outcome::{Ran, Started, TickOutcome};
 pub use question::{ask_failed_waits, ask_outcome, question_text};
 use runs::Run;
-pub use start::{InUse, PlannedPhase, TaskStanding, start_outcome, start_planned};
+pub use start::{EPIC_SIZE, InUse, PlannedModel, TaskStanding, start_outcome, start_planned};
 pub use state::{SpawnState, derive, load, save};
 pub use tick::{
-    EpicSkip, NOT_BUILT, PLANNING_ROLE, PastLaunch, Plan, PlannedLaunch, Settings, SlotCount,
-    Snapshot, TEAM_ROLE, TaskSkip,
+    EpicCandidate, EpicSkip, NOT_BUILT, PLANNING_ROLE, PastLaunch, Plan, PlannedLaunch, Settings,
+    SlotCount, Snapshot, TEAM_ROLE, TaskSkip,
 };
 pub use waits::{launch_outcome, launch_waits};
 

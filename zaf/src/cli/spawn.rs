@@ -25,7 +25,7 @@ use crate::app::actions::{
 };
 use crate::app::profile;
 use crate::app::spawn::{
-    self, DryLaunch, LaunchContext, LaunchPorts, Launched, PlannedPhase, Prepared, SpawnError,
+    self, DryLaunch, LaunchContext, LaunchPorts, Launched, PlannedModel, Prepared, SpawnError,
     TEAM_ROLE,
 };
 use crate::composition::{Composition, STATE_DIR, zaf_home};
@@ -180,7 +180,7 @@ pub fn run_zaf_action(task: TicketId, action: &ActionName) -> u8 {
 /// hands [`spawn::start_planned`]. It waits only for `zaf spawn phase`, which returns once the
 /// phase's launcher is started as its own process, never for the phase itself (#421 ruling 19).
 /// Its refusal or failure is on stderr; a non-zero exit is `Err` naming the code.
-pub fn start_phase(planned: &PlannedPhase) -> Result<(), String> {
+pub fn start_phase(planned: &PlannedModel) -> Result<(), String> {
     let exe = std::env::current_exe()
         .map_err(|error| format!("cannot find the zaf binary to start a phase: {error}"))?;
     spawn_phase_with(Command::new(exe), planned)
@@ -188,12 +188,16 @@ pub fn start_phase(planned: &PlannedPhase) -> Result<(), String> {
 
 /// Runs `<zaf> spawn phase <task> <action>`, `zaf` the command that stands for the binary, and
 /// waits for that command alone. Its stdout, the `started` line, is dropped so a `--json` tick
-/// prints one document; its stderr is the tick's.
-fn spawn_phase_with(mut zaf: Command, planned: &PlannedPhase) -> Result<(), String> {
+/// prints one document; its stderr is the tick's. An epic's launch is not a phase: `zaf spawn
+/// phase` has no verb for it yet, so it is an error until the tick's launcher is wired to it.
+fn spawn_phase_with(mut zaf: Command, planned: &PlannedModel) -> Result<(), String> {
+    let PlannedModel::Phase { task, action, .. } = planned else {
+        return Err("an epic launch is not started by zaf spawn phase".to_owned());
+    };
     let status = zaf
         .args(["spawn", "phase"])
-        .arg(planned.task.get().to_string())
-        .arg(planned.action.as_str())
+        .arg(task.get().to_string())
+        .arg(action.as_str())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .status()
@@ -205,9 +209,8 @@ fn spawn_phase_with(mut zaf: Command, planned: &PlannedPhase) -> Result<(), Stri
         .code()
         .map_or_else(|| "a signal".to_owned(), |code| format!("exit {code}"));
     Err(format!(
-        "zaf spawn phase {} {} ended with {code}",
-        planned.task.get(),
-        planned.action
+        "zaf spawn phase {} {action} ended with {code}",
+        task.get()
     ))
 }
 
@@ -422,8 +425,8 @@ mod tests {
         zaf
     }
 
-    fn planned() -> PlannedPhase {
-        PlannedPhase {
+    fn planned() -> PlannedModel {
+        PlannedModel::Phase {
             task: TicketId::from(42),
             action: crate::app::actions::ActionName::from("implement"),
             units: 4,
@@ -440,6 +443,19 @@ mod tests {
         assert!(began.elapsed() < std::time::Duration::from_secs(10));
         let args = std::fs::read_to_string(dir.path().join("args")).expect("the args");
         assert_eq!(args.trim(), "spawn phase 42 implement");
+    }
+
+    #[test]
+    fn an_epic_launch_is_not_started_as_a_phase() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let zaf = fake_zaf(dir.path(), "exit 0");
+        let epic = PlannedModel::Epic {
+            epic: TicketId::from(7),
+            role: RoleName::from("planning"),
+            units: 1,
+        };
+        assert!(spawn_phase_with(zaf, &epic).is_err());
+        assert!(!dir.path().join("args").exists());
     }
 
     #[test]

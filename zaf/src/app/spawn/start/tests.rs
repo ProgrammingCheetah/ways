@@ -71,6 +71,15 @@ fn failed(task: u64, size: TaskSize, since: u64, on_fail: Option<&str>) -> TaskS
     )
 }
 
+/// An epic whose `role` launch has waited since `since`.
+fn epic(epic: u64, role: &str, since: u64) -> EpicCandidate {
+    EpicCandidate {
+        epic: TicketId::from(epic),
+        role: RoleName::from(role),
+        since: time(since),
+    }
+}
+
 /// A budget of `units`, the default reserve and sizes.
 fn budget(units: u32) -> Budget {
     Budget {
@@ -89,18 +98,26 @@ fn in_use(units: u64) -> InUse {
     }
 }
 
-fn planned(task: u64, action: &str, units: u32) -> PlannedPhase {
-    PlannedPhase {
+fn planned(task: u64, action: &str, units: u32) -> PlannedModel {
+    PlannedModel::Phase {
         task: TicketId::from(task),
         action: name(action),
         units,
     }
 }
 
-/// A start that records each phase it is handed and launches nothing.
+fn planned_epic(epic: u64, role: &str, units: u32) -> PlannedModel {
+    PlannedModel::Epic {
+        epic: TicketId::from(epic),
+        role: RoleName::from(role),
+        units,
+    }
+}
+
+/// A start that records each model it is handed and launches nothing.
 fn recording(
-    calls: &mut Vec<PlannedPhase>,
-) -> impl FnMut(&PlannedPhase) -> Result<(), Infallible> + '_ {
+    calls: &mut Vec<PlannedModel>,
+) -> impl FnMut(&PlannedModel) -> Result<(), Infallible> + '_ {
     move |planned| {
         calls.push(planned.clone());
         Ok(())
@@ -111,7 +128,7 @@ fn recording(
 fn the_longest_ready_starts() {
     let standings = [ready(441, TaskSize::S, 20), ready(440, TaskSize::S, 10)];
     assert_eq!(
-        plan(&standings, &in_use(0), &budget(32)),
+        plan(&standings, &[], &in_use(0), &budget(32)),
         Some(planned(440, "implement", 2)),
         "#440 has been ready longer, whatever the order it is read in"
     );
@@ -122,13 +139,13 @@ fn a_phase_too_big_is_passed() {
     // 3 of 6 units in use: the M (4) waiting longest does not fit, the S (2) behind it does.
     let standings = [ready(440, TaskSize::M, 10), ready(441, TaskSize::S, 20)];
     assert_eq!(
-        plan(&standings, &in_use(3), &budget(6)),
+        plan(&standings, &[], &in_use(3), &budget(6)),
         Some(planned(441, "implement", 2)),
         "the M is passed for the S that fits"
     );
     // Passed, it keeps its weight: once the budget frees, it is first again.
     assert_eq!(
-        plan(&standings, &in_use(0), &budget(6)),
+        plan(&standings, &[], &in_use(0), &budget(6)),
         Some(planned(440, "implement", 4))
     );
     // Passed for a full project, it keeps its weight as well.
@@ -136,7 +153,7 @@ fn a_phase_too_big_is_passed() {
         running_here: 4,
         ..in_use(0)
     };
-    assert_eq!(plan(&standings, &full, &budget(6)), None);
+    assert_eq!(plan(&standings, &[], &full, &budget(6)), None);
 }
 
 #[test]
@@ -147,7 +164,7 @@ fn a_failed_wait_starts_its_on_fail() {
         ready(442, TaskSize::XS, 20),
     ];
     assert_eq!(
-        plan(&standings, &in_use(0), &budget(32)),
+        plan(&standings, &[], &in_use(0), &budget(32)),
         Some(planned(441, "fix", 4)),
         "fix starts at the task's size, M; a failed wait with no on-fail is not an item"
     );
@@ -162,6 +179,7 @@ fn nothing_fits_nothing_starts() {
     let mut calls = Vec::new();
     let outcome = start_outcome(
         &standings,
+        &[],
         &in_use(30),
         &budget(32),
         &mut recording(&mut calls),
@@ -199,7 +217,7 @@ fn nothing_fits_nothing_starts() {
             },
         ),
     ];
-    assert_eq!(plan(&others, &in_use(0), &budget(32)), None);
+    assert_eq!(plan(&others, &[], &in_use(0), &budget(32)), None);
 }
 
 #[test]
@@ -212,6 +230,7 @@ fn one_model_per_tick() {
     let mut calls = Vec::new();
     let outcome = start_outcome(
         &standings,
+        &[],
         &in_use(0),
         &budget(32),
         &mut recording(&mut calls),
@@ -221,6 +240,83 @@ fn one_model_per_tick() {
         calls,
         vec![planned(440, "implement", 1)],
         "three fit, one starts"
+    );
+    assert_eq!(outcome.units(), 1);
+}
+
+#[test]
+fn an_older_phase_starts_before_an_epic() {
+    let standings = [ready(440, TaskSize::M, 10)];
+    let epics = [epic(421, "planning", 20)];
+    assert_eq!(
+        plan(&standings, &epics, &in_use(0), &budget(32)),
+        Some(planned(440, "implement", 4)),
+        "the phase has waited longer than the epic's stage"
+    );
+    // The other way round, the epic's stage has waited longer: it starts, the phase waits.
+    let older = [epic(421, "challenger", 5)];
+    assert_eq!(
+        plan(&standings, &older, &in_use(0), &budget(32)),
+        Some(planned_epic(421, "challenger", 1)),
+        "the epic has waited longer than the phase"
+    );
+}
+
+#[test]
+fn a_planning_launch_costs_xs() {
+    let epics = [epic(421, "planning", 10)];
+    let none = Budget {
+        units: Some(32),
+        ..Budget::default()
+    };
+    assert_eq!(
+        plan(&[], &epics, &in_use(0), &none),
+        Some(planned_epic(
+            421,
+            "planning",
+            whole_units(none.cost(EPIC_SIZE))
+        )),
+        "an epic launch is charged at the XS size, whatever the epic"
+    );
+    assert_eq!(EPIC_SIZE, TaskSize::XS);
+    assert_eq!(
+        plan(&[], &epics, &in_use(0), &budget(32)).map(|model| model.units()),
+        Some(1)
+    );
+    // 5 of 6 units in use: an XS fits where the M (4) waiting longer does not.
+    let standings = [ready(440, TaskSize::M, 1)];
+    assert_eq!(
+        plan(&standings, &epics, &in_use(5), &budget(6)),
+        Some(planned_epic(421, "planning", 1)),
+        "the launch is passed over to by size, not by role"
+    );
+}
+
+#[test]
+fn epics_share_the_one_model_start() {
+    let standings = [ready(440, TaskSize::XS, 30)];
+    let epics = [epic(421, "planning", 20), epic(422, "challenger", 10)];
+    let mut calls = Vec::new();
+    let outcome = start_outcome(
+        &standings,
+        &epics,
+        &in_use(0),
+        &budget(32),
+        &mut recording(&mut calls),
+    )
+    .expect("the tick passes");
+    assert_eq!(
+        calls,
+        vec![planned_epic(422, "challenger", 1)],
+        "three fit, one starts: the epic that has waited longest"
+    );
+    assert_eq!(
+        outcome.started,
+        Some(Started {
+            task: TicketId::from(422),
+            action: name("challenger"),
+            units: 1,
+        })
     );
     assert_eq!(outcome.units(), 1);
 }
@@ -240,7 +336,7 @@ fn the_tick_does_not_wait() {
     let standings = [ready(440, TaskSize::XS, 10)];
     let mut phase = None;
     let begun = Instant::now();
-    let outcome = start_outcome(&standings, &in_use(0), &budget(32), &mut |_| {
+    let outcome = start_outcome(&standings, &[], &in_use(0), &budget(32), &mut |_| {
         phase = Some(Reap(Command::new("sleep").arg("30").spawn()?));
         Ok::<(), std::io::Error>(())
     })
@@ -264,6 +360,7 @@ fn the_outcome_names_the_start() {
     let mut calls = Vec::new();
     let outcome = start_outcome(
         &standings,
+        &[],
         &in_use(0),
         &budget(32),
         &mut recording(&mut calls),
@@ -287,7 +384,7 @@ fn the_outcome_names_the_start() {
 #[test]
 fn a_failed_launch_records_no_start() {
     let standings = [ready(440, TaskSize::XS, 10)];
-    let result = start_outcome(&standings, &in_use(0), &budget(32), &mut |_| {
+    let result = start_outcome(&standings, &[], &in_use(0), &budget(32), &mut |_| {
         Err("no launch")
     });
     assert_eq!(result, Err("no launch"));
@@ -306,7 +403,7 @@ fn the_standing_is_derived_from_the_task() {
     };
     let standing = TaskStanding::of(&task, TaskSize::M);
     assert_eq!(
-        plan(&[standing], &in_use(0), &budget(32)),
+        plan(&[standing], &[], &in_use(0), &budget(32)),
         Some(planned(440, "implement", 4))
     );
 }
@@ -316,7 +413,7 @@ fn with_no_budget_only_the_slots_decide() {
     let standings = [ready(440, TaskSize::M, 10)];
     let none = Budget::default();
     assert_eq!(
-        plan(&standings, &in_use(1000), &none),
+        plan(&standings, &[], &in_use(1000), &none),
         Some(planned(440, "implement", 4))
     );
 }

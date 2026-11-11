@@ -251,6 +251,8 @@ impl Board for FakeBoard {
                     })
                     .collect(),
                 signature: epic.signature.clone(),
+                // The fake keeps no time on a comment.
+                planned_at: None,
                 challenged: epic
                     .reports
                     .iter()

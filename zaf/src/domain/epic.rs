@@ -16,6 +16,9 @@ use crate::newtype::text_newtype;
 /// The role whose report on an epic means the epic was challenged.
 pub const CHALLENGER_ROLE: &str = "challenger";
 
+/// The role that turns a signed epic into tasks.
+pub const PLANNING_ROLE: &str = "planning";
+
 text_newtype! {
     /// The name in a task's `group:<name>` label.
     GroupName
@@ -162,6 +165,10 @@ pub struct Epic {
     pub tasks: Vec<EpicTask>,
     /// The latest signature on it, whether or not it still matches the body.
     pub signature: Option<Signature>,
+    /// When the latest planning instance's exit marker was posted on it: the moment planning
+    /// ended, which no other fact records (the ruling on #459). `None` when no such marker is
+    /// on it, or the board does not time its comments.
+    pub planned_at: Option<SystemTime>,
     /// Whether the challenger's report is on it.
     pub challenged: bool,
 }
