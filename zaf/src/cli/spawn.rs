@@ -23,12 +23,12 @@ use super::slice::VERSION_VAR;
 use crate::adapters::process;
 use crate::app::actions::{
     ActionName, Caller, HOOKS_DIR, MINUTE, Nesting, RunRequest as ActionRequest, RunResult, hook,
-    last_lines, run_hook,
+    last_lines, run_hook_with_input,
 };
 use crate::app::profile;
 use crate::app::spawn::{
     self, DryLaunch, LaunchContext, LaunchPorts, Launched, PlannedPhase, Prepared, SpawnError,
-    TEAM_ROLE,
+    TEAM_ROLE, TickOutcome,
 };
 use crate::composition::{Composition, STATE_DIR, zaf_home};
 use crate::domain::{CHALLENGER_ROLE, Instance, RoleName, TicketId};
@@ -63,6 +63,25 @@ pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool, no_wait:
     if !dry_run && let Some(code) = pre_tick(&path, &composition, version) {
         return code;
     }
+    let code = tick(cli, &path, &composition, version, dry_run);
+    // Last of all, idle ticks and failed ones included; the hook's failure changes nothing, so the
+    // code is the tick's own. A dry run is no tick and runs no hook.
+    if !dry_run {
+        post_tick(&path, &composition, version);
+    }
+    code
+}
+
+/// What this tick did, for the `post-tick` hook. The steps that fill a [`TickOutcome`] (the model
+/// phase started, the waits launched, the `zaf` actions run, the questions raised) are not wired
+/// into this tick yet, so none is reported and the outcome says idle.
+fn outcome_of_tick() -> TickOutcome {
+    TickOutcome::default()
+}
+
+/// The tick itself, everything between the `pre-tick` hook and the `post-tick` one.
+fn tick(cli: &Cli, path: &str, composition: &Composition, version: &str, dry_run: bool) -> u8 {
+    let path = path.to_owned();
     let board = match composition.board() {
         Ok(board) => board,
         Err(error) => return exit::fail_composition(&path, &error),
@@ -93,7 +112,7 @@ pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool, no_wait:
         }
     };
     if dry_run {
-        return dry(cli, &path, &composition, version, &project_env);
+        return dry(cli, &path, composition, version, &project_env);
     }
     // This tick holds each launch it reserves until the runner starts the instance.
     let Some(holder) = process::this() else {
@@ -119,7 +138,7 @@ pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool, no_wait:
         }
         print!("{}", prepared.plan.render_text());
     }
-    let jobs = jobs(&composition, &prepared, version, &project_env);
+    let jobs = jobs(composition, &prepared, version, &project_env);
     let ports = |role: &RoleName| -> Result<LaunchPorts, PortError> {
         let board = composition
             .board()
@@ -165,7 +184,7 @@ pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool, no_wait:
             .collect();
         println!("{json}");
     }
-    if let Err(message) = super::report::ingest_ledger(&composition) {
+    if let Err(message) = super::report::ingest_ledger(composition) {
         eprintln!("zaf {path}: warning: {message}");
     }
     code
@@ -320,15 +339,43 @@ const HOOK_TAIL_LINES: usize = 10;
 /// run (a file not executable, a mode or a manifest `[env]` that refuses it), fails the tick: the
 /// tick does not guess that a hook that did not run did not matter.
 fn pre_tick(path: &str, composition: &Composition, version: &str) -> Option<u8> {
+    run_tick_hook(path, composition, version, "pre-tick", None)
+}
+
+/// The `post-tick` hook (docs/zaf-actions.md §5.1, #421 ruling 12): runs after every tick, idle
+/// ones too, with the tick's outcome as JSON on its stdin. A hook that fails is reported on stderr
+/// as `pre-tick`'s is and changes nothing: the tick's exit code is not read from it.
+fn post_tick(path: &str, composition: &Composition, version: &str) {
+    let outcome = outcome_of_tick();
+    spawn::post_tick::run(
+        &outcome,
+        &mut |input| match run_tick_hook(path, composition, version, "post-tick", Some(input)) {
+            None => Ok(()),
+            Some(code) => Err(format!("exit {code}")),
+        },
+        &mut |line| eprintln!("zaf {path}: {line}"),
+    );
+}
+
+/// Runs the hook of one tick event from the project root, `input` on its stdin when it has any:
+/// `None` when there is no hook or it exited 0, and `Some(BACKEND)` after printing why when it did
+/// not. The caller decides what a failure means.
+fn run_tick_hook(
+    path: &str,
+    composition: &Composition,
+    version: &str,
+    event: &str,
+    input: Option<&str>,
+) -> Option<u8> {
     let root = composition.root();
     let manifest = composition.manifest();
-    let name = format!("{HOOKS_DIR}/pre-tick");
+    let name = format!("{HOOKS_DIR}/{event}");
     let home = match zaf_home().map(std::path::absolute) {
         Some(Ok(home)) => home,
         // With no home there is no machine tier, so the project's hook alone is looked for.
         _ => root.join(STATE_DIR),
     };
-    hook(root, &home, "pre-tick")?;
+    hook(root, &home, event)?;
     let failed = |reason: String| {
         eprintln!("zaf {path}: NOT_RUN {name}: {reason}");
         Some(BACKEND)
@@ -345,7 +392,7 @@ fn pre_tick(path: &str, composition: &Composition, version: &str) -> Option<u8> 
         Ok(env) => env,
         Err(error) => return failed(error.to_string()),
     };
-    let outcome = run_hook(&ActionRequest {
+    let request = ActionRequest {
         name: &name,
         args: &[],
         cwd: root,
@@ -358,7 +405,8 @@ fn pre_tick(path: &str, composition: &Composition, version: &str) -> Option<u8> 
         only: None,
         slice: None,
         env,
-    });
+    };
+    let outcome = run_hook_with_input(&request, input);
     if outcome.result == RunResult::Ok {
         return None;
     }
