@@ -76,7 +76,7 @@
     },
     {
       "name": "spawn.rs",
-      "role": "one tick, launches joined in parallel threads; --dry-run",
+      "role": "one tick, launches joined in parallel threads; --dry-run; the tick's zaf-kind runner and its model-phase starter (zaf spawn phase, never waiting for the phase)",
       "node": false
     },
     {
