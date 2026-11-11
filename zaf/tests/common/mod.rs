@@ -107,6 +107,11 @@ impl Project {
 
     /// Runs the built `zaf` in `dir`.
     pub fn zaf_in(&self, dir: &Path, args: &[&str]) -> Output {
+        self.command_in(dir, args).output().expect("run zaf")
+    }
+
+    /// The `zaf` command `zaf_in` runs, not yet started: for a test that must not block on it.
+    pub fn command_in(&self, dir: &Path, args: &[&str]) -> Command {
         let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
         let inherited = std::env::var_os("PATH").unwrap_or_default();
         let search_path = std::env::join_paths(
@@ -136,7 +141,7 @@ impl Project {
         for (key, value) in &self.env {
             command.env(key, value);
         }
-        command.output().expect("run zaf")
+        command
     }
 
     /// Writes the four `slice-*` actions into the project's `.zaf/actions`: zaf ships none, and
