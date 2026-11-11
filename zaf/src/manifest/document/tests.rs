@@ -800,6 +800,68 @@ fn a_projects_board_needs_its_project_and_reads_its_optional_keys() {
     assert_eq!(manifest.board.state_field.as_deref(), Some("Stage"));
 }
 
+fn names(list: &[ActionName]) -> Vec<&str> {
+    list.iter().map(ActionName::as_str).collect()
+}
+
+#[test]
+fn a_type_has_its_phase_list() {
+    let manifest = load(&with(
+        "[phases]\nTask = [\"implement\", \"ci\", \"merge\"]\n",
+    ))
+    .expect("loads");
+    let list = manifest.phase_list("Task").expect("a list for Task");
+    assert_eq!(names(list), ["implement", "ci", "merge"]);
+    assert_eq!(manifest.phase_list("Bug"), None, "no list for Bug");
+    assert!(load(MINIMAL).expect("loads").phases.is_empty());
+}
+
+#[test]
+fn an_empty_list_fails() {
+    let error = load(&with("[phases]\nTask = [\"implement\"]\nBug = []\n")).expect_err("empty");
+    assert!(
+        matches!(error, ManifestError::EmptyPhaseList { .. }),
+        "{error}"
+    );
+    assert!(
+        error.to_string().contains("`Bug`"),
+        "names the type: {error}"
+    );
+}
+
+#[test]
+fn a_name_twice_fails() {
+    let error = load(&with("[phases]\nBug = [\"fix\", \"ci\", \"fix\"]\n")).expect_err("twice");
+    assert!(
+        matches!(error, ManifestError::PhaseListedTwice { .. }),
+        "{error}"
+    );
+    let text = error.to_string();
+    assert!(text.contains("`fix`") && text.contains("`Bug`"), "{text}");
+    // The same name in two types' lists is no repeat.
+    load(&with("[phases]\nTask = [\"ci\"]\nBug = [\"ci\"]\n")).expect("one list each");
+}
+
+#[test]
+fn a_higher_layer_replaces_a_list() {
+    let root = "[phases]\nTask = [\"build\", \"merge\"]\n";
+    let folder = format!(
+        "[project]\nname = \"p\"\n{BOARD}[phases]\nTask = [\"implement\", \"ci\", \"merge\"]\nBug = [\"fix\"]\n"
+    );
+    let manifest =
+        load_layers(&[(".zaf.toml", root), (".zaf/config.toml", &folder)], None).expect("loads");
+    assert_eq!(
+        names(manifest.phase_list("Task").expect("Task")),
+        ["build", "merge"],
+        "the root's list replaces the folder's whole list, never merged"
+    );
+    assert_eq!(
+        names(manifest.phase_list("Bug").expect("Bug")),
+        ["fix"],
+        "a type only the lower layer lists keeps its list"
+    );
+}
+
 /// A project file that sets the slots to 2 and the guard thresholds, for the local layer to
 /// lay over.
 fn project_file() -> String {
