@@ -315,7 +315,8 @@ pub fn record_exit(run_dir: &Path, code: i32) -> Result<(), String> {
 pub const POST_PHASE_LOG: &str = "post-phase.log";
 
 /// What the `post-phase` hook gets on stdin (ruling 21): one JSON object naming the task, the
-/// phase's action and the exit code the launcher recorded.
+/// phase's action and the exit code the launcher recorded, as
+/// `{"task": <n>, "action": "<name>", "exit": <code>}`.
 pub fn post_phase_input(task: TicketId, action: &ActionName, code: i32) -> String {
     let action = serde_json::Value::from(action.as_str()).to_string();
     format!(
