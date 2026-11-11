@@ -50,6 +50,7 @@ pub mod start;
 mod state;
 pub mod tick;
 pub mod waits;
+pub mod watch;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

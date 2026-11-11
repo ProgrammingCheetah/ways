@@ -219,6 +219,9 @@ impl Manifest {
         if self.spawn.slots == 0 {
             return Err(invalid("spawn", "slots", "must be at least 1"));
         }
+        if self.spawn.tick_minutes == 0 {
+            return Err(invalid("spawn", "tick_minutes", "must be at least 1"));
+        }
         if let Some(budget) = self.spawn.budget
             && self.spawn.reserve >= budget.get()
         {
