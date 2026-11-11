@@ -22,7 +22,8 @@ use super::metadata::{ActionKind, ActionMetadata, parse};
 use super::phase::{derive_phase, gather_phase_facts};
 use super::records::{SliceRecords, forget_records, keep_hand_back};
 use super::resolve::{
-    ResolveError, Resolved, Tier, can_shadow, check_name, list, resolve, resolve_in, same_file,
+    HOOKS_DIR, ResolveError, Resolved, Tier, can_shadow, check_name, hook_file, hook_file_in, list,
+    resolve, resolve_in, same_file,
 };
 use super::slice_env::{SliceContext, SliceEnv};
 use crate::composition::{STATE_DIR, ZAF_HOME_VAR};
@@ -369,13 +370,65 @@ pub fn read_action(
 /// Runs the action, under the contract of §3, keeps what a slice name hands back and forgets the
 /// records of a slice that ended. Every way a run can end is in the outcome.
 pub fn run_action(request: &RunRequest<'_>) -> RunOutcome {
-    forget_records(request, keep_hand_back(request, run_body(request)))
+    forget_records(
+        request,
+        keep_hand_back(request, run_body(request, find_action_of)),
+    )
+}
+
+/// Runs the hook of one event, `request.name` being `hooks/<event>` (docs/zaf-actions.md §5.1): the
+/// project's file, else the machine's, under the modes, the log and the time bound of an action,
+/// with no slice and no phase. The one way a hook runs, since `zaf do` refuses its name. The log
+/// ends with a line that holds the exit code, so the log alone says how the hook ended. A hook
+/// leaves no slice record to keep or forget.
+pub fn run_hook(request: &RunRequest<'_>) -> RunOutcome {
+    let outcome = run_body(request, find_hook_of);
+    if let Some(log) = &outcome.log {
+        let line = match outcome.result {
+            RunResult::Ok | RunResult::Fail => {
+                format!("zaf: {} exit {}\n", outcome.name, outcome.exit)
+            }
+            RunResult::NotRun => String::new(),
+        };
+        // A log that cannot take the line leaves the outcome as it was.
+        let _ = OpenOptions::new()
+            .append(true)
+            .open(log)
+            .and_then(|mut file| file.write_all(line.as_bytes()));
+    }
+    outcome
+}
+
+/// What finds the file of a run: an action by its name, a hook by its event.
+type Lookup = fn(&RunRequest<'_>) -> Result<Option<Resolved>, ResolveError>;
+
+/// The hook file of the request's `hooks/<event>`, in the project's tier first.
+fn find_hook_of(request: &RunRequest<'_>) -> Result<Option<Resolved>, ResolveError> {
+    let event = request
+        .name
+        .strip_prefix(HOOKS_DIR)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .unwrap_or(request.name);
+    match request.project_root {
+        Some(root) => hook_file(root, request.home, event),
+        None => hook_file_in(Tier::Machine, request.home, request.home, event),
+    }
+}
+
+/// The file of the request's action, as [`find_action`] has it.
+fn find_action_of(request: &RunRequest<'_>) -> Result<Option<Resolved>, ResolveError> {
+    find_action(
+        request.project_root,
+        request.home,
+        request.name,
+        request.only,
+    )
 }
 
 /// The run itself: the body from start to end, nothing kept of it.
-fn run_body(request: &RunRequest<'_>) -> RunOutcome {
+fn run_body(request: &RunRequest<'_>, lookup: Lookup) -> RunOutcome {
     let started_at = Instant::now();
-    let started = match start(request) {
+    let started = match start(request, lookup) {
         Ok(started) => started,
         Err(refused) => return RunOutcome::not_run(request.name, refused.tier, refused.reason),
     };
@@ -461,7 +514,7 @@ impl Refused {
 
 /// Everything up to a running body: the guard, the file, what it shadows, its metadata, its mode,
 /// the log, the start.
-fn start(request: &RunRequest<'_>) -> Result<Started, Refused> {
+fn start(request: &RunRequest<'_>, lookup: Lookup) -> Result<Started, Refused> {
     let RunRequest { name, nesting, .. } = request;
     if nesting.above >= MAX_DEPTH {
         return Err(Refused::before_the_file(format!(
@@ -469,7 +522,7 @@ fn start(request: &RunRequest<'_>) -> Result<Started, Refused> {
             chain_with(nesting, name)
         )));
     }
-    let found = find_action(request.project_root, request.home, name, request.only)
+    let found = lookup(request)
         .map_err(|error| Refused::before_the_file(error.to_string()))?
         .ok_or_else(|| Refused::before_the_file(NO_SUCH_ACTION.to_owned()))?;
     let refused = |reason: String| Refused {
@@ -506,7 +559,8 @@ fn start(request: &RunRequest<'_>) -> Result<Started, Refused> {
     check_phase(request, &metadata).map_err(refused)?;
     // Before a log exists: a board that cannot answer starts nothing and leaves nothing behind.
     let slice_env = SliceEnv::for_run(request, metadata.target.is_some()).map_err(refused)?;
-    let (log, log_file) = open_log(&logs_dir(request), name)
+    // A hook's name has a slash, which no log's name may.
+    let (log, log_file) = open_log(&logs_dir(request), &name.replace(['/', '\\'], "_"))
         .map_err(|error| refused(format!("cannot open a log: {error}")))?;
     let child = spawn_body(request, &found.path, &log, log_file, &slice_env).map_err(|error| {
         // Nothing ran, so nothing is left to read: no empty log beside the real ones.
@@ -587,8 +641,16 @@ fn shadowed_metadata(
     let (Some(tier), Some(root)) = (found.shadows, request.project_root) else {
         return Ok(None);
     };
-    let shadowed =
-        resolve_in(tier, root, request.home, &found.name).map_err(|error| error.to_string())?;
+    // A hook's name is `hooks/<file>`, which `resolve_in` refuses as an action's.
+    let shadowed = match found
+        .name
+        .strip_prefix(HOOKS_DIR)
+        .and_then(|rest| rest.strip_prefix('/'))
+    {
+        Some(file) => hook_file_in(tier, root, request.home, file),
+        None => resolve_in(tier, root, request.home, &found.name),
+    }
+    .map_err(|error| error.to_string())?;
     let Some(shadowed) = shadowed.filter(|shadowed| !same_file(&found.path, &shadowed.path)) else {
         return Ok(None);
     };
