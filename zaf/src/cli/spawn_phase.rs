@@ -6,10 +6,11 @@
 //! start. `phase-run` is the launcher: not in the help, it runs the action as its child through
 //! `zaf do` from the project root with `ZAF_RUN` (the run folder), `ZAF_SIZE` (the task's size)
 //! and `ZAF_INSTANCE` (`<action> instance <n> on #<epic>`) set, records the child's process in
-//! the run folder's `pid`, waits on it and exits with its code. It serves a model action and a
-//! wait alike. The exit code, the post-phase hook and the tick are later steps of this entry point.
+//! the run folder's `pid`, waits on it, records its exit code in the run folder's `exit` file (a
+//! signal `n` records `128 + n`) as its first step once it has ended, and exits with that code.
+//! It serves a model action and a wait alike. The post-phase hook and the tick are later steps.
 
-use std::os::unix::process::CommandExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -169,10 +170,14 @@ pub fn launcher(cli: &Cli, run_dir: &Path) -> u8 {
         eprintln!("zaf {path}: {reason}");
     }
     match child.wait() {
-        Ok(status) => status
-            .code()
-            .and_then(|code| u8::try_from(code).ok())
-            .unwrap_or(BACKEND),
+        Ok(status) => {
+            let code = phase::exit_code(status.code(), status.signal());
+            // The first step once the child has ended, before post-phase (#439) or a tick (#440).
+            if let Err(reason) = phase::end(&run_dir, code, &|| {}) {
+                eprintln!("zaf {path}: {reason}");
+            }
+            u8::try_from(code).unwrap_or(BACKEND)
+        }
         Err(error) => {
             eprintln!("zaf {path}: cannot wait on {}: {error}", launch.action);
             BACKEND

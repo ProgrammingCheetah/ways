@@ -39,6 +39,22 @@ const TASK_BODY: &str = "Goal: Members export their reading list as CSV.\n\
 /// A project whose task 4 (of epic 1) stands at its first phase, `implement`. The action records
 /// what it sees in `seen`, says it started in `started`, waits for `release`, then says `ended`.
 fn project() -> Project {
+    let root_dir = |project: &Project| project.root.display().to_string();
+    project_running(|project| {
+        format!(
+            "cd '{root}'\n\
+             echo \"$ZAF_RUN $ZAF_SIZE $ZAF_INSTANCE $1\" > seen.new\n\
+             mv seen.new seen\n\
+             touch started\n\
+             while [ ! -f release ]; do sleep 0.05; done\n\
+             touch ended\n",
+            root = root_dir(project)
+        )
+    })
+}
+
+/// The same project, whose `implement` runs the body `body` makes of it.
+fn project_running(body: impl Fn(&Project) -> String) -> Project {
     let mut project = Project::new(MANIFEST);
     let ticket = serde_json::json!({
         "number": 4,
@@ -56,15 +72,7 @@ fn project() -> Project {
         &project,
         "implement",
         "# zaf kind: model\n# zaf ends: exit\n",
-        &format!(
-            "cd '{root}'\n\
-             echo \"$ZAF_RUN $ZAF_SIZE $ZAF_INSTANCE $1\" > seen.new\n\
-             mv seen.new seen\n\
-             touch started\n\
-             while [ ! -f release ]; do sleep 0.05; done\n\
-             touch ended\n",
-            root = project.root.display()
-        ),
+        &body(&project),
     );
     action(
         &project,
@@ -260,7 +268,7 @@ fn a_started_phase_reads_running() {
         }
     );
     release(&project);
-    // The launcher goes once the action has; it records no exit yet (a later task does).
+    // The launcher goes once the action has.
     let deadline = Instant::now() + Duration::from_secs(20);
     while matches!(standing(&project), Standing::Running { .. }) {
         assert!(
@@ -269,4 +277,77 @@ fn a_started_phase_reads_running() {
         );
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// Starts `implement` for task 4 and returns its run folder, once the verb has returned.
+fn start(project: &Project) -> PathBuf {
+    let (code, stdout, stderr) = outcome(&project.zaf(&["spawn", "phase", "4", "implement"]));
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    let folders = run_folders(project);
+    assert_eq!(folders.len(), 1, "{folders:?}");
+    folders[0].clone()
+}
+
+/// Waits for the launcher to record the run's exit and returns what the file holds.
+fn exit_of(run: &Path) -> String {
+    await_file(&run.join("exit"));
+    fs::read_to_string(run.join("exit")).expect("exit")
+}
+
+#[test]
+fn the_exit_code_is_recorded() {
+    let project = project_running(|_| "exit 3\n".to_owned());
+
+    let run = start(&project);
+
+    // The decimal code and a newline; the launcher is not told the code, it reads the child's.
+    assert_eq!(exit_of(&run), "3\n");
+    assert!(!run.join("exit.new").exists());
+}
+
+#[test]
+fn an_exit_zero_ends_the_phase_on_read() {
+    let project = project_running(|_| "exit 0\n".to_owned());
+    let run = start(&project);
+
+    assert_eq!(exit_of(&run), "0\n");
+
+    // The exit end of `implement` holds, so the task's current phase is the next one.
+    let Standing::Ready { action, .. } = standing(&project) else {
+        panic!("the task is not ready for its next phase");
+    };
+    assert_eq!(action, ActionName::from("review"));
+}
+
+#[test]
+fn a_failed_exit_does_not_end_the_phase_on_read() {
+    let project = project_running(|_| "exit 3\n".to_owned());
+    let run = start(&project);
+
+    assert_eq!(exit_of(&run), "3\n");
+
+    let Standing::Ready { action, .. } = standing(&project) else {
+        panic!("the task is not ready");
+    };
+    assert_eq!(action, ActionName::from("implement"));
+}
+
+#[test]
+fn a_killed_phase_records_its_signal() {
+    let project = project();
+    let run = start(&project);
+    await_file(&project.root.join("started"));
+    // The `pid` file holds the action's process, the one the launcher waits on.
+    let holder = fs::read_to_string(run.join("pid")).expect("pid");
+    let pid = holder.split_whitespace().next().expect("pid").to_owned();
+
+    let status = std::process::Command::new("kill")
+        .args(["-TERM", &pid])
+        .status()
+        .expect("kill");
+    assert!(status.success());
+
+    assert_eq!(exit_of(&run), "143\n");
+    // Let the orphaned action end, so the test leaves nothing running.
+    release(&project);
 }
