@@ -26,7 +26,7 @@ pub use ask::{
     Ask, AskError, AskKind, Asker, MAX_CONTEXT_LINES, MAX_QUESTIONS, QUESTION_WORD_LIMIT, Question,
     QuestionId,
 };
-pub use budget::{Budget, Fit, SizeTable};
+pub use budget::{Budget, DEFAULT_RESERVE, Fit, SizeTable};
 pub use epic::{
     BodyHash, CHALLENGER_ROLE, Epic, EpicStage, EpicTask, GroupName, Signature, SignatureError,
 };

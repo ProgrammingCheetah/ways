@@ -10,7 +10,7 @@
 use super::{TaskSize, Units};
 
 /// What each size short of E costs, in units: XS 1, S 2, M 4, L 8 and XL 16 unless a project
-/// overrides one. E has no entry: it costs the whole budget until #434 leaves a reserve.
+/// overrides one. E has no entry: it costs the budget minus the reserve.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct SizeTable {
     /// The cost of an XS.
@@ -84,40 +84,75 @@ pub enum Fit {
     NoFreeSlot,
 }
 
-/// The machine budget and the cost of each size: `Budget { units: Option<u32>, sizes: SizeTable }`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+/// The units an E leaves free when the zaf home sets no `[spawn] reserve`.
+pub const DEFAULT_RESERVE: u32 = 6;
+
+/// The machine budget, the reserve an E leaves and the cost of each size:
+/// `Budget { units: Option<u32>, reserve: u32, sizes: SizeTable }`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct Budget {
     /// The machine's `[spawn] budget`, in units, from the zaf home; none means no machine cap.
     pub units: Option<u32>,
+    /// The machine's `[spawn] reserve`, in units: what an E leaves free of the budget, so
+    /// work that fits it keeps launching beside the one E. [`DEFAULT_RESERVE`] when unset.
+    pub reserve: u32,
     /// The cost of each size, the project's overrides over the defaults.
     pub sizes: SizeTable,
 }
 
+impl Default for Budget {
+    /// No machine cap, the default reserve and the default sizes.
+    fn default() -> Self {
+        Self {
+            units: None,
+            reserve: DEFAULT_RESERVE,
+            sizes: SizeTable::default(),
+        }
+    }
+}
+
 impl Budget {
     /// What a launch of `size` costs, `cost(size) -> Units`: its entry in the table, and for
-    /// an E the whole budget (nothing with no budget, which has no cap to take) until #434
-    /// leaves a reserve.
+    /// an E, `Budget::cost(E)` is `budget - reserve` (nothing with no budget, which has no
+    /// cap to take).
     #[must_use]
     pub fn cost(&self, size: TaskSize) -> Units {
-        let units = self.sizes.units_of(size).or(self.units).unwrap_or_default();
+        let units = self
+            .sizes
+            .units_of(size)
+            .or_else(|| self.units.map(|units| units.saturating_sub(self.reserve)))
+            .unwrap_or_default();
         Units::whole(u64::from(units))
     }
 
     /// Whether a launch of `size` fits,
-    /// `fits(in_use: Units, size: TaskSize, running_here: usize, slots: usize) -> Fit`.
+    /// `fits(in_use: Units, e_live: bool, size: TaskSize, running_here: usize, slots: usize) -> Fit`.
     ///
     /// It fits iff `running_here < slots`, the project running fewer instances than its
     /// slots, and `in_use + cost(size) <= units`, the live use of the machine plus the
-    /// launch's cost staying inside the budget. A full project is [`Fit::NoFreeSlot`] before
-    /// the budget is asked; with no budget every launch under the slots fits.
+    /// launch's cost staying inside the budget. An E is also [`Fit::NoBudget`] while an
+    /// instance with `ZAF_SIZE=E` is live, whatever is left: `e_live` says whether one is,
+    /// `ports::e_is_live` of the live instances read on the tick. A full project is
+    /// [`Fit::NoFreeSlot`] before the budget is asked; with no budget every launch under
+    /// the slots fits.
     #[must_use]
-    pub fn fits(&self, in_use: Units, size: TaskSize, running_here: usize, slots: usize) -> Fit {
+    pub fn fits(
+        &self,
+        in_use: Units,
+        e_live: bool,
+        size: TaskSize,
+        running_here: usize,
+        slots: usize,
+    ) -> Fit {
         if running_here >= slots {
             return Fit::NoFreeSlot;
         }
         let Some(units) = self.units else {
             return Fit::Fits;
         };
+        if size == TaskSize::E && e_live {
+            return Fit::NoBudget;
+        }
         if in_use + self.cost(size) <= Units::whole(u64::from(units)) {
             Fit::Fits
         } else {

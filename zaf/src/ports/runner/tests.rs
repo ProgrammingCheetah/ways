@@ -65,6 +65,20 @@ fn instance_of(root: &str, slug: &str, memory: u64) -> MachineInstance {
 }
 
 #[test]
+fn an_e_is_live_when_an_instance_carries_size_e() {
+    let sized = |size| MachineInstance {
+        size,
+        ..instance_of("/work/bookshelf", "team-instance-1-on-2", 512)
+    };
+    assert!(!e_is_live(&[]));
+    assert!(!e_is_live(&[sized(None), sized(Some(TaskSize::XL))]));
+    assert!(e_is_live(&[
+        sized(Some(TaskSize::S)),
+        sized(Some(TaskSize::E))
+    ]));
+}
+
+#[test]
 fn live_use_sums_the_machine() {
     let machine = [
         instance_of("/work/bookshelf", "team-instance-1-on-2", 512),

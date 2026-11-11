@@ -196,6 +196,26 @@ fn status_shows_the_units_in_use() {
 }
 
 #[test]
+fn status_shows_the_reserve() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let budget = Budget {
+        units: Some(38),
+        reserve: 10,
+        ..Budget::default()
+    };
+    let status = status(&board(), dir.path(), 2, &all_alive)
+        .expect("status")
+        .with_budget(budget);
+    let text = status.render_text();
+    assert!(
+        text.contains("\nbudget 0.0 of 38 units, reserve 10\n"),
+        "{text}"
+    );
+    let json: serde_json::Value = serde_json::from_str(&status.to_json()).expect("json");
+    assert_eq!(json["budget"]["reserve"], 10);
+}
+
+#[test]
 fn status_shows_the_budget_in_use() {
     let dir = tempfile::tempdir().expect("tempdir");
     let machine = [
@@ -205,6 +225,7 @@ fn status_shows_the_budget_in_use() {
     let budget = Budget {
         units: Some(38),
         sizes: SizeTable::default().with(TaskSize::M, 6),
+        ..Budget::default()
     };
 
     // The budget and the machine may come in either order: the line uses the machine's total.
@@ -221,7 +242,7 @@ fn status_shows_the_budget_in_use() {
     for status in screens {
         let text = status.render_text();
         assert!(
-            text.contains("units in use\nbudget 34.5 of 38 units\nguard"),
+            text.contains("units in use\nbudget 34.5 of 38 units, reserve 6\nguard"),
             "{text}"
         );
         let json: serde_json::Value = serde_json::from_str(&status.to_json()).expect("json");
@@ -230,6 +251,7 @@ fn status_shows_the_budget_in_use() {
             serde_json::json!({
                 "in_use_units": 34.5,
                 "units": 38,
+                "reserve": 6,
                 "sizes": { "XS": 1, "S": 2, "M": 6, "L": 8, "XL": 16 },
             })
         );

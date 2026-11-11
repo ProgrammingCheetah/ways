@@ -18,8 +18,8 @@ use super::guard::{self, GuardError, GuardState};
 use super::profile::StaleProfile;
 use super::spawn::{self, blockers, blockers::DeadLine};
 use crate::domain::{
-    Budget, Mebibytes, SLOTS_DIR, SizeTable, SlotRecord, TaskTemplate, Ticket, TicketId,
-    TicketSummary, Units,
+    Budget, DEFAULT_RESERVE, Mebibytes, SLOTS_DIR, SizeTable, SlotRecord, TaskTemplate, Ticket,
+    TicketId, TicketSummary, Units,
 };
 use crate::ports::{Board, ClaimRecord, Holder, MachineInstance, PortError, live_use};
 
@@ -158,18 +158,32 @@ pub struct Status {
 /// The machine budget and how much of it the live instances use, read when asked and never
 /// stored.
 ///
-/// The text screen prints it as `budget <used> of <units> units`, or `budget: no machine cap`
-/// when the zaf home sets no `[spawn] budget`; the JSON carries the use in units, the budget
-/// and the size table.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+/// The text screen prints it as `budget <used> of <units> units, reserve <n>`, or
+/// `budget: no machine cap` when the zaf home sets no `[spawn] budget`; the JSON carries the
+/// use in units, the budget, the reserve and the size table.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct BudgetLine {
     /// The live use of the machine, the machine line's total, in units.
     #[serde(rename = "in_use_units", serialize_with = "units_as_number")]
     pub in_use: Units,
     /// The machine's `[spawn] budget`, in units; none means no machine cap.
     pub units: Option<u32>,
+    /// The machine's `[spawn] reserve`, in units: what an E leaves free of the budget.
+    pub reserve: u32,
     /// What each size costs, in units.
     pub sizes: SizeTable,
+}
+
+impl Default for BudgetLine {
+    /// No machine cap, nothing in use, the default reserve and the default sizes.
+    fn default() -> Self {
+        Self {
+            in_use: Units::default(),
+            units: None,
+            reserve: DEFAULT_RESERVE,
+            sizes: SizeTable::default(),
+        }
+    }
 }
 
 /// Units as a plain number of units, `34.5`, rather than the mebibytes they hold.
@@ -384,6 +398,7 @@ impl Status {
         self.budget = BudgetLine {
             in_use: self.machine.in_use,
             units: budget.units,
+            reserve: budget.reserve,
             sizes: budget.sizes,
         };
         self
@@ -463,7 +478,10 @@ impl Status {
             self.machine.in_use
         ));
         line(match self.budget.units {
-            Some(units) => format!("budget {} of {units} units", self.budget.in_use),
+            Some(units) => format!(
+                "budget {} of {units} units, reserve {}",
+                self.budget.in_use, self.budget.reserve
+            ),
             None => "budget: no machine cap".to_owned(),
         });
         line(format!(
