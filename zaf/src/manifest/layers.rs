@@ -113,6 +113,9 @@ pub(super) fn load(root: &Path, home: Option<&Path>) -> Result<Manifest, Manifes
         if found.local.as_ref() == Some(file) {
             merge(&mut merged, local_layer(table)?);
         } else {
+            if found.layers().any(|project| project == file) {
+                refuse_machine_budget(&table, file)?;
+            }
             merge(&mut merged, table);
         }
     }
@@ -174,6 +177,23 @@ fn local_layer(table: Table) -> Result<Table, ManifestError> {
         }
     }
     Ok(layer)
+}
+
+/// Refuses `[spawn] budget` and `[spawn] reserve` in a project file: both are the machine's,
+/// read only from the zaf home's `config.toml`, and the error names the file that set it.
+fn refuse_machine_budget(table: &Table, file: &Path) -> Result<(), ManifestError> {
+    let spawn = table.get("spawn").and_then(Value::as_table);
+    for key in ["budget", "reserve"] {
+        if spawn.is_some_and(|spawn| spawn.contains_key(key)) {
+            let error = ManifestError::Invalid {
+                section: "spawn",
+                key,
+                reason: format!("is the machine's: set it only in the zaf home's {HOME_FILE}"),
+            };
+            return Err(error.in_files(&[file]));
+        }
+    }
+    Ok(())
 }
 
 /// A top-level setting of `.zaf/local.toml` that it may not hold: a table is named as

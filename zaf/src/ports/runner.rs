@@ -103,6 +103,15 @@ pub fn live_use(instances: &[MachineInstance]) -> Units {
         .sum()
 }
 
+/// `e_is_live(instances) -> bool`: whether a live instance of the machine, from any project,
+/// carries `ZAF_SIZE=E`; the budget lets one E run at a time.
+#[must_use]
+pub fn e_is_live(instances: &[MachineInstance]) -> bool {
+    instances
+        .iter()
+        .any(|instance| instance.size == Some(TaskSize::E))
+}
+
 /// What a run produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunOutput {

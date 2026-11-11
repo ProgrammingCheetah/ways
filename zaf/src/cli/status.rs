@@ -25,9 +25,18 @@ pub fn run(cli: &Cli) -> u8 {
 
 /// The screen for a project over the given board, with the machine's live instances.
 fn screen(composition: &Composition, board: &dyn Board) -> Result<Status, StatusError> {
-    let slots = composition.manifest().spawn.slots;
-    status::status(board, &composition.state_dir(), slots, &process::alive)
-        .map(|screen| screen.with_machine(&process::machine()))
+    let spawn = &composition.manifest().spawn;
+    status::status(
+        board,
+        &composition.state_dir(),
+        spawn.slots,
+        &process::alive,
+    )
+    .map(|screen| {
+        screen
+            .with_machine(&process::machine())
+            .with_budget(spawn.budget())
+    })
 }
 
 /// Reads and prints the screen for a project over the given board.
