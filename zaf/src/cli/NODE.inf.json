@@ -80,6 +80,11 @@
       "node": false
     },
     {
+      "name": "spawn_phase.rs",
+      "role": "`spawn phase` (starts a detached launcher, returns at once) and the hidden `spawn phase-run` launcher that runs the action and waits",
+      "node": false
+    },
+    {
       "name": "status/",
       "role": "tests.rs",
       "node": false

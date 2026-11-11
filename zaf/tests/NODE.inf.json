@@ -46,6 +46,11 @@
       "node": false
     },
     {
+      "name": "spawn_phase.rs",
+      "role": "spawn phase: the caller does not wait, the run sees ZAF_RUN, ZAF_SIZE and ZAF_INSTANCE, a non-current or running phase is refused, a started phase reads Running",
+      "node": false
+    },
+    {
       "name": "ways_manifest.rs",
       "role": "the ways repo's own .zaf.toml loads, ZAF.toml is gone, and doctor finds every needed action in the project tier with no machine dependency",
       "node": false

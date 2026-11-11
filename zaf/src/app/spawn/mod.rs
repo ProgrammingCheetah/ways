@@ -25,21 +25,29 @@
 //! The phase tick's step 3 ([`inline`]) runs every ready `zaf`-kind action with `zaf do`, one
 //! after another, at no cost to the budget; [`outcome::TickOutcome`] is what a tick did, its
 //! `ran` filled from there. Step 5 ([`question`]) raises one question on each task whose wait
-//! failed with no `on-fail`, at no cost either; its tasks fill `questions`. Step 6 ([`start`])
-//! starts at most one model phase, the longest ready that fits the budget, never waiting for it;
-//! it fills `started`.
+//! failed with no `on-fail`, at no cost either; its tasks fill `questions`. Step 4 ([`waits`])
+//! launches every ready `wait` action detached with `zaf spawn phase`, at no cost and never
+//! waiting for one; the waits it launched fill `waits`, and they are not the tick's one model start.
+//! Step 6 ([`start`]) starts at most one model phase, the longest ready that fits the budget,
+//! never waiting for it; it fills `started`.
 //!
 //! A dry run ([`plan_only`] and [`dry_run`]) plans the same tick and describes
 //! each launch it would make, writing nothing: no state, no run folder, no comment.
+//!
+//! [`phase`] starts one phase action of a task (`zaf spawn phase`): it takes the next instance
+//! number from the same counter, under the same lock, and writes a phase run folder in
+//! `.zaf/phases/` rather than `.zaf/runs/`.
 
 pub mod blockers;
 pub mod inline;
 pub mod outcome;
+pub mod phase;
 pub mod question;
 pub mod runs;
 pub mod start;
 mod state;
 pub mod tick;
+pub mod waits;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -55,6 +63,7 @@ pub use tick::{
     EpicSkip, NOT_BUILT, PLANNING_ROLE, PastLaunch, Plan, PlannedLaunch, Settings, SlotCount,
     Snapshot, TEAM_ROLE, TaskSkip,
 };
+pub use waits::{launch_outcome, launch_waits};
 
 use super::actions::{PHASES_DIR, SliceRecords, running_tasks};
 use super::guard::{GUARD_FILE, Level};
