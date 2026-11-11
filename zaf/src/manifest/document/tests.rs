@@ -515,6 +515,46 @@ fn a_partial_section_keeps_the_defaults_it_leaves_out() {
 }
 
 #[test]
+fn a_zero_interval_fails() {
+    let zero = with("[spawn]\ntick_minutes = 0\n");
+    let error = load(&zero).expect_err("a watch with no interval");
+    assert!(
+        matches!(
+            error,
+            ManifestError::Invalid {
+                section: "spawn",
+                key: "tick_minutes",
+                ..
+            }
+        ),
+        "{error}"
+    );
+    // From any project layer, not only the one file `load` reads.
+    let folder = format!("[project]\nname = \"p\"\n{BOARD}[spawn]\ntick_minutes = 0\n");
+    let error = load_layers(&[(".zaf/config.toml", &folder)], None).expect_err("folder");
+    assert!(error.to_string().contains("tick_minutes"), "{error}");
+}
+
+#[test]
+fn the_tick_interval_defaults_to_five_minutes_and_reads_from_the_project_layers() {
+    assert_eq!(load(MINIMAL).expect("loads").spawn.tick_minutes, 5);
+    let set = load(&with("[spawn]\ntick_minutes = 2\n")).expect("loads");
+    assert_eq!(set.spawn.tick_minutes, 2);
+    assert_eq!(
+        set.spawn.slots, 1,
+        "the rest of the section keeps its defaults"
+    );
+
+    let root = "[project]\nname = \"p\"\n[spawn]\ntick_minutes = 3\n";
+    let folder = format!("[project]\nname = \"p\"\n{BOARD}[spawn]\ntick_minutes = 7\n");
+    let folder_only = load_layers(&[(".zaf/config.toml", &folder)], None).expect("folder");
+    assert_eq!(folder_only.spawn.tick_minutes, 7);
+    let both = load_layers(&[(".zaf.toml", root), (".zaf/config.toml", &folder)], None)
+        .expect("both load");
+    assert_eq!(both.spawn.tick_minutes, 3, "the root file wins a conflict");
+}
+
+#[test]
 fn style_cache_hours_and_runner_timeout_read_and_default() {
     let declared = with(
         "[style]\npath = \"docs/style.md\"\n[ask]\ncache_hours = 6\n\

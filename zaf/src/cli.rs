@@ -130,6 +130,10 @@ pub enum Verb {
         /// With `--once`: exit 0 at once, doing nothing, when another tick holds `spawn.lock`.
         #[arg(long, requires = "once")]
         no_wait: bool,
+        /// Tick in the foreground each `[spawn] tick_minutes` until stopped; a failed tick is
+        /// logged and the loop goes on. Each tick is `--once --no-wait`.
+        #[arg(long, conflicts_with_all = ["once", "dry_run"])]
+        watch: bool,
     },
     /// The ask log: top pages, recurring questions, gaps.
     Asklog,
@@ -502,7 +506,14 @@ fn run_verb(cli: &Cli) -> u8 {
             version,
             dry_run,
             no_wait,
-        } => spawn::run(cli, *once, version.as_deref(), *dry_run, *no_wait),
+            watch,
+        } => {
+            if *watch {
+                spawn::watch(cli, version.as_deref())
+            } else {
+                spawn::run(cli, *once, version.as_deref(), *dry_run, *no_wait)
+            }
+        }
         Verb::Profile { action } => profile::run(cli, action),
         Verb::Do(args) => do_action::run(cli, args),
         Verb::Hub { action, port } => hub::run(cli, action.as_ref(), *port),

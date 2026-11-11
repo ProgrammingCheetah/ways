@@ -20,8 +20,7 @@ use crate::manifest::Manifest;
 /// The role that builds a challenged epic's tasks.
 pub const TEAM_ROLE: &str = "team";
 
-/// The role that turns a signed epic into tasks.
-pub const PLANNING_ROLE: &str = "planning";
+pub use crate::domain::PLANNING_ROLE;
 
 /// The branches of the tick that are not built yet; each is skipped as `not built`.
 pub const NOT_BUILT: [&str; 1] = ["release"];
@@ -46,6 +45,9 @@ pub struct Snapshot {
     /// The ready tasks whose body does not follow the template, each with what is wrong
     /// (the field names, or `line <n>`).
     pub unparsed: BTreeMap<TicketId, Vec<String>>,
+    /// The ready tasks whose type has a `[phases]` list: the phase steps run them, so no team
+    /// launch takes them.
+    pub phased: BTreeSet<TicketId>,
     /// The open epics, with everything their stage is derived from.
     pub epics: Vec<Epic>,
     /// The issues an open question is raised on.
@@ -151,6 +153,8 @@ pub enum TaskSkip {
     NoEpic,
     /// Its body does not follow the template; the fields at fault, or `line <n>`.
     DoesNotParse(Vec<String>),
+    /// Its type has a `[phases]` list: the phase steps run it, not a team.
+    Phased,
 }
 
 /// What one tick decided.
@@ -228,6 +232,46 @@ fn next_launch(
     }
 }
 
+/// An epic launch as an item of the one model order (#427): the planning instance for a signed
+/// epic with no tasks, the challenger for a planned one, and how long that stage has waited.
+/// It is charged XS, whatever the epic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EpicCandidate {
+    /// The epic.
+    pub epic: TicketId,
+    /// The role to launch: [`PLANNING_ROLE`] or [`CHALLENGER_ROLE`].
+    pub role: RoleName,
+    /// When its stage began to wait, the item's weight: the signature of a signed epic, the
+    /// planning instance's exit marker of a planned one (the ruling on #459). A planned epic
+    /// with no such marker on it has waited at most since its signature, which stands in.
+    pub since: SystemTime,
+}
+
+/// The epic launches the tick may start this tick, each as an [`EpicCandidate`]: the epics
+/// `next_launch` gives planning or the challenger. A team launch is not one (it is #449's),
+/// and an epic held by a question, a running instance or a launch already made is none.
+pub fn epic_candidates(snapshot: &Snapshot, state: &SpawnState) -> Vec<EpicCandidate> {
+    let running = state.running_instances();
+    snapshot
+        .epics
+        .iter()
+        .filter_map(|epic| {
+            let (role, _) = next_launch(epic, &[], snapshot, &running, 1).ok()?;
+            let signed_at = epic.signature.as_ref().map(|signature| signature.at)?;
+            let since = match role {
+                PLANNING_ROLE => signed_at,
+                CHALLENGER_ROLE => epic.planned_at.unwrap_or(signed_at),
+                _ => return None,
+            };
+            Some(EpicCandidate {
+                epic: epic.id,
+                role: RoleName::from(role),
+                since,
+            })
+        })
+        .collect()
+}
+
 /// Plans one tick: at most one launch per open epic, by its stage.
 pub fn plan(snapshot: &Snapshot, state: &SpawnState, level: Level, settings: Settings) -> Plan {
     let allowed = allowed_slots(settings.slots, level);
@@ -266,7 +310,9 @@ pub fn plan(snapshot: &Snapshot, state: &SpawnState, level: Level, settings: Set
             .into_iter()
             .filter(|blocker| !snapshot.closed.contains(blocker))
             .collect();
-        if snapshot.claimed.contains(&ticket.id) {
+        if snapshot.phased.contains(&ticket.id) {
+            tasks.push((ticket.id, TaskSkip::Phased));
+        } else if snapshot.claimed.contains(&ticket.id) {
             tasks.push((ticket.id, TaskSkip::Claimed));
         } else if let Some(instance) = carried.get(&ticket.id.get()) {
             tasks.push((ticket.id, TaskSkip::Running((*instance).to_owned())));
