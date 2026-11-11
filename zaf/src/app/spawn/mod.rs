@@ -29,7 +29,8 @@
 //! launches every ready `wait` action detached with `zaf spawn phase`, at no cost and never
 //! waiting for one; the waits it launched fill `waits`, and they are not the tick's one model start.
 //! Step 6 ([`start`]) starts at most one model phase, the longest ready that fits the budget,
-//! never waiting for it; it fills `started`.
+//! never waiting for it; it fills `started`. Step 7 ([`post_tick`]) runs the `post-tick` hook with
+//! the whole outcome as JSON on its stdin.
 //!
 //! A dry run ([`plan_only`] and [`dry_run`]) plans the same tick and describes
 //! each launch it would make, writing nothing: no state, no run folder, no comment.
@@ -42,6 +43,7 @@ pub mod blockers;
 pub mod inline;
 pub mod outcome;
 pub mod phase;
+pub mod post_tick;
 pub mod question;
 pub mod runs;
 pub mod start;
