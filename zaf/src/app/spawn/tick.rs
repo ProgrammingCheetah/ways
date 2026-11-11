@@ -46,6 +46,9 @@ pub struct Snapshot {
     /// The ready tasks whose body does not follow the template, each with what is wrong
     /// (the field names, or `line <n>`).
     pub unparsed: BTreeMap<TicketId, Vec<String>>,
+    /// The ready tasks whose type has a `[phases]` list: the phase steps run them, so no team
+    /// launch takes them.
+    pub phased: BTreeSet<TicketId>,
     /// The open epics, with everything their stage is derived from.
     pub epics: Vec<Epic>,
     /// The issues an open question is raised on.
@@ -151,6 +154,8 @@ pub enum TaskSkip {
     NoEpic,
     /// Its body does not follow the template; the fields at fault, or `line <n>`.
     DoesNotParse(Vec<String>),
+    /// Its type has a `[phases]` list: the phase steps run it, not a team.
+    Phased,
 }
 
 /// What one tick decided.
@@ -266,7 +271,9 @@ pub fn plan(snapshot: &Snapshot, state: &SpawnState, level: Level, settings: Set
             .into_iter()
             .filter(|blocker| !snapshot.closed.contains(blocker))
             .collect();
-        if snapshot.claimed.contains(&ticket.id) {
+        if snapshot.phased.contains(&ticket.id) {
+            tasks.push((ticket.id, TaskSkip::Phased));
+        } else if snapshot.claimed.contains(&ticket.id) {
             tasks.push((ticket.id, TaskSkip::Claimed));
         } else if let Some(instance) = carried.get(&ticket.id.get()) {
             tasks.push((ticket.id, TaskSkip::Running((*instance).to_owned())));

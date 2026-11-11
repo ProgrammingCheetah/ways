@@ -29,7 +29,11 @@
 //! launches every ready `wait` action detached with `zaf spawn phase`, at no cost and never
 //! waiting for one; the waits it launched fill `waits`, and they are not the tick's one model start.
 //! Step 6 ([`start`]) starts at most one model phase, the longest ready that fits the budget,
-//! never waiting for it; it fills `started`.
+//! never waiting for it; it fills `started`. [`phase_tick`] assembles them: it derives the
+//! standing of every claimed or ready task whose type has a `[phases]` list from the forge and
+//! the phase run folders, storing none of it, and runs steps 3 to 6 on them in that order into
+//! one outcome. Such a task is the phase steps', so the team plan leaves it out
+//! ([`TaskSkip::Phased`]).
 //!
 //! A dry run ([`plan_only`] and [`dry_run`]) plans the same tick and describes
 //! each launch it would make, writing nothing: no state, no run folder, no comment.
@@ -42,6 +46,7 @@ pub mod blockers;
 pub mod inline;
 pub mod outcome;
 pub mod phase;
+pub mod phase_tick;
 pub mod question;
 pub mod runs;
 pub mod start;
@@ -55,6 +60,9 @@ use std::time::SystemTime;
 
 pub use inline::{TickTask, run_inline, run_zaf_actions};
 pub use outcome::{Ran, Started, TickOutcome};
+pub use phase_tick::{
+    Gathered, PhaseTask, PhaseTick, Steps, Unreadable, gather, phased, run_steps,
+};
 pub use question::{ask_failed_waits, ask_outcome, question_text};
 use runs::Run;
 pub use start::{InUse, PlannedPhase, TaskStanding, start_outcome, start_planned};
@@ -223,6 +231,7 @@ pub fn snapshot(board: &dyn Board, runs: &[Run]) -> Result<Snapshot, PortError> 
         epics: board.epics()?,
         questioned,
         unparsed,
+        phased: BTreeSet::new(),
         launched: runs.iter().filter_map(past_launch).collect(),
     })
 }
@@ -354,7 +363,7 @@ pub fn prepare(
             instance: claim.instance.clone(),
         });
     }
-    let snapshot = snapshot(board, &found)?;
+    let snapshot = with_phased(snapshot(board, &found)?, manifest);
     let level = read_guard(state_dir)?;
     let plan = tick::plan(&snapshot, &state, level, Settings::from(manifest));
     let now = humantime::format_rfc3339_seconds(SystemTime::now()).to_string();
@@ -713,7 +722,7 @@ pub fn plan_only(
         .filter_map(Run::instance)
         .map(|instance| instance.to_string())
         .collect();
-    let snapshot = snapshot(board, &found)?;
+    let snapshot = with_phased(snapshot(board, &found)?, manifest);
     let level = read_guard(state_dir)?;
     let plan = tick::plan(&snapshot, &state, level, Settings::from(manifest));
     Ok(Prepared {
@@ -721,6 +730,18 @@ pub fn plan_only(
         lost,
         released: Vec::new(),
     })
+}
+
+/// `snapshot` with its ready tasks whose type has a `[phases]` list marked phased, so the team
+/// plan leaves them to the phase steps.
+fn with_phased(mut snapshot: Snapshot, manifest: &Manifest) -> Snapshot {
+    snapshot.phased = snapshot
+        .ready
+        .iter()
+        .filter(|ticket| phased(manifest, ticket))
+        .map(|ticket| ticket.id)
+        .collect();
+    snapshot
 }
 
 /// What a runner would run for a request: the command line and the environment it sets.
@@ -874,6 +895,7 @@ impl Plan {
                     TaskSkip::Running(instance) => ("running", serde_json::json!(instance)),
                     TaskSkip::NoEpic => ("no_epic", serde_json::Value::Null),
                     TaskSkip::DoesNotParse(fields) => ("does_not_parse", serde_json::json!(fields)),
+                    TaskSkip::Phased => ("phased", serde_json::Value::Null),
                 };
                 serde_json::json!({ "task": task.get(), "reason": reason, "detail": detail })
             })
@@ -936,6 +958,7 @@ impl Plan {
             TaskSkip::Running(instance) => format!("carried by {instance}"),
             TaskSkip::NoEpic => "no open epic".to_owned(),
             TaskSkip::DoesNotParse(fields) => format!("does not parse: {}", fields.join(", ")),
+            TaskSkip::Phased => "its type has a phase list: the phase steps run it".to_owned(),
         }
     }
 }

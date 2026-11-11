@@ -5,6 +5,12 @@
 //! the tick returns), and exits `2` when a launch
 //! could not be recorded or its runner could not run. Each launch runs the
 //! `team` role through [`Composition::runner_for_role`], inside its profile.
+//! When the manifest has `[phases]`, the phase steps run first, before any team launch: every
+//! claimed or ready task whose type has a list has its standing derived from the forge and its
+//! phase run folders, and steps 3 to 6 of docs/zaf-actions.md §5.1 run on them, the waits and the
+//! one model phase started with `zaf spawn phase`; what they did prints after the plan (under
+//! `tick` with `--json`). A task that cannot be read is named and skipped. A model phase that
+//! fails to start, a question that cannot be raised or a forge that cannot be reached exits `2`.
 //! The tick ends by filling the ledger; a ledger failure warns and leaves the exit code.
 //! A generated profile older than the manifest or zaf, or with no stamp, refuses the tick (and
 //! the dry run) before it plans anything: it exits `1` and names the profile.
@@ -24,13 +30,14 @@ use crate::app::actions::{
     last_lines, run_hook,
 };
 use crate::app::profile;
+use crate::app::spawn::phase::Ports;
 use crate::app::spawn::{
-    self, DryLaunch, LaunchContext, LaunchPorts, Launched, PlannedPhase, Prepared, SpawnError,
-    TEAM_ROLE,
+    self, DryLaunch, InUse, LaunchContext, LaunchPorts, Launched, PhaseTask, PhaseTick,
+    PlannedPhase, Prepared, SpawnError, Steps, TEAM_ROLE,
 };
 use crate::composition::{Composition, STATE_DIR, zaf_home};
-use crate::domain::{CHALLENGER_ROLE, Instance, RoleName, TicketId};
-use crate::ports::{PortError, RunRequest};
+use crate::domain::{Budget, CHALLENGER_ROLE, Instance, RoleName, TicketId};
+use crate::ports::{Board, PortError, RunRequest, e_is_live, live_use};
 
 /// Runs one tick; refuses without `--once` or `--version`. With `dry_run`, launches
 /// nothing and writes nothing.
@@ -109,6 +116,18 @@ pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool) -> u8 {
         }
         print!("{}", prepared.plan.render_text());
     }
+    let mut code = OK;
+    // Steps 3 to 6 run before the team launches, which run to their exit.
+    let phases = if manifest.phases.is_empty() {
+        None
+    } else {
+        let (tick, phase_code) = phase_tick(&path, &composition, board.as_ref(), &prepared);
+        code = code.max(phase_code);
+        if !cli.json {
+            print!("{}", tick.render_text());
+        }
+        Some(tick)
+    };
     let jobs = jobs(&composition, &prepared, version, &project_env);
     let ports = |role: &RoleName| -> Result<LaunchPorts, PortError> {
         let board = composition
@@ -119,7 +138,6 @@ pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool) -> u8 {
             .map_err(|error| PortError::Unavailable(error.to_string()))?;
         Ok((board, runner))
     };
-    let mut code = OK;
     let mut launched: Vec<Launched> = Vec::new();
     for result in spawn::launch_all(&jobs, &ports) {
         match result {
@@ -153,6 +171,9 @@ pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool) -> u8 {
                 })
             })
             .collect();
+        if let Some(tick) = &phases {
+            json["tick"] = tick.to_json();
+        }
         println!("{json}");
     }
     if let Err(message) = super::report::ingest_ledger(&composition) {
@@ -181,19 +202,125 @@ pub fn run_zaf_action(task: TicketId, action: &ActionName) -> u8 {
 /// phase's launcher is started as its own process, never for the phase itself (#421 ruling 19).
 /// Its refusal or failure is on stderr; a non-zero exit is `Err` naming the code.
 pub fn start_phase(planned: &PlannedPhase) -> Result<(), String> {
+    spawn_phase_with(this_zaf()?, planned.task, &planned.action)
+}
+
+/// The command that runs this zaf binary.
+fn this_zaf() -> Result<Command, String> {
     let exe = std::env::current_exe()
         .map_err(|error| format!("cannot find the zaf binary to start a phase: {error}"))?;
-    spawn_phase_with(Command::new(exe), planned)
+    Ok(Command::new(exe))
+}
+
+/// The phase steps of the tick (docs/zaf-actions.md §5.1, steps 3 to 6) on every claimed or ready
+/// task whose type has a `[phases]` list, and the exit code they leave: `2` when the forge cannot
+/// be reached, the board cannot be read, a question cannot be raised or the model phase fails to
+/// start, `0` otherwise, idle or not. A task that cannot be read is named on stderr and skipped.
+///
+/// The budget is the machine's: its live use and E across every project, and this project's
+/// running instances, with the team launches this tick reserved, against `[spawn] slots`.
+fn phase_tick(
+    path: &str,
+    composition: &Composition,
+    board: &dyn Board,
+    prepared: &Prepared,
+) -> (spawn::TickOutcome, u8) {
+    let forge = match composition.forge() {
+        Ok(forge) => forge,
+        Err(error) => {
+            eprintln!("zaf {path}: the phase steps did not run: {error}");
+            return (spawn::TickOutcome::default(), BACKEND);
+        }
+    };
+    let root = composition.root();
+    let state_dir = composition.state_dir();
+    // With no home there is no machine tier, so the project's actions alone are looked for.
+    let home = match zaf_home().map(std::path::absolute) {
+        Some(Ok(home)) => home,
+        _ => root.join(STATE_DIR),
+    };
+    let manifest = composition.manifest();
+    let ports = Ports {
+        board,
+        forge: forge.as_ref(),
+        manifest,
+        root,
+        home: &home,
+        state_dir: &state_dir,
+        alive: &process::alive,
+    };
+    let gathered = match spawn::gather(&ports, std::time::SystemTime::now()) {
+        Ok(gathered) => gathered,
+        Err(error) => {
+            eprintln!("zaf {path}: the phase steps did not run: {error}");
+            return (spawn::TickOutcome::default(), BACKEND);
+        }
+    };
+    for skipped in &gathered.unreadable {
+        eprintln!("zaf {path}: skipped {}: {}", skipped.task, skipped.reason);
+    }
+    let machine = process::machine();
+    let in_use = InUse {
+        units: live_use(&machine),
+        e_live: e_is_live(&machine),
+        running_here: machine
+            .iter()
+            .filter(|instance| instance.root == root)
+            .count()
+            + prepared.plan.launches.len(),
+        slots: usize::try_from(manifest.spawn.slots).unwrap_or(usize::MAX),
+    };
+    let (tick, code) = phase_steps(
+        board,
+        &gathered.tasks,
+        &in_use,
+        &manifest.spawn.budget(),
+        &this_zaf,
+    );
+    for failure in &tick.failed {
+        eprintln!("zaf {path}: {failure}");
+    }
+    (tick.outcome, code)
+}
+
+/// Runs steps 3 to 6 on `tasks`, each wait and the model phase started with `<zaf> spawn phase`,
+/// and gives what they did with the exit code: `2` when any step failed, `0` otherwise.
+fn phase_steps(
+    board: &dyn Board,
+    tasks: &[PhaseTask],
+    in_use: &InUse,
+    budget: &Budget,
+    zaf: &dyn Fn() -> Result<Command, String>,
+) -> (PhaseTick, u8) {
+    let mut run = run_zaf_action;
+    let mut launch = |task: TicketId, action: &ActionName| spawn_phase_with(zaf()?, task, action);
+    let mut start =
+        |planned: &PlannedPhase| spawn_phase_with(zaf()?, planned.task, &planned.action);
+    let mut log = |line: &str| eprintln!("{line}");
+    let tick = spawn::run_steps(
+        board,
+        tasks,
+        in_use,
+        budget,
+        &mut Steps {
+            run: &mut run,
+            launch: &mut launch,
+            start: &mut start,
+            log: &mut log,
+        },
+    );
+    let code = if tick.failed.is_empty() { OK } else { BACKEND };
+    (tick, code)
 }
 
 /// Runs `<zaf> spawn phase <task> <action>`, `zaf` the command that stands for the binary, and
 /// waits for that command alone. Its stdout, the `started` line, is dropped so a `--json` tick
 /// prints one document; its stderr is the tick's.
-fn spawn_phase_with(mut zaf: Command, planned: &PlannedPhase) -> Result<(), String> {
+fn spawn_phase_with(mut zaf: Command, task: TicketId, action: &ActionName) -> Result<(), String> {
     let status = zaf
         .args(["spawn", "phase"])
-        .arg(planned.task.get().to_string())
-        .arg(planned.action.as_str())
+        .arg(task.get().to_string())
+        .arg(action.as_str())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .status()
@@ -205,9 +332,8 @@ fn spawn_phase_with(mut zaf: Command, planned: &PlannedPhase) -> Result<(), Stri
         .code()
         .map_or_else(|| "a signal".to_owned(), |code| format!("exit {code}"));
     Err(format!(
-        "zaf spawn phase {} {} ended with {code}",
-        planned.task.get(),
-        planned.action
+        "zaf spawn phase {} {action} ended with {code}",
+        task.get()
     ))
 }
 
@@ -436,7 +562,8 @@ mod tests {
         // `zaf spawn phase` returns once its launcher is started; the phase runs on, detached.
         let zaf = fake_zaf(dir.path(), "sleep 30 >/dev/null 2>&1 &\nexit 0");
         let began = std::time::Instant::now();
-        assert_eq!(spawn_phase_with(zaf, &planned()), Ok(()));
+        let planned = planned();
+        assert_eq!(spawn_phase_with(zaf, planned.task, &planned.action), Ok(()));
         assert!(began.elapsed() < std::time::Duration::from_secs(10));
         let args = std::fs::read_to_string(dir.path().join("args")).expect("the args");
         assert_eq!(args.trim(), "spawn phase 42 implement");
@@ -446,9 +573,91 @@ mod tests {
     fn a_refused_phase_start_is_an_error_naming_its_code() {
         let dir = tempfile::tempdir().expect("a temporary directory");
         let zaf = fake_zaf(dir.path(), "exit 1");
+        let planned = planned();
         assert_eq!(
-            spawn_phase_with(zaf, &planned()),
+            spawn_phase_with(zaf, planned.task, &planned.action),
             Err("zaf spawn phase 42 implement ended with exit 1".to_owned())
+        );
+    }
+
+    /// `task`, ready at `implement` (a model phase ending at an open pull request) since 1, size S.
+    fn ready_at_implement(task: u64) -> PhaseTask {
+        use crate::app::actions::{ActionKind, ListedPhase, PhaseEnd, StandingFacts};
+        use crate::app::spawn::TickTask;
+        PhaseTask {
+            tick: TickTask {
+                task: TicketId::from(task),
+                list: vec![ListedPhase {
+                    action: ActionName::from("implement"),
+                    kind: ActionKind::Model,
+                    ends: PhaseEnd::PrOpen,
+                    on_fail: None,
+                }],
+                facts: StandingFacts {
+                    ready_since: std::time::UNIX_EPOCH + std::time::Duration::from_secs(1),
+                    pull: None,
+                    runs: Vec::new(),
+                },
+            },
+            size: crate::domain::TaskSize::S,
+        }
+    }
+
+    #[test]
+    fn a_failed_launch_exits_two() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let calls = std::cell::Cell::new(0);
+        let zaf = || {
+            calls.set(calls.get() + 1);
+            Ok(fake_zaf(dir.path(), "exit 1"))
+        };
+        let in_use = InUse {
+            units: crate::domain::Units::default(),
+            e_live: false,
+            running_here: 0,
+            slots: 2,
+        };
+        let board = crate::fakes::FakeBoard::default();
+        let (tick, code) = phase_steps(
+            &board,
+            &[ready_at_implement(3), ready_at_implement(5)],
+            &in_use,
+            &Budget::default(),
+            &zaf,
+        );
+        assert_eq!(code, BACKEND);
+        assert_eq!(tick.outcome.started, None, "nothing is recorded as started");
+        assert_eq!(calls.get(), 1, "no other item is tried");
+        let args = std::fs::read_to_string(dir.path().join("args")).expect("the args");
+        assert_eq!(args.trim(), "spawn phase 3 implement");
+        assert_eq!(
+            tick.failed,
+            ["zaf spawn phase 3 implement ended with exit 1"]
+        );
+    }
+
+    #[test]
+    fn a_started_phase_exits_zero() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let zaf = || Ok(fake_zaf(dir.path(), "exit 0"));
+        let in_use = InUse {
+            units: crate::domain::Units::default(),
+            e_live: false,
+            running_here: 0,
+            slots: 2,
+        };
+        let board = crate::fakes::FakeBoard::default();
+        let (tick, code) = phase_steps(
+            &board,
+            &[ready_at_implement(3)],
+            &in_use,
+            &Budget::default(),
+            &zaf,
+        );
+        assert_eq!(code, OK);
+        assert_eq!(
+            tick.outcome.started.map(|started| started.task),
+            Some(TicketId::from(3))
         );
     }
 

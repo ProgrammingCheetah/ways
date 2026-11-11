@@ -230,7 +230,11 @@ fn describe(standing: &Standing) -> String {
 
 /// The task's phase list with what each action declares. An action that cannot be found or read,
 /// or that declares no kind, cannot be a phase.
-fn listed(root: &Path, home: &Path, names: &[ActionName]) -> Result<Vec<ListedPhase>, PhaseError> {
+pub(super) fn listed(
+    root: &Path,
+    home: &Path,
+    names: &[ActionName],
+) -> Result<Vec<ListedPhase>, PhaseError> {
     let mut list = Vec::new();
     for name in names {
         let failed = |reason: String| PhaseError::Failed(format!("phase {name}: {reason}"));
