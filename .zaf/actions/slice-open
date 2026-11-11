@@ -3,7 +3,7 @@
 # zaf 1: refused: the arguments are not <task>, or `workspace-open` refused (the slice is open on another base, or the base is unknown)
 # zaf 2: a backend failed (jj is missing or refused)
 # zaf mode: 750
-# zaf group: team, release
+# zaf group: team, release, implement, fix
 # zaf target: task
 # zaf phases: claim
 

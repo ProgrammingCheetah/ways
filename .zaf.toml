@@ -78,8 +78,38 @@ effort = "xhigh"
 profile = "build"
 turns = 200
 
+# The phase actions run as roles of their own, so that the slice actions each one calls name them
+# in their `group` (the ruling on #518): implement and fix run the slice steps that open and
+# publish, merge the ones that land. Each is the programmer's settings, and the ruling-16 guard
+# holds: no action is widened, so the programmer role still cannot land. merge starts no model.
+[roles.implement]
+model = "sonnet"
+effort = "high"
+profile = "lean"
+turns = 150
+
+[roles.fix]
+model = "sonnet"
+effort = "high"
+profile = "lean"
+turns = 150
+
+[roles.merge]
+model = "sonnet"
+effort = "high"
+profile = "lean"
+turns = 1
+
 [check.pr]
 steps = ["ci"]
+
+# A task's phases, one list for each issue type: implement opens the pull request, ci and review
+# wait on it (a failure of either starts fix, a model), and merge lands it. Review is a wait with
+# no model (the ruling on #452). implement and fix start the programmer on its pack with
+# `zaf brief --phase implement` and `zaf brief --phase fix`.
+[phases]
+Task = ["implement", "ci", "review", "merge"]
+Bug = ["implement", "ci", "review", "merge"]
 
 [ask]
 ladder = ["haiku", "sonnet"]

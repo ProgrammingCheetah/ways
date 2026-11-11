@@ -1,0 +1,40 @@
+#!/bin/sh
+# zaf description: phase fix, started only by a wait that failed: run the programmer on the fix brief, then publish the slice again with `slice-pr`
+# zaf 1: refused: the argument is not <task>, or a step refused (the slice or the pull request was refused)
+# zaf 2: a backend failed (a verb or a step failed, or the programmer exited non-zero)
+# zaf mode: 755
+# zaf target: task
+# zaf kind: model
+# zaf ends: exit
+
+# The task as a bare number; zaf has already read it as one.
+task=${1#\#}
+# zaf sets ZAF_SLICE and ZAF_PR on a `target: task` run, ZAF_PR from the task's record.
+if [ "$#" -ne 1 ] || [ -z "$ZAF_ROOT" ] || [ -z "$ZAF_SLICE" ] || [ -z "$ZAF_PR" ]; then
+    echo "usage: fix <task>, run by zaf with ZAF_ROOT, ZAF_SLICE and ZAF_PR set" >&2
+    exit 1
+fi
+
+# A step ends this action with its own code when it is 1, a refusal; any other code, 125 (a step
+# that never ran) included, is a backend that failed.
+stop() {
+    case $1 in
+        1) exit 1 ;;
+        *) exit 2 ;;
+    esac
+}
+
+cd "$ZAF_ROOT" || exit 2
+
+# The first line `zaf brief` prints is the pack's path, the second its size.
+brief=$(zaf brief "$task" --phase fix) || stop $?
+pack=$(printf '%s\n' "$brief" | awk 'NR == 1')
+workspace=$ZAF_ROOT/.zaf/workspaces/$ZAF_SLICE
+
+# The programmer runs in its own profile, as [roles.programmer] says, a fresh one on the pack and
+# on the findings of the last check at the pull request's head.
+CLAUDE_CONFIG_DIR="$ZAF_ROOT/.zaf/profiles/lean" claude -p \
+    "Task #$task, fix round. Pack: $pack. Workspace: $workspace. Findings: zaf check pr:$ZAF_PR:$task --status --more" \
+    --model sonnet --effort high --add-dir "$ZAF_ROOT" || exit 2
+
+zaf do slice-pr "$task" || stop $?

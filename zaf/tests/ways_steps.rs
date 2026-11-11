@@ -19,24 +19,67 @@ name = "example"
 kind = "github-issues"
 repo = "example/tracker"
 
-# §7 names the release role in a group; the pack's own roles are only programmer and team.
+# §7 names the release role in a group; the pack's own roles are only programmer and team. The
+# phase roles of the ruling on #518 are named in the groups of the slice steps they call.
 [roles.release]
 model = "opus"
 effort = "high"
 profile = "build"
 turns = 100
+
+[roles.implement]
+model = "sonnet"
+effort = "high"
+profile = "lean"
+turns = 150
+
+[roles.fix]
+model = "sonnet"
+effort = "high"
+profile = "lean"
+turns = 150
+
+[roles.merge]
+model = "sonnet"
+effort = "high"
+profile = "lean"
+turns = 1
 "#;
 
 /// The actions §7 gives mode 755: they run a check, read or file on the board, and name no
 /// group. `issue-file` is the planning instance's, a role no manifest declares, so no group
-/// can name it.
-const OPEN: [&str; 6] = [
+/// can name it. The five phase actions the `[phases]` lists name (§5.1) are here too: the
+/// launcher runs them, and what they call is guarded by the group of each step.
+const OPEN: [&str; 11] = [
+    "ci",
     "ci-wait",
+    "fix",
     "gate",
     "gate-light",
+    "implement",
     "issue-file",
+    "merge",
     "nodes-check",
+    "review",
     "task-pr",
+];
+
+/// The phase roles of the ruling on #518: `implement` and `fix` open and publish a slice, `merge`
+/// lands one. Each is named in the group of every step it calls, so no action is widened to 755.
+const SLICE_STEPS: [&str; 6] = [
+    "slice-open",
+    "slice-pr",
+    "workspace-open",
+    "commit",
+    "pr-open",
+    "push",
+];
+const LAND_STEPS: [&str; 5] = [
+    "slice-merge",
+    "merge-base",
+    "pr-merge",
+    "workspace-drop",
+    "push",
 ];
 
 /// The actions only the release role runs; every other 750 action is the team's and the
@@ -88,15 +131,22 @@ fn parsed(name: &str) -> (String, ParsedAction) {
 }
 
 /// The mode and group §7 gives an action, by its name.
-fn row(name: &str) -> (&'static str, &'static [&'static str]) {
+fn row(name: &str) -> (&'static str, Vec<&'static str>) {
     if OPEN.contains(&name) {
-        ("755", &[])
+        ("755", vec![])
     } else if name == OWNER_ONLY {
-        ("700", &[])
+        ("700", vec![])
     } else if RELEASE_ONLY.contains(&name) {
-        ("750", &["release"])
+        ("750", vec!["release"])
     } else {
-        ("750", &["team", "release"])
+        let mut group = vec!["team", "release"];
+        if SLICE_STEPS.contains(&name) {
+            group.extend(["implement", "fix"]);
+        }
+        if LAND_STEPS.contains(&name) {
+            group.push("merge");
+        }
+        ("750", group)
     }
 }
 
@@ -111,7 +161,7 @@ fn ways_steps_cover_every_action_file() {
         let (_, action) = parsed(name);
         let metadata = action.metadata;
         assert_eq!(metadata.mode, ActionMode::parse(mode).unwrap(), "{name}");
-        assert_eq!(metadata.group, group, "{name}");
+        assert_eq!(metadata.group, group.as_slice(), "{name}");
         // Phases need a target (§3): an action that names no target names no phase.
         if metadata.target.is_none() {
             assert!(metadata.phases.is_empty(), "{name} names phases, no target");
