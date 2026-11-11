@@ -38,7 +38,7 @@
     },
     {
       "name": "brief/",
-      "role": "`zaf brief`: task context pack (ticket, pages, a ## Rulings section with the questions and rulings on the task, nodes chain, style, interface page)",
+      "role": "`zaf brief`: task context pack (ticket, pages, a ## Rulings section with the questions and rulings on the task, nodes chain, style, interface page; for a resumed phase with a pull request also its diff, the findings at its head and the hand-off)",
       "node": false
     },
     {
