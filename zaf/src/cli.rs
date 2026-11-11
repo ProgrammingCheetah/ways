@@ -79,6 +79,11 @@ pub enum Verb {
     Brief {
         /// The task.
         task: TicketId,
+        /// The phase action the pack is for, one of its task type's `[phases]` list; a task with
+        /// a pull request then gets its diff, new findings and hand-off. The call is
+        /// `zaf brief <task> --phase <action>`, refused with exit 1 for an unlisted action.
+        #[arg(long)]
+        phase: Option<String>,
     },
     /// Run the configured check steps for a task, a pull request or a milestone.
     Check {
@@ -471,7 +476,7 @@ fn run_verb(cli: &Cli) -> u8 {
     match &cli.verb {
         Verb::Board { action } => board::run(cli, action),
         Verb::Ask { task, questions } => ask::run(cli, *task, questions),
-        Verb::Brief { task } => brief::run(cli, *task),
+        Verb::Brief { task, phase } => brief::run(cli, *task, phase.as_deref()),
         Verb::Check { target, status } => check::run(cli, target, *status),
         Verb::Changes { task, path } => changes::run(cli, *task, path.as_deref()),
         Verb::Verify { task } => check::verify(cli, *task),

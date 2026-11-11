@@ -6,14 +6,17 @@ use std::process::Command;
 
 use super::Cli;
 use super::exit::{BACKEND, OK, REFUSED, fail, fail_composition, note_design_paths};
+use super::slice::{VERSION_VAR, fail_slice};
 
-use crate::app::actions::Caller;
+use crate::app::actions::{ActionName, Caller, SliceRecords};
 use crate::app::brief::{
-    ActionsView, BriefActionsError, BriefError, BriefPorts, BriefQuery, NodesChain,
-    brief_with_actions,
+    ActionsView, BriefActionsError, BriefError, BriefPorts, BriefQuery, NodesChain, PhaseView,
+    brief_for_phase,
 };
+use crate::app::slice::{self, SliceQuery};
 use crate::composition::{Composition, zaf_home};
-use crate::domain::TicketId;
+use crate::domain::{Ticket, TicketId, TicketType};
+use crate::ports::{BaseName, Board, Forge, PrNumber, Vcs};
 
 /// The environment variable naming the instance a brief or an ask is for.
 pub const INSTANCE_VAR: &str = "ZAF_INSTANCE";
@@ -27,8 +30,93 @@ const NODES_BINARY: &str = "nodes";
 /// The file at the project root that marks a node tree.
 const NODE_TREE_FILE: &str = "NODE.inf.json";
 
-/// Builds a task's context pack.
-pub fn run(cli: &Cli, task: TicketId) -> u8 {
+/// What a resumed phase's pack reads its diff and findings from, owned until the pack is built.
+struct Resumed {
+    pr: PrNumber,
+    workspace: Option<PathBuf>,
+    base: BaseName,
+    forge: Box<dyn Forge>,
+    vcs: Box<dyn Vcs>,
+}
+
+impl Resumed {
+    fn view(&self) -> PhaseView<'_> {
+        PhaseView {
+            pr: self.pr,
+            workspace: self.workspace.as_deref(),
+            base: &self.base,
+            forge: self.forge.as_ref(),
+            vcs: self.vcs.as_ref(),
+        }
+    }
+}
+
+/// Refuses a phase the task's type does not list: its `[phases]` list is the one for the
+/// ticket's type, and a task with no type or no list for it has no phase to resume.
+fn check_phase(
+    path: &str,
+    composition: &Composition,
+    ticket: &Ticket,
+    phase: &str,
+) -> Result<(), u8> {
+    let kind = ticket.kind.as_ref().map(TicketType::as_str);
+    let list = kind.and_then(|kind| composition.manifest().phase_list(kind));
+    if list.is_some_and(|list| list.iter().any(|name| name.as_str() == phase)) {
+        return Ok(());
+    }
+    let reason = match (kind, list) {
+        (None, _) => format!("{} has no type, so no phase list", ticket.id),
+        (Some(kind), None) => format!("[phases] has no list for {kind}"),
+        (Some(kind), Some(list)) => {
+            let listed: Vec<&str> = list.iter().map(ActionName::as_str).collect();
+            format!("the {kind} list is {}", listed.join(", "))
+        }
+    };
+    eprintln!(
+        "zaf {path}: `{phase}` is not a phase of {}: {reason}",
+        ticket.id
+    );
+    Err(REFUSED)
+}
+
+/// The recorded pull request of the task and what reads its change; none when the task has no
+/// pull request, and then the pack is today's.
+fn resume(
+    path: &str,
+    cli: &Cli,
+    composition: &Composition,
+    board: &dyn Board,
+    task: TicketId,
+) -> Result<Option<Resumed>, u8> {
+    let records = SliceRecords::new(composition.root());
+    let Some(pr) = records.pr(task) else {
+        return Ok(None);
+    };
+    let query = SliceQuery {
+        task,
+        version: std::env::var(VERSION_VAR)
+            .ok()
+            .filter(|version| !version.is_empty()),
+    };
+    let target = slice::resolve(board, &composition.manifest().branches, &query)
+        .map_err(|error| fail_slice(path, cli, &error))?;
+    let forge = composition
+        .forge()
+        .map_err(|error| fail_composition(path, &error))?;
+    let vcs = composition
+        .vcs()
+        .map_err(|error| fail_composition(path, &error))?;
+    Ok(Some(Resumed {
+        pr,
+        workspace: records.workspace(task),
+        base: target.base,
+        forge,
+        vcs,
+    }))
+}
+
+/// Builds a task's context pack; with a phase, a resumed one when the task has a pull request.
+pub fn run(cli: &Cli, task: TicketId, phase: Option<&str>) -> u8 {
     let path = cli.verb.path();
     let composition = match Composition::discover_here() {
         Ok(composition) => composition,
@@ -37,6 +125,22 @@ pub fn run(cli: &Cli, task: TicketId) -> u8 {
     let board = match composition.board() {
         Ok(board) => board,
         Err(error) => return fail_composition(&path, &error),
+    };
+    let resumed = match phase {
+        None => None,
+        Some(phase) => {
+            let ticket = match board.task(task) {
+                Ok(ticket) => ticket,
+                Err(error) => return fail(&path, &error),
+            };
+            if let Err(code) = check_phase(&path, &composition, &ticket, phase) {
+                return code;
+            }
+            match resume(&path, cli, &composition, board.as_ref(), task) {
+                Ok(resumed) => resumed,
+                Err(code) => return code,
+            }
+        }
     };
     let design = match composition.design() {
         Ok(design) => design,
@@ -74,7 +178,8 @@ pub fn run(cli: &Cli, task: TicketId) -> u8 {
         home: home.as_deref(),
         caller: &caller,
     };
-    match brief_with_actions(&query, &ports, view) {
+    let phase_view = resumed.as_ref().map(Resumed::view);
+    match brief_for_phase(&query, &ports, view, phase_view.as_ref()) {
         Ok(brief) if cli.json => {
             println!("{}", serde_json::json!(brief));
             OK
@@ -95,7 +200,9 @@ pub fn run(cli: &Cli, task: TicketId) -> u8 {
 /// Reports why no pack was written and returns the exit code.
 fn fail_brief(path: &str, error: BriefError, composition: &Composition) -> u8 {
     match error {
-        BriefError::Board(error) => fail(path, &error),
+        BriefError::Board(error) | BriefError::Forge(error) | BriefError::Vcs(error) => {
+            fail(path, &error)
+        }
         BriefError::Design(error) => {
             note_design_paths(path, composition);
             fail(path, &error)

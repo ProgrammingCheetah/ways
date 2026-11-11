@@ -108,3 +108,38 @@ fn without_a_zaf_home_only_the_project_actions_are_listed() {
     );
     assert!(!text.contains("notify"), "{text}");
 }
+
+/// A project whose Task type lists two phases, and whose task 4 is of that type.
+fn phased_project() -> Project {
+    let manifest = format!("{MANIFEST}\n[phases]\nTask = [\"build\", \"check\"]\n");
+    let mut project = Project::new(&manifest);
+    project
+        .on(
+            "issue view 4 *",
+            r#"{"number":4,"title":"A task","body":"","labels":[{"name":"task"},{"name":"ready"}],"parent":{"number":1},"state":"OPEN","comments":[],"issueType":{"name":"Task","id":"IT_1"}}"#,
+        )
+        .on("issue list *", "[]");
+    project
+}
+
+#[test]
+fn an_unlisted_phase_is_refused() {
+    let project = phased_project();
+    let (code, stdout, stderr) = outcome(&project.zaf(&["brief", "4", "--phase", "review"]));
+    assert_eq!(code, 1, "{stdout}{stderr}");
+    assert!(stderr.contains("`review` is not a phase of"), "{stderr}");
+    assert!(stderr.contains("build, check"), "{stderr}");
+    assert_eq!(stdout, "");
+}
+
+#[test]
+fn a_listed_phase_of_a_task_with_no_pr_gets_todays_pack() {
+    let project = phased_project();
+    let (code, stdout, stderr) = outcome(&project.zaf(&["brief", "4", "--phase", "check"]));
+    assert_eq!(code, 0, "{stderr}");
+    let text = pack(&stdout);
+    for heading in ["## Diff", "## Findings", "## Hand-off"] {
+        assert!(!text.contains(heading), "{text}");
+    }
+    assert!(text.contains("## Ticket"), "{text}");
+}
