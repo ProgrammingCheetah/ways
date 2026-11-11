@@ -79,6 +79,16 @@
       "node": false
     },
     {
+      "name": "phase_tick.rs",
+      "role": "the phase steps of zaf spawn --once: derives each claimed or ready phased task's standing from the forge and the phase run folders, storing none, and runs tick steps 3 to 6 in order into one TickOutcome; an unreadable task is named and skipped",
+      "node": false
+    },
+    {
+      "name": "phase_tick/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
       "name": "runs.rs",
       "role": ".zaf/runs/<slug>/: launch.json, the holding process in pid, exit; Run::running reads the process table",
       "node": false
