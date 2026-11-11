@@ -29,6 +29,21 @@
       "node": false
     },
     {
+      "name": "inline.rs",
+      "role": "tick step 3: run each task's ready zaf-kind action with zaf do, one after another, at no budget cost; a failure never stops the rest",
+      "node": false
+    },
+    {
+      "name": "inline/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "outcome.rs",
+      "role": "TickOutcome { started, waits, ran, questions }: what a tick did; idle when all are empty",
+      "node": false
+    },
+    {
       "name": "mod.rs",
       "role": "prepare (lost, orphaned claims, plan, reserve under spawn.lock), launch, launch_all, dry run",
       "node": false

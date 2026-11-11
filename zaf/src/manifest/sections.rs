@@ -1,9 +1,10 @@
 //! The sections of `ZAF.toml`, with the pack's defaults for the ones a project leaves out.
 
 use std::collections::BTreeMap;
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 
-use crate::domain::Profile;
+use crate::domain::{Budget, DEFAULT_RESERVE, Profile, SizeTable, TaskSize};
 use crate::newtype::text_newtype;
 
 text_newtype! {
@@ -436,7 +437,8 @@ impl Default for AskSection {
     }
 }
 
-/// `[spawn]`: how many instances run at once and when the budget guard steps in.
+/// `[spawn]`: how many instances run at once, when the budget guard steps in, and the
+/// machine budget a launch must fit.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SpawnSection {
@@ -444,6 +446,18 @@ pub struct SpawnSection {
     pub slots: u32,
     /// Budget percentages at which the guard tightens, ascending. Default: 70, 85, 95.
     pub guard: Vec<u8>,
+    /// The machine budget, `[spawn] budget = <units>`, a positive integer read only from the
+    /// zaf home's `config.toml`: a project file that sets it fails the load. Unset means no
+    /// machine cap.
+    pub budget: Option<NonZeroU32>,
+    /// The reserve an E leaves of the budget, `[spawn] reserve = <units>`, read only from the
+    /// zaf home's `config.toml` like `budget`: a project file that sets it fails the load, and
+    /// so does a reserve at or above the budget. An E costs the budget minus the reserve.
+    /// Default: 6.
+    pub reserve: u32,
+    /// `[spawn.sizes]`: the units each size costs, over the defaults XS 1, S 2, M 4, L 8 and
+    /// XL 16.
+    pub sizes: SizesSection,
 }
 
 impl Default for SpawnSection {
@@ -451,7 +465,64 @@ impl Default for SpawnSection {
         Self {
             slots: 1,
             guard: vec![70, 85, 95],
+            budget: None,
+            reserve: DEFAULT_RESERVE,
+            sizes: SizesSection::default(),
         }
+    }
+}
+
+impl SpawnSection {
+    /// The machine budget, its reserve and the size table these settings make.
+    #[must_use]
+    pub fn budget(&self) -> Budget {
+        Budget {
+            units: self.budget.map(NonZeroU32::get),
+            reserve: self.reserve,
+            sizes: self.sizes.table(),
+        }
+    }
+}
+
+/// `[spawn.sizes]`: the units a size costs, each a positive integer; a size left out keeps
+/// its default. The keys are XS, S, M, L and XL; any other key, `E` among them, fails the
+/// load, since an E costs the budget minus the reserve.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SizesSection {
+    /// The cost of an XS. Default: 1.
+    #[serde(rename = "XS")]
+    pub xs: Option<NonZeroU32>,
+    /// The cost of an S. Default: 2.
+    #[serde(rename = "S")]
+    pub s: Option<NonZeroU32>,
+    /// The cost of an M. Default: 4.
+    #[serde(rename = "M")]
+    pub m: Option<NonZeroU32>,
+    /// The cost of an L. Default: 8.
+    #[serde(rename = "L")]
+    pub l: Option<NonZeroU32>,
+    /// The cost of an XL. Default: 16.
+    #[serde(rename = "XL")]
+    pub xl: Option<NonZeroU32>,
+}
+
+impl SizesSection {
+    /// The size table: the defaults with each size set here laid over them.
+    #[must_use]
+    pub fn table(&self) -> SizeTable {
+        [
+            (TaskSize::XS, self.xs),
+            (TaskSize::S, self.s),
+            (TaskSize::M, self.m),
+            (TaskSize::L, self.l),
+            (TaskSize::XL, self.xl),
+        ]
+        .into_iter()
+        .fold(SizeTable::default(), |table, (size, units)| match units {
+            Some(units) => table.with(size, units.get()),
+            None => table,
+        })
     }
 }
 

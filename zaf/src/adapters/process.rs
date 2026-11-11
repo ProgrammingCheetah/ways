@@ -9,13 +9,15 @@
 //! project, by the [`RUN_VAR`] in each process's environment: `/proc/<pid>/environ` on
 //! Linux, else `ps` with the environment. It keeps [`RUN_VAR`], [`SIZE_VAR`] and
 //! [`INSTANCE_VAR`] and drops every other variable as it reads, since an instance's
-//! environment holds tokens; nothing it finds is written anywhere.
+//! environment holds tokens; nothing it finds is written anywhere. Each instance also reads
+//! the resident memory of its processes, summed: `VmRSS` of `/proc/<pid>/status` on Linux,
+//! else `ps -o rss=`; a process whose memory cannot be read adds nothing.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use crate::domain::TaskSize;
+use crate::domain::{Mebibytes, TaskSize};
 use crate::ports::{Holder, INSTANCE_VAR, MachineInstance, RUN_VAR, SIZE_VAR};
 
 /// The holder for a running process, or none when there is no such process.
@@ -108,7 +110,7 @@ fn proc_start(stat: &str) -> Option<String> {
 /// A process whose environment cannot be read (another user's, or one that exits during
 /// the read) is skipped. Each call reads the process table afresh; nothing is kept.
 pub fn machine() -> Vec<MachineInstance> {
-    group(environments())
+    group(environments(), &resident_kibibytes)
 }
 
 /// The three variables of one process's environment the machine read keeps; every other
@@ -247,24 +249,62 @@ fn ps_environments() -> Vec<(u32, Kept)> {
         .collect()
 }
 
+/// The resident memory of a process in kibibytes: the `VmRSS` line of `/proc/<pid>/status`
+/// on Linux, else `ps -o rss=`. None when it cannot be read: the process is gone, a zombie
+/// (which holds none) or another user's.
+fn resident_kibibytes(pid: u32) -> Option<u64> {
+    if Path::new("/proc/self/status").exists() {
+        let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+        return vm_rss(&status);
+    }
+    let output = Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid.to_string()])
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+}
+
+/// The kibibytes of the `VmRSS:` line of a `/proc/<pid>/status` file, as `VmRSS:  1234 kB`.
+fn vm_rss(status: &str) -> Option<u64> {
+    let line = status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmRSS:"))?;
+    line.split_whitespace().next()?.parse().ok()
+}
+
 /// The processes carrying [`RUN_VAR`], one instance per run folder. The instance and size
-/// come from its lowest pid that carries them; a size that does not parse is none.
-fn group(mut processes: Vec<(u32, Kept)>) -> Vec<MachineInstance> {
+/// come from its lowest pid that carries them; a size that does not parse is none. Its memory
+/// is the sum of what `resident` reads, in kibibytes, of each of its processes; one it cannot
+/// read adds nothing. The sum is rounded to mebibytes once, so many small processes lose nothing.
+fn group(
+    mut processes: Vec<(u32, Kept)>,
+    resident: &dyn Fn(u32) -> Option<u64>,
+) -> Vec<MachineInstance> {
     processes.sort_by_key(|(pid, _)| *pid);
-    let mut instances: BTreeMap<PathBuf, MachineInstance> = BTreeMap::new();
+    let mut instances: BTreeMap<PathBuf, (MachineInstance, u64)> = BTreeMap::new();
     for (pid, kept) in processes {
         let Some(run) = kept.run.map(PathBuf::from) else {
             continue;
         };
-        let instance = instances
-            .entry(run.clone())
-            .or_insert_with(|| MachineInstance {
-                root: root_of(&run),
-                run,
-                instance: None,
-                size: None,
-                pids: Vec::new(),
-            });
+        let (instance, kibibytes) = instances.entry(run.clone()).or_insert_with(|| {
+            (
+                MachineInstance {
+                    root: root_of(&run),
+                    run,
+                    instance: None,
+                    size: None,
+                    pids: Vec::new(),
+                    memory: Mebibytes::default(),
+                },
+                0,
+            )
+        });
         instance.pids.push(pid);
         if instance.instance.is_none() {
             instance.instance = kept.instance;
@@ -272,8 +312,15 @@ fn group(mut processes: Vec<(u32, Kept)>) -> Vec<MachineInstance> {
         if instance.size.is_none() {
             instance.size = kept.size.and_then(|size| size.parse::<TaskSize>().ok());
         }
+        *kibibytes = kibibytes.saturating_add(resident(pid).unwrap_or(0));
     }
-    instances.into_values().collect()
+    instances
+        .into_values()
+        .map(|(mut instance, kibibytes)| {
+            instance.memory = Mebibytes::from_kibibytes(kibibytes);
+            instance
+        })
+        .collect()
 }
 
 /// The project of a run folder `<root>/.zaf/runs/<slug>`: three folders up, or the run
@@ -302,6 +349,31 @@ mod tests {
                 command.env(name, value);
             }
             Self(command.spawn().expect("runs sleep"))
+        }
+
+        /// A stub that holds `mebibytes` of resident memory: python fills a bytes object, which
+        /// it must touch to build. Returns once the memory shows in the process table.
+        fn holding(env: &[(&str, &str)], mebibytes: u64) -> Self {
+            let script = format!("import time\nblock = b'x' * ({mebibytes} << 20)\ntime.sleep(30)");
+            let mut command = Command::new("python3");
+            command
+                .args(["-c", &script])
+                .env_remove(RUN_VAR)
+                .env_remove(SIZE_VAR)
+                .env_remove(INSTANCE_VAR)
+                .stdin(Stdio::null());
+            for (name, value) in env {
+                command.env(name, value);
+            }
+            let stub = Self(command.spawn().expect("runs python3"));
+            let wanted = mebibytes * 1024;
+            for _ in 0..200 {
+                if resident_kibibytes(stub.pid()).is_some_and(|held| held >= wanted) {
+                    return stub;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            panic!("the stub never held {mebibytes} MiB");
         }
 
         fn pid(&self) -> u32 {
@@ -358,8 +430,118 @@ mod tests {
                 instance: Some("planning instance 1 on #2".to_owned()),
                 size: Some(TaskSize::XS),
                 pids,
+                memory: read[0].memory,
             }]
         );
+    }
+
+    /// The memory the machine read gives the instance of `run`, under `dir`.
+    fn memory_of(dir: &Path, run: &Path) -> Mebibytes {
+        let read = read_under(dir);
+        let found = read.iter().find(|instance| instance.run == run);
+        found.expect("the instance is read").memory
+    }
+
+    #[test]
+    fn an_instance_sums_its_processes_memory() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let run = run_in(dir.path(), "bookshelf", "team-instance-1-on-2");
+        let env = [(RUN_VAR, run.to_str().expect("utf-8"))];
+        let _instance = Stub::holding(&env, 200);
+        let _child = Stub::holding(&env, 100);
+
+        let memory = memory_of(dir.path(), &run).get();
+
+        // The two hold 300 MiB between them, and python itself about 10 MiB each.
+        assert!(
+            (300..=360).contains(&memory),
+            "one instance of two processes reads their sum, not one of them: {memory} MiB"
+        );
+    }
+
+    #[test]
+    fn memory_reads_in_units() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let run = run_in(dir.path(), "bookshelf", "team-instance-1-on-2");
+        let _stub = Stub::holding(&[(RUN_VAR, run.to_str().expect("utf-8"))], 512);
+
+        let read = read_under(dir.path());
+
+        let units = crate::ports::live_use(&read);
+        assert!(
+            (0.5..0.55).contains(&units.as_f64()),
+            "512 MiB and a little reads as about 0.5 units, not {units}"
+        );
+        assert_eq!(units.to_string(), "0.5");
+    }
+
+    #[test]
+    fn an_exited_process_frees_its_memory() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let run = run_in(dir.path(), "bookshelf", "team-instance-1-on-2");
+        let env = [(RUN_VAR, run.to_str().expect("utf-8"))];
+        let _kept = Stub::holding(&env, 100);
+        let mut gone = Stub::holding(&env, 300);
+        assert!(memory_of(dir.path(), &run).get() >= 400);
+
+        gone.stop();
+
+        let memory = memory_of(dir.path(), &run).get();
+        assert!(
+            (100..200).contains(&memory),
+            "the next read no longer counts the exited process: {memory} MiB"
+        );
+    }
+
+    #[test]
+    fn a_process_whose_memory_cannot_be_read_adds_nothing() {
+        let env = |run: &str| Kept {
+            run: Some(run.to_owned()),
+            ..Kept::default()
+        };
+        let read = group(
+            vec![(7, env("/p/.zaf/runs/x")), (8, env("/p/.zaf/runs/x"))],
+            &|pid| (pid == 7).then_some(2048),
+        );
+
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].memory, Mebibytes::new(2));
+        assert_eq!(
+            read[0].pids,
+            [7, 8],
+            "it still counts as a process of the instance"
+        );
+    }
+
+    #[test]
+    fn processes_are_summed_before_rounding_to_mebibytes() {
+        let env = |run: &str| Kept {
+            run: Some(run.to_owned()),
+            ..Kept::default()
+        };
+        let processes = (1..=4).map(|pid| (pid, env("/p/.zaf/runs/x"))).collect();
+
+        let read = group(processes, &|_| Some(400));
+
+        assert_eq!(
+            read[0].memory,
+            Mebibytes::new(2),
+            "1600 KiB, not four rounds of 0"
+        );
+    }
+
+    #[test]
+    fn the_status_file_gives_its_resident_kibibytes() {
+        let status = "Name:\tclaude\nVmPeak:\t  900000 kB\nVmRSS:\t  524288 kB\nRssAnon:\t 1 kB\n";
+        assert_eq!(vm_rss(status), Some(524_288));
+        assert_eq!(vm_rss("Name:\tkthreadd\nState:\tS (sleeping)\n"), None);
+        assert_eq!(vm_rss("VmRSS:\tmany kB\n"), None);
+    }
+
+    #[test]
+    fn this_process_reads_some_memory() {
+        let held = resident_kibibytes(std::process::id()).expect("this process has memory");
+        assert!(held > 0);
     }
 
     #[test]
@@ -474,7 +656,7 @@ mod tests {
             instance: Some("team instance 1 on #2".to_owned()),
             ..Kept::default()
         };
-        assert!(group(vec![(7, kept)]).is_empty());
+        assert!(group(vec![(7, kept)], &|_| Some(1024)).is_empty());
     }
 
     #[test]

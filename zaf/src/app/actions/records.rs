@@ -6,6 +6,7 @@
 //! the record left as it was. The task comes from the caller's arguments and only ever reaches a
 //! file name as a number, so no argument can point a record outside its folder.
 
+use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -65,10 +66,32 @@ pub struct SliceRecords {
 impl SliceRecords {
     /// The records of the project at `root`.
     pub fn new(root: &Path) -> Self {
+        Self::in_state_dir(&root.join(STATE_DIR))
+    }
+
+    /// The records kept in `state_dir`, the project's `.zaf/` folder.
+    pub fn in_state_dir(state_dir: &Path) -> Self {
         Self {
-            dir: root.join(STATE_DIR).join(SLICES_DIR),
-            runs: root.join(STATE_DIR).join(RUNS_DIR),
+            dir: state_dir.join(SLICES_DIR),
+            runs: state_dir.join(RUNS_DIR),
         }
+    }
+
+    /// Every task with a recorded pull request, read by the rule of [`Self::pr`]. An absent
+    /// folder, or a file that is no record, names none.
+    pub fn tasks_with_pr(&self) -> BTreeSet<TicketId> {
+        let Ok(entries) = fs::read_dir(&self.dir) else {
+            return BTreeSet::new();
+        };
+        entries
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let name = entry.file_name().into_string().ok()?;
+                let digits = name.strip_suffix(".pr")?;
+                let task = digits.parse::<TicketId>().ok()?;
+                self.pr(task).map(|_| task)
+            })
+            .collect()
     }
 
     /// Forgets the task: both slice records, and the check records of the task and of its
