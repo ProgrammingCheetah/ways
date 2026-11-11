@@ -21,6 +21,7 @@ fn epic_in(number: u64, signed: bool, challenged: bool, tasks: &[u64]) -> Epic {
         id: TicketId::from(number),
         title: format!("Epic {number}").into(),
         signature: signed.then(|| Signature::of(&body, SystemTime::UNIX_EPOCH)),
+        planned_at: None,
         body,
         tasks: tasks
             .iter()
@@ -424,6 +425,59 @@ fn a_planned_epic_gets_the_challenger_once() {
     ended.launched = vec![past(CHALLENGER_ROLE, 2, 1, 60)];
     let plan = super::plan(&ended, &SpawnState::default(), Level::Green, settings(2));
     assert_eq!(plan.epics, [(TicketId::from(2), EpicSkip::ChallengerEnded)]);
+}
+
+fn at(secs: u64) -> SystemTime {
+    SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(secs)
+}
+
+#[test]
+fn a_signed_epic_waits_from_its_signature() {
+    let mut epic = epic_in(2, true, false, &[]);
+    epic.signature = Some(Signature::of(&epic.body, at(100)));
+    let board = board_of(vec![epic]);
+    assert_eq!(
+        epic_candidates(&board, &SpawnState::default()),
+        [EpicCandidate {
+            epic: TicketId::from(2),
+            role: RoleName::from(PLANNING_ROLE),
+            since: at(100),
+        }]
+    );
+}
+
+#[test]
+fn a_planned_epic_waits_from_its_planning_exit() {
+    let mut epic = epic_in(2, true, false, &[3]);
+    epic.signature = Some(Signature::of(&epic.body, at(100)));
+    epic.planned_at = Some(at(500));
+    let board = board_of(vec![epic.clone()]);
+    assert_eq!(
+        epic_candidates(&board, &SpawnState::default()),
+        [EpicCandidate {
+            epic: TicketId::from(2),
+            role: RoleName::from(CHALLENGER_ROLE),
+            since: at(500),
+        }],
+        "the challenger waits from the planning exit, not from the signature"
+    );
+
+    // No exit marker on the epic: the signature stands in.
+    epic.planned_at = None;
+    let board = board_of(vec![epic]);
+    assert_eq!(
+        epic_candidates(&board, &SpawnState::default())
+            .first()
+            .map(|candidate| candidate.since),
+        Some(at(100))
+    );
+
+    // A team launch, an unsigned epic and a challenged one are not epic launches.
+    let team = board_of(vec![
+        epic_in(4, true, true, &[5]),
+        epic_in(6, false, false, &[]),
+    ]);
+    assert_eq!(epic_candidates(&team, &SpawnState::default()), []);
 }
 
 #[test]

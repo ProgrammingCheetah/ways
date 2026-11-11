@@ -10,16 +10,16 @@ use std::time::SystemTime;
 use super::GhCommand;
 use super::command::{GraphqlValue, number_from_url};
 use super::notes::{
-    LeaseNote, RULING_MARKER, SIGNATURE_TEXT, marked, read_signature, release_line, report_author,
-    report_marker, signature_marker, unmarked,
+    LeaseNote, RULING_MARKER, SIGNATURE_TEXT, exit_author, marked, read_signature, release_line,
+    report_author, report_marker, signature_marker, unmarked,
 };
 use super::rows::{
     ISSUE_FIELDS, IssueRow, NameRow, STANDING_FIELDS, StandingRow, TICKET_LIST_FIELDS,
 };
 use super::state::{LabelState, ProjectRef, ProjectState, StateStore};
 use crate::domain::{
-    CHALLENGER_ROLE, Epic, EpicTask, Instance, NewTask, Signature, Standing, Ticket, TicketId,
-    TicketState, TicketType,
+    CHALLENGER_ROLE, Epic, EpicTask, Instance, NewTask, PLANNING_ROLE, Signature, Standing, Ticket,
+    TicketId, TicketState, TicketType,
 };
 use crate::manifest::RepoName;
 use crate::ports::{Board, ClaimOutcome, ClaimRecord, IssueTypes, NewQuestion, PortError};
@@ -369,6 +369,17 @@ impl<S: StateStore> Board for GithubBoard<S> {
                     .comments
                     .iter()
                     .filter_map(|comment| read_signature(&comment.body))
+                    .next_back(),
+                planned_at: epic
+                    .comments
+                    .iter()
+                    .filter(|comment| {
+                        exit_author(&comment.body)
+                            .is_some_and(|author| author.role.as_str() == PLANNING_ROLE)
+                    })
+                    .filter_map(|comment| {
+                        humantime::parse_rfc3339(comment.created_at.as_deref()?).ok()
+                    })
                     .next_back(),
                 challenged: epic.comments.iter().any(|comment| {
                     report_author(&comment.body)

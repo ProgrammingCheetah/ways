@@ -178,7 +178,7 @@ fn in_use() -> InUse {
 struct Calls {
     run: Vec<(u64, String)>,
     launch: Vec<(u64, String)>,
-    start: Vec<PlannedPhase>,
+    start: Vec<PlannedModel>,
 }
 
 /// Runs the steps on `tasks`, each act recorded and `start` answering as `start_result` says.
@@ -199,7 +199,7 @@ fn run(
         launches.push((task.get(), action.as_str().to_owned()));
         Ok(())
     };
-    let mut start = |planned: &PlannedPhase| {
+    let mut start = |planned: &PlannedModel| {
         starts.push(planned.clone());
         start_result.clone()
     };
@@ -285,7 +285,7 @@ fn the_tick_starts_one_model_phase() {
     let (tick, calls) = run(&scene.board, &gathered.tasks, Ok(()));
     assert_eq!(
         calls.start,
-        [PlannedPhase {
+        [PlannedModel::Phase {
             task: id(3),
             action: name("implement"),
             units: 2,

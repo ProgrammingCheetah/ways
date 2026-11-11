@@ -111,6 +111,17 @@ pub(super) fn report_author(comment: &str) -> Option<Instance> {
     instance.parse().ok()
 }
 
+/// The instance whose exit a comment records, when it opens with an exit marker:
+/// `<!-- zaf:exit <instance> <status> -->`, the status being one word.
+pub(super) fn exit_author(comment: &str) -> Option<Instance> {
+    let first_line = comment.lines().next()?.trim_end();
+    let inner = first_line
+        .strip_prefix("<!-- zaf:exit ")?
+        .strip_suffix(" -->")?;
+    let (instance, _status) = inner.rsplit_once(' ')?;
+    instance.parse().ok()
+}
+
 /// What a signature comment says under its marker.
 pub(super) const SIGNATURE_TEXT: &str = "Signed: zaf plans and builds this epic as its body reads now. \
      An edit to the body voids this signature until the epic is signed again.";

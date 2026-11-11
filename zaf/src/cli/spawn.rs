@@ -35,7 +35,7 @@ use crate::app::profile;
 use crate::app::spawn::phase::Ports;
 use crate::app::spawn::{
     self, DryLaunch, InUse, LaunchContext, LaunchPorts, Launched, PhaseTask, PhaseTick,
-    PlannedPhase, Prepared, SpawnError, Steps, TEAM_ROLE, TickOutcome,
+    PlannedModel, Prepared, SpawnError, Steps, TEAM_ROLE, TickOutcome,
 };
 use crate::composition::{Composition, STATE_DIR, zaf_home};
 use crate::domain::{Budget, CHALLENGER_ROLE, Instance, RoleName, TicketId};
@@ -253,8 +253,8 @@ pub fn run_zaf_action(task: TicketId, action: &ActionName) -> u8 {
 /// hands [`spawn::start_planned`]. It waits only for `zaf spawn phase`, which returns once the
 /// phase's launcher is started as its own process, never for the phase itself (#421 ruling 19).
 /// Its refusal or failure is on stderr; a non-zero exit is `Err` naming the code.
-pub fn start_phase(planned: &PlannedPhase) -> Result<(), String> {
-    spawn_phase_with(this_zaf()?, planned.task, &planned.action)
+pub fn start_phase(planned: &PlannedModel) -> Result<(), String> {
+    start_model(this_zaf()?, planned)
 }
 
 /// The command that runs this zaf binary.
@@ -348,8 +348,7 @@ fn phase_steps(
 ) -> (PhaseTick, u8) {
     let mut run = run_zaf_action;
     let mut launch = |task: TicketId, action: &ActionName| spawn_phase_with(zaf()?, task, action);
-    let mut start =
-        |planned: &PlannedPhase| spawn_phase_with(zaf()?, planned.task, &planned.action);
+    let mut start = |planned: &PlannedModel| start_model(zaf()?, planned);
     let mut log = |line: &str| eprintln!("{line}");
     let tick = spawn::run_steps(
         board,
@@ -365,6 +364,16 @@ fn phase_steps(
     );
     let code = if tick.failed.is_empty() { OK } else { BACKEND };
     (tick, code)
+}
+
+/// Starts `planned` with `<zaf> spawn phase <task> <action>`. An epic's launch is not a phase:
+/// `zaf spawn phase` has no verb for it yet, so it is an error until the tick's launcher is wired
+/// to it.
+fn start_model(zaf: Command, planned: &PlannedModel) -> Result<(), String> {
+    let PlannedModel::Phase { task, action, .. } = planned else {
+        return Err("an epic launch is not started by zaf spawn phase".to_owned());
+    };
+    spawn_phase_with(zaf, *task, action)
 }
 
 /// Runs `<zaf> spawn phase <task> <action>`, `zaf` the command that stands for the binary, and
@@ -630,8 +639,8 @@ mod tests {
         zaf
     }
 
-    fn planned() -> PlannedPhase {
-        PlannedPhase {
+    fn planned() -> PlannedModel {
+        PlannedModel::Phase {
             task: TicketId::from(42),
             action: crate::app::actions::ActionName::from("implement"),
             units: 4,
@@ -644,20 +653,31 @@ mod tests {
         // `zaf spawn phase` returns once its launcher is started; the phase runs on, detached.
         let zaf = fake_zaf(dir.path(), "sleep 30 >/dev/null 2>&1 &\nexit 0");
         let began = std::time::Instant::now();
-        let planned = planned();
-        assert_eq!(spawn_phase_with(zaf, planned.task, &planned.action), Ok(()));
+        assert_eq!(start_model(zaf, &planned()), Ok(()));
         assert!(began.elapsed() < std::time::Duration::from_secs(10));
         let args = std::fs::read_to_string(dir.path().join("args")).expect("the args");
         assert_eq!(args.trim(), "spawn phase 42 implement");
     }
 
     #[test]
+    fn an_epic_launch_is_not_started_as_a_phase() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let zaf = fake_zaf(dir.path(), "exit 0");
+        let epic = PlannedModel::Epic {
+            epic: TicketId::from(7),
+            role: RoleName::from("planning"),
+            units: 1,
+        };
+        assert!(start_model(zaf, &epic).is_err());
+        assert!(!dir.path().join("args").exists());
+    }
+
+    #[test]
     fn a_refused_phase_start_is_an_error_naming_its_code() {
         let dir = tempfile::tempdir().expect("a temporary directory");
         let zaf = fake_zaf(dir.path(), "exit 1");
-        let planned = planned();
         assert_eq!(
-            spawn_phase_with(zaf, planned.task, &planned.action),
+            start_model(zaf, &planned()),
             Err("zaf spawn phase 42 implement ended with exit 1".to_owned())
         );
     }

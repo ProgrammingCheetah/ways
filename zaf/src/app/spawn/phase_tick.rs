@@ -24,7 +24,7 @@ use super::inline::{TickTask, run_zaf_actions};
 use super::outcome::TickOutcome;
 use super::phase::{Ports, listed};
 use super::question::ask_failed_waits;
-use super::start::{InUse, PlannedPhase, TaskStanding, start_planned};
+use super::start::{InUse, PlannedModel, TaskStanding, start_planned};
 use super::waits::launch_waits;
 use crate::app::actions::{ActionName, gather_standing_facts};
 use crate::domain::{Budget, DEFAULT_TASK_TYPE, TaskSize, Ticket, TicketId};
@@ -134,7 +134,7 @@ pub struct Steps<'a> {
     /// Step 4: launches a wait with `zaf spawn phase <task> <action>`, never waiting for it.
     pub launch: &'a mut dyn FnMut(TicketId, &ActionName) -> Result<(), String>,
     /// Step 6: starts the planned model phase with `zaf spawn phase`, never waiting for it.
-    pub start: &'a mut dyn FnMut(&PlannedPhase) -> Result<(), String>,
+    pub start: &'a mut dyn FnMut(&PlannedModel) -> Result<(), String>,
     /// Where a wait that could not launch is logged.
     pub log: &'a mut dyn FnMut(&str),
 }
@@ -175,7 +175,9 @@ pub fn run_steps(
         .iter()
         .map(|task| TaskStanding::of(&task.tick, task.size))
         .collect();
-    match start_planned(&standings, in_use, budget, steps.start) {
+    // No epic launch is a candidate here: the tick's launcher is not wired to start one by `zaf
+    // spawn phase` yet, so only the tasks' model phases are planned.
+    match start_planned(&standings, &[], in_use, budget, steps.start) {
         Ok(started) => tick.outcome.started = started,
         Err(error) => tick.failed.push(error),
     }

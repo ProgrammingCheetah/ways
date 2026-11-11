@@ -72,6 +72,9 @@ pub struct IssueCommentRow {
     /// Ends in `#issuecomment-<id>`, the id the REST API edits by.
     #[serde(default)]
     pub url: String,
+    /// When it was posted, RFC 3339; absent from a read that did not ask for it.
+    #[serde(default, rename = "createdAt")]
+    pub created_at: Option<String>,
 }
 
 /// A conversation comment as `repos/{repo}/issues/{n}/comments` prints it.
