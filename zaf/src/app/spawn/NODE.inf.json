@@ -49,6 +49,16 @@
       "node": false
     },
     {
+      "name": "waits.rs",
+      "role": "tick step 4: launch each task's ready wait action detached with zaf spawn phase, never waiting for it, at no budget cost; a failed launch is logged and the rest still go",
+      "node": false
+    },
+    {
+      "name": "waits/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
       "name": "outcome.rs",
       "role": "TickOutcome { started, waits, ran, questions }: what a tick did; idle when all are empty",
       "node": false
