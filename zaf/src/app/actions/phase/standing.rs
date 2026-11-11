@@ -49,7 +49,8 @@ pub struct ListedPhase {
     pub on_fail: Option<ActionName>,
 }
 
-/// Where a task stands in its phase list.
+/// Where a task stands in its phase list: `Running { action }`, `Ready { action, since }`,
+/// `Waiting { action }`, `Failed { action, on_fail: Option<ActionName>, since }` or `Done`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Standing {
     /// A phase process of the task is live, whatever the forge says.
@@ -168,7 +169,7 @@ impl StandingFacts {
     }
 }
 
-/// The task's standing in `list`, its type's phase list.
+/// The task's standing in `list`, its type's phase list: `derive_standing(list, facts) -> Standing`.
 ///
 /// A live phase process makes it [`Standing::Running`], whatever the forge says. Otherwise a
 /// merged pull request is [`Standing::Done`], and the first listed action whose fact does not hold
