@@ -487,6 +487,39 @@ fn prepare_skips_blocked_and_claimed_tasks_read_from_the_board() {
 }
 
 #[test]
+fn a_phased_task_gets_no_team() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let board = board();
+    // #4 is a Bug, a type with no phase list: it keeps the team launch. #3 and #13 are Tasks.
+    board.set_type(TicketId::from(4), "Bug");
+    let manifest: Manifest = format!("{MANIFEST}\n[phases]\nTask = [\"implement\", \"merge\"]\n")
+        .parse()
+        .expect("manifest parses");
+    let prepared = prepare(&board, &state_dir, &manifest, &|_| true, &tick()).expect("prepares");
+    let plan = &prepared.plan;
+    assert_eq!(plan.launches.len(), 1, "{plan:?}");
+    assert_eq!(plan.launches[0].tasks, [TicketId::from(4)]);
+    for phased in [3, 13] {
+        assert!(
+            plan.tasks
+                .contains(&(TicketId::from(phased), TaskSkip::Phased)),
+            "{plan:?}"
+        );
+    }
+    assert!(
+        plan.render_text()
+            .contains("#3 skipped: its type has a phase list")
+    );
+    let dry = plan_only(&board, &state_dir, &manifest, &|_| true).expect("plans");
+    assert!(
+        dry.plan
+            .tasks
+            .contains(&(TicketId::from(3), TaskSkip::Phased))
+    );
+}
+
+#[test]
 fn spawn_skips_a_task_that_does_not_parse() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state_dir = dir.path().join(".zaf");
