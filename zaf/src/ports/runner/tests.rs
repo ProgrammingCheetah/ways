@@ -52,3 +52,37 @@ fn the_fake_records_the_requests_environment() {
     assert_eq!(port.run(&sent), Ok(output("ok")));
     assert_eq!(runner.requests()[0].env["ZAF_VERSION"], "0.3.0");
 }
+
+fn instance_of(root: &str, slug: &str, memory: u64) -> MachineInstance {
+    MachineInstance {
+        run: PathBuf::from(root).join(".zaf/runs").join(slug),
+        root: PathBuf::from(root),
+        instance: None,
+        size: None,
+        pids: vec![1],
+        memory: Mebibytes::new(memory),
+    }
+}
+
+#[test]
+fn live_use_sums_the_machine() {
+    let machine = [
+        instance_of("/work/bookshelf", "team-instance-1-on-2", 512),
+        instance_of("/work/bookshelf", "team-instance-2-on-3", 300),
+        instance_of("/work/ledger", "planning-instance-4-on-9", 1024),
+    ];
+
+    let in_use = live_use(&machine);
+
+    assert_eq!(
+        in_use.mebibytes(),
+        Mebibytes::new(1836),
+        "every instance counts, from any project"
+    );
+    assert_eq!(in_use.to_string(), "1.8");
+    assert_eq!(
+        live_use(&[]),
+        Units::default(),
+        "an empty machine uses nothing"
+    );
+}
