@@ -3,7 +3,8 @@ use std::process::{Child, Command};
 use std::time::{Duration, Instant, SystemTime};
 
 use super::*;
-use crate::app::actions::{PhaseEnd, StandingFacts};
+use crate::app::actions::{PhaseEnd, PhaseRun, PullFacts, RunExit, StandingFacts};
+use crate::app::spawn::inline::run_zaf_actions;
 
 fn time(secs: u64) -> SystemTime {
     SystemTime::UNIX_EPOCH + Duration::from_secs(secs)
@@ -79,9 +80,11 @@ fn budget(units: u32) -> Budget {
     }
 }
 
-/// `units` in use, no E live, nothing running of four slots.
+/// `units` in use, no E live, nothing running of four slots, at second 100: no phase of these
+/// tests is old enough to starve.
 fn in_use(units: u64) -> InUse {
     InUse {
+        now: time(100),
         units: Units::whole(units),
         e_live: false,
         running_here: 0,
@@ -319,4 +322,135 @@ fn with_no_budget_only_the_slots_decide() {
         plan(&standings, &in_use(1000), &none),
         Some(planned(440, "implement", 4))
     );
+}
+
+fn minutes(count: u64) -> u64 {
+    count * 60
+}
+
+/// 3 of 6 units in use at `now_minutes`: an M (4) does not fit, an S (2) does.
+fn crowded(now_minutes: u64) -> InUse {
+    InUse {
+        now: time(minutes(now_minutes)),
+        ..in_use(3)
+    }
+}
+
+#[test]
+fn starve_after_is_thirty_minutes() {
+    assert_eq!(STARVE_AFTER, Duration::from_secs(30 * 60));
+}
+
+#[test]
+fn a_starved_phase_holds_the_budget() {
+    // The M has been ready since minute 0 and does not fit; at minute 31 it is starved, so the
+    // S behind it, which does fit, does not start.
+    let standings = [
+        ready(440, TaskSize::M, 0),
+        ready(441, TaskSize::S, minutes(20)),
+    ];
+    assert_eq!(plan(&standings, &crowded(31), &budget(6)), None);
+    // Exactly 30 minutes is starved too.
+    assert_eq!(plan(&standings, &crowded(30), &budget(6)), None);
+    // Once the budget frees up it is first, and starts.
+    assert_eq!(
+        plan(
+            &standings,
+            &InUse {
+                now: time(minutes(31)),
+                ..in_use(0)
+            },
+            &budget(6)
+        ),
+        Some(planned(440, "implement", 4))
+    );
+    // A failed wait with an on-fail that does not fit holds the budget the same way.
+    let failed_wait = [
+        failed(440, TaskSize::M, 0, Some("fix")),
+        ready(441, TaskSize::S, minutes(20)),
+    ];
+    assert_eq!(plan(&failed_wait, &crowded(31), &budget(6)), None);
+    // And a full project holds it: nothing smaller starts past the slots either way.
+    let full = InUse {
+        running_here: 4,
+        ..crowded(31)
+    };
+    assert_eq!(plan(&standings, &full, &budget(6)), None);
+}
+
+#[test]
+fn a_young_phase_does_not() {
+    // At minute 29 the M is not starved: it is passed for the S that fits.
+    let standings = [
+        ready(440, TaskSize::M, 0),
+        ready(441, TaskSize::S, minutes(20)),
+    ];
+    assert_eq!(
+        plan(&standings, &crowded(29), &budget(6)),
+        Some(planned(441, "implement", 2))
+    );
+    // A ready time after the tick's clock is young, not starved.
+    assert_eq!(
+        plan(&standings, &crowded(0), &budget(6)),
+        Some(planned(441, "implement", 2))
+    );
+}
+
+#[test]
+fn a_starved_phase_lets_zaf_actions_run() {
+    let standings = [ready(440, TaskSize::M, 0)];
+    let at_merge = TickTask {
+        task: TicketId::from(441),
+        list: vec![
+            ListedPhase {
+                action: name("implement"),
+                kind: ActionKind::Model,
+                ends: PhaseEnd::Exit,
+                on_fail: None,
+            },
+            ListedPhase {
+                action: name("merge"),
+                kind: ActionKind::Zaf,
+                ends: PhaseEnd::Merged,
+                on_fail: None,
+            },
+        ],
+        facts: StandingFacts {
+            ready_since: time(1),
+            pull: Some(PullFacts {
+                opened_at: time(10),
+                merged_at: None,
+                head: Some("head".to_owned()),
+                checks: Vec::new(),
+                failed_checks: Vec::new(),
+                reviews: Vec::new(),
+            }),
+            runs: vec![PhaseRun {
+                action: name("implement"),
+                head: None,
+                started_at: time(2),
+                alive: false,
+                exit: Some(RunExit {
+                    code: 0,
+                    at: time(9),
+                }),
+            }],
+        },
+    };
+    assert_eq!(
+        plan(&standings, &crowded(31), &budget(6)),
+        None,
+        "the M is starved and holds the budget"
+    );
+    let mut calls = Vec::new();
+    let ran = run_zaf_actions(&[at_merge], &mut |task, action| {
+        calls.push((task.get(), action.as_str().to_owned()));
+        0
+    });
+    assert_eq!(
+        calls,
+        vec![(441, "merge".to_owned())],
+        "the merge still runs"
+    );
+    assert!(ran.iter().all(crate::app::spawn::outcome::Ran::passed));
 }
