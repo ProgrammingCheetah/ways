@@ -47,6 +47,7 @@ The environment the verbs read (the spawner sets both; by hand, set them yoursel
 | `zaf board question <issue> "<text>" [--door]` | raise a question for the Engineer; the issue waits |
 | `zaf board done <task>` | mark a task done; refused unless the task is in `land` or its pull request has merged |
 | `zaf board file <epic> "<title>" --body-file <file> [--group <name>] [--type <name>] [--blocked]` | file a task under an epic, its body in the task template (`--body "<text>"` works too; `--body-file -` reads stdin); `--type` is its issue type, `Task` unless named; refused if the body is not a task or the repository has no such type; a title the epic already has is not filed twice |
+| `zaf board lint <issue>` | name every field of a task's body that does not follow the template, one line each; exit 1 when any is bad, no output when it parses |
 | `zaf epic show <epic>` | see one epic: its stage, then each task, closed ones too, with its state and group |
 | `zaf brief <task>` | write the task's pack (ticket, named pages, owned paths, style, this page) and print its path |
 | `zaf ask -t <task> "<kind>: <question>" ...` | ask the keeper one to five design questions in one call; kinds are `fact`, `rule`, `term`, `exists`, `where` |
@@ -88,7 +89,7 @@ Asking well:
 
 ## What makes a task exact
 
-One behaviour, size S or M; its scope in words with what it leaves alone, no closed list of files; its design pages named by id, and the interface ids it implements; acceptance checkable by `zaf check <task>` (named tests, named HTTP outcomes, named UI states); its security trigger right for what it touches; every interface it shares written down, with the task that defines it blocking the one that consumes it; a change to stored data shape raised as a door before the task is ready.
+One behaviour, size XS, S or M (L, XL and E are costs of the size table and of a release launch, not ticket sizes); typed fields (Security trigger, Model, Size) within their allowed values; its scope in words with what it leaves alone, no closed list of files; its design pages named by id, and the interface ids it implements; acceptance checkable by `zaf check <task>` (named tests, named HTTP outcomes, named UI states); its security trigger right for what it touches; every interface it shares written down, with the task that defines it blocking the one that consumes it; a change to stored data shape raised as a door before the task is ready.
 
 ## Steps
 

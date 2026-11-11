@@ -105,15 +105,80 @@ fn duplicate_field_is_rejected() {
 #[test]
 fn values_outside_their_vocabulary_are_rejected() {
     let bad_model = FILLED_TEMPLATE.replace("Model: sonnet", "Model: large");
-    let bad_model_error = TaskTemplateError::InvalidValue {
+    let bad_model_error = TaskTemplateError::NotAllowed {
         field: TaskField::Model,
         value: "large".to_owned(),
+        allowed: "sonnet, opus".to_owned(),
     };
     assert_eq!(bad_model.parse::<TaskTemplate>(), Err(bad_model_error));
     let bad_trigger = FILLED_TEMPLATE.replace("Security trigger: no", "Security trigger: yes");
     assert!(bad_trigger.parse::<TaskTemplate>().is_err());
     let bad_blocker = FILLED_TEMPLATE.replace("#3, #5", "#3, soon");
     assert!(bad_blocker.parse::<TaskTemplate>().is_err());
+}
+
+#[test]
+fn every_size_parses() {
+    for name in ["XS", "S", "M", "L", "XL", "E"] {
+        let size: TaskSize = name
+            .parse()
+            .unwrap_or_else(|error| panic!("{name} parses as a size: {error}"));
+        assert_eq!(size.name(), name);
+        let body = FILLED_TEMPLATE.replace("Size: S\n", &format!("Size: {name}\n"));
+        let template: TaskTemplate = body
+            .parse()
+            .unwrap_or_else(|error| panic!("a body holding Size: {name} parses: {error}"));
+        assert_eq!(template.size, size);
+        assert_eq!(template.to_string(), body);
+    }
+}
+
+#[test]
+fn sizes_are_ordered_from_xs_to_e() {
+    let ordered = [
+        TaskSize::XS,
+        TaskSize::S,
+        TaskSize::M,
+        TaskSize::L,
+        TaskSize::XL,
+        TaskSize::E,
+    ];
+    let mut shuffled = [
+        TaskSize::L,
+        TaskSize::E,
+        TaskSize::XS,
+        TaskSize::XL,
+        TaskSize::M,
+        TaskSize::S,
+    ];
+    shuffled.sort();
+    assert_eq!(shuffled, ordered);
+    assert_eq!(TaskSize::VARIANTS, ordered);
+    assert!(TaskSize::XS < TaskSize::S && TaskSize::XL < TaskSize::E);
+}
+
+#[test]
+fn an_unknown_size_names_the_allowed_values() {
+    let bad_size = FILLED_TEMPLATE.replace("Size: S", "Size: XXL");
+    let error = bad_size
+        .parse::<TaskTemplate>()
+        .expect_err("XXL is not a size");
+    assert_eq!(
+        error.to_string(),
+        "`Size` has an invalid value `XXL`: allowed values are XS, S, M, L, XL, E"
+    );
+}
+
+#[test]
+fn an_unknown_model_names_the_allowed_values() {
+    let bad_model = FILLED_TEMPLATE.replace("Model: sonnet", "Model: haiku");
+    let error = bad_model
+        .parse::<TaskTemplate>()
+        .expect_err("haiku is not a task model");
+    assert_eq!(
+        error.to_string(),
+        "`Model` has an invalid value `haiku`: allowed values are sonnet, opus"
+    );
 }
 
 #[test]
@@ -328,4 +393,94 @@ fn field_labels_are_pinned() {
             "Style",
         ]
     );
+}
+
+fn lines(text: &str) -> Vec<String> {
+    TaskTemplate::problems(text)
+        .iter()
+        .map(ToString::to_string)
+        .collect()
+}
+
+#[test]
+fn a_body_that_parses_has_no_problems() {
+    assert!(TaskTemplate::problems(FILLED_TEMPLATE).is_empty());
+    assert!(TaskTemplate::problems(&scoped_text()).is_empty());
+}
+
+#[test]
+fn problems_name_a_bad_value_as_written_with_what_the_field_accepts() {
+    let text =
+        FILLED_TEMPLATE.replace("Security trigger: no", "Security trigger: no, it removes x");
+    assert_eq!(
+        lines(&text),
+        ["Security trigger: no, it removes x (accepts: no | yes <which>)"]
+    );
+}
+
+#[test]
+fn problems_report_every_bad_field_not_only_the_first() {
+    let text = FILLED_TEMPLATE
+        .replace("Model: sonnet", "Model: gpt")
+        .replace("Size: S", "Size: XXL")
+        .replace("Blocked by: #3, #5", "Blocked by: soon");
+    assert_eq!(
+        lines(&text),
+        [
+            "Model: gpt (accepts: sonnet | opus)",
+            "Size: XXL (accepts: XS | S | M | L | XL | E)",
+            "Blocked by: soon (accepts: — | #<issue>, #<issue>)",
+        ]
+    );
+}
+
+#[test]
+fn problems_name_a_missing_field_an_unknown_label_and_a_stray_line() {
+    let text = FILLED_TEMPLATE
+        .replace("Model: sonnet\n", "")
+        .replace("Tests:", "Tets:")
+        .replace("Size: S", "Size: S\nwhat is this");
+    assert_eq!(
+        lines(&text),
+        [
+            "line 9: unknown field Tets",
+            "line 12: what is this (accepts: Field: value | - item under Acceptance)",
+            "Tests: missing",
+            "Model: missing",
+        ]
+    );
+}
+
+#[test]
+fn problems_name_a_missing_scope_and_an_empty_acceptance() {
+    let text = "Goal: g\nInterfaces: i\nDesign pages: d\nAcceptance:\nTests: t\n\
+                Security trigger: no\nModel: opus\nSize: M\nBlocked by: —\n";
+    assert_eq!(
+        lines(text),
+        ["Scope or Owned paths: missing", "Acceptance: missing"]
+    );
+}
+
+#[test]
+fn a_body_parses_exactly_when_it_has_no_problems() {
+    let bodies = [
+        FILLED_TEMPLATE.to_owned(),
+        scoped_text(),
+        FILLED_TEMPLATE.replace("Size: S", "Size: L"),
+        FILLED_TEMPLATE.replace("Goal: Members", "Goal:"),
+        FILLED_TEMPLATE.replace("Tests:", "Tets:"),
+        FILLED_TEMPLATE.replace("Size: S", "Size: S\nSize: M"),
+        FILLED_TEMPLATE.replace("Acceptance:", "Acceptance: none"),
+        FILLED_TEMPLATE.replace("Security trigger: no", "Security trigger: yes"),
+        FILLED_TEMPLATE.replace("  - an empty", "- an empty"),
+        "  indented first\nGoal: g".to_owned(),
+        String::new(),
+    ];
+    for body in bodies {
+        assert_eq!(
+            body.parse::<TaskTemplate>().is_ok(),
+            TaskTemplate::problems(&body).is_empty(),
+            "{body}"
+        );
+    }
 }

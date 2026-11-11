@@ -58,6 +58,64 @@ fn ready_lists_only_ready_tasks_in_issue_order() {
     assert_eq!(numbers, [TicketId::from(2), TicketId::from(4)]);
 }
 
+/// A task body that follows the template, its security trigger, model and size lines given.
+fn body(trigger: &str, model: &str, size: &str) -> String {
+    format!(
+        "Goal: do it\nOwned paths: src/\nInterfaces: none\nDesign pages: none\n\
+         Acceptance:\n  - it works\nTests: it_works\nSecurity trigger: {trigger}\n\
+         Model: {model}\nSize: {size}\nBlocked by: —\n"
+    )
+}
+
+fn board_with_body(body: String) -> FakeBoard {
+    let board = FakeBoard::default();
+    board.add_ticket(Ticket {
+        body: body.into(),
+        ..ticket(7, TicketState::Ready)
+    });
+    board
+}
+
+#[test]
+fn lint_names_a_bad_security_trigger() {
+    let board = board_with_body(body("no, it removes x", "sonnet", "S"));
+    let problems = lint(&board, TicketId::from(7)).expect("lints");
+    let lines: Vec<String> = problems.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        lines,
+        ["Security trigger: no, it removes x (accepts: no | yes <which>)"]
+    );
+    assert_eq!(problems[0].name(), "Security trigger");
+    assert_eq!(problems[0].value(), Some("no, it removes x"));
+    assert_eq!(problems[0].accepts().as_deref(), Some("no | yes <which>"));
+}
+
+#[test]
+fn lint_names_every_bad_field() {
+    let board = board_with_body(body("maybe", "sonnet", "XXL"));
+    let problems = lint(&board, TicketId::from(7)).expect("lints");
+    let lines: Vec<String> = problems.iter().map(ToString::to_string).collect();
+    assert_eq!(
+        lines,
+        [
+            "Security trigger: maybe (accepts: no | yes <which>)",
+            "Size: XXL (accepts: XS | S | M | L | XL | E)",
+        ]
+    );
+}
+
+#[test]
+fn lint_passes_a_good_body() {
+    let board = board_with_body(body("yes the token path", "opus", "M"));
+    assert!(lint(&board, TicketId::from(7)).expect("lints").is_empty());
+}
+
+#[test]
+fn lint_of_an_issue_the_board_does_not_hold_is_an_error() {
+    let board = board_with_body(body("no", "sonnet", "S"));
+    assert!(lint(&board, TicketId::from(99)).is_err());
+}
+
 #[test]
 fn a_claim_takes_a_ready_task_and_a_repeat_is_quiet() {
     let board = board_with(&[(2, TicketState::Ready)]);

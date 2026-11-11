@@ -5,15 +5,18 @@
 //! while the process recorded in its run folder does, so one that died frees its slot at
 //! once, with no tick in between. A claim held by an instance that no longer runs is shown
 //! as orphaned, not claimed: the next tick releases it. The guard line is whatever
-//! `zaf guard` last wrote.
+//! `zaf guard` last wrote. The machine line counts every live zaf instance on the machine,
+//! from any project, as the process table reads it when asked ([`Status::with_machine`]).
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use super::epic::EpicLine;
 use super::guard::{self, GuardError, GuardState};
+use super::profile::StaleProfile;
 use super::spawn::{self, blockers, blockers::DeadLine};
-use crate::domain::{Ticket, TicketId, TicketSummary};
-use crate::ports::{Board, ClaimRecord, Holder, PortError};
+use crate::domain::{SLOTS_DIR, SlotRecord, TaskTemplate, Ticket, TicketId, TicketSummary};
+use crate::ports::{Board, ClaimRecord, Holder, MachineInstance, PortError};
 
 /// The spawner's state file under the state folder.
 pub const SPAWN_STATE_FILE: &str = "spawn.state";
@@ -35,6 +38,17 @@ pub enum StatusError {
     /// `.zaf/guard.json` is there but unreadable.
     #[error(transparent)]
     Guard(#[from] GuardError),
+}
+
+/// A ready task whose body does not follow the template, and what is wrong with it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct UnparsedLine {
+    /// Its issue number.
+    pub number: u64,
+    /// Its title.
+    pub title: String,
+    /// One line per problem, as `zaf board lint` prints them.
+    pub problems: Vec<String>,
 }
 
 /// A live claim.
@@ -81,13 +95,26 @@ pub struct Slots {
     pub free: u32,
 }
 
+/// A build slot a gate run holds now, read from `.zaf/slots/<pid>`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SlotLine {
+    /// The instance that runs the gate, or `the Engineer`.
+    pub holder: String,
+    /// The gate level: `full`, `light` or `tests`.
+    pub level: String,
+    /// When the run took the slot, RFC 3339.
+    pub since: String,
+}
+
 /// The whole screen.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Status {
     /// The open epics, each with its stage; none on a board that cannot list them.
     pub epics: Vec<EpicLine>,
-    /// Tasks open for a claim.
+    /// Tasks open for a claim whose body follows the template.
     pub ready: Vec<TicketSummary>,
+    /// Ready tasks whose body does not, which the spawner skips.
+    pub unparsed: Vec<UnparsedLine>,
     /// Claims held now by an instance that runs, or by one this machine did not launch.
     pub claimed: Vec<ClaimLine>,
     /// Claims held by an instance this machine launched that no longer runs: free, and
@@ -101,15 +128,63 @@ pub struct Status {
     pub running: Vec<Launch>,
     /// The slots.
     pub slots: Slots,
+    /// The build slots gate runs hold now, one per live record in `.zaf/slots/`.
+    pub held_slots: Vec<SlotLine>,
     /// The guard as last computed; none if `zaf guard` never ran.
     pub guard: Option<GuardState>,
     /// Questions still waiting for the Engineer.
     pub questions: Vec<TicketSummary>,
+    /// Generated profiles older than the manifest or zaf, or with no stamp; `zaf spawn`
+    /// refuses them. [`status`] leaves it empty, [`Status::with_stale`] fills it.
+    pub stale: Vec<StaleProfile>,
     /// Blocker cycles among the open tasks reached from the ready ones, each from its
     /// lowest task: the first waits for the second, the last for the first.
     pub cycles: Vec<Vec<u64>>,
     /// Blockers those tasks name that never close.
     pub dead_blockers: Vec<DeadLine>,
+    /// Every live zaf instance on the machine, from any project; empty until
+    /// [`Status::with_machine`] gives the process table's read.
+    pub machine: Machine,
+}
+
+/// The live zaf instances of the whole machine, read from the process table when asked.
+///
+/// The text screen prints it as `machine: <n> instances in <m> projects`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct Machine {
+    /// How many projects they come from: their distinct roots.
+    pub projects: usize,
+    /// Each instance once.
+    pub instances: Vec<MachineLine>,
+}
+
+/// One live instance of the machine.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct MachineLine {
+    /// The root of the project that launched it.
+    pub root: PathBuf,
+    /// Who it is, as `<role> instance <n> on #<epic>`, when its environment says.
+    pub instance: Option<String>,
+    /// Its size name; none for a launch that carries none.
+    pub size: Option<String>,
+}
+
+impl Machine {
+    /// The screen's view of the machine read.
+    pub fn read(instances: &[MachineInstance]) -> Self {
+        let roots: BTreeSet<&Path> = instances.iter().map(|one| one.root.as_path()).collect();
+        Self {
+            projects: roots.len(),
+            instances: instances
+                .iter()
+                .map(|one| MachineLine {
+                    root: one.root.clone(),
+                    instance: one.instance.clone(),
+                    size: one.size.map(|size| size.name().to_owned()),
+                })
+                .collect(),
+        }
+    }
 }
 
 /// Reads the running launches through the spawner's own reader, so both count alike.
@@ -151,7 +226,20 @@ pub fn status(
         .iter()
         .map(blockers::DeadLine::from)
         .collect();
-    let ready = ready_tickets.iter().map(Ticket::summary).collect();
+    let mut ready = Vec::new();
+    let mut unparsed = Vec::new();
+    for ticket in &ready_tickets {
+        let problems = TaskTemplate::problems(ticket.body.as_str());
+        if problems.is_empty() {
+            ready.push(ticket.summary());
+        } else {
+            unparsed.push(UnparsedLine {
+                number: ticket.id.get(),
+                title: ticket.title.to_string(),
+                problems: problems.iter().map(ToString::to_string).collect(),
+            });
+        }
+    }
     let claims = board.claims()?;
     let orphaned_claims = spawn::orphaned(&claims, &runs, alive);
     let claim_line = |claim: &ClaimRecord| ClaimLine {
@@ -178,20 +266,58 @@ pub fn status(
     Ok(Status {
         epics,
         ready,
+        unparsed,
         claimed,
         orphaned,
         slots: Slots {
             total: slots,
             free: slots.saturating_sub(u32::try_from(in_use).unwrap_or(u32::MAX)),
         },
+        held_slots: read_slots(state_dir, alive),
         running_count: in_use,
         instances,
         running: state.launches,
         guard: guard::read(state_dir)?,
         questions,
+        stale: Vec::new(),
         cycles,
         dead_blockers,
+        machine: Machine::default(),
     })
+}
+
+/// The live records of `.zaf/slots/`, oldest first. A record whose process is gone is
+/// dropped: its file is removed, best effort, so it never shows again.
+fn read_slots(state_dir: &Path, alive: &dyn Fn(&Holder) -> bool) -> Vec<SlotLine> {
+    let Ok(entries) = std::fs::read_dir(state_dir.join(SLOTS_DIR)) else {
+        return Vec::new();
+    };
+    let mut live = Vec::new();
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        let pid = entry.file_name().to_string_lossy().parse::<u32>().ok();
+        let record = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<SlotRecord>(&text).ok());
+        // Not a record (or one still being written): shown nowhere, removed never.
+        if let (Some(pid), Some(record)) = (pid, record) {
+            let holder = Holder {
+                pid,
+                start: record.start.clone(),
+            };
+            if alive(&holder) {
+                live.push(SlotLine {
+                    holder: record.holder,
+                    level: record.level,
+                    since: record.since,
+                });
+            } else {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+    live.sort_by(|a, b| a.since.cmp(&b.since).then_with(|| a.holder.cmp(&b.holder)));
+    live
 }
 
 fn numbers(lines: impl Iterator<Item = u64>) -> String {
@@ -204,6 +330,20 @@ fn numbers(lines: impl Iterator<Item = u64>) -> String {
 }
 
 impl Status {
+    /// The screen with the machine's live instances, as the process table reads them now.
+    #[must_use]
+    pub fn with_machine(mut self, instances: &[MachineInstance]) -> Self {
+        self.machine = Machine::read(instances);
+        self
+    }
+
+    /// The screen with the profiles `profile::stale` names.
+    #[must_use]
+    pub fn with_stale(mut self, stale: Vec<StaleProfile>) -> Self {
+        self.stale = stale;
+        self
+    }
+
     /// The screen as text.
     pub fn render_text(&self) -> String {
         let mut out = String::new();
@@ -219,6 +359,15 @@ impl Status {
             self.ready.len(),
             numbers(self.ready.iter().map(|t| t.number.get()))
         ));
+        if !self.unparsed.is_empty() {
+            line("Ready, does not parse:".to_owned());
+            for task in &self.unparsed {
+                line(format!("  #{} {}", task.number, task.title));
+                for problem in &task.problems {
+                    line(format!("    {problem}"));
+                }
+            }
+        }
         line(format!(
             "claimed   {}{}",
             self.claimed.len(),
@@ -249,6 +398,17 @@ impl Status {
             "slots     {} free of {}",
             self.slots.free, self.slots.total
         ));
+        for held in &self.held_slots {
+            line(format!(
+                "slot: {} {} since {}",
+                held.holder, held.level, held.since
+            ));
+        }
+        line(format!(
+            "machine: {} instances in {} projects",
+            self.machine.instances.len(),
+            self.machine.projects
+        ));
         line(format!(
             "guard     {}",
             self.guard.as_ref().map_or(
@@ -256,6 +416,9 @@ impl Status {
                 GuardState::line
             )
         ));
+        for stale in &self.stale {
+            line(stale.line());
+        }
         for cycle in &self.cycles {
             let tasks: Vec<TicketId> = cycle.iter().copied().map(TicketId::from).collect();
             line(format!("blocker cycle: {}", blockers::render_cycle(&tasks)));

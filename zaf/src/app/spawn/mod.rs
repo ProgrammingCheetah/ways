@@ -13,7 +13,8 @@
 //! launch in its run folder, held by the tick until the instance starts. [`launch`]
 //! then runs one through the Runner port: it records the launch on the epic, runs
 //! the instance's role in `.zaf/runs/<instance slug>/`, where the runner records the
-//! instance's own process, keeps the instance's output as `report.md` there and
+//! instance's own process, with `ZAF_RUN` naming that folder and `ZAF_SIZE` its size
+//! ([`launch_size`]) in its environment, keeps the instance's output as `report.md` there and
 //! records the exit in the run folder and on the epic. Launch and exit are HTML
 //! comments on the epic: `<!-- zaf:launch <instance> -->` and
 //! `<!-- zaf:exit <instance> <status> -->`, the status being the exit code, `error`
@@ -40,9 +41,13 @@ pub use tick::{
 };
 
 use super::guard::{GUARD_FILE, Level};
-use crate::domain::{CHALLENGER_ROLE, Instance, Profile, RoleName, TicketId};
+use crate::domain::{
+    CHALLENGER_ROLE, Instance, Profile, RoleName, TaskProblem, TaskSize, TaskTemplate, TicketId,
+};
 use crate::manifest::{Manifest, ManifestError};
-use crate::ports::{Board, ClaimRecord, Holder, NewQuestion, PortError, RunRequest, Runner};
+use crate::ports::{
+    Board, ClaimRecord, Holder, NewQuestion, PortError, RUN_VAR, RunRequest, Runner, SIZE_VAR,
+};
 
 /// The one-line launch prompt of a team instance, with `{instance}`, `{epic}`,
 /// `{project}`, `{tasks}` and `{brief}` placeholders.
@@ -170,6 +175,19 @@ pub fn snapshot(board: &dyn Board, runs: &[Run]) -> Result<Snapshot, PortError> 
         .iter()
         .filter_map(|question| NewQuestion::raised_on(question.body.as_str()))
         .collect();
+    let unparsed = ready
+        .iter()
+        .filter_map(|ticket| {
+            let problems = TaskTemplate::problems(ticket.body.as_str());
+            let mut fields: Vec<String> = Vec::new();
+            for name in problems.iter().map(TaskProblem::name) {
+                if !fields.contains(&name) {
+                    fields.push(name);
+                }
+            }
+            (!fields.is_empty()).then_some((ticket.id, fields))
+        })
+        .collect();
     Ok(Snapshot {
         ready,
         claimed,
@@ -178,6 +196,7 @@ pub fn snapshot(board: &dyn Board, runs: &[Run]) -> Result<Snapshot, PortError> 
         dead: found.dead,
         epics: board.epics()?,
         questioned,
+        unparsed,
         launched: runs.iter().filter_map(past_launch).collect(),
     })
 }
@@ -594,15 +613,37 @@ fn request_for(context: &LaunchContext, planned: &PlannedLaunch) -> (PathBuf, Pa
     } else {
         run_dir.join(BRIEF_FILE)
     };
+    let mut env = context.env.clone();
+    env.extend(run_env(&run_dir, role));
     let request = RunRequest {
         role: role.clone(),
         profile: context.profile,
         prompt: prompt(planned, &context.project, &brief),
         dir: run_dir.clone(),
-        env: context.env.clone(),
+        env,
         holder_file: Some(run_dir.join(runs::HOLDER_FILE)),
     };
     (run_dir, brief, request)
+}
+
+/// The size a launch of `role` carries in [`SIZE_VAR`]: `XS` for a planning or challenger
+/// instance; none for a team instance, which reads with no size until #449 retires it.
+pub fn launch_size(role: &RoleName) -> Option<TaskSize> {
+    match role.as_str() {
+        PLANNING_ROLE | CHALLENGER_ROLE => Some(TaskSize::XS),
+        _ => None,
+    }
+}
+
+/// What marks a launch's process as a zaf instance for the machine read: [`RUN_VAR`], the
+/// absolute path of its run folder, and [`SIZE_VAR`] when its role has a size.
+fn run_env(run_dir: &Path, role: &RoleName) -> BTreeMap<String, String> {
+    let absolute = std::path::absolute(run_dir).unwrap_or_else(|_| run_dir.to_owned());
+    let mut env = BTreeMap::from([(RUN_VAR.to_owned(), absolute.display().to_string())]);
+    if let Some(size) = launch_size(role) {
+        env.insert(SIZE_VAR.to_owned(), size.name().to_owned());
+    }
+    env
 }
 
 /// Plans one tick the way [`prepare`] does, changing nothing: launches that ended with
@@ -780,6 +821,7 @@ impl Plan {
                     TaskSkip::Claimed => ("claimed", serde_json::Value::Null),
                     TaskSkip::Running(instance) => ("running", serde_json::json!(instance)),
                     TaskSkip::NoEpic => ("no_epic", serde_json::Value::Null),
+                    TaskSkip::DoesNotParse(fields) => ("does_not_parse", serde_json::json!(fields)),
                 };
                 serde_json::json!({ "task": task.get(), "reason": reason, "detail": detail })
             })
@@ -841,6 +883,7 @@ impl Plan {
             TaskSkip::Claimed => "claimed".to_owned(),
             TaskSkip::Running(instance) => format!("carried by {instance}"),
             TaskSkip::NoEpic => "no open epic".to_owned(),
+            TaskSkip::DoesNotParse(fields) => format!("does not parse: {}", fields.join(", ")),
         }
     }
 }

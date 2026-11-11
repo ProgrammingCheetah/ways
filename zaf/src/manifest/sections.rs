@@ -249,6 +249,10 @@ pub struct GateSection {
     /// One named test, with `{name}` and other placeholders.
     #[serde(default)]
     pub tests: Option<CommandLine>,
+    /// The command prefix of the machine's build slot: with it a gate line runs as
+    /// `<slot> sh -c '<line>'`, so every gate level waits for and holds the slot.
+    #[serde(default)]
+    pub slot: Option<CommandLine>,
 }
 
 /// `[runners.<name>]`: a command that runs a role, with `{prompt}`, `{dir}` and `{root}` placeholders (`{model}` and `{effort}` for a role).

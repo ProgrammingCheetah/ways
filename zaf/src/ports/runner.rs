@@ -5,7 +5,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 use super::PortError;
-use crate::domain::{Profile, RoleName};
+use crate::domain::{Profile, RoleName, TaskSize};
 
 /// One run of a role.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +56,38 @@ impl fmt::Display for Holder {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{} {}", self.pid, self.start)
     }
+}
+
+/// The variable naming a launch's run folder, as an absolute path; zaf groups the live
+/// processes of the machine by it.
+pub const RUN_VAR: &str = "ZAF_RUN";
+
+/// The variable naming a launch's size, a [`TaskSize`] name; a team launch carries none.
+pub const SIZE_VAR: &str = "ZAF_SIZE";
+
+/// The variable naming who a launch is, as `<role> instance <n> on #<epic>`.
+pub const INSTANCE_VAR: &str = "ZAF_INSTANCE";
+
+/// One live zaf instance on the machine, from any project, read from the process table each
+/// time it is asked and never stored.
+///
+/// It is every live process whose environment carries the same [`RUN_VAR`]: the instance and
+/// the processes it starts, which inherit its environment. Of an environment only
+/// [`RUN_VAR`], [`SIZE_VAR`] and [`INSTANCE_VAR`] are kept, since it holds tokens.
+///
+/// Its shape: `MachineInstance { run, root, instance, size: Option<TaskSize>, pids }`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MachineInstance {
+    /// Its run folder, `<root>/.zaf/runs/<instance slug>`.
+    pub run: PathBuf,
+    /// The project that launched it: the folder above the run folder's `.zaf`.
+    pub root: PathBuf,
+    /// Who it is, when its environment says.
+    pub instance: Option<String>,
+    /// Its size; none for a launch that carries none, or one that does not parse.
+    pub size: Option<TaskSize>,
+    /// Its live processes, lowest first.
+    pub pids: Vec<u32>,
 }
 
 /// What a run produced.

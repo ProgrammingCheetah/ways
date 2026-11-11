@@ -303,6 +303,11 @@ pub enum BoardAction {
         #[arg(long)]
         blocked: bool,
     },
+    /// Name every field of a task's body that does not follow the template.
+    Lint {
+        /// The task.
+        issue: TicketId,
+    },
 }
 
 /// `zaf slice …`.

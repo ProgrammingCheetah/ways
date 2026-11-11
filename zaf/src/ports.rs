@@ -24,6 +24,8 @@ pub use forge::{
 };
 pub use gate::{Gate, GateLevel, GateRun, GateVerdict};
 pub use releases::Releases;
-pub use runner::{Holder, RunOutput, RunRequest, Runner};
+pub use runner::{
+    Holder, INSTANCE_VAR, MachineInstance, RUN_VAR, RunOutput, RunRequest, Runner, SIZE_VAR,
+};
 pub use shell::Shell;
 pub use vcs::{BaseName, CommitId, DiffStat, FileStat, SliceName, Vcs};

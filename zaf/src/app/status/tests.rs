@@ -1,15 +1,29 @@
 use super::*;
 use crate::app::spawn::runs;
 use crate::app::spawn::tick::PlannedLaunch;
-use crate::domain::{Instance, InstanceNumber, RoleName, TicketId, TicketState};
+use crate::domain::{Instance, InstanceNumber, RoleName, TaskSize, TicketId, TicketState};
 use crate::fakes::FakeBoard;
 
+/// A task body that follows the template, its security trigger line reading `trigger`.
+fn task_body(trigger: &str) -> String {
+    format!(
+        "Goal: do it\nOwned paths: src/\nInterfaces: none\nDesign pages: none\n\
+         Acceptance:\n  - it works\nTests: it_works\nSecurity trigger: {trigger}\n\
+         Model: sonnet\nSize: S\nBlocked by: —\n"
+    )
+}
+
+/// A ticket; a ready one gets a body that follows the template.
 fn ticket(number: u64, title: &str, label: TicketState) -> Ticket {
+    let body = match label {
+        TicketState::Ready => task_body("no"),
+        _ => String::new(),
+    };
     Ticket {
         id: TicketId::from(number),
         epic: None,
         title: title.into(),
-        body: "".into(),
+        body: body.into(),
         state: Some(label),
         url: "".into(),
         kind: None,
@@ -121,8 +135,71 @@ fn the_screen_joins_board_run_folders_and_guard() {
          running   1\n\
          \x20 team instance 1 on #2: #5\n\
          slots     1 free of 2\n\
+         machine: 0 instances in 0 projects\n\
          guard     yellow 72% ($72 of $100)\n\
          question  #9 Which columns are exported?\n"
+    );
+}
+
+fn machine_instance(root: &str, slug: &str, size: Option<TaskSize>) -> MachineInstance {
+    MachineInstance {
+        run: Path::new(root).join(".zaf/runs").join(slug),
+        root: PathBuf::from(root),
+        instance: Some(slug.replace('-', " ").replace(" on ", " on #")),
+        size,
+        pids: vec![100, 101],
+    }
+}
+
+#[test]
+fn status_lists_the_machines_instances() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let machine = [
+        machine_instance(
+            "/work/bookshelf",
+            "planning-instance-1-on-2",
+            Some(TaskSize::XS),
+        ),
+        machine_instance("/work/bookshelf", "team-instance-2-on-3", None),
+        machine_instance(
+            "/work/ledger",
+            "challenger-instance-5-on-8",
+            Some(TaskSize::XS),
+        ),
+    ];
+
+    let status = status(&board(), dir.path(), 2, &all_alive)
+        .expect("status")
+        .with_machine(&machine);
+
+    let text = status.render_text();
+    assert!(
+        text.contains("slots     2 free of 2\nmachine: 3 instances in 2 projects\n"),
+        "{text}"
+    );
+    let json: serde_json::Value = serde_json::from_str(&status.to_json()).expect("json");
+    assert_eq!(
+        json["machine"],
+        serde_json::json!({
+            "projects": 2,
+            "instances": [
+                {
+                    "root": "/work/bookshelf",
+                    "instance": "planning instance 1 on #2",
+                    "size": "XS",
+                },
+                {
+                    "root": "/work/bookshelf",
+                    "instance": "team instance 2 on #3",
+                    "size": null,
+                },
+                {
+                    "root": "/work/ledger",
+                    "instance": "challenger instance 5 on #8",
+                    "size": "XS",
+                },
+            ],
+        })
     );
 }
 
@@ -139,6 +216,40 @@ fn json_carries_the_whole_screen() {
     assert_eq!(json["slots"]["free"], 1);
     assert_eq!(json["questions"][0]["title"], "Which columns are exported?");
     assert!(json["guard"].is_null());
+}
+
+#[test]
+fn status_names_a_stale_profile() {
+    use crate::app::profile;
+
+    const HEAD: &str = "[project]\nname = \"bookshelf\"\n[board]\nkind = \"github-issues\"\nrepo = \"example/b\"\n";
+    let dir = tempfile::tempdir().expect("tempdir");
+    let before: crate::manifest::Manifest =
+        format!("{HEAD}[forbidden]\ncommands = [\"git push\"]\n")
+            .parse()
+            .expect("manifest");
+    let after: crate::manifest::Manifest =
+        format!("{HEAD}[forbidden]\ncommands = [\"gh pr merge\"]\n")
+            .parse()
+            .expect("manifest");
+    profile::write_stamps(dir.path(), &before);
+
+    let current = status(&board(), dir.path(), 1, &all_alive)
+        .expect("status")
+        .with_stale(profile::stale(dir.path(), &before));
+    assert!(!current.render_text().contains("older than"));
+
+    let screen = status(&board(), dir.path(), 1, &all_alive)
+        .expect("status")
+        .with_stale(profile::stale(dir.path(), &after));
+    let text = screen.render_text();
+    assert!(
+        text.contains("profile build is older than the manifest (forbidden changed)"),
+        "{text}"
+    );
+    let json: serde_json::Value = serde_json::from_str(&screen.to_json()).expect("json");
+    assert_eq!(json["stale"][1]["profile"], "build");
+    assert_eq!(json["stale"][1]["reasons"][0], "forbidden changed");
 }
 
 #[test]
@@ -264,6 +375,38 @@ fn the_running_line_counts_instances_and_each_is_listed_once_with_its_tasks() {
     );
 }
 
+#[test]
+fn status_lists_ready_tasks_that_do_not_parse() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let board = FakeBoard::default();
+    board.add_ticket(ticket(3, "Export rows", TicketState::Ready));
+    board.add_ticket(Ticket {
+        body: task_body("no, it removes x").into(),
+        ..ticket(4, "Export header", TicketState::Ready)
+    });
+
+    let status = status(&board, dir.path(), 2, &all_alive).expect("status");
+
+    let ready: Vec<u64> = status.ready.iter().map(|t| t.number.get()).collect();
+    assert_eq!(ready, [3], "a task that does not parse is not runnable");
+    assert_eq!(status.unparsed.len(), 1);
+    assert_eq!(status.unparsed[0].number, 4);
+    assert_eq!(
+        status.unparsed[0].problems,
+        ["Security trigger: no, it removes x (accepts: no | yes <which>)"]
+    );
+    let text = status.render_text();
+    assert!(
+        text.contains(
+            "Ready, does not parse:\n  #4 Export header\n    \
+             Security trigger: no, it removes x (accepts: no | yes <which>)\n"
+        ),
+        "{text}"
+    );
+    let json: serde_json::Value = serde_json::from_str(&status.to_json()).expect("json");
+    assert_eq!(json["unparsed"][0]["number"], 4);
+}
+
 fn blocked(number: u64, by: &str) -> Ticket {
     Ticket {
         body: format!("Blocked by: {by}").into(),
@@ -364,4 +507,60 @@ fn each_open_epic_shows_with_its_stage() {
         "{text}"
     );
     assert!(status.to_json().contains("\"stage\": \"unsigned\""));
+}
+/// Writes `.zaf/slots/<pid>` as a slotted gate run would, its process started at `start`.
+fn slot_record(state_dir: &Path, pid: u32, holder: &str, level: &str, start: &str) {
+    let folder = state_dir.join(SLOTS_DIR);
+    std::fs::create_dir_all(&folder).expect("slots dir");
+    let record = SlotRecord {
+        holder: holder.to_owned(),
+        level: level.to_owned(),
+        since: "2026-11-09T10:00:00Z".to_owned(),
+        start: start.to_owned(),
+    };
+    std::fs::write(
+        folder.join(pid.to_string()),
+        serde_json::to_string(&record).expect("json"),
+    )
+    .expect("record");
+}
+
+#[test]
+fn status_shows_who_holds_a_slot() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    slot_record(dir.path(), 4242, "team instance 1 on #2", "full", "1000");
+    slot_record(dir.path(), 4343, "the Engineer", "tests", "2000");
+    // Pid 4343 is gone, and pid 4242 was reused by a process that started later.
+    let only_4242_at_1000 = |holder: &Holder| holder.pid == 4242 && holder.start == "1000";
+
+    let screen = status(&board(), dir.path(), 2, &only_4242_at_1000).expect("status");
+
+    assert_eq!(
+        screen.held_slots,
+        [SlotLine {
+            holder: "team instance 1 on #2".to_owned(),
+            level: "full".to_owned(),
+            since: "2026-11-09T10:00:00Z".to_owned(),
+        }]
+    );
+    let text = screen.render_text();
+    assert!(
+        text.contains("slot: team instance 1 on #2 full since 2026-11-09T10:00:00Z\n"),
+        "{text}"
+    );
+    assert!(!text.contains("the Engineer"), "{text}");
+    assert!(
+        !dir.path().join(SLOTS_DIR).join("4343").exists(),
+        "a record left by a dead process is dropped"
+    );
+    let json: serde_json::Value = serde_json::from_str(&screen.to_json()).expect("json");
+    assert_eq!(json["held_slots"][0]["level"], "full");
+}
+
+#[test]
+fn a_screen_without_slot_records_has_no_slot_line() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let screen = status(&board(), dir.path(), 2, &all_alive).expect("status");
+    assert!(screen.held_slots.is_empty());
+    assert!(!screen.render_text().contains("slot:"));
 }

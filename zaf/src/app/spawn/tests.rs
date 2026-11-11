@@ -98,7 +98,23 @@ fn manifest() -> Manifest {
     MANIFEST.parse().expect("manifest parses")
 }
 
+/// A task body that follows the template, blocked as `blocked_by` says.
+fn task_body(blocked_by: &str) -> String {
+    format!(
+        "Goal: do it\nOwned paths: src/\nInterfaces: none\nDesign pages: none\n\
+         Acceptance:\n  - it works\nTests: it_works\nSecurity trigger: no\n\
+         Model: sonnet\nSize: S\nBlocked by: {blocked_by}\n"
+    )
+}
+
+/// A ticket; a ready one gets a body that follows the template, with the `Blocked by:` line
+/// of `body` when it has one.
 fn ticket(number: u64, epic: Option<u64>, body: &str, label: TicketState) -> Ticket {
+    let body = match (label, body.strip_prefix("Blocked by: ")) {
+        (TicketState::Ready, Some(blocked_by)) => task_body(blocked_by),
+        (TicketState::Ready, None) if body.is_empty() => task_body("—"),
+        _ => body.to_owned(),
+    };
     Ticket {
         id: TicketId::from(number),
         epic: epic.map(TicketId::from),
@@ -471,6 +487,38 @@ fn prepare_skips_blocked_and_claimed_tasks_read_from_the_board() {
 }
 
 #[test]
+fn spawn_skips_a_task_that_does_not_parse() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let board = FakeBoard::default();
+    board.add_challenged_epic(TicketId::from(2), "Issue 2");
+    board.add_ticket(ticket(3, Some(2), "Blocked by: —", TicketState::Ready));
+    board.add_ticket(Ticket {
+        body: task_body("—")
+            .replace("Security trigger: no", "Security trigger: no, it removes x")
+            .into(),
+        ..ticket(4, Some(2), "", TicketState::Ready)
+    });
+
+    let skipped = "#4 skipped: does not parse: Security trigger\n";
+    let dry = plan_only(&board, &state_dir, &manifest(), &|_| true).expect("plans");
+    assert!(dry.plan.render_text().contains(skipped));
+    assert_eq!(dry.plan.launches[0].tasks, [TicketId::from(3)]);
+
+    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
+    assert!(prepared.plan.render_text().contains(skipped));
+    assert_eq!(prepared.plan.launches[0].tasks, [TicketId::from(3)]);
+    assert_eq!(
+        prepared.plan.to_json(&[], &[])["skipped"]["tasks"],
+        serde_json::json!([{
+            "task": 4,
+            "reason": "does_not_parse",
+            "detail": ["Security trigger"],
+        }])
+    );
+}
+
+#[test]
 fn a_missing_blocker_is_dead() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state_dir = dir.path().join(".zaf");
@@ -502,7 +550,7 @@ fn a_blocker_closed_as_not_planned_is_dead() {
     let state_dir = dir.path().join(".zaf");
     let board = FakeBoard::default();
     board.add_challenged_epic(TicketId::from(2), "Issue 2");
-    board.add_ticket(ticket(3, Some(2), "Blocked by: #6 #7", TicketState::Ready));
+    board.add_ticket(ticket(3, Some(2), "Blocked by: #6, #7", TicketState::Ready));
     board.add_ticket(ticket(6, Some(2), "", TicketState::Blocked));
     board.close_not_planned(TicketId::from(6));
     board.add_ticket(ticket(7, Some(2), "", TicketState::Done));
@@ -771,7 +819,73 @@ fn a_launch_puts_its_environment_on_the_request() {
     launch(&board, &runner, &context, &prepared.plan.launches[0]).expect("records the run");
     let requests = runner.requests();
     assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].env, context.env);
+    let mut expected = context.env.clone();
+    expected.insert(RUN_VAR.to_owned(), requests[0].dir.display().to_string());
+    assert_eq!(requests[0].env, expected);
+}
+
+#[test]
+fn a_launch_carries_its_run_and_size() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let board = board();
+    let runner = FakeRunner::default();
+    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
+    let context = LaunchContext {
+        env: BTreeMap::from([(
+            "ZAF_INSTANCE".to_owned(),
+            "team instance 1 on #2".to_owned(),
+        )]),
+        ..context(&state_dir)
+    };
+    launch(&board, &runner, &context, &prepared.plan.launches[0]).expect("records the run");
+    let requests = runner.requests();
+    let env = &requests[0].env;
+    let run_dir = state_dir.join(RUNS_DIR).join("team-instance-1-on-2");
+    assert!(run_dir.is_absolute());
+    assert_eq!(env[RUN_VAR], run_dir.display().to_string());
+    assert_eq!(
+        env["ZAF_INSTANCE"], "team instance 1 on #2",
+        "beside its name"
+    );
+    assert_eq!(
+        env.get(SIZE_VAR),
+        None,
+        "a team launch reads with no size until #449 retires it"
+    );
+    assert_eq!(launch_size(&team()), None);
+    assert_eq!(
+        launch_size(&RoleName::from(CHALLENGER_ROLE)),
+        Some(TaskSize::XS)
+    );
+}
+
+#[test]
+fn a_launch_names_its_run_folder_absolutely_from_a_relative_state_folder() {
+    let env = run_env(Path::new(".zaf/runs/team-instance-1-on-2"), &team());
+    let run = Path::new(&env[RUN_VAR]);
+    assert!(run.is_absolute(), "{}", run.display());
+    assert!(run.ends_with(".zaf/runs/team-instance-1-on-2"));
+}
+
+#[test]
+fn a_planning_launch_is_xs() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let board = FakeBoard::default();
+    board.add_challenged_epic(TicketId::from(2), "Issue 2");
+    let runner = FakeRunner::default();
+    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
+    let planned = &prepared.plan.launches[0];
+    assert_eq!(planned.instance.role, RoleName::from(PLANNING_ROLE));
+
+    launch(&board, &runner, &context(&state_dir), planned).expect("launches");
+
+    let requests = runner.requests();
+    let run_dir = state_dir.join(RUNS_DIR).join("planning-instance-1-on-2");
+    assert_eq!(requests[0].dir, run_dir);
+    assert_eq!(requests[0].env[RUN_VAR], run_dir.display().to_string());
+    assert_eq!(requests[0].env[SIZE_VAR], "XS");
 }
 
 #[test]
@@ -806,6 +920,7 @@ fn spawn_launches_with_env() {
                 "feature/release-0-3@origin".to_owned()
             ),
             ("HOME".to_owned(), "/from/manifest".to_owned()),
+            (RUN_VAR.to_owned(), requests[0].dir.display().to_string()),
         ])
     );
 }
@@ -958,15 +1073,15 @@ fn a_dry_run_names_each_launch_and_its_command_line_and_writes_nothing() {
     let dir_of = |_| profile_dir.clone();
     let dry = dry_run(&jobs, &dir_of, &describe).expect("describes");
     let text: String = dry.iter().map(DryLaunch::render_text).collect();
-    let brief = state_dir
-        .join(RUNS_DIR)
-        .join("team-instance-1-on-2")
-        .join(BRIEF_FILE);
+    let run_dir = state_dir.join(RUNS_DIR).join("team-instance-1-on-2");
+    let brief = run_dir.join(BRIEF_FILE);
     let first = format!(
         "would launch team instance 1 on #2\n  epic #2\n  tasks #3 #4\n  profile {home}\n  \
          env CLAUDE_CONFIG_DIR={home}\n  env ZAF_INSTANCE=team instance 1 on #2\n  \
+         env ZAF_RUN={}\n  \
          command claude -p 'You are team instance 1 on #2, the team instance for epic #2 of \
          project bookshelf. Tasks: #3 #4. Read {} first and follow it exactly.' --model opus\n",
+        run_dir.display(),
         brief.display()
     );
     assert!(text.starts_with(&first), "{text}");
