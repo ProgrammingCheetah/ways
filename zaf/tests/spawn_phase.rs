@@ -422,6 +422,52 @@ fn a_failing_post_phase_changes_nothing() {
     assert_eq!(action, ActionName::from("implement"));
 }
 
+/// Writes the project's `pre-tick` hook: `body` under its description.
+fn pre_tick(project: &Project, body: &str) {
+    let hooks = project.root.join(".zaf/actions/hooks");
+    fs::create_dir_all(&hooks).expect("hooks");
+    let file = hooks.join("pre-tick");
+    fs::write(
+        &file,
+        format!("#!/bin/sh\n# zaf description: before each tick\n# zaf 1: failed\n{body}\n"),
+    )
+    .expect("hook");
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).expect("mode");
+}
+
+#[test]
+fn a_phase_end_runs_a_tick() {
+    let mut project = project_running(|_| "exit 0\n".to_owned());
+    // The tick needs the milestone; the launcher passes on the one it has.
+    project.env("ZAF_VERSION", "0.3.0");
+    // Each step says its name in `order`: the tick is told apart by its `pre-tick`.
+    post_phase(&project, "echo post-phase >> order");
+    pre_tick(&project, "echo pre-tick >> order\ntouch ticked");
+
+    let run = start(&project);
+
+    await_file(&project.root.join("ticked"));
+    // The phase ended, its `post-phase` ran, and only then did the tick.
+    assert_eq!(exit_of(&run), "0\n");
+    let order = fs::read_to_string(project.root.join("order")).expect("order");
+    assert_eq!(order, "post-phase\npre-tick\n");
+}
+
+#[test]
+fn a_failing_tick_changes_nothing() {
+    // The manifest has no runner, so the tick the launcher asks for fails; the launcher's exit and
+    // the recorded one stay the child's.
+    let mut project = project_running(|_| "exit 3\n".to_owned());
+    project.env("ZAF_VERSION", "0.3.0");
+    pre_tick(&project, "touch ticked");
+
+    let run = start(&project);
+
+    await_file(&project.root.join("ticked"));
+    assert_eq!(exit_of(&run), "3\n");
+    await_not_running(&project);
+}
+
 #[test]
 fn no_hook_no_run() {
     let project = project_running(|_| "exit 3\n".to_owned());
