@@ -131,14 +131,16 @@ fn no_team_launch_for_ready_tasks() {
 
     // Whatever the stage mix, a launch is planning's or the challenger's, never a team's.
     let mut mixed = snapshot(vec![task(9, 8, "")]);
-    mixed.epics.extend([
-        epic_in(2, true, false, &[]),
-        epic_in(4, true, false, &[5]),
-    ]);
+    mixed
+        .epics
+        .extend([epic_in(2, true, false, &[]), epic_in(4, true, false, &[5])]);
     let plan = super::plan(&mixed, &SpawnState::default(), Level::Green, settings(8));
     assert!(
         plan.launches.iter().all(|launch| {
-            matches!(launch.instance.role.as_str(), PLANNING_ROLE | CHALLENGER_ROLE)
+            matches!(
+                launch.instance.role.as_str(),
+                PLANNING_ROLE | CHALLENGER_ROLE
+            )
         }),
         "{:?}",
         launched(&plan)
@@ -159,7 +161,10 @@ fn planning_still_launches() {
     assert_eq!(launched(&plan), ["planning instance 7 on #2"]);
     assert_eq!(plan.launches[0].instance.role.as_str(), PLANNING_ROLE);
     assert_eq!(plan.epics, [(TicketId::from(8), EpicSkip::BuiltByPhases)]);
-    assert_eq!(plan.slots.free, 2, "the slots are counted before the launch");
+    assert_eq!(
+        plan.slots.free, 2,
+        "the slots are counted before the launch"
+    );
 
     // Once planning has answered the signature it is not launched again.
     board.launched = vec![past(PLANNING_ROLE, 2, 7, 60)];
@@ -240,10 +245,7 @@ fn a_blocker_cycle_among_ready_tasks_is_named_once() {
     );
     assert_eq!(plan.cycles, [numbers(&[3, 4])]);
     assert!(plan.launches.is_empty());
-    assert!(
-        plan.render_text()
-            .contains("blocker cycle: #3 → #4 → #3\n")
-    );
+    assert!(plan.render_text().contains("blocker cycle: #3 → #4 → #3\n"));
 }
 
 #[test]
@@ -254,10 +256,7 @@ fn a_blocker_cycle_an_open_task_leads_to_is_named() {
     board.open.insert(TicketId::from(9), Vec::new());
     let plan = plan(&board, &SpawnState::default(), Level::Green, settings(2));
     assert_eq!(plan.cycles, [numbers(&[7, 8])]);
-    assert!(
-        plan.render_text()
-            .contains("blocker cycle: #7 → #8 → #7\n")
-    );
+    assert!(plan.render_text().contains("blocker cycle: #7 → #8 → #7\n"));
 }
 
 #[test]
@@ -486,10 +485,7 @@ fn each_epic_takes_the_launch_its_stage_calls_for_in_one_tick() {
     let plan = plan(&board, &SpawnState::default(), Level::Green, settings(4));
     assert_eq!(
         launched(&plan),
-        [
-            "planning instance 1 on #2",
-            "challenger instance 2 on #4",
-        ]
+        ["planning instance 1 on #2", "challenger instance 2 on #4",]
     );
     assert_eq!(
         plan.epics,

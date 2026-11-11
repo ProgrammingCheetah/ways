@@ -939,7 +939,10 @@ fn launches_run_in_parallel_threads_and_all_are_joined() {
         .map(|request| request.env["ZAF_INSTANCE"].clone())
         .collect();
     seen.sort();
-    assert_eq!(seen, ["planning instance 1 on #2", "planning instance 2 on #12"]);
+    assert_eq!(
+        seen,
+        ["planning instance 1 on #2", "planning instance 2 on #12"]
+    );
     assert_eq!(board.comments(TicketId::from(2)).len(), 2);
     assert_eq!(board.comments(TicketId::from(12)).len(), 2);
 }
