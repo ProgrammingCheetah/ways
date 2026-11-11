@@ -3,6 +3,7 @@
 //!
 //! Nothing here writes: it reads the forge, lists a folder and reads files and their times.
 
+use std::collections::BTreeSet;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -129,6 +130,38 @@ fn read_runs(
     }
     runs.sort_by_key(|run| run.started_at);
     Ok(runs)
+}
+
+/// The tasks with a phase process running under `dir`: a run folder with no exit recorded and a
+/// holder that is alive. An absent folder is none; a folder that is no run folder names no task.
+pub fn running_tasks(
+    dir: &Path,
+    alive: &dyn Fn(&Holder) -> bool,
+) -> Result<BTreeSet<TicketId>, String> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(source) if source.kind() == ErrorKind::NotFound => return Ok(BTreeSet::new()),
+        Err(source) => return Err(format!("{}: {source}", dir.display())),
+    };
+    let mut tasks = BTreeSet::new();
+    for entry in entries {
+        let path = entry
+            .map_err(|source| format!("{}: {source}", dir.display()))?
+            .path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(text) = read_text(&path.join("task"))? else {
+            continue;
+        };
+        let Ok(task) = text.trim().parse::<TicketId>() else {
+            continue;
+        };
+        if read_run(&path, task, alive)?.is_some_and(|run| run.alive) {
+            tasks.insert(task);
+        }
+    }
+    Ok(tasks)
 }
 
 /// One run folder; none when it is not `task`'s or is not a run folder.
