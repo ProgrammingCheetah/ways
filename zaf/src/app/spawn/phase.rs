@@ -9,8 +9,12 @@
 //! once; [`Started`] holds what it needs.
 //!
 //! [`launch_of`] reads that folder back for the launcher: the action, the task, its size and the
-//! instance the action runs as. The launcher is the entry point #454, #439 and #440 extend; the
-//! exit code, the post-phase hook and the tick are not here.
+//! instance the action runs as. The launcher is the entry point #439 and #440 extend.
+//!
+//! [`end`] is the launcher's first step once its child has exited: it records the exit code in the
+//! run folder's `exit` file ([`record_exit`]), and only then runs what follows, the post-phase hook
+//! and the tick's ask (#439, #440). The code is [`exit_code`]: the child's own, or `128 + n` for a
+//! signal `n`. It is a recorded act kept beside the launch record, never a stored queue.
 
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -37,6 +41,8 @@ pub const ACTION_FILE: &str = "action";
 pub const HEAD_FILE: &str = "head";
 /// The file of a phase run folder that holds the action's process, as a holder.
 pub const PID_FILE: &str = "pid";
+/// The file of a phase run folder that holds the process's exit code, written once it has ended.
+pub const EXIT_FILE: &str = "exit";
 
 /// Why a phase was not started.
 #[derive(Debug, thiserror::Error)]
@@ -284,3 +290,35 @@ pub fn record_pid(run_dir: &Path, holder: &Holder) -> Result<(), String> {
         .and_then(|()| std::fs::rename(&staging, &path))
         .map_err(|source| format!("cannot write {}: {source}", path.display()))
 }
+
+/// The exit code to record for a process that ended: its own `code`, or the shell's `128 + n` when
+/// signal `n` killed it, so a phase killed by SIGTERM records `143`.
+pub fn exit_code(code: Option<i32>, signal: Option<i32>) -> i32 {
+    match (code, signal) {
+        (Some(code), _) => code,
+        (None, Some(signal)) => 128 + signal,
+        (None, None) => 255,
+    }
+}
+
+/// Records `code` in the run folder as its `exit` file: the decimal code and a newline. It is
+/// staged whole and renamed into place, so a reader sees no file or the whole of it, never half.
+pub fn record_exit(run_dir: &Path, code: i32) -> Result<(), String> {
+    let path = run_dir.join(EXIT_FILE);
+    let staging = run_dir.join(format!("{EXIT_FILE}.new"));
+    std::fs::write(&staging, format!("{code}\n"))
+        .and_then(|()| std::fs::rename(&staging, &path))
+        .map_err(|source| format!("cannot write {}: {source}", path.display()))
+}
+
+/// What a launcher does when its child has ended with `code`: records the exit first, then runs
+/// `after`, the steps that follow (post-phase, the tick's ask). A record that fails is returned,
+/// and `after` still runs, since a failed write must not swallow the phase's end.
+pub fn end(run_dir: &Path, code: i32, after: &dyn Fn()) -> Result<(), String> {
+    let recorded = record_exit(run_dir, code);
+    after();
+    recorded
+}
+
+#[cfg(test)]
+mod tests;

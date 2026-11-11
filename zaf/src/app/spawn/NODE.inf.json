@@ -70,7 +70,12 @@
     },
     {
       "name": "phase.rs",
-      "role": "`zaf spawn phase`: checks the action is the task's current phase and none runs, takes the next instance number and writes the phase run folder under spawn.lock; reads it back for the launcher",
+      "role": "`zaf spawn phase`: checks the action is the task's current phase and none runs, takes the next instance number and writes the phase run folder under spawn.lock; reads it back for the launcher; records the child's exit code in the folder's `exit` file before anything that follows",
+      "node": false
+    },
+    {
+      "name": "phase/",
+      "role": "tests.rs",
       "node": false
     },
     {
