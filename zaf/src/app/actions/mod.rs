@@ -23,8 +23,9 @@ pub use metadata::{
 };
 pub use phase::{
     CheckResult, ListedPhase, PHASES_DIR, Phase, PhaseFacts, PhaseRun, PhaseUnreadable, PrFacts,
-    PullFacts, ReviewFact, RunExit, Standing, StandingFacts, StandingUnreadable, WorkspaceFacts,
-    derive_phase, derive_standing, gather_phase_facts, gather_standing_facts,
+    PullFacts, ReviewFact, RunExit, Standing, StandingFacts, StandingUnreadable, WaitFailure,
+    WorkspaceFacts, derive_phase, derive_standing, gather_phase_facts, gather_standing_facts,
+    running_tasks, wait_failure,
 };
 pub use records::{SliceRecords, hand_back};
 pub use resolve::{
@@ -35,7 +36,7 @@ pub use run::{
     ACTION_VAR, CHAIN_VAR, DEPTH_VAR, LOG_VAR, ListedAction, MAX_DEPTH, MINUTE, NO_SUCH_ACTION,
     NOT_RUN_EXIT, Nesting, ROOT_VAR, Refused, RunOutcome, RunRequest, RunResult, TIMEOUT_EXIT,
     forbidden_action, last_lines, list_actions, read_action, refuse_forbidden, run_action,
-    run_hook,
+    run_hook, run_hook_with_input,
 };
 pub use slice_env::{BASE_VAR, PR_VAR, SLICE_VAR, SliceContext, TASK_TITLE_VAR};
 

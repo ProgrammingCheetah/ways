@@ -4,7 +4,8 @@
 //! Nothing the tick plans from is kept in step by hand: each read derives it.
 //! Whether a launch still runs comes from its run folder and the process table
 //! ([`runs`]), which launches still hold slots follows from that, a claim counts
-//! only while its instance runs, and the board answers the rest. `.zaf/spawn.state`
+//! only while its instance runs (unless its task has a recorded pull request or a running
+//! phase, see [`held`]), and the board answers the rest. `.zaf/spawn.state`
 //! keeps only the instance counter.
 //!
 //! [`prepare`] records `lost` for a launch that ended with nobody there to record
@@ -21,25 +22,50 @@
 //! when the runner could not run, `timeout` when the run passed its time bound, or
 //! `lost`. A timed-out instance's claims go back to the board at its exit.
 //!
+//! The phase tick's step 3 ([`inline`]) runs every ready `zaf`-kind action with `zaf do`, one
+//! after another, at no cost to the budget; [`outcome::TickOutcome`] is what a tick did, its
+//! `ran` filled from there. Step 5 ([`question`]) raises one question on each task whose wait
+//! failed with no `on-fail`, at no cost either; its tasks fill `questions`. Step 4 ([`waits`])
+//! launches every ready `wait` action detached with `zaf spawn phase`, at no cost and never
+//! waiting for one; the waits it launched fill `waits`, and they are not the tick's one model start.
+//! Step 6 ([`start`]) starts at most one model phase, the longest ready that fits the budget,
+//! never waiting for it; it fills `started`.
+//!
 //! A dry run ([`plan_only`] and [`dry_run`]) plans the same tick and describes
 //! each launch it would make, writing nothing: no state, no run folder, no comment.
+//!
+//! [`phase`] starts one phase action of a task (`zaf spawn phase`): it takes the next instance
+//! number from the same counter, under the same lock, and writes a phase run folder in
+//! `.zaf/phases/` rather than `.zaf/runs/`.
 
 pub mod blockers;
+pub mod inline;
+pub mod outcome;
+pub mod phase;
+pub mod question;
 pub mod runs;
+pub mod start;
 mod state;
 pub mod tick;
+pub mod waits;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+pub use inline::{TickTask, run_inline, run_zaf_actions};
+pub use outcome::{Ran, Started, TickOutcome};
+pub use question::{ask_failed_waits, ask_outcome, question_text};
 use runs::Run;
+pub use start::{InUse, PlannedPhase, STARVE_AFTER, TaskStanding, start_outcome, start_planned};
 pub use state::{SpawnState, derive, load, save};
 pub use tick::{
     EpicSkip, NOT_BUILT, PLANNING_ROLE, PastLaunch, Plan, PlannedLaunch, Settings, SlotCount,
     Snapshot, TEAM_ROLE, TaskSkip,
 };
+pub use waits::{launch_outcome, launch_waits};
 
+use super::actions::{PHASES_DIR, SliceRecords, running_tasks};
 use super::guard::{GUARD_FILE, Level};
 use crate::domain::{
     CHALLENGER_ROLE, Instance, Profile, RoleName, TaskProblem, TaskSize, TaskTemplate, TicketId,
@@ -236,6 +262,14 @@ pub const SPAWN_LOCK_FILE: &str = "spawn.lock";
 
 /// Takes the spawner's lock, waiting for a tick that holds it; the OS drops it with the file.
 fn lock(state_dir: &Path) -> Result<std::fs::File, SpawnError> {
+    let (file, path) = open_lock(state_dir)?;
+    file.lock()
+        .map(|()| file)
+        .map_err(|source| SpawnError::Write { path, source })
+}
+
+/// The lock file, created when it is missing, and its path; nothing locked yet.
+fn open_lock(state_dir: &Path) -> Result<(std::fs::File, PathBuf), SpawnError> {
     let path = state_dir.join(SPAWN_LOCK_FILE);
     std::fs::create_dir_all(state_dir)
         .and_then(|()| {
@@ -245,17 +279,53 @@ fn lock(state_dir: &Path) -> Result<std::fs::File, SpawnError> {
                 .write(true)
                 .open(&path)
         })
-        .and_then(|file| file.lock().map(|()| file))
+        .map(|file| (file, path.clone()))
         .map_err(|source| SpawnError::Write { path, source })
 }
 
-/// The claims held by an instance this machine launched that no longer runs: its run folder
+/// Whether another tick holds the spawner's lock right now, found without waiting for it: the
+/// lock is taken and let go at once when it is free. A tick that takes it between this look and its
+/// own `prepare` is waited for there, as plain `--once` waits (`zaf spawn --once --no-wait`).
+pub fn lock_is_held(state_dir: &Path) -> Result<bool, SpawnError> {
+    let (file, path) = open_lock(state_dir)?;
+    match file.try_lock() {
+        Ok(()) => Ok(false),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(true),
+        Err(std::fs::TryLockError::Error(source)) => Err(SpawnError::Write { path, source }),
+    }
+}
+
+/// The tasks held by the forge's facts or by a running phase, whatever instance claimed them:
+/// those with a recorded pull request (`.zaf/slices/<task>.pr`) and those with a live phase
+/// process (`.zaf/phases/`, #437). A phase run folder that cannot be read is an error, never a
+/// guess, so no claim is released on a read that failed.
+pub fn held(
+    state_dir: &Path,
+    alive: &dyn Fn(&Holder) -> bool,
+) -> Result<BTreeSet<TicketId>, SpawnError> {
+    let phases = state_dir.join(PHASES_DIR);
+    let mut held = SliceRecords::in_state_dir(state_dir).tasks_with_pr();
+    held.extend(
+        running_tasks(&phases, alive).map_err(|reason| SpawnError::Read {
+            path: phases,
+            reason,
+        })?,
+    );
+    Ok(held)
+}
+
+/// `orphaned(claims, runs, alive, held)`: the claims held by an instance this machine launched
+/// that no longer runs: its run folder
 /// is there and its holder is dead. A claim by an instance with no run folder here (one
 /// started by hand, or on another machine) is not this machine's to judge, so it stays.
+/// A task in `held` (see [`held`]) is not orphaned: a task with a recorded pull request is held
+/// by its forge facts and one with a running phase by that phase, so its claim stays until the
+/// task is done (the ruling on #426).
 pub fn orphaned<'a>(
     claims: &'a [ClaimRecord],
     runs: &[Run],
     alive: &dyn Fn(&Holder) -> bool,
+    held: &BTreeSet<TicketId>,
 ) -> Vec<&'a ClaimRecord> {
     let gone: BTreeSet<&str> = runs
         .iter()
@@ -265,6 +335,7 @@ pub fn orphaned<'a>(
     claims
         .iter()
         .filter(|claim| gone.contains(slug(&claim.instance).as_str()))
+        .filter(|claim| !held.contains(&claim.task))
         .collect()
 }
 
@@ -295,7 +366,8 @@ pub fn prepare(
     }
     let claims = board.claims()?;
     let mut released = Vec::new();
-    for claim in orphaned(&claims, &found, alive) {
+    let held = held(state_dir, alive)?;
+    for claim in orphaned(&claims, &found, alive, &held) {
         board.release(claim.task, &claim.instance)?;
         released.push(Released {
             task: claim.task,

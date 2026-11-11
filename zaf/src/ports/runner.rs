@@ -5,7 +5,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 use super::PortError;
-use crate::domain::{Profile, RoleName, TaskSize};
+use crate::domain::{Mebibytes, Profile, RoleName, TaskSize, Units};
 
 /// One run of a role.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,7 +75,7 @@ pub const INSTANCE_VAR: &str = "ZAF_INSTANCE";
 /// the processes it starts, which inherit its environment. Of an environment only
 /// [`RUN_VAR`], [`SIZE_VAR`] and [`INSTANCE_VAR`] are kept, since it holds tokens.
 ///
-/// Its shape: `MachineInstance { run, root, instance, size: Option<TaskSize>, pids }`.
+/// Its shape: `MachineInstance { run, root, instance, size: Option<TaskSize>, pids, memory }`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MachineInstance {
     /// Its run folder, `<root>/.zaf/runs/<instance slug>`.
@@ -88,6 +88,28 @@ pub struct MachineInstance {
     pub size: Option<TaskSize>,
     /// Its live processes, lowest first.
     pub pids: Vec<u32>,
+    /// The resident memory of its live processes, summed. A process whose memory cannot be
+    /// read adds nothing.
+    pub memory: Mebibytes,
+}
+
+/// `live_use(instances) -> Units`, the live use of the machine: the memory of every instance on it, from any project, summed
+/// and read in budget units.
+#[must_use]
+pub fn live_use(instances: &[MachineInstance]) -> Units {
+    instances
+        .iter()
+        .map(|instance| Units::of(instance.memory))
+        .sum()
+}
+
+/// `e_is_live(instances) -> bool`: whether a live instance of the machine, from any project,
+/// carries `ZAF_SIZE=E`; the budget lets one E run at a time.
+#[must_use]
+pub fn e_is_live(instances: &[MachineInstance]) -> bool {
+    instances
+        .iter()
+        .any(|instance| instance.size == Some(TaskSize::E))
 }
 
 /// What a run produced.

@@ -26,5 +26,5 @@ pub use sections::{
     DEFAULT_STATE_FIELD, DesignKind, DesignSection, Effort, EnvSection, ForbiddenSection,
     ForgeKind, ForgeSection, GateSection, IsolationKind, IsolationSection, ModelName, PackSection,
     ProjectName, ProjectSection, RepoName, RoleSection, Rung, RunnerName, RunnerSection,
-    SpawnSection, StyleSection, ToolName, VcsKind, VcsSection, WorkspacesSection,
+    SizesSection, SpawnSection, StyleSection, ToolName, VcsKind, VcsSection, WorkspacesSection,
 };

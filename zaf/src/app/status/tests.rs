@@ -1,7 +1,9 @@
 use super::*;
 use crate::app::spawn::runs;
 use crate::app::spawn::tick::PlannedLaunch;
-use crate::domain::{Instance, InstanceNumber, RoleName, TaskSize, TicketId, TicketState};
+use crate::domain::{
+    Budget, Instance, InstanceNumber, RoleName, SizeTable, TaskSize, TicketId, TicketState,
+};
 use crate::fakes::FakeBoard;
 
 /// A task body that follows the template, its security trigger line reading `trigger`.
@@ -135,20 +137,136 @@ fn the_screen_joins_board_run_folders_and_guard() {
          running   1\n\
          \x20 team instance 1 on #2: #5\n\
          slots     1 free of 2\n\
-         machine: 0 instances in 0 projects\n\
+         machine: 0 instances in 0 projects, 0.0 units in use\n\
+         budget: no machine cap\n\
          guard     yellow 72% ($72 of $100)\n\
          question  #9 Which columns are exported?\n"
     );
 }
 
 fn machine_instance(root: &str, slug: &str, size: Option<TaskSize>) -> MachineInstance {
+    machine_instance_holding(root, slug, size, 0)
+}
+
+fn machine_instance_holding(
+    root: &str,
+    slug: &str,
+    size: Option<TaskSize>,
+    memory: u64,
+) -> MachineInstance {
     MachineInstance {
         run: Path::new(root).join(".zaf/runs").join(slug),
         root: PathBuf::from(root),
         instance: Some(slug.replace('-', " ").replace(" on ", " on #")),
         size,
         pids: vec![100, 101],
+        memory: Mebibytes::new(memory),
     }
+}
+
+#[test]
+fn status_shows_the_units_in_use() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let machine = [
+        machine_instance_holding(
+            "/work/bookshelf",
+            "planning-instance-1-on-2",
+            Some(TaskSize::XS),
+            512,
+        ),
+        machine_instance_holding("/work/ledger", "team-instance-2-on-3", None, 1024),
+    ];
+
+    let status = status(&board(), dir.path(), 2, &all_alive)
+        .expect("status")
+        .with_machine(&machine);
+
+    let text = status.render_text();
+    assert!(
+        text.contains("machine: 2 instances in 2 projects, 1.5 units in use\n"),
+        "{text}"
+    );
+    let json: serde_json::Value = serde_json::from_str(&status.to_json()).expect("json");
+    assert_eq!(
+        json["machine"]["memory_mib"], 1536,
+        "the total, in mebibytes"
+    );
+    assert_eq!(json["machine"]["instances"][0]["memory_mib"], 512);
+    assert_eq!(json["machine"]["instances"][1]["memory_mib"], 1024);
+}
+
+#[test]
+fn status_shows_the_reserve() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let budget = Budget {
+        units: Some(38),
+        reserve: 10,
+        ..Budget::default()
+    };
+    let status = status(&board(), dir.path(), 2, &all_alive)
+        .expect("status")
+        .with_budget(budget);
+    let text = status.render_text();
+    assert!(
+        text.contains("\nbudget 0.0 of 38 units, reserve 10\n"),
+        "{text}"
+    );
+    let json: serde_json::Value = serde_json::from_str(&status.to_json()).expect("json");
+    assert_eq!(json["budget"]["reserve"], 10);
+}
+
+#[test]
+fn status_shows_the_budget_in_use() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let machine = [
+        machine_instance_holding("/work/bookshelf", "team-instance-1-on-2", None, 30 * 1024),
+        machine_instance_holding("/work/ledger", "team-instance-2-on-3", None, 4 * 1024 + 512),
+    ];
+    let budget = Budget {
+        units: Some(38),
+        sizes: SizeTable::default().with(TaskSize::M, 6),
+        ..Budget::default()
+    };
+
+    // The budget and the machine may come in either order: the line uses the machine's total.
+    let screens = [
+        status(&board(), dir.path(), 2, &all_alive)
+            .expect("status")
+            .with_machine(&machine)
+            .with_budget(budget),
+        status(&board(), dir.path(), 2, &all_alive)
+            .expect("status")
+            .with_budget(budget)
+            .with_machine(&machine),
+    ];
+    for status in screens {
+        let text = status.render_text();
+        assert!(
+            text.contains("units in use\nbudget 34.5 of 38 units, reserve 6\nguard"),
+            "{text}"
+        );
+        let json: serde_json::Value = serde_json::from_str(&status.to_json()).expect("json");
+        assert_eq!(
+            json["budget"],
+            serde_json::json!({
+                "in_use_units": 34.5,
+                "units": 38,
+                "reserve": 6,
+                "sizes": { "XS": 1, "S": 2, "M": 6, "L": 8, "XL": 16 },
+            })
+        );
+    }
+
+    // With no budget the line says there is no cap, and the JSON carries a null budget.
+    let status = status(&board(), dir.path(), 2, &all_alive)
+        .expect("status")
+        .with_machine(&machine)
+        .with_budget(Budget::default());
+    assert!(status.render_text().contains("\nbudget: no machine cap\n"));
+    let json: serde_json::Value = serde_json::from_str(&status.to_json()).expect("json");
+    assert!(json["budget"]["units"].is_null());
+    assert_eq!(json["budget"]["in_use_units"], 34.5);
+    assert_eq!(json["budget"]["sizes"]["XL"], 16);
 }
 
 #[test]
@@ -174,7 +292,9 @@ fn status_lists_the_machines_instances() {
 
     let text = status.render_text();
     assert!(
-        text.contains("slots     2 free of 2\nmachine: 3 instances in 2 projects\n"),
+        text.contains(
+            "slots     2 free of 2\nmachine: 3 instances in 2 projects, 0.0 units in use\n"
+        ),
         "{text}"
     );
     let json: serde_json::Value = serde_json::from_str(&status.to_json()).expect("json");
@@ -182,21 +302,25 @@ fn status_lists_the_machines_instances() {
         json["machine"],
         serde_json::json!({
             "projects": 2,
+            "memory_mib": 0,
             "instances": [
                 {
                     "root": "/work/bookshelf",
                     "instance": "planning instance 1 on #2",
                     "size": "XS",
+                    "memory_mib": 0,
                 },
                 {
                     "root": "/work/bookshelf",
                     "instance": "team instance 2 on #3",
                     "size": null,
+                    "memory_mib": 0,
                 },
                 {
                     "root": "/work/ledger",
                     "instance": "challenger instance 5 on #8",
                     "size": "XS",
+                    "memory_mib": 0,
                 },
             ],
         })

@@ -31,6 +31,7 @@ pub mod report;
 pub mod setup;
 pub mod slice;
 pub mod spawn;
+pub mod spawn_phase;
 pub mod status;
 pub mod update;
 
@@ -111,8 +112,12 @@ pub enum Verb {
         #[command(subcommand)]
         action: SliceAction,
     },
-    /// Run the spawner's tick.
+    /// Run the spawner's tick, or start one phase action of a task.
+    #[command(args_conflicts_with_subcommands = true)]
     Spawn {
+        /// What to start; none runs the tick.
+        #[command(subcommand)]
+        action: Option<SpawnAction>,
         /// One tick, then exit.
         #[arg(long)]
         once: bool,
@@ -122,6 +127,9 @@ pub enum Verb {
         /// Plan the tick and print each launch's command line; launch nothing, write nothing.
         #[arg(long)]
         dry_run: bool,
+        /// With `--once`: exit 0 at once, doing nothing, when another tick holds `spawn.lock`.
+        #[arg(long, requires = "once")]
+        no_wait: bool,
     },
     /// The ask log: top pages, recurring questions, gaps.
     Asklog,
@@ -222,6 +230,25 @@ pub enum ProgressAction {
         /// The role the phase is for; the role `ZAF_INSTANCE` names when not given.
         #[arg(long)]
         role: Option<String>,
+    },
+}
+
+/// `zaf spawn …`, beside the flags of the tick.
+#[derive(Debug, clap::Subcommand, strum::IntoStaticStr)]
+#[strum(serialize_all = "kebab-case")]
+pub enum SpawnAction {
+    /// Start a task's current phase action as a process of its own and return at once.
+    Phase {
+        /// The task.
+        task: TicketId,
+        /// The phase action: the task's current one.
+        action: String,
+    },
+    /// The launcher `phase` starts: runs the action of a phase run folder and waits on it.
+    #[command(hide = true)]
+    PhaseRun {
+        /// The phase run folder.
+        run_folder: PathBuf,
     },
 }
 
@@ -358,6 +385,7 @@ impl Verb {
             Self::Slice { action } => Some(action.into()),
             Self::Profile { action } => Some(action.into()),
             Self::Hub { action, .. } => action.as_ref().map(Into::into),
+            Self::Spawn { action, .. } => action.as_ref().map(Into::into),
             Self::Progress { action } => Some(action.into()),
             Self::Epic { action } => Some(action.into()),
             _ => None,
@@ -461,10 +489,20 @@ fn run_verb(cli: &Cli) -> u8 {
         Verb::Report(args) => report::run(cli, args),
         Verb::Guard => guard::run(cli),
         Verb::Spawn {
+            action: Some(SpawnAction::Phase { task, action }),
+            ..
+        } => spawn_phase::run(cli, *task, action),
+        Verb::Spawn {
+            action: Some(SpawnAction::PhaseRun { run_folder }),
+            ..
+        } => spawn_phase::launcher(cli, run_folder),
+        Verb::Spawn {
+            action: None,
             once,
             version,
             dry_run,
-        } => spawn::run(cli, *once, version.as_deref(), *dry_run),
+            no_wait,
+        } => spawn::run(cli, *once, version.as_deref(), *dry_run, *no_wait),
         Verb::Profile { action } => profile::run(cli, action),
         Verb::Do(args) => do_action::run(cli, args),
         Verb::Hub { action, port } => hub::run(cli, action.as_ref(), *port),

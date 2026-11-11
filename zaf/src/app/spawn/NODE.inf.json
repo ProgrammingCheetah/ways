@@ -29,8 +29,53 @@
       "node": false
     },
     {
+      "name": "inline.rs",
+      "role": "tick step 3: run each task's ready zaf-kind action with zaf do, one after another, at no budget cost; a failure never stops the rest",
+      "node": false
+    },
+    {
+      "name": "inline/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "question.rs",
+      "role": "tick step 5: a failed wait with no on-fail raises one question on its task, unless it has an open one; starts nothing, charges nothing",
+      "node": false
+    },
+    {
+      "name": "question/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "waits.rs",
+      "role": "tick step 4: launch each task's ready wait action detached with zaf spawn phase, never waiting for it, at no budget cost; a failed launch is logged and the rest still go",
+      "node": false
+    },
+    {
+      "name": "waits/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "outcome.rs",
+      "role": "TickOutcome { started, waits, ran, questions }: what a tick did; idle when all are empty",
+      "node": false
+    },
+    {
       "name": "mod.rs",
       "role": "prepare (lost, orphaned claims, plan, reserve under spawn.lock), launch, launch_all, dry run",
+      "node": false
+    },
+    {
+      "name": "phase.rs",
+      "role": "`zaf spawn phase`: checks the action is the task's current phase and none runs, takes the next instance number and writes the phase run folder under spawn.lock; reads it back for the launcher; records the child's exit code in the folder's `exit` file before anything that follows",
+      "node": false
+    },
+    {
+      "name": "phase/",
+      "role": "tests.rs",
       "node": false
     },
     {
@@ -40,6 +85,16 @@
     },
     {
       "name": "runs/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "start.rs",
+      "role": "tick step 6: plan the one model phase to start, the longest ready (or failed wait's on-fail) that fits the budget, and start it without waiting; a phase ready STARVE_AFTER (30 minutes) that does not fit holds the budget, so no other model phase starts",
+      "node": false
+    },
+    {
+      "name": "start/",
       "role": "tests.rs",
       "node": false
     },
