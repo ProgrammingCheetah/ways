@@ -15,8 +15,10 @@ use super::epic::EpicLine;
 use super::guard::{self, GuardError, GuardState};
 use super::profile::StaleProfile;
 use super::spawn::{self, blockers, blockers::DeadLine};
-use crate::domain::{SLOTS_DIR, SlotRecord, TaskTemplate, Ticket, TicketId, TicketSummary};
-use crate::ports::{Board, ClaimRecord, Holder, MachineInstance, PortError};
+use crate::domain::{
+    Mebibytes, SLOTS_DIR, SlotRecord, TaskTemplate, Ticket, TicketId, TicketSummary, Units,
+};
+use crate::ports::{Board, ClaimRecord, Holder, MachineInstance, PortError, live_use};
 
 /// The spawner's state file under the state folder.
 pub const SPAWN_STATE_FILE: &str = "spawn.state";
@@ -149,11 +151,15 @@ pub struct Status {
 
 /// The live zaf instances of the whole machine, read from the process table when asked.
 ///
-/// The text screen prints it as `machine: <n> instances in <m> projects`.
+/// The text screen prints it as `machine: <n> instances in <m> projects, <u> units in use`;
+/// the JSON carries the total as `memory_mib`, mebibytes, which a unit is 1024 of.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct Machine {
     /// How many projects they come from: their distinct roots.
     pub projects: usize,
+    /// The live use of the machine: the memory of every instance, summed.
+    #[serde(rename = "memory_mib")]
+    pub in_use: Units,
     /// Each instance once.
     pub instances: Vec<MachineLine>,
 }
@@ -167,6 +173,8 @@ pub struct MachineLine {
     pub instance: Option<String>,
     /// Its size name; none for a launch that carries none.
     pub size: Option<String>,
+    /// The resident memory of its processes, summed, in mebibytes.
+    pub memory_mib: Mebibytes,
 }
 
 impl Machine {
@@ -175,12 +183,14 @@ impl Machine {
         let roots: BTreeSet<&Path> = instances.iter().map(|one| one.root.as_path()).collect();
         Self {
             projects: roots.len(),
+            in_use: live_use(instances),
             instances: instances
                 .iter()
                 .map(|one| MachineLine {
                     root: one.root.clone(),
                     instance: one.instance.clone(),
                     size: one.size.map(|size| size.name().to_owned()),
+                    memory_mib: one.memory,
                 })
                 .collect(),
         }
@@ -405,9 +415,10 @@ impl Status {
             ));
         }
         line(format!(
-            "machine: {} instances in {} projects",
+            "machine: {} instances in {} projects, {} units in use",
             self.machine.instances.len(),
-            self.machine.projects
+            self.machine.projects,
+            self.machine.in_use
         ));
         line(format!(
             "guard     {}",
