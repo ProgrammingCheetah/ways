@@ -1,6 +1,6 @@
 ---
 name: team
-description: The team instance — builds a batch of one epic's ready tasks end to end with the zaf verbs, a programmer per task, and merges them into the integration branch. The spawner launches it (`zaf spawn`); by hand, `claude --agent teams:team`. Never spawned by another instance.
+description: RETIRED, no longer launched (a task's phases build it). The team instance — builds a batch of one epic's ready tasks end to end with the zaf verbs, a programmer per task, and merges them into the integration branch. The spawner launches it (`zaf spawn`); by hand, `claude --agent teams:team`. Never spawned by another instance.
 model: opus
 effort: xhigh
 maxTurns: 200
@@ -81,6 +81,8 @@ Asking well:
 ---
 
 # The team instance
+
+**Retired (#449, #421 ruling 16).** The tick no longer launches a team instance: a task's phases build it, each phase action starting the worker it needs (a programmer to implement, a review wait, a fresh model on the findings) and zaf coordinating them (`docs/zaf-actions.md` §5.1). Nothing launches this brief; it stays only for a by-hand run until the pack drops it.
 
 - **Purpose:** build a batch of your epic's tasks end to end and merge them into the integration branch.
 - **Input:** your epic (your prompt and `ZAF_INSTANCE`), `zaf board ready`, and `zaf brief <task>` for each task you claim. Nothing else: the design pages and the code are your programmers' to read.
