@@ -22,10 +22,16 @@
 //! when the runner could not run, `timeout` when the run passed its time bound, or
 //! `lost`. A timed-out instance's claims go back to the board at its exit.
 //!
+//! The phase tick's step 3 ([`inline`]) runs every ready `zaf`-kind action with `zaf do`, one
+//! after another, at no cost to the budget; [`outcome::TickOutcome`] is what a tick did, its
+//! `ran` filled from there.
+//!
 //! A dry run ([`plan_only`] and [`dry_run`]) plans the same tick and describes
 //! each launch it would make, writing nothing: no state, no run folder, no comment.
 
 pub mod blockers;
+pub mod inline;
+pub mod outcome;
 pub mod runs;
 mod state;
 pub mod tick;
@@ -34,6 +40,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+pub use inline::{TickTask, run_inline, run_zaf_actions};
+pub use outcome::{Ran, Started, TickOutcome};
 use runs::Run;
 pub use state::{SpawnState, derive, load, save};
 pub use tick::{

@@ -1,7 +1,9 @@
 use super::*;
 use crate::app::spawn::runs;
 use crate::app::spawn::tick::PlannedLaunch;
-use crate::domain::{Instance, InstanceNumber, RoleName, TaskSize, TicketId, TicketState};
+use crate::domain::{
+    Budget, Instance, InstanceNumber, RoleName, SizeTable, TaskSize, TicketId, TicketState,
+};
 use crate::fakes::FakeBoard;
 
 /// A task body that follows the template, its security trigger line reading `trigger`.
@@ -136,6 +138,7 @@ fn the_screen_joins_board_run_folders_and_guard() {
          \x20 team instance 1 on #2: #5\n\
          slots     1 free of 2\n\
          machine: 0 instances in 0 projects, 0.0 units in use\n\
+         budget: no machine cap\n\
          guard     yellow 72% ($72 of $100)\n\
          question  #9 Which columns are exported?\n"
     );
@@ -190,6 +193,58 @@ fn status_shows_the_units_in_use() {
     );
     assert_eq!(json["machine"]["instances"][0]["memory_mib"], 512);
     assert_eq!(json["machine"]["instances"][1]["memory_mib"], 1024);
+}
+
+#[test]
+fn status_shows_the_budget_in_use() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let machine = [
+        machine_instance_holding("/work/bookshelf", "team-instance-1-on-2", None, 30 * 1024),
+        machine_instance_holding("/work/ledger", "team-instance-2-on-3", None, 4 * 1024 + 512),
+    ];
+    let budget = Budget {
+        units: Some(38),
+        sizes: SizeTable::default().with(TaskSize::M, 6),
+    };
+
+    // The budget and the machine may come in either order: the line uses the machine's total.
+    let screens = [
+        status(&board(), dir.path(), 2, &all_alive)
+            .expect("status")
+            .with_machine(&machine)
+            .with_budget(budget),
+        status(&board(), dir.path(), 2, &all_alive)
+            .expect("status")
+            .with_budget(budget)
+            .with_machine(&machine),
+    ];
+    for status in screens {
+        let text = status.render_text();
+        assert!(
+            text.contains("units in use\nbudget 34.5 of 38 units\nguard"),
+            "{text}"
+        );
+        let json: serde_json::Value = serde_json::from_str(&status.to_json()).expect("json");
+        assert_eq!(
+            json["budget"],
+            serde_json::json!({
+                "in_use_units": 34.5,
+                "units": 38,
+                "sizes": { "XS": 1, "S": 2, "M": 6, "L": 8, "XL": 16 },
+            })
+        );
+    }
+
+    // With no budget the line says there is no cap, and the JSON carries a null budget.
+    let status = status(&board(), dir.path(), 2, &all_alive)
+        .expect("status")
+        .with_machine(&machine)
+        .with_budget(Budget::default());
+    assert!(status.render_text().contains("\nbudget: no machine cap\n"));
+    let json: serde_json::Value = serde_json::from_str(&status.to_json()).expect("json");
+    assert!(json["budget"]["units"].is_null());
+    assert_eq!(json["budget"]["in_use_units"], 34.5);
+    assert_eq!(json["budget"]["sizes"]["XL"], 16);
 }
 
 #[test]
