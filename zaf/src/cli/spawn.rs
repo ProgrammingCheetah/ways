@@ -2,7 +2,8 @@
 //!
 //! With `--no-wait` it does nothing, with exit `0`, while another tick holds `spawn.lock`; a phase's
 //! launcher asks for a tick that way once the phase has ended.
-//! The verb never loops: a timer runs it. It prints the plan, then runs each
+//! `--once` never loops: a timer runs it, or `zaf spawn --watch` ([`watch`]), the foreground loop
+//! that runs it each `[spawn] tick_minutes`. It prints the plan, then runs each
 //! planned launch to its exit, all in parallel (one thread each, joined before
 //! the tick returns), and exits `2` when a launch
 //! could not be recorded or its runner could not run. Each launch runs the
@@ -47,7 +48,9 @@ use crate::ports::{Board, PortError, RunRequest, e_is_live, live_use};
 pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool, no_wait: bool) -> u8 {
     let path = cli.verb.path();
     if !once {
-        eprintln!("zaf {path}: only one tick at a time; pass --once and let a timer repeat it");
+        eprintln!(
+            "zaf {path}: only one tick at a time; pass --once and let a timer repeat it, or --watch"
+        );
         return REFUSED;
     }
     let Some(version) = version else {
@@ -80,6 +83,36 @@ pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool, no_wait:
         post_tick(&path, &composition, version, &outcome);
     }
     code
+}
+
+/// `zaf spawn --watch --version <v>`: one tick each `[spawn] tick_minutes`, the first at once,
+/// in the foreground until the process is stopped. Each tick is the one of `--once --no-wait`, so
+/// a held `spawn.lock` skips it, and a tick that fails is logged on stderr while the loop goes on
+/// (#421 ruling 25). Only what stops the loop from starting ends the verb: a missing version, or
+/// a manifest that does not load, `tick_minutes = 0` among its failures.
+pub fn watch(cli: &Cli, version: Option<&str>) -> u8 {
+    let path = cli.verb.path();
+    let Some(version) = version else {
+        eprintln!("zaf {path}: pass --version <v>, the milestone the instances build");
+        return REFUSED;
+    };
+    let minutes = match Composition::discover_here() {
+        Ok(composition) => composition.manifest().spawn.tick_minutes,
+        Err(error) => return exit::fail_composition(&path, &error),
+    };
+    if !cli.json {
+        println!("watching: a tick every {minutes} minutes, until stopped");
+    }
+    spawn::watch::watch(
+        MINUTE * minutes,
+        &mut || run(cli, true, Some(version), false, true),
+        &mut |interval| {
+            std::thread::sleep(interval);
+            true
+        },
+        &mut |line| eprintln!("zaf {path}: {line}"),
+    );
+    OK
 }
 
 /// The tick itself, everything between the `pre-tick` hook and the `post-tick` one. What its phase

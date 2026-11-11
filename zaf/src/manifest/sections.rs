@@ -455,10 +455,18 @@ pub struct SpawnSection {
     /// so does a reserve at or above the budget. An E costs the budget minus the reserve.
     /// Default: 6.
     pub reserve: u32,
+    /// The minutes between the ticks of `zaf spawn --watch`, `[spawn] tick_minutes = <n>`, a
+    /// positive integer; 0 fails the load. Read from any project manifest layer, since it paces
+    /// one project's ticks and holds no machine resource (#421 ruling 25, the ruling on #428).
+    /// Default: 5.
+    pub tick_minutes: u32,
     /// `[spawn.sizes]`: the units each size costs, over the defaults XS 1, S 2, M 4, L 8 and
     /// XL 16.
     pub sizes: SizesSection,
 }
+
+/// The minutes between `zaf spawn --watch` ticks when `[spawn] tick_minutes` is unset.
+pub const DEFAULT_TICK_MINUTES: u32 = 5;
 
 impl Default for SpawnSection {
     fn default() -> Self {
@@ -467,6 +475,7 @@ impl Default for SpawnSection {
             guard: vec![70, 85, 95],
             budget: None,
             reserve: DEFAULT_RESERVE,
+            tick_minutes: DEFAULT_TICK_MINUTES,
             sizes: SizesSection::default(),
         }
     }
