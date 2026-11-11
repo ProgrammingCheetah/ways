@@ -51,6 +51,20 @@ pub enum ManifestError {
         /// What the key allows.
         reason: String,
     },
+    /// A task type's list under `[phases]` with no action in it.
+    #[error("[phases] `{task_type}` is an empty list: name at least one action")]
+    EmptyPhaseList {
+        /// The task type.
+        task_type: String,
+    },
+    /// An action named twice in one task type's list under `[phases]`.
+    #[error("[phases] `{task_type}` lists `{name}` twice")]
+    PhaseListedTwice {
+        /// The task type.
+        task_type: String,
+        /// The action named twice.
+        name: String,
+    },
     /// An `[env]` value uses `{version}` and no version was given to resolve it with.
     #[error("[env] `{name}` uses `{{version}}`, and no version was given")]
     EnvNeedsVersion {

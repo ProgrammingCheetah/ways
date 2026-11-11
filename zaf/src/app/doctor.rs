@@ -12,7 +12,9 @@
 //! pack's `plugin.json` declares, fails the report, and `zaf profile init` installs or updates it. Every action either tier provides is
 //! reported with its validity and its mode; an invalid file fails the report (see [`ActionCheck`]).
 //! Every action name the project needs is reported with the tier that provides it; a needed name
-//! with no provider fails the report (see [`NeededCheck`]).
+//! with no provider fails the report (see [`NeededCheck`]). Every action a `[phases]` list names is
+//! reported too; one with no provider, no `kind` or no `ends` fails the report (see
+//! [`PhaseCheck`]).
 
 use std::fmt;
 use std::fs;
@@ -28,9 +30,11 @@ use crate::manifest::{DesignSection, Manifest, Requirement, ToolName, files_read
 mod actions;
 pub mod fake;
 mod needed;
+mod phases;
 
 pub use actions::ActionCheck;
 pub use needed::NeededCheck;
+pub use phases::PhaseCheck;
 
 /// Where a credentials file holds its access token's expiry, in milliseconds since the epoch.
 const EXPIRES_AT: &str = "/claudeAiOauth/expiresAt";
@@ -273,6 +277,9 @@ pub struct Report {
     /// One entry per action name the project needs, in name order, with the tier that provides it;
     /// a name with no provider fails the report.
     pub needed: Vec<NeededCheck>,
+    /// One entry per action of a `[phases]` list, in task type and list order; one that no tier
+    /// provides, or that has no `kind` or no `ends`, fails the report.
+    pub phases: Vec<PhaseCheck>,
     /// The manifest files the load read, highest layer first; informational. Printed as
     /// `manifest: <files>`.
     pub manifest: Vec<PathBuf>,
@@ -290,6 +297,7 @@ impl Report {
             && self.actions.iter().all(|check| check.ok)
             && self.actions_error.is_none()
             && self.needed.iter().all(|check| check.ok)
+            && self.phases.iter().all(|check| check.ok)
             && self.design.as_ref().is_none_or(|check| check.ok)
             && self.design_index.as_ref().is_none_or(|check| check.ok)
             && self.workspaces.ok
@@ -317,6 +325,7 @@ impl Report {
         lines.extend(self.actions.iter().flat_map(ActionCheck::lines));
         lines.extend(self.actions_error.clone());
         lines.extend(self.needed.iter().flat_map(NeededCheck::lines));
+        lines.extend(self.phases.iter().flat_map(PhaseCheck::lines));
         lines.push(self.workspaces.line());
         if !self.manifest.is_empty() {
             let files: Vec<String> = self
@@ -610,6 +619,7 @@ pub fn doctor_with(
     };
     let (actions, actions_error) = actions::check_actions(root, zaf_home, manifest);
     let needed = needed::check_needed(root, zaf_home, manifest);
+    let phases = phases::check_phases(root, zaf_home, manifest);
     Report {
         tools,
         design,
@@ -622,6 +632,7 @@ pub fn doctor_with(
         actions,
         actions_error,
         needed,
+        phases,
         manifest: files_read(root, zaf_home),
         unread: unread_tomls(root),
     }
