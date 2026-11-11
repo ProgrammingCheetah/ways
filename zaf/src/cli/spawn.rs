@@ -18,11 +18,15 @@ use super::board::INSTANCE_VAR;
 use super::exit::{self, BACKEND, OK, REFUSED};
 use super::slice::VERSION_VAR;
 use crate::adapters::process;
+use crate::app::actions::{
+    Caller, HOOKS_DIR, MINUTE, Nesting, RunRequest as ActionRequest, RunResult, hook, last_lines,
+    run_hook,
+};
 use crate::app::profile;
 use crate::app::spawn::{
     self, DryLaunch, LaunchContext, LaunchPorts, Launched, Prepared, SpawnError, TEAM_ROLE,
 };
-use crate::composition::Composition;
+use crate::composition::{Composition, STATE_DIR, zaf_home};
 use crate::domain::{CHALLENGER_ROLE, Instance, RoleName};
 use crate::ports::{PortError, RunRequest};
 
@@ -42,6 +46,11 @@ pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool) -> u8 {
         Ok(composition) => composition,
         Err(error) => return exit::fail_composition(&path, &error),
     };
+    // First of all, before any forge read: a hook that fails fails the tick, with nothing started.
+    // A dry run is no tick, starts nothing and writes nothing, so it runs no hook either.
+    if !dry_run && let Some(code) = pre_tick(&path, &composition, version) {
+        return code;
+    }
     let board = match composition.board() {
         Ok(board) => board,
         Err(error) => return exit::fail_composition(&path, &error),
@@ -221,6 +230,71 @@ fn dry(
         print!("{}", launch.render_text());
     }
     OK
+}
+
+/// How many lines of a failed hook's log the tick shows.
+const HOOK_TAIL_LINES: usize = 10;
+
+/// The `pre-tick` hook (docs/zaf-actions.md §5.1): `None` when the tick goes on, because there is
+/// no hook or it exited 0, and the tick's exit code when it does not. The hook runs from the
+/// project root, its output and exit code in its log. A hook that exits non-zero, or that cannot
+/// run (a file not executable, a mode or a manifest `[env]` that refuses it), fails the tick: the
+/// tick does not guess that a hook that did not run did not matter.
+fn pre_tick(path: &str, composition: &Composition, version: &str) -> Option<u8> {
+    let root = composition.root();
+    let manifest = composition.manifest();
+    let name = format!("{HOOKS_DIR}/pre-tick");
+    let home = match zaf_home().map(std::path::absolute) {
+        Some(Ok(home)) => home,
+        // With no home there is no machine tier, so the project's hook alone is looked for.
+        _ => root.join(STATE_DIR),
+    };
+    hook(root, &home, "pre-tick")?;
+    let failed = |reason: String| {
+        eprintln!("zaf {path}: NOT_RUN {name}: {reason}");
+        Some(BACKEND)
+    };
+    let nesting = match Nesting::from_env() {
+        Ok(nesting) => nesting,
+        Err(reason) => return failed(reason),
+    };
+    let caller = match Caller::from_env() {
+        Ok(caller) => caller,
+        Err(reason) => return failed(reason),
+    };
+    let env = match manifest.env.resolve(root, Some(version)) {
+        Ok(env) => env,
+        Err(error) => return failed(error.to_string()),
+    };
+    let outcome = run_hook(&ActionRequest {
+        name: &name,
+        args: &[],
+        cwd: root,
+        project_root: Some(root),
+        home: &home,
+        timeout_minutes: manifest.actions.timeout_minutes,
+        minute: MINUTE,
+        nesting,
+        caller,
+        only: None,
+        slice: None,
+        env,
+    });
+    if outcome.result == RunResult::Ok {
+        return None;
+    }
+    if let Some(headline) = outcome.headline() {
+        eprintln!("zaf {path}: {headline}");
+    }
+    // The last lines of the log, under the line they explain, as `zaf do` shows them.
+    if let Some(log) = &outcome.log
+        && let Ok(lines) = last_lines(log, HOOK_TAIL_LINES)
+    {
+        for line in lines {
+            eprintln!("{line}");
+        }
+    }
+    Some(BACKEND)
 }
 
 /// The manifest's `[env]` first, then zaf's own variables over it (no `[env]` key may
