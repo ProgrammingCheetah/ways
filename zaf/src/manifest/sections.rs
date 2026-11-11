@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 
-use crate::domain::{Budget, Profile, SizeTable, TaskSize};
+use crate::domain::{Budget, DEFAULT_RESERVE, Profile, SizeTable, TaskSize};
 use crate::newtype::text_newtype;
 
 text_newtype! {
@@ -450,6 +450,11 @@ pub struct SpawnSection {
     /// zaf home's `config.toml`: a project file that sets it fails the load. Unset means no
     /// machine cap.
     pub budget: Option<NonZeroU32>,
+    /// The reserve an E leaves of the budget, `[spawn] reserve = <units>`, read only from the
+    /// zaf home's `config.toml` like `budget`: a project file that sets it fails the load, and
+    /// so does a reserve at or above the budget. An E costs the budget minus the reserve.
+    /// Default: 6.
+    pub reserve: u32,
     /// `[spawn.sizes]`: the units each size costs, over the defaults XS 1, S 2, M 4, L 8 and
     /// XL 16.
     pub sizes: SizesSection,
@@ -461,17 +466,19 @@ impl Default for SpawnSection {
             slots: 1,
             guard: vec![70, 85, 95],
             budget: None,
+            reserve: DEFAULT_RESERVE,
             sizes: SizesSection::default(),
         }
     }
 }
 
 impl SpawnSection {
-    /// The machine budget and the size table these settings make.
+    /// The machine budget, its reserve and the size table these settings make.
     #[must_use]
     pub fn budget(&self) -> Budget {
         Budget {
             units: self.budget.map(NonZeroU32::get),
+            reserve: self.reserve,
             sizes: self.sizes.table(),
         }
     }
@@ -479,7 +486,7 @@ impl SpawnSection {
 
 /// `[spawn.sizes]`: the units a size costs, each a positive integer; a size left out keeps
 /// its default. The keys are XS, S, M, L and XL; any other key, `E` among them, fails the
-/// load, since an E costs the whole budget.
+/// load, since an E costs the budget minus the reserve.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SizesSection {

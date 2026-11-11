@@ -86,6 +86,53 @@ fn a_project_cannot_set_the_machine_budget() {
 }
 
 #[test]
+fn the_reserve_reads_from_the_zaf_home() {
+    let manifest =
+        load_project(&[(ROOT_FILE, PROJECT)], Some("[spawn]\nbudget = 38\n")).expect("loads");
+    assert_eq!(manifest.spawn.budget().reserve, 6, "the default");
+    assert_eq!(manifest.spawn.budget().cost(TaskSize::E), Units::whole(32));
+    let machine = "[spawn]\nbudget = 38\nreserve = 10\n";
+    let manifest = load_project(&[(ROOT_FILE, PROJECT)], Some(machine)).expect("loads");
+    assert_eq!(manifest.spawn.budget().reserve, 10);
+    assert_eq!(manifest.spawn.budget().cost(TaskSize::E), Units::whole(28));
+}
+
+#[test]
+fn a_reserve_over_the_budget_fails() {
+    for reserve in [38, 40] {
+        let machine = format!("[spawn]\nbudget = 38\nreserve = {reserve}\n");
+        let error = load_project(&[(ROOT_FILE, PROJECT)], Some(&machine)).expect_err("too big");
+        let message = error.to_string();
+        assert!(message.contains("reserve"), "{message}");
+        assert!(message.contains(HOME_FILE), "{message}");
+    }
+    // The default reserve of 6 is over a budget of 6 too.
+    let small = "[spawn]\nbudget = 6\n";
+    assert!(load_project(&[(ROOT_FILE, PROJECT)], Some(small)).is_err());
+    // With no budget there is nothing for a reserve to exceed.
+    let no_cap = "[spawn]\nreserve = 40\n";
+    assert!(load_project(&[(ROOT_FILE, PROJECT)], Some(no_cap)).is_ok());
+}
+
+#[test]
+fn a_project_cannot_set_the_reserve() {
+    for project_file in [ROOT_FILE, FOLDER_FILE] {
+        let text = format!("{PROJECT}[spawn]\nreserve = 4\n");
+        let error = load_project(&[(project_file, &text)], None).expect_err("the machine's");
+        let message = error.to_string();
+        assert!(message.contains(project_file), "{message}");
+        assert!(message.contains("reserve"), "{message}");
+    }
+    // The local file may not set it either.
+    let error = load_project(
+        &[(ROOT_FILE, PROJECT), (LOCAL_FILE, "[spawn]\nreserve = 4\n")],
+        None,
+    )
+    .expect_err("not a local setting");
+    assert!(error.to_string().contains("[spawn] reserve"), "{error}");
+}
+
+#[test]
 fn a_project_overrides_a_size() {
     let text = format!("{PROJECT}[spawn.sizes]\nM = 6\n");
     let manifest =
