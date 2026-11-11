@@ -28,6 +28,8 @@
 //! failed with no `on-fail`, at no cost either; its tasks fill `questions`. Step 4 ([`waits`])
 //! launches every ready `wait` action detached with `zaf spawn phase`, at no cost and never
 //! waiting for one; the waits it launched fill `waits`, and they are not the tick's one model start.
+//! Step 6 ([`start`]) starts at most one model phase, the longest ready that fits the budget,
+//! never waiting for it; it fills `started`.
 //!
 //! A dry run ([`plan_only`] and [`dry_run`]) plans the same tick and describes
 //! each launch it would make, writing nothing: no state, no run folder, no comment.
@@ -42,6 +44,7 @@ pub mod outcome;
 pub mod phase;
 pub mod question;
 pub mod runs;
+pub mod start;
 mod state;
 pub mod tick;
 pub mod waits;
@@ -54,6 +57,7 @@ pub use inline::{TickTask, run_inline, run_zaf_actions};
 pub use outcome::{Ran, Started, TickOutcome};
 pub use question::{ask_failed_waits, ask_outcome, question_text};
 use runs::Run;
+pub use start::{InUse, PlannedPhase, TaskStanding, start_outcome, start_planned};
 pub use state::{SpawnState, derive, load, save};
 pub use tick::{
     EpicSkip, NOT_BUILT, PLANNING_ROLE, PastLaunch, Plan, PlannedLaunch, Settings, SlotCount,

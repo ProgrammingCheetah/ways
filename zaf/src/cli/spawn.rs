@@ -12,6 +12,7 @@
 //! the tasks, the profile, the environment and the command line, and stops there.
 
 use std::collections::BTreeMap;
+use std::process::{Command, Stdio};
 
 use super::Cli;
 use super::board::INSTANCE_VAR;
@@ -24,7 +25,8 @@ use crate::app::actions::{
 };
 use crate::app::profile;
 use crate::app::spawn::{
-    self, DryLaunch, LaunchContext, LaunchPorts, Launched, Prepared, SpawnError, TEAM_ROLE,
+    self, DryLaunch, LaunchContext, LaunchPorts, Launched, PlannedPhase, Prepared, SpawnError,
+    TEAM_ROLE,
 };
 use crate::composition::{Composition, STATE_DIR, zaf_home};
 use crate::domain::{CHALLENGER_ROLE, Instance, RoleName, TicketId};
@@ -172,6 +174,41 @@ pub fn run_zaf_action(task: TicketId, action: &ActionName) -> u8 {
         eprintln!("{headline}");
     }
     outcome.exit
+}
+
+/// Starts the tick's one model phase with `zaf spawn phase <task> <action>`: the `start` the tick
+/// hands [`spawn::start_planned`]. It waits only for `zaf spawn phase`, which returns once the
+/// phase's launcher is started as its own process, never for the phase itself (#421 ruling 19).
+/// Its refusal or failure is on stderr; a non-zero exit is `Err` naming the code.
+pub fn start_phase(planned: &PlannedPhase) -> Result<(), String> {
+    let exe = std::env::current_exe()
+        .map_err(|error| format!("cannot find the zaf binary to start a phase: {error}"))?;
+    spawn_phase_with(Command::new(exe), planned)
+}
+
+/// Runs `<zaf> spawn phase <task> <action>`, `zaf` the command that stands for the binary, and
+/// waits for that command alone. Its stdout, the `started` line, is dropped so a `--json` tick
+/// prints one document; its stderr is the tick's.
+fn spawn_phase_with(mut zaf: Command, planned: &PlannedPhase) -> Result<(), String> {
+    let status = zaf
+        .args(["spawn", "phase"])
+        .arg(planned.task.get().to_string())
+        .arg(planned.action.as_str())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .status()
+        .map_err(|error| format!("cannot run zaf spawn phase: {error}"))?;
+    if status.success() {
+        return Ok(());
+    }
+    let code = status
+        .code()
+        .map_or_else(|| "a signal".to_owned(), |code| format!("exit {code}"));
+    Err(format!(
+        "zaf spawn phase {} {} ended with {code}",
+        planned.task.get(),
+        planned.action
+    ))
 }
 
 /// Each planned launch with the context it runs under.
@@ -371,6 +408,48 @@ mod tests {
         assert_eq!(env["ZAF_VERSION"], "0-3");
         assert_eq!(env["ZAF_INSTANCE"], "team instance 12 on #16");
         assert_eq!(env.len(), 3);
+    }
+
+    /// A stand-in for the zaf binary: `sh` on a script that records its arguments in `args`, then
+    /// runs `body`. `sh` reads the script, so no freshly written file is executed.
+    fn fake_zaf(dir: &std::path::Path, body: &str) -> Command {
+        let script = dir.join("zaf.sh");
+        let args = dir.join("args");
+        let text = format!("echo \"$@\" > '{}'\n{body}\n", args.display());
+        std::fs::write(&script, text).expect("writes the fake zaf");
+        let mut zaf = Command::new("sh");
+        zaf.arg(script);
+        zaf
+    }
+
+    fn planned() -> PlannedPhase {
+        PlannedPhase {
+            task: TicketId::from(42),
+            action: crate::app::actions::ActionName::from("implement"),
+            units: 4,
+        }
+    }
+
+    #[test]
+    fn the_tick_starts_its_phase_with_zaf_spawn_phase_and_does_not_wait() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        // `zaf spawn phase` returns once its launcher is started; the phase runs on, detached.
+        let zaf = fake_zaf(dir.path(), "sleep 30 >/dev/null 2>&1 &\nexit 0");
+        let began = std::time::Instant::now();
+        assert_eq!(spawn_phase_with(zaf, &planned()), Ok(()));
+        assert!(began.elapsed() < std::time::Duration::from_secs(10));
+        let args = std::fs::read_to_string(dir.path().join("args")).expect("the args");
+        assert_eq!(args.trim(), "spawn phase 42 implement");
+    }
+
+    #[test]
+    fn a_refused_phase_start_is_an_error_naming_its_code() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let zaf = fake_zaf(dir.path(), "exit 1");
+        assert_eq!(
+            spawn_phase_with(zaf, &planned()),
+            Err("zaf spawn phase 42 implement ended with exit 1".to_owned())
+        );
     }
 
     #[test]
