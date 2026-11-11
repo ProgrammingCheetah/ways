@@ -19,15 +19,15 @@ use super::exit::{self, BACKEND, OK, REFUSED};
 use super::slice::VERSION_VAR;
 use crate::adapters::process;
 use crate::app::actions::{
-    Caller, HOOKS_DIR, MINUTE, Nesting, RunRequest as ActionRequest, RunResult, hook, last_lines,
-    run_hook,
+    ActionName, Caller, HOOKS_DIR, MINUTE, Nesting, RunRequest as ActionRequest, RunResult, hook,
+    last_lines, run_hook,
 };
 use crate::app::profile;
 use crate::app::spawn::{
     self, DryLaunch, LaunchContext, LaunchPorts, Launched, Prepared, SpawnError, TEAM_ROLE,
 };
 use crate::composition::{Composition, STATE_DIR, zaf_home};
-use crate::domain::{CHALLENGER_ROLE, Instance, RoleName};
+use crate::domain::{CHALLENGER_ROLE, Instance, RoleName, TicketId};
 use crate::ports::{PortError, RunRequest};
 
 /// Runs one tick; refuses without `--once` or `--version`. With `dry_run`, launches
@@ -157,6 +157,21 @@ pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool) -> u8 {
         eprintln!("zaf {path}: warning: {message}");
     }
     code
+}
+
+/// Runs `zaf do <action> <task>` in this process: the runner the tick hands
+/// [`spawn::run_zaf_actions`] for a `zaf`-kind action. A failure prints its headline on stderr
+/// and the code is passed on: 0 passed, 125 never ran, any other the action's own.
+pub fn run_zaf_action(task: TicketId, action: &ActionName) -> u8 {
+    let outcome = super::do_action::run_named(
+        action.as_str(),
+        &[std::ffi::OsString::from(task.get().to_string())],
+        None,
+    );
+    if let Some(headline) = outcome.headline() {
+        eprintln!("{headline}");
+    }
+    outcome.exit
 }
 
 /// Each planned launch with the context it runs under.
