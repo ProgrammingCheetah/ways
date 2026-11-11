@@ -11,7 +11,6 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use super::phase::Phase;
-use crate::newtype::text_newtype;
 
 /// The mode an action declares nothing for.
 const DEFAULT_MODE: u16 = 0o755;
@@ -71,10 +70,7 @@ pub enum PhaseEnd {
 /// The five values of `ends`, as a refusal names them.
 const END_NAMES: &str = "pr-open, review-posted, ci-done, merged, exit";
 
-text_newtype! {
-    /// The name of an action, as `on-fail` names the one to run when a wait fails.
-    ActionName
-}
+pub use crate::manifest::ActionName;
 
 /// One digit of a mode: the `r`, `w` and `x` bits for one subject.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

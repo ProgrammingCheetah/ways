@@ -46,6 +46,12 @@ text_newtype! {
     CommandLine
 }
 
+text_newtype! {
+    /// The name of an action: an entry of a task type's list under `[phases]`, or the one an
+    /// action's `on-fail` names.
+    ActionName
+}
+
 /// `[project]`: who the manifest is for.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]

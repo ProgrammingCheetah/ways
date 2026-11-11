@@ -808,3 +808,125 @@ fn doctor_names_a_bad_on_fail() {
         );
     }
 }
+
+/// A project whose manifest lists `names` as the phases of task type `Task`, with the four
+/// `slice-*` actions provided.
+fn phased(names: &[&str]) -> Project {
+    let list = names
+        .iter()
+        .map(|name| format!("\"{name}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let project = Project::new(&format!("{MANIFEST}\n[phases]\nTask = [{list}]\n"));
+    project.provide_slice_actions();
+    project
+}
+
+#[test]
+fn doctor_names_a_missing_phase_action() {
+    let project = phased(&["implement", "nobody"]);
+    put(
+        &project_actions(&project),
+        "implement",
+        &[
+            "description: build",
+            "1: failed",
+            "kind: model",
+            "ends: exit",
+        ],
+        true,
+    );
+
+    let (code, text) = doctor(&project);
+
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        text.contains("[phases] Task: action `nobody` is provided by no tier"),
+        "{text}"
+    );
+    assert!(
+        text.contains("phase Task implement (project): ok"),
+        "{text}"
+    );
+    assert!(text.contains("phase Task nobody: no provider"), "{text}");
+}
+
+#[test]
+fn doctor_names_a_phase_action_without_kind() {
+    let project = phased(&["plain"]);
+    put(
+        &project_actions(&project),
+        "plain",
+        &["description: plain", "1: failed"],
+        true,
+    );
+
+    let (code, text) = doctor(&project);
+
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        text.contains("[phases] Task: action `plain` has no `kind`"),
+        "{text}"
+    );
+    assert!(
+        text.contains("phase Task plain (project): invalid"),
+        "{text}"
+    );
+}
+
+#[test]
+fn doctor_names_a_phase_action_without_ends() {
+    let project = phased(&["open-ended"]);
+    put(
+        &project_actions(&project),
+        "open-ended",
+        &["description: open ended", "1: failed", "kind: wait"],
+        true,
+    );
+
+    let (code, text) = doctor(&project);
+
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        text.contains("[phases] Task: action `open-ended` is invalid"),
+        "{text}"
+    );
+    assert!(text.contains("no `ends`"), "{text}");
+}
+
+#[test]
+fn doctor_passes_a_phase_list_of_whole_actions() {
+    let project = phased(&["implement", "ci"]);
+    let actions = project_actions(&project);
+    put(
+        &actions,
+        "implement",
+        &[
+            "description: build",
+            "1: failed",
+            "kind: model",
+            "ends: exit",
+        ],
+        true,
+    );
+    put(
+        &project.home.join("actions"),
+        "ci",
+        &[
+            "description: ci",
+            "1: failed",
+            "kind: wait",
+            "ends: ci-done",
+        ],
+        true,
+    );
+
+    let (code, text) = doctor(&project);
+
+    assert_eq!(code, 0, "{text}");
+    assert!(
+        text.contains("phase Task implement (project): ok"),
+        "{text}"
+    );
+    assert!(text.contains("phase Task ci (machine): ok"), "{text}");
+}
