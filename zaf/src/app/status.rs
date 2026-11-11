@@ -6,7 +6,9 @@
 //! once, with no tick in between. A claim held by an instance that no longer runs is shown
 //! as orphaned, not claimed: the next tick releases it. The guard line is whatever
 //! `zaf guard` last wrote. The machine line counts every live zaf instance on the machine,
-//! from any project, as the process table reads it when asked ([`Status::with_machine`]).
+//! from any project, as the process table reads it when asked ([`Status::with_machine`]);
+//! the budget line sets that use against the zaf home's `[spawn] budget`
+//! ([`Status::with_budget`]).
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -16,7 +18,8 @@ use super::guard::{self, GuardError, GuardState};
 use super::profile::StaleProfile;
 use super::spawn::{self, blockers, blockers::DeadLine};
 use crate::domain::{
-    Mebibytes, SLOTS_DIR, SlotRecord, TaskTemplate, Ticket, TicketId, TicketSummary, Units,
+    Budget, Mebibytes, SLOTS_DIR, SizeTable, SlotRecord, TaskTemplate, Ticket, TicketId,
+    TicketSummary, Units,
 };
 use crate::ports::{Board, ClaimRecord, Holder, MachineInstance, PortError, live_use};
 
@@ -147,6 +150,31 @@ pub struct Status {
     /// Every live zaf instance on the machine, from any project; empty until
     /// [`Status::with_machine`] gives the process table's read.
     pub machine: Machine,
+    /// The machine budget against the live use; no machine cap until
+    /// [`Status::with_budget`] gives the manifest's.
+    pub budget: BudgetLine,
+}
+
+/// The machine budget and how much of it the live instances use, read when asked and never
+/// stored.
+///
+/// The text screen prints it as `budget <used> of <units> units`, or `budget: no machine cap`
+/// when the zaf home sets no `[spawn] budget`; the JSON carries the use in units, the budget
+/// and the size table.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct BudgetLine {
+    /// The live use of the machine, the machine line's total, in units.
+    #[serde(rename = "in_use_units", serialize_with = "units_as_number")]
+    pub in_use: Units,
+    /// The machine's `[spawn] budget`, in units; none means no machine cap.
+    pub units: Option<u32>,
+    /// What each size costs, in units.
+    pub sizes: SizeTable,
+}
+
+/// Units as a plain number of units, `34.5`, rather than the mebibytes they hold.
+fn units_as_number<S: serde::Serializer>(units: &Units, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_f64(units.as_f64())
 }
 
 /// The live zaf instances of the whole machine, read from the process table when asked.
@@ -293,6 +321,7 @@ pub fn status(
         cycles,
         dead_blockers,
         machine: Machine::default(),
+        budget: BudgetLine::default(),
     })
 }
 
@@ -344,6 +373,19 @@ impl Status {
     #[must_use]
     pub fn with_machine(mut self, instances: &[MachineInstance]) -> Self {
         self.machine = Machine::read(instances);
+        self.budget.in_use = self.machine.in_use;
+        self
+    }
+
+    /// The screen with the machine budget and size table, measured against the machine's
+    /// live use.
+    #[must_use]
+    pub fn with_budget(mut self, budget: Budget) -> Self {
+        self.budget = BudgetLine {
+            in_use: self.machine.in_use,
+            units: budget.units,
+            sizes: budget.sizes,
+        };
         self
     }
 
@@ -420,6 +462,10 @@ impl Status {
             self.machine.projects,
             self.machine.in_use
         ));
+        line(match self.budget.units {
+            Some(units) => format!("budget {} of {units} units", self.budget.in_use),
+            None => "budget: no machine cap".to_owned(),
+        });
         line(format!(
             "guard     {}",
             self.guard.as_ref().map_or(
