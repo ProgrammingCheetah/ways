@@ -4,7 +4,8 @@
 //! Nothing the tick plans from is kept in step by hand: each read derives it.
 //! Whether a launch still runs comes from its run folder and the process table
 //! ([`runs`]), which launches still hold slots follows from that, a claim counts
-//! only while its instance runs, and the board answers the rest. `.zaf/spawn.state`
+//! only while its instance runs (unless its task has a recorded pull request or a running
+//! phase, see [`held`]), and the board answers the rest. `.zaf/spawn.state`
 //! keeps only the instance counter.
 //!
 //! [`prepare`] records `lost` for a launch that ended with nobody there to record
@@ -51,6 +52,7 @@ pub use tick::{
     Snapshot, TEAM_ROLE, TaskSkip,
 };
 
+use super::actions::{PHASES_DIR, SliceRecords, running_tasks};
 use super::guard::{GUARD_FILE, Level};
 use crate::domain::{
     CHALLENGER_ROLE, Instance, Profile, RoleName, TaskProblem, TaskSize, TaskTemplate, TicketId,
@@ -260,13 +262,37 @@ fn lock(state_dir: &Path) -> Result<std::fs::File, SpawnError> {
         .map_err(|source| SpawnError::Write { path, source })
 }
 
-/// The claims held by an instance this machine launched that no longer runs: its run folder
+/// The tasks held by the forge's facts or by a running phase, whatever instance claimed them:
+/// those with a recorded pull request (`.zaf/slices/<task>.pr`) and those with a live phase
+/// process (`.zaf/phases/`, #437). A phase run folder that cannot be read is an error, never a
+/// guess, so no claim is released on a read that failed.
+pub fn held(
+    state_dir: &Path,
+    alive: &dyn Fn(&Holder) -> bool,
+) -> Result<BTreeSet<TicketId>, SpawnError> {
+    let phases = state_dir.join(PHASES_DIR);
+    let mut held = SliceRecords::in_state_dir(state_dir).tasks_with_pr();
+    held.extend(
+        running_tasks(&phases, alive).map_err(|reason| SpawnError::Read {
+            path: phases,
+            reason,
+        })?,
+    );
+    Ok(held)
+}
+
+/// `orphaned(claims, runs, alive, held)`: the claims held by an instance this machine launched
+/// that no longer runs: its run folder
 /// is there and its holder is dead. A claim by an instance with no run folder here (one
 /// started by hand, or on another machine) is not this machine's to judge, so it stays.
+/// A task in `held` (see [`held`]) is not orphaned: a task with a recorded pull request is held
+/// by its forge facts and one with a running phase by that phase, so its claim stays until the
+/// task is done (the ruling on #426).
 pub fn orphaned<'a>(
     claims: &'a [ClaimRecord],
     runs: &[Run],
     alive: &dyn Fn(&Holder) -> bool,
+    held: &BTreeSet<TicketId>,
 ) -> Vec<&'a ClaimRecord> {
     let gone: BTreeSet<&str> = runs
         .iter()
@@ -276,6 +302,7 @@ pub fn orphaned<'a>(
     claims
         .iter()
         .filter(|claim| gone.contains(slug(&claim.instance).as_str()))
+        .filter(|claim| !held.contains(&claim.task))
         .collect()
 }
 
@@ -306,7 +333,8 @@ pub fn prepare(
     }
     let claims = board.claims()?;
     let mut released = Vec::new();
-    for claim in orphaned(&claims, &found, alive) {
+    let held = held(state_dir, alive)?;
+    for claim in orphaned(&claims, &found, alive, &held) {
         board.release(claim.task, &claim.instance)?;
         released.push(Released {
             task: claim.task,

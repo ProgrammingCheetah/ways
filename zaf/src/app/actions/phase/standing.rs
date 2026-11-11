@@ -33,7 +33,7 @@ use crate::app::actions::{ActionKind, ActionName, PhaseEnd};
 
 mod gather;
 
-pub use gather::{PHASES_DIR, StandingUnreadable, gather_standing_facts};
+pub use gather::{PHASES_DIR, StandingUnreadable, gather_standing_facts, running_tasks};
 
 /// One entry of a task type's phase list, with what its action declares: the `kind`, `ends` and
 /// `on-fail` of its metadata.
