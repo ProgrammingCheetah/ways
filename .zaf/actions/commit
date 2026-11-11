@@ -3,7 +3,7 @@
 # zaf 1: refused: nothing to commit, the slice is not an open slice workspace, or the slice name leaves the workspaces directory
 # zaf 2: a backend failed (jj is missing or refused)
 # zaf mode: 750
-# zaf group: team, release
+# zaf group: team, release, implement, fix
 slice=$1
 message=$2
 

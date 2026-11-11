@@ -1,0 +1,54 @@
+#!/bin/sh
+# zaf description: phase implement: claim the task, open its slice, run the programmer on its brief, then publish the slice with `slice-pr`, which opens the pull request
+# zaf 1: refused: the argument is not <task>, or a step refused (the task is not ready or is held, or the slice or the pull request was refused)
+# zaf 2: a backend failed (a verb or a step failed, or the programmer exited non-zero)
+# zaf mode: 755
+# zaf kind: model
+# zaf ends: pr-open
+
+# The task as a bare number; the launcher passes it as the one argument.
+task=${1#\#}
+if [ "$#" -ne 1 ] || [ -z "$ZAF_ROOT" ]; then
+    echo "usage: implement <task>, run by zaf with ZAF_ROOT and ZAF_INSTANCE set" >&2
+    exit 1
+fi
+case $task in
+    "" | *[!0-9]*)
+        echo "task $1 is not an issue number" >&2
+        exit 1
+        ;;
+esac
+
+# A step ends this action with its own code when it is 1, a refusal; any other code, 125 (a step
+# that never ran) included, is a backend that failed.
+stop() {
+    case $1 in
+        1) exit 1 ;;
+        *) exit 2 ;;
+    esac
+}
+
+cd "$ZAF_ROOT" || exit 2
+
+zaf board claim "$task" || stop $?
+
+# A successful `zaf do` prints nothing, so `--more` brings the log back; its last non-empty line
+# is the workspace path.
+log=$(zaf do --more slice-open "$task") || stop $?
+workspace=$(printf '%s\n' "$log" | awk 'NF { line = $0 } END { print line }')
+if [ -z "$workspace" ]; then
+    echo "slice-open handed back no workspace" >&2
+    exit 2
+fi
+
+# The first line `zaf brief` prints is the pack's path, the second its size.
+brief=$(zaf brief "$task" --phase implement) || stop $?
+pack=$(printf '%s\n' "$brief" | awk 'NR == 1')
+
+# The programmer runs in its own profile, as [roles.programmer] says, one round on the pack.
+CLAUDE_CONFIG_DIR="$ZAF_ROOT/.zaf/profiles/lean" claude -p \
+    "Task #$task, round 1. Pack: $pack. Workspace: $workspace." \
+    --model sonnet --effort high --add-dir "$ZAF_ROOT" || exit 2
+
+# The pull request opens here, and zaf keeps the number `slice-pr` hands back.
+zaf do slice-pr "$task" || stop $?

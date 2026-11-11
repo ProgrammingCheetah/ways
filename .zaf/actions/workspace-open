@@ -3,7 +3,7 @@
 # zaf 1: refused: the slice is open on another base, its directory is not a slice workspace, the base bookmark is unknown, or the slice name leaves the workspaces directory
 # zaf 2: a backend failed (jj is missing or refused)
 # zaf mode: 750
-# zaf group: team, release
+# zaf group: team, release, implement, fix
 slice=$1
 base=$2
 
