@@ -20,8 +20,8 @@ pub use layers::{
 };
 pub use requirement::{Requirement, RequirementError};
 pub use sections::{
-    ActionsSection, AskSection, BoardKind, BoardSection, BranchPattern, BranchesSection,
-    CheckSection, CheckTarget, ChecksSection, CommandLine, DEFAULT_DESIGN_INDEX,
+    ActionName, ActionsSection, AskSection, BoardKind, BoardSection, BranchPattern,
+    BranchesSection, CheckSection, CheckTarget, ChecksSection, CommandLine, DEFAULT_DESIGN_INDEX,
     DEFAULT_STATE_FIELD, DesignKind, DesignSection, Effort, EnvSection, ForbiddenSection,
     ForgeKind, ForgeSection, GateSection, IsolationKind, IsolationSection, ModelName, PackSection,
     ProjectName, ProjectSection, RepoName, RoleSection, Rung, RunnerName, RunnerSection,
