@@ -76,7 +76,11 @@ fn read_pull(forge: &dyn Forge, pr: crate::ports::PrNumber) -> Result<PullFacts,
     };
     let head = forge.head(pr).map_err(failed)?;
     let mut checks = Vec::new();
+    let mut failed_checks = Vec::new();
     for check in forge.checks(pr).map_err(failed)? {
+        if check.state == CheckState::Failed {
+            failed_checks.push(check.name.to_string());
+        }
         checks.push(match (check.state, check.finished_at) {
             (CheckState::Pending, _) => CheckResult::Pending,
             (CheckState::Passed, Some(at)) => CheckResult::Passed(at),
@@ -100,6 +104,7 @@ fn read_pull(forge: &dyn Forge, pr: crate::ports::PrNumber) -> Result<PullFacts,
         merged_at,
         head,
         checks,
+        failed_checks,
         reviews,
     })
 }

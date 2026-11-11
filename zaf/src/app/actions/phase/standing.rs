@@ -115,6 +115,8 @@ pub struct PullFacts {
     pub head: Option<String>,
     /// Its check runs at that head.
     pub checks: Vec<CheckResult>,
+    /// The names of the checks among `checks` that failed, in the order the forge lists them.
+    pub failed_checks: Vec<String>,
     /// Its reviews, at whatever head each was made.
     pub reviews: Vec<ReviewFact>,
 }
@@ -166,6 +168,45 @@ impl StandingFacts {
             .iter()
             .filter(|run| &run.action == action)
             .max_by_key(|run| run.started_at)
+    }
+
+    /// The latest run of `action` that started at the pull request's current head.
+    fn run_at_head(&self, action: &ActionName) -> Option<&PhaseRun> {
+        let head = self.head();
+        self.runs
+            .iter()
+            .filter(|run| &run.action == action && run.head.as_deref() == head)
+            .max_by_key(|run| run.started_at)
+    }
+}
+
+/// What a failed wait failed on: the pull request's head, the checks that failed there and the
+/// exit code of the wait's own run at that head when it was not zero.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WaitFailure {
+    /// The pull request's current head; none when the forge reports none.
+    pub head: Option<String>,
+    /// The names of the checks that failed.
+    pub checks: Vec<String>,
+    /// The non-zero exit code of the wait's run at the head.
+    pub exit: Option<i32>,
+}
+
+/// What the wait `action` failed on, read from the same facts [`derive_standing`] read.
+#[must_use]
+pub fn wait_failure(action: &ActionName, facts: &StandingFacts) -> WaitFailure {
+    WaitFailure {
+        head: facts.head().map(str::to_owned),
+        checks: facts
+            .pull
+            .iter()
+            .flat_map(|pull| pull.failed_checks.iter().cloned())
+            .collect(),
+        exit: facts
+            .run_at_head(action)
+            .and_then(|run| run.exit)
+            .map(|exit| exit.code)
+            .filter(|code| *code != 0),
     }
 }
 
@@ -285,12 +326,7 @@ fn current(lead: &ListedPhase, facts: &StandingFacts, previous: Option<SystemTim
             since: previous.unwrap_or(facts.ready_since),
         };
     }
-    let head = facts.head();
-    let at_head = facts
-        .runs
-        .iter()
-        .filter(|run| run.action == action && run.head.as_deref() == head)
-        .max_by_key(|run| run.started_at);
+    let at_head = facts.run_at_head(&action);
     let failed_check = facts
         .pull
         .iter()

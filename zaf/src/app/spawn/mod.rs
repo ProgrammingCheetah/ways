@@ -24,7 +24,8 @@
 //!
 //! The phase tick's step 3 ([`inline`]) runs every ready `zaf`-kind action with `zaf do`, one
 //! after another, at no cost to the budget; [`outcome::TickOutcome`] is what a tick did, its
-//! `ran` filled from there.
+//! `ran` filled from there. Step 5 ([`question`]) raises one question on each task whose wait
+//! failed with no `on-fail`, at no cost either; its tasks fill `questions`.
 //!
 //! A dry run ([`plan_only`] and [`dry_run`]) plans the same tick and describes
 //! each launch it would make, writing nothing: no state, no run folder, no comment.
@@ -32,6 +33,7 @@
 pub mod blockers;
 pub mod inline;
 pub mod outcome;
+pub mod question;
 pub mod runs;
 mod state;
 pub mod tick;
@@ -42,6 +44,7 @@ use std::time::SystemTime;
 
 pub use inline::{TickTask, run_inline, run_zaf_actions};
 pub use outcome::{Ran, Started, TickOutcome};
+pub use question::{ask_failed_waits, ask_outcome, question_text};
 use runs::Run;
 pub use state::{SpawnState, derive, load, save};
 pub use tick::{

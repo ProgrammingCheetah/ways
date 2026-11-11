@@ -39,6 +39,16 @@
       "node": false
     },
     {
+      "name": "question.rs",
+      "role": "tick step 5: a failed wait with no on-fail raises one question on its task, unless it has an open one; starts nothing, charges nothing",
+      "node": false
+    },
+    {
+      "name": "question/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
       "name": "outcome.rs",
       "role": "TickOutcome { started, waits, ran, questions }: what a tick did; idle when all are empty",
       "node": false
