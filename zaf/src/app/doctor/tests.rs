@@ -752,3 +752,53 @@ fn a_project_without_a_pack_has_no_pack_lines() {
     assert!(report.packs.is_empty());
     assert!(report.lines().iter().all(|line| !line.contains("pack")));
 }
+
+/// Writes `text` to `<root>/<name>`, making its folder.
+fn put(root: &Path, name: &str, text: &str) {
+    let file = root.join(name);
+    fs::create_dir_all(file.parent().expect("parent")).expect("folder");
+    fs::write(file, text).expect("file");
+}
+
+#[test]
+fn doctor_names_the_manifest_files_it_reads() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    put(dir.path(), ".zaf.toml", HEAD);
+    put(dir.path(), ".zaf/config.toml", "[spawn]\nslots = 2\n");
+    put(dir.path(), ".zaf/local.toml", "[spawn]\nslots = 4\n");
+    let report = doctor(dir.path(), &manifest(""), &FakeCommands::new());
+    let expected = [
+        dir.path().join(".zaf/local.toml"),
+        dir.path().join(".zaf.toml"),
+        dir.path().join(".zaf/config.toml"),
+    ];
+    assert_eq!(report.manifest, expected, "highest layer first");
+    let named: Vec<String> = expected
+        .iter()
+        .map(|file| file.display().to_string())
+        .collect();
+    let line = format!("manifest: {}", named.join(", "));
+    assert!(report.lines().contains(&line), "{:?}", report.lines());
+    // Without a local file it is not named.
+    fs::remove_file(dir.path().join(".zaf/local.toml")).expect("remove");
+    let report = doctor(dir.path(), &manifest(""), &FakeCommands::new());
+    assert_eq!(report.manifest, expected[1..]);
+}
+
+#[test]
+fn doctor_warns_about_an_unread_toml() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    put(dir.path(), ".zaf.toml", HEAD);
+    put(dir.path(), ".zaf/local.toml", "");
+    put(dir.path(), ".zaf/extra.toml", "[spawn]\nslots = 9\n");
+    // A `.toml` below `.zaf/` is nobody's file to warn about.
+    put(dir.path(), ".zaf/profiles/p/settings.toml", "");
+    let report = doctor(dir.path(), &manifest(""), &FakeCommands::new());
+    let warnings: Vec<String> = report
+        .lines()
+        .into_iter()
+        .filter(|line| line.starts_with("unread:"))
+        .collect();
+    assert_eq!(warnings, ["unread: .zaf/extra.toml"]);
+    assert!(report.passed(), "a warning does not fail the report");
+}
