@@ -15,6 +15,13 @@ mod gather;
 
 pub use gather::{PhaseUnreadable, gather_phase_facts};
 
+mod standing;
+
+pub use standing::{
+    CheckResult, ListedPhase, PHASES_DIR, PhaseRun, PullFacts, ReviewFact, RunExit, Standing,
+    StandingFacts, StandingUnreadable, derive_standing, gather_standing_facts,
+};
+
 /// Where a task stands. The seven of §3 and `Unclaimed`, in lifecycle order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, strum::Display)]
 #[strum(serialize_all = "lowercase")]
