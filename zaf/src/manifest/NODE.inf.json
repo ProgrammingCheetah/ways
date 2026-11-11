@@ -54,6 +54,6 @@
     "Only [project] and [board] are required; vcs, forge, gate, style and pack are optional and design defaults to kind none",
     "Sections: project, requires, board, vcs, forge, design, style, workspaces, branches, gate, runners, roles, check, ask, spawn, isolation, pack, forbidden",
     "isolation kind container parses and validates, but no adapter acts on it",
-    "Machine-private .zaf/local.toml is not part of this model"
+    "Machine-private .zaf/local.toml is the top layer (layers.rs local_layer): only [spawn] slots and [gate] slot reach the manifest, any other setting is ManifestError::LocalSetting; its [budget], [report.prices] and [auth] tables are dropped here and read by their own readers"
   ]
 }

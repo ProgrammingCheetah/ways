@@ -159,7 +159,7 @@
   ],
   "notes": [
     ".zaf/ file names are constants repeated per module (RUNS_DIR in brief, spawn and adapters::gate; asklog.jsonl in ask and setup)",
-    ".zaf/local.toml is read by guard ([budget]) and report (prices), never by the manifest",
+    ".zaf/local.toml is read by guard ([budget]) and report (prices) as well as by the manifest, which takes only [spawn] slots and [gate] slot from it",
     "Only lean and build profiles ship settings; design and review profiles get none from profile init"
   ]
 }
