@@ -165,6 +165,7 @@ fn write(file: &Path, text: &str) {
 
 fn in_use() -> InUse {
     InUse {
+        now: time(100),
         units: Units::default(),
         e_live: false,
         running_here: 0,

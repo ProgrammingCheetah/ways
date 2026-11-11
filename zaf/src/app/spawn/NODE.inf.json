@@ -100,7 +100,7 @@
     },
     {
       "name": "start.rs",
-      "role": "tick step 6: plan the one model phase to start, the longest ready (or failed wait's on-fail) that fits the budget, and start it without waiting",
+      "role": "tick step 6: plan the one model phase to start, the longest ready (or failed wait's on-fail) that fits the budget, and start it without waiting; a phase ready STARVE_AFTER (30 minutes) that does not fit holds the budget, so no other model phase starts",
       "node": false
     },
     {

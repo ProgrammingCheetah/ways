@@ -1,5 +1,7 @@
 //! `zaf spawn --once --version <v>`: one tick of the spawner.
 //!
+//! With `--no-wait` it does nothing, with exit `0`, while another tick holds `spawn.lock`; a phase's
+//! launcher asks for a tick that way once the phase has ended.
 //! The verb never loops: a timer runs it. It prints the plan, then runs each
 //! planned launch to its exit, all in parallel (one thread each, joined before
 //! the tick returns), and exits `2` when a launch
@@ -27,21 +29,22 @@ use super::slice::VERSION_VAR;
 use crate::adapters::process;
 use crate::app::actions::{
     ActionName, Caller, HOOKS_DIR, MINUTE, Nesting, RunRequest as ActionRequest, RunResult, hook,
-    last_lines, run_hook,
+    last_lines, run_hook_with_input,
 };
 use crate::app::profile;
 use crate::app::spawn::phase::Ports;
 use crate::app::spawn::{
     self, DryLaunch, InUse, LaunchContext, LaunchPorts, Launched, PhaseTask, PhaseTick,
-    PlannedPhase, Prepared, SpawnError, Steps, TEAM_ROLE,
+    PlannedPhase, Prepared, SpawnError, Steps, TEAM_ROLE, TickOutcome,
 };
 use crate::composition::{Composition, STATE_DIR, zaf_home};
 use crate::domain::{Budget, CHALLENGER_ROLE, Instance, RoleName, TicketId};
 use crate::ports::{Board, PortError, RunRequest, e_is_live, live_use};
 
 /// Runs one tick; refuses without `--once` or `--version`. With `dry_run`, launches
-/// nothing and writes nothing.
-pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool) -> u8 {
+/// nothing and writes nothing. With `no_wait`, a tick that finds `spawn.lock` held by another
+/// does nothing and exits `0`: that tick reads the same forge (#421 ruling 25).
+pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool, no_wait: bool) -> u8 {
     let path = cli.verb.path();
     if !once {
         eprintln!("zaf {path}: only one tick at a time; pass --once and let a timer repeat it");
@@ -55,11 +58,41 @@ pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool) -> u8 {
         Ok(composition) => composition,
         Err(error) => return exit::fail_composition(&path, &error),
     };
+    // Before the hook and any forge read: a tick that runs already does what this one would.
+    if no_wait
+        && !dry_run
+        && let Some(code) = skip_if_held(cli, &path, &composition)
+    {
+        return code;
+    }
     // First of all, before any forge read: a hook that fails fails the tick, with nothing started.
     // A dry run is no tick, starts nothing and writes nothing, so it runs no hook either.
     if !dry_run && let Some(code) = pre_tick(&path, &composition, version) {
         return code;
     }
+    // What the tick's own steps did (the model phase started, the waits launched, the `zaf` actions
+    // run, the questions raised): `tick` fills it, and it stays idle when no step ran.
+    let mut outcome = TickOutcome::default();
+    let code = tick(cli, &path, &composition, version, dry_run, &mut outcome);
+    // Last of all, idle ticks and failed ones included; the hook's failure changes nothing, so the
+    // code is the tick's own. A dry run is no tick and runs no hook.
+    if !dry_run {
+        post_tick(&path, &composition, version, &outcome);
+    }
+    code
+}
+
+/// The tick itself, everything between the `pre-tick` hook and the `post-tick` one. What its phase
+/// steps did is written to `outcome`.
+fn tick(
+    cli: &Cli,
+    path: &str,
+    composition: &Composition,
+    version: &str,
+    dry_run: bool,
+    outcome: &mut TickOutcome,
+) -> u8 {
+    let path = path.to_owned();
     let board = match composition.board() {
         Ok(board) => board,
         Err(error) => return exit::fail_composition(&path, &error),
@@ -90,7 +123,7 @@ pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool) -> u8 {
         }
     };
     if dry_run {
-        return dry(cli, &path, &composition, version, &project_env);
+        return dry(cli, &path, composition, version, &project_env);
     }
     // This tick holds each launch it reserves until the runner starts the instance.
     let Some(holder) = process::this() else {
@@ -121,14 +154,16 @@ pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool) -> u8 {
     let phases = if manifest.phases.is_empty() {
         None
     } else {
-        let (tick, phase_code) = phase_tick(&path, &composition, board.as_ref(), &prepared);
+        let (tick, phase_code) = phase_tick(&path, composition, board.as_ref(), &prepared);
         code = code.max(phase_code);
         if !cli.json {
             print!("{}", tick.render_text());
         }
+        // What the `post-tick` hook gets: the tick's own steps, not an empty outcome.
+        *outcome = tick.clone();
         Some(tick)
     };
-    let jobs = jobs(&composition, &prepared, version, &project_env);
+    let jobs = jobs(composition, &prepared, version, &project_env);
     let ports = |role: &RoleName| -> Result<LaunchPorts, PortError> {
         let board = composition
             .board()
@@ -176,10 +211,27 @@ pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool) -> u8 {
         }
         println!("{json}");
     }
-    if let Err(message) = super::report::ingest_ledger(&composition) {
+    if let Err(message) = super::report::ingest_ledger(composition) {
         eprintln!("zaf {path}: warning: {message}");
     }
     code
+}
+
+/// `--no-wait`: `Some(exit)` ends the verb, `None` lets the tick go on. A held lock exits `0`
+/// with nothing done, and a lock that cannot be read is a backend failure, never a guess.
+fn skip_if_held(cli: &Cli, path: &str, composition: &Composition) -> Option<u8> {
+    match spawn::lock_is_held(&composition.state_dir()) {
+        Ok(false) => None,
+        Ok(true) => {
+            if cli.json {
+                println!("{}", serde_json::json!({"skipped": "spawn.lock is held"}));
+            } else {
+                println!("skipped: another tick holds spawn.lock");
+            }
+            Some(OK)
+        }
+        Err(error) => Some(failed(path, &error)),
+    }
 }
 
 /// Runs `zaf do <action> <task>` in this process: the runner the tick hands
@@ -249,7 +301,8 @@ fn phase_tick(
         state_dir: &state_dir,
         alive: &process::alive,
     };
-    let gathered = match spawn::gather(&ports, std::time::SystemTime::now()) {
+    let now = std::time::SystemTime::now();
+    let gathered = match spawn::gather(&ports, now) {
         Ok(gathered) => gathered,
         Err(error) => {
             eprintln!("zaf {path}: the phase steps did not run: {error}");
@@ -261,6 +314,7 @@ fn phase_tick(
     }
     let machine = process::machine();
     let in_use = InUse {
+        now,
         units: live_use(&machine),
         e_live: e_is_live(&machine),
         running_here: machine
@@ -419,15 +473,42 @@ const HOOK_TAIL_LINES: usize = 10;
 /// run (a file not executable, a mode or a manifest `[env]` that refuses it), fails the tick: the
 /// tick does not guess that a hook that did not run did not matter.
 fn pre_tick(path: &str, composition: &Composition, version: &str) -> Option<u8> {
+    run_tick_hook(path, composition, version, "pre-tick", None)
+}
+
+/// The `post-tick` hook (docs/zaf-actions.md §5.1, #421 ruling 12): runs after every tick, idle
+/// ones too, with the tick's outcome as JSON on its stdin. A hook that fails is reported on stderr
+/// as `pre-tick`'s is and changes nothing: the tick's exit code is not read from it.
+fn post_tick(path: &str, composition: &Composition, version: &str, outcome: &TickOutcome) {
+    spawn::post_tick::run(
+        outcome,
+        &mut |input| match run_tick_hook(path, composition, version, "post-tick", Some(input)) {
+            None => Ok(()),
+            Some(code) => Err(format!("exit {code}")),
+        },
+        &mut |line| eprintln!("zaf {path}: {line}"),
+    );
+}
+
+/// Runs the hook of one tick event from the project root, `input` on its stdin when it has any:
+/// `None` when there is no hook or it exited 0, and `Some(BACKEND)` after printing why when it did
+/// not. The caller decides what a failure means.
+fn run_tick_hook(
+    path: &str,
+    composition: &Composition,
+    version: &str,
+    event: &str,
+    input: Option<&str>,
+) -> Option<u8> {
     let root = composition.root();
     let manifest = composition.manifest();
-    let name = format!("{HOOKS_DIR}/pre-tick");
+    let name = format!("{HOOKS_DIR}/{event}");
     let home = match zaf_home().map(std::path::absolute) {
         Some(Ok(home)) => home,
         // With no home there is no machine tier, so the project's hook alone is looked for.
         _ => root.join(STATE_DIR),
     };
-    hook(root, &home, "pre-tick")?;
+    hook(root, &home, event)?;
     let failed = |reason: String| {
         eprintln!("zaf {path}: NOT_RUN {name}: {reason}");
         Some(BACKEND)
@@ -444,7 +525,7 @@ fn pre_tick(path: &str, composition: &Composition, version: &str) -> Option<u8> 
         Ok(env) => env,
         Err(error) => return failed(error.to_string()),
     };
-    let outcome = run_hook(&ActionRequest {
+    let request = ActionRequest {
         name: &name,
         args: &[],
         cwd: root,
@@ -457,7 +538,8 @@ fn pre_tick(path: &str, composition: &Composition, version: &str) -> Option<u8> 
         only: None,
         slice: None,
         env,
-    });
+    };
+    let outcome = run_hook_with_input(&request, input);
     if outcome.result == RunResult::Ok {
         return None;
     }
@@ -612,6 +694,7 @@ mod tests {
             Ok(fake_zaf(dir.path(), "exit 1"))
         };
         let in_use = InUse {
+            now: std::time::UNIX_EPOCH,
             units: crate::domain::Units::default(),
             e_live: false,
             running_here: 0,
@@ -641,6 +724,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("a temporary directory");
         let zaf = || Ok(fake_zaf(dir.path(), "exit 0"));
         let in_use = InUse {
+            now: std::time::UNIX_EPOCH,
             units: crate::domain::Units::default(),
             e_live: false,
             running_here: 0,

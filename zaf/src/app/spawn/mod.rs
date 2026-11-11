@@ -33,7 +33,8 @@
 //! standing of every claimed or ready task whose type has a `[phases]` list from the forge and
 //! the phase run folders, storing none of it, and runs steps 3 to 6 on them in that order into
 //! one outcome. Such a task is the phase steps', so the team plan leaves it out
-//! ([`TaskSkip::Phased`]).
+//! ([`TaskSkip::Phased`]). Step 7 ([`post_tick`]) runs the `post-tick` hook with the whole
+//! outcome as JSON on its stdin.
 //!
 //! A dry run ([`plan_only`] and [`dry_run`]) plans the same tick and describes
 //! each launch it would make, writing nothing: no state, no run folder, no comment.
@@ -47,6 +48,7 @@ pub mod inline;
 pub mod outcome;
 pub mod phase;
 pub mod phase_tick;
+pub mod post_tick;
 pub mod question;
 pub mod runs;
 pub mod start;
@@ -65,7 +67,7 @@ pub use phase_tick::{
 };
 pub use question::{ask_failed_waits, ask_outcome, question_text};
 use runs::Run;
-pub use start::{InUse, PlannedPhase, TaskStanding, start_outcome, start_planned};
+pub use start::{InUse, PlannedPhase, STARVE_AFTER, TaskStanding, start_outcome, start_planned};
 pub use state::{SpawnState, derive, load, save};
 pub use tick::{
     EpicSkip, NOT_BUILT, PLANNING_ROLE, PastLaunch, Plan, PlannedLaunch, Settings, SlotCount,
@@ -271,6 +273,14 @@ pub const SPAWN_LOCK_FILE: &str = "spawn.lock";
 
 /// Takes the spawner's lock, waiting for a tick that holds it; the OS drops it with the file.
 fn lock(state_dir: &Path) -> Result<std::fs::File, SpawnError> {
+    let (file, path) = open_lock(state_dir)?;
+    file.lock()
+        .map(|()| file)
+        .map_err(|source| SpawnError::Write { path, source })
+}
+
+/// The lock file, created when it is missing, and its path; nothing locked yet.
+fn open_lock(state_dir: &Path) -> Result<(std::fs::File, PathBuf), SpawnError> {
     let path = state_dir.join(SPAWN_LOCK_FILE);
     std::fs::create_dir_all(state_dir)
         .and_then(|()| {
@@ -280,8 +290,20 @@ fn lock(state_dir: &Path) -> Result<std::fs::File, SpawnError> {
                 .write(true)
                 .open(&path)
         })
-        .and_then(|file| file.lock().map(|()| file))
+        .map(|file| (file, path.clone()))
         .map_err(|source| SpawnError::Write { path, source })
+}
+
+/// Whether another tick holds the spawner's lock right now, found without waiting for it: the
+/// lock is taken and let go at once when it is free. A tick that takes it between this look and its
+/// own `prepare` is waited for there, as plain `--once` waits (`zaf spawn --once --no-wait`).
+pub fn lock_is_held(state_dir: &Path) -> Result<bool, SpawnError> {
+    let (file, path) = open_lock(state_dir)?;
+    match file.try_lock() {
+        Ok(()) => Ok(false),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(true),
+        Err(std::fs::TryLockError::Error(source)) => Err(SpawnError::Write { path, source }),
+    }
 }
 
 /// The tasks held by the forge's facts or by a running phase, whatever instance claimed them:

@@ -7,7 +7,9 @@
 //! first, #421 rulings 19 and 20), and returns the first that [`Budget::fits`] accepts at its
 //! size, with `units` its [`Budget::cost`] (#421 ruling 14). An item passed for
 //! [`Fit::NoBudget`] or [`Fit::NoFreeSlot`] keeps its weight: nothing is stored, so the next
-//! tick orders it by the same `since` and it comes first again once it fits.
+//! tick orders it by the same `since` and it comes first again once it fits. One that has been
+//! ready for [`STARVE_AFTER`] and still does not fit is starved (the starvation rule of #419,
+//! #421 ruling 20): no other model phase starts while it is, so the budget frees up for it.
 //!
 //! [`plan`] is pure: the caller hands in the standings, what the fit rule reads of the machine
 //! ([`InUse`]) and the budget. [`start_planned`] hands the planned phase to a `start` the caller
@@ -15,10 +17,17 @@
 //! in [`TickOutcome::started`]. A wait, a `zaf`-kind action and a failed wait with no `on-fail`
 //! are other steps' ([`super::inline`], [`super::question`]).
 
+use std::time::{Duration, SystemTime};
+
 use super::inline::TickTask;
 use super::outcome::{Started, TickOutcome};
 use crate::app::actions::{ActionKind, ActionName, ListedPhase, Standing, derive_standing};
 use crate::domain::{Budget, Fit, MEBIBYTES_PER_UNIT, TaskSize, TicketId, Units};
+
+/// How long a model phase may be ready, passed over, before it holds the budget: 30 minutes,
+/// the starvation rule of #419. A constant and not a setting, since the budget it holds is the
+/// machine's.
+pub const STARVE_AFTER: Duration = Duration::from_secs(30 * 60);
 
 /// One task as the plan reads it: its size, its type's phase list and where it stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,7 +55,7 @@ impl TaskStanding {
 
     /// The model action the task may start and how long it has waited: its `Ready` action when
     /// that is model-kind, or the `on-fail` of its failed wait.
-    fn model_item(&self) -> Option<(ActionName, std::time::SystemTime)> {
+    fn model_item(&self) -> Option<(ActionName, SystemTime)> {
         match &self.standing {
             Standing::Ready { action, since } => self
                 .list
@@ -64,9 +73,12 @@ impl TaskStanding {
 }
 
 /// What the fit rule reads of the machine and the project on this tick, besides the budget:
-/// the live use of #472, whether an E is live, and the project's running count and slots.
+/// the time of the tick, the live use of #472, whether an E is live, and the project's running
+/// count and slots.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InUse {
+    /// The time of the tick: a phase ready for [`STARVE_AFTER`] before it is starved.
+    pub now: SystemTime,
     /// The live use of the machine, `ports::live_use` of the live instances.
     pub units: Units,
     /// Whether an instance with `ZAF_SIZE=E` is live, `ports::e_is_live`.
@@ -99,9 +111,12 @@ fn whole_units(cost: Units) -> u32 {
 /// The `Ready` model phases and the failed waits with an `on-fail` are ordered by how long each
 /// has been ready, the earliest `since` first; items with the same `since` keep the order of
 /// `standings`. The first for which [`Budget::fits`] is [`Fit::Fits`] at the size of its task is
-/// returned with `units` its cost at that size; none when nothing fits.
+/// returned with `units` its cost at that size; none when nothing fits. An item that does not
+/// fit and has been ready [`STARVE_AFTER`] or more before `in_use.now` is starved: the walk
+/// stops there and returns none, so no smaller phase starts until it fits. A younger one that
+/// does not fit is passed.
 pub fn plan(standings: &[TaskStanding], in_use: &InUse, budget: &Budget) -> Option<PlannedPhase> {
-    let mut items: Vec<(&TaskStanding, ActionName, std::time::SystemTime)> = standings
+    let mut items: Vec<(&TaskStanding, ActionName, SystemTime)> = standings
         .iter()
         .filter_map(|standing| {
             let (action, since) = standing.model_item()?;
@@ -109,7 +124,7 @@ pub fn plan(standings: &[TaskStanding], in_use: &InUse, budget: &Budget) -> Opti
         })
         .collect();
     items.sort_by_key(|(_, _, since)| *since);
-    items.into_iter().find_map(|(standing, action, _)| {
+    for (standing, action, since) in items {
         let fit = budget.fits(
             in_use.units,
             in_use.e_live,
@@ -117,12 +132,25 @@ pub fn plan(standings: &[TaskStanding], in_use: &InUse, budget: &Budget) -> Opti
             in_use.running_here,
             in_use.slots,
         );
-        (fit == Fit::Fits).then(|| PlannedPhase {
-            task: standing.task,
-            action,
-            units: whole_units(budget.cost(standing.size)),
-        })
-    })
+        if fit == Fit::Fits {
+            return Some(PlannedPhase {
+                task: standing.task,
+                action,
+                units: whole_units(budget.cost(standing.size)),
+            });
+        }
+        if starved(since, in_use.now) {
+            return None;
+        }
+    }
+    None
+}
+
+/// Whether a phase ready since `since` is starved at `now`: ready [`STARVE_AFTER`] or more. A
+/// `since` after `now`, a clock that stepped back, is not.
+fn starved(since: SystemTime, now: SystemTime) -> bool {
+    now.duration_since(since)
+        .is_ok_and(|ready_for| ready_for >= STARVE_AFTER)
 }
 
 /// Plans the tick's model phase and starts it: `start(&planned)` launches it detached and
