@@ -149,7 +149,8 @@ pub fn event_of(verb: &Verb) -> Option<Event> {
             // A heartbeat on the ticket and a listing change nothing the hub shows.
             super::BoardAction::Ready
             | super::BoardAction::Report { .. }
-            | super::BoardAction::Handoff { .. } => None,
+            | super::BoardAction::Handoff { .. }
+            | super::BoardAction::Lint { .. } => None,
         },
         Verb::Slice { action } => match action {
             super::SliceAction::Open { task } => Event::done(*task, "slice opened"),

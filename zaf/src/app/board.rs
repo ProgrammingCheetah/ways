@@ -1,9 +1,10 @@
-//! `zaf board ready|claim|report|handoff|question|ruling|done|file`: reading and writing the
-//! board, and the hand-off on a task's pull request.
+//! `zaf board ready|claim|report|handoff|question|ruling|done|file|lint`: reading and writing
+//! the board, and the hand-off on a task's pull request.
 
 use crate::app::actions::{Phase, PhaseUnreadable, SliceRecords, derive_phase, gather_phase_facts};
 use crate::domain::{
-    Instance, NewTask, TaskTemplateError, Ticket, TicketId, TicketState, TicketType,
+    Instance, NewTask, TaskProblem, TaskTemplate, TaskTemplateError, Ticket, TicketId, TicketState,
+    TicketType,
 };
 use crate::ports::{Board, ClaimOutcome, Forge, NewQuestion, PortError, PrNumber, Vcs};
 
@@ -72,6 +73,13 @@ fn list(numbers: &[TicketId]) -> String {
 /// `zaf board ready`: the tasks open for a claim, in issue order.
 pub fn ready(board: &dyn Board) -> Result<Vec<Ticket>, BoardError> {
     Ok(board.ready()?)
+}
+
+/// `zaf board lint`: every problem the body of a task has against the template; none when it
+/// parses. A task the board cannot read is an error, not a clean body.
+pub fn lint(board: &dyn Board, issue: TicketId) -> Result<Vec<TaskProblem>, BoardError> {
+    let ticket = board.task(issue)?;
+    Ok(TaskTemplate::problems(ticket.body.as_str()))
 }
 
 /// The command `zaf board claim` runs.

@@ -41,7 +41,9 @@ pub use tick::{
 };
 
 use super::guard::{GUARD_FILE, Level};
-use crate::domain::{CHALLENGER_ROLE, Instance, Profile, RoleName, TaskSize, TicketId};
+use crate::domain::{
+    CHALLENGER_ROLE, Instance, Profile, RoleName, TaskProblem, TaskSize, TaskTemplate, TicketId,
+};
 use crate::manifest::{Manifest, ManifestError};
 use crate::ports::{
     Board, ClaimRecord, Holder, NewQuestion, PortError, RUN_VAR, RunRequest, Runner, SIZE_VAR,
@@ -173,6 +175,19 @@ pub fn snapshot(board: &dyn Board, runs: &[Run]) -> Result<Snapshot, PortError> 
         .iter()
         .filter_map(|question| NewQuestion::raised_on(question.body.as_str()))
         .collect();
+    let unparsed = ready
+        .iter()
+        .filter_map(|ticket| {
+            let problems = TaskTemplate::problems(ticket.body.as_str());
+            let mut fields: Vec<String> = Vec::new();
+            for name in problems.iter().map(TaskProblem::name) {
+                if !fields.contains(&name) {
+                    fields.push(name);
+                }
+            }
+            (!fields.is_empty()).then_some((ticket.id, fields))
+        })
+        .collect();
     Ok(Snapshot {
         ready,
         claimed,
@@ -181,6 +196,7 @@ pub fn snapshot(board: &dyn Board, runs: &[Run]) -> Result<Snapshot, PortError> 
         dead: found.dead,
         epics: board.epics()?,
         questioned,
+        unparsed,
         launched: runs.iter().filter_map(past_launch).collect(),
     })
 }
@@ -805,6 +821,7 @@ impl Plan {
                     TaskSkip::Claimed => ("claimed", serde_json::Value::Null),
                     TaskSkip::Running(instance) => ("running", serde_json::json!(instance)),
                     TaskSkip::NoEpic => ("no_epic", serde_json::Value::Null),
+                    TaskSkip::DoesNotParse(fields) => ("does_not_parse", serde_json::json!(fields)),
                 };
                 serde_json::json!({ "task": task.get(), "reason": reason, "detail": detail })
             })
@@ -866,6 +883,7 @@ impl Plan {
             TaskSkip::Claimed => "claimed".to_owned(),
             TaskSkip::Running(instance) => format!("carried by {instance}"),
             TaskSkip::NoEpic => "no open epic".to_owned(),
+            TaskSkip::DoesNotParse(fields) => format!("does not parse: {}", fields.join(", ")),
         }
     }
 }

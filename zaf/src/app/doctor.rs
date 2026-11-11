@@ -263,6 +263,9 @@ pub struct Report {
     /// One entry per generated profile that carries the pack, when the manifest has a `[pack]`;
     /// a stale or a missing pack fails the report.
     pub packs: Vec<PackCheck>,
+    /// One entry per generated profile older than the manifest or zaf, or with no stamp;
+    /// any fails the report, as `zaf spawn` refuses it.
+    pub stale: Vec<profile::StaleProfile>,
     /// One entry per action either tier provides, in name order; an invalid one fails the report.
     pub actions: Vec<ActionCheck>,
     /// Why the actions folders could not be read, when they could not; it fails the report.
@@ -277,6 +280,7 @@ impl Report {
     pub fn passed(&self) -> bool {
         self.tools.iter().all(|check| check.status.is_ok())
             && self.packs.iter().all(|check| check.ok)
+            && self.stale.is_empty()
             && self.actions.iter().all(|check| check.ok)
             && self.actions_error.is_none()
             && self.needed.iter().all(|check| check.ok)
@@ -303,6 +307,7 @@ impl Report {
         lines.push(self.actions_dir.line());
         lines.extend(self.logins.iter().map(LoginCheck::line));
         lines.extend(self.packs.iter().map(PackCheck::line));
+        lines.extend(self.stale.iter().map(profile::StaleProfile::line));
         lines.extend(self.actions.iter().flat_map(ActionCheck::lines));
         lines.extend(self.actions_error.clone());
         lines.extend(self.needed.iter().flat_map(NeededCheck::lines));
@@ -575,6 +580,7 @@ pub fn doctor_with(
         actions_dir,
         logins: logins(root, manifest, commands, claude_home, now),
         packs: packs(root, manifest),
+        stale: profile::stale_homes(&root.join(STATE_DIR), manifest),
         actions,
         actions_error,
         needed,

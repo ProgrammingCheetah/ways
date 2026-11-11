@@ -6,6 +6,8 @@
 //! could not be recorded or its runner could not run. Each launch runs the
 //! `team` role through [`Composition::runner_for_role`], inside its profile.
 //! The tick ends by filling the ledger; a ledger failure warns and leaves the exit code.
+//! A generated profile older than the manifest or zaf, or with no stamp, refuses the tick (and
+//! the dry run) before it plans anything: it exits `1` and names the profile.
 //! With `--dry-run` it prints the plan and, per launch, the instance, the epic,
 //! the tasks, the profile, the environment and the command line, and stops there.
 
@@ -16,6 +18,7 @@ use super::board::INSTANCE_VAR;
 use super::exit::{self, BACKEND, OK, REFUSED};
 use super::slice::VERSION_VAR;
 use crate::adapters::process;
+use crate::app::profile;
 use crate::app::spawn::{
     self, DryLaunch, LaunchContext, LaunchPorts, Launched, Prepared, SpawnError, TEAM_ROLE,
 };
@@ -51,6 +54,15 @@ pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool) -> u8 {
     }
     let manifest = composition.manifest();
     let state_dir = composition.state_dir();
+    // Before anything is planned or reserved, dry run included: a profile made from an older
+    // manifest runs its instances with yesterday's deny list.
+    let stale = profile::stale(&state_dir, manifest);
+    if !stale.is_empty() {
+        for profile in &stale {
+            eprintln!("zaf {path}: {}", profile.line());
+        }
+        return REFUSED;
+    }
     // Resolved before anything is reserved, so a bad table holds no slot.
     let project_env = match spawn::manifest_env(manifest, composition.root(), version) {
         Ok(env) => env,

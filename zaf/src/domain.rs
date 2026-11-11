@@ -12,6 +12,7 @@ mod instance;
 mod labels;
 mod profile;
 mod quote;
+mod slot;
 mod task;
 mod text;
 mod ticket;
@@ -32,7 +33,10 @@ pub use instance::{Instance, InstanceNumber, RoleName};
 pub use labels::{PageStatus, TicketState};
 pub use profile::Profile;
 pub use quote::Quote;
-pub use task::{SecurityTrigger, TaskField, TaskModel, TaskSize, TaskTemplate, TaskTemplateError};
+pub use slot::{SLOTS_DIR, SlotRecord};
+pub use task::{
+    SecurityTrigger, TaskField, TaskModel, TaskProblem, TaskSize, TaskTemplate, TaskTemplateError,
+};
 pub use ticket::{
     DEFAULT_TASK_TYPE, NewTask, Standing, Ticket, TicketBody, TicketSummary, TicketTitle,
     TicketType, TicketUrl,
