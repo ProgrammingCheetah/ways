@@ -122,6 +122,9 @@ pub enum Verb {
         /// Plan the tick and print each launch's command line; launch nothing, write nothing.
         #[arg(long)]
         dry_run: bool,
+        /// With `--once`: exit 0 at once, doing nothing, when another tick holds `spawn.lock`.
+        #[arg(long, requires = "once")]
+        no_wait: bool,
     },
     /// The ask log: top pages, recurring questions, gaps.
     Asklog,
@@ -493,7 +496,8 @@ fn run_verb(cli: &Cli) -> u8 {
             once,
             version,
             dry_run,
-        } => spawn::run(cli, *once, version.as_deref(), *dry_run),
+            no_wait,
+        } => spawn::run(cli, *once, version.as_deref(), *dry_run, *no_wait),
         Verb::Profile { action } => profile::run(cli, action),
         Verb::Do(args) => do_action::run(cli, args),
         Verb::Hub { action, port } => hub::run(cli, action.as_ref(), *port),

@@ -1,5 +1,7 @@
 //! `zaf spawn --once --version <v>`: one tick of the spawner.
 //!
+//! With `--no-wait` it does nothing, with exit `0`, while another tick holds `spawn.lock`; a phase's
+//! launcher asks for a tick that way once the phase has ended.
 //! The verb never loops: a timer runs it. It prints the plan, then runs each
 //! planned launch to its exit, all in parallel (one thread each, joined before
 //! the tick returns), and exits `2` when a launch
@@ -33,8 +35,9 @@ use crate::domain::{CHALLENGER_ROLE, Instance, RoleName, TicketId};
 use crate::ports::{PortError, RunRequest};
 
 /// Runs one tick; refuses without `--once` or `--version`. With `dry_run`, launches
-/// nothing and writes nothing.
-pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool) -> u8 {
+/// nothing and writes nothing. With `no_wait`, a tick that finds `spawn.lock` held by another
+/// does nothing and exits `0`: that tick reads the same forge (#421 ruling 25).
+pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool, no_wait: bool) -> u8 {
     let path = cli.verb.path();
     if !once {
         eprintln!("zaf {path}: only one tick at a time; pass --once and let a timer repeat it");
@@ -48,6 +51,13 @@ pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool) -> u8 {
         Ok(composition) => composition,
         Err(error) => return exit::fail_composition(&path, &error),
     };
+    // Before the hook and any forge read: a tick that runs already does what this one would.
+    if no_wait
+        && !dry_run
+        && let Some(code) = skip_if_held(cli, &path, &composition)
+    {
+        return code;
+    }
     // First of all, before any forge read: a hook that fails fails the tick, with nothing started.
     // A dry run is no tick, starts nothing and writes nothing, so it runs no hook either.
     if !dry_run && let Some(code) = pre_tick(&path, &composition, version) {
@@ -159,6 +169,23 @@ pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool) -> u8 {
         eprintln!("zaf {path}: warning: {message}");
     }
     code
+}
+
+/// `--no-wait`: `Some(exit)` ends the verb, `None` lets the tick go on. A held lock exits `0`
+/// with nothing done, and a lock that cannot be read is a backend failure, never a guess.
+fn skip_if_held(cli: &Cli, path: &str, composition: &Composition) -> Option<u8> {
+    match spawn::lock_is_held(&composition.state_dir()) {
+        Ok(false) => None,
+        Ok(true) => {
+            if cli.json {
+                println!("{}", serde_json::json!({"skipped": "spawn.lock is held"}));
+            } else {
+                println!("skipped: another tick holds spawn.lock");
+            }
+            Some(OK)
+        }
+        Err(error) => Some(failed(path, &error)),
+    }
 }
 
 /// Runs `zaf do <action> <task>` in this process: the runner the tick hands
