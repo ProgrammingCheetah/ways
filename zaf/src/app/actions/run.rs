@@ -372,7 +372,7 @@ pub fn read_action(
 pub fn run_action(request: &RunRequest<'_>) -> RunOutcome {
     forget_records(
         request,
-        keep_hand_back(request, run_body(request, find_action_of)),
+        keep_hand_back(request, run_body(request, find_action_of, None)),
     )
 }
 
@@ -382,7 +382,13 @@ pub fn run_action(request: &RunRequest<'_>) -> RunOutcome {
 /// ends with a line that holds the exit code, so the log alone says how the hook ended. A hook
 /// leaves no slice record to keep or forget.
 pub fn run_hook(request: &RunRequest<'_>) -> RunOutcome {
-    let outcome = run_body(request, find_hook_of);
+    run_hook_with_input(request, None)
+}
+
+/// [`run_hook`] with `input` on the hook's stdin, for a hook that is told something (`post-phase`
+/// gets the phase's outcome). A hook that does not read it is no error.
+pub fn run_hook_with_input(request: &RunRequest<'_>, input: Option<&str>) -> RunOutcome {
+    let outcome = run_body(request, find_hook_of, input);
     if let Some(log) = &outcome.log {
         let line = match outcome.result {
             RunResult::Ok | RunResult::Fail => {
@@ -426,9 +432,9 @@ fn find_action_of(request: &RunRequest<'_>) -> Result<Option<Resolved>, ResolveE
 }
 
 /// The run itself: the body from start to end, nothing kept of it.
-fn run_body(request: &RunRequest<'_>, lookup: Lookup) -> RunOutcome {
+fn run_body(request: &RunRequest<'_>, lookup: Lookup, input: Option<&str>) -> RunOutcome {
     let started_at = Instant::now();
-    let started = match start(request, lookup) {
+    let started = match start(request, lookup, input) {
         Ok(started) => started,
         Err(refused) => return RunOutcome::not_run(request.name, refused.tier, refused.reason),
     };
@@ -514,7 +520,11 @@ impl Refused {
 
 /// Everything up to a running body: the guard, the file, what it shadows, its metadata, its mode,
 /// the log, the start.
-fn start(request: &RunRequest<'_>, lookup: Lookup) -> Result<Started, Refused> {
+fn start(
+    request: &RunRequest<'_>,
+    lookup: Lookup,
+    input: Option<&str>,
+) -> Result<Started, Refused> {
     let RunRequest { name, nesting, .. } = request;
     if nesting.above >= MAX_DEPTH {
         return Err(Refused::before_the_file(format!(
@@ -562,11 +572,12 @@ fn start(request: &RunRequest<'_>, lookup: Lookup) -> Result<Started, Refused> {
     // A hook's name has a slash, which no log's name may.
     let (log, log_file) = open_log(&logs_dir(request), &name.replace(['/', '\\'], "_"))
         .map_err(|error| refused(format!("cannot open a log: {error}")))?;
-    let child = spawn_body(request, &found.path, &log, log_file, &slice_env).map_err(|error| {
-        // Nothing ran, so nothing is left to read: no empty log beside the real ones.
-        let _ = fs::remove_file(&log);
-        refused(format!("cannot start {}: {error}", found.path.display()))
-    })?;
+    let child =
+        spawn_body(request, &found.path, &log, log_file, &slice_env, input).map_err(|error| {
+            // Nothing ran, so nothing is left to read: no empty log beside the real ones.
+            let _ = fs::remove_file(&log);
+            refused(format!("cannot start {}: {error}", found.path.display()))
+        })?;
     Ok(Started {
         child,
         tier: found.tier,
@@ -742,14 +753,15 @@ fn open_log(dir: &Path, name: &str) -> io::Result<(PathBuf, File)> {
     }
 }
 
-/// Starts the file in a process group of its own, its output in the log and nothing on stdin:
-/// no one can answer a prompt whose question went to a file.
+/// Starts the file in a process group of its own, its output in the log and nothing on stdin, bar
+/// the `input` a hook is told: no one can answer a prompt whose question went to a file.
 fn spawn_body(
     request: &RunRequest<'_>,
     file: &Path,
     log: &Path,
     log_file: File,
     slice_env: &SliceEnv,
+    input: Option<&str>,
 ) -> io::Result<Child> {
     let RunRequest { name, nesting, .. } = request;
     let mut command = Command::new(file);
@@ -762,7 +774,11 @@ fn spawn_body(
         .env(DEPTH_VAR, nesting.above.to_string())
         .env(CHAIN_VAR, chain_with(nesting, name))
         .env(LOG_VAR, log)
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::from(log_file.try_clone()?))
         .stderr(Stdio::from(log_file))
         .process_group(0);
@@ -781,9 +797,18 @@ fn spawn_body(
                 tries += 1;
                 thread::sleep(BUSY_WAIT);
             }
-            other => return other,
+            other => return other.map(|child| told(child, input)),
         }
     }
+}
+
+/// Writes `input` to the child's stdin and closes it. A child that has gone, or never reads, has
+/// closed its end: that is its business, and the write's error is dropped.
+fn told(mut child: Child, input: Option<&str>) -> Child {
+    if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+        let _ = stdin.write_all(input.as_bytes());
+    }
+    child
 }
 
 /// Puts the manifest's `[env]` on `command`, on top of the inherited environment: a name in the

@@ -311,6 +311,27 @@ pub fn record_exit(run_dir: &Path, code: i32) -> Result<(), String> {
         .map_err(|source| format!("cannot write {}: {source}", path.display()))
 }
 
+/// The file of a phase run folder that holds what a failed `post-phase` hook said.
+pub const POST_PHASE_LOG: &str = "post-phase.log";
+
+/// What the `post-phase` hook gets on stdin (ruling 21): one JSON object naming the task, the
+/// phase's action and the exit code the launcher recorded.
+pub fn post_phase_input(task: TicketId, action: &ActionName, code: i32) -> String {
+    let action = serde_json::Value::from(action.as_str()).to_string();
+    format!(
+        "{{\"task\": {}, \"action\": {action}, \"exit\": {code}}}\n",
+        task.get()
+    )
+}
+
+/// Logs a failed `post-phase` hook in the run folder, as its `post-phase.log`. It is all the
+/// failure changes: the exit code and the standing are not touched.
+pub fn record_hook_failure(run_dir: &Path, text: &str) -> Result<(), String> {
+    let path = run_dir.join(POST_PHASE_LOG);
+    std::fs::write(&path, text)
+        .map_err(|source| format!("cannot write {}: {source}", path.display()))
+}
+
 /// What a launcher does when its child has ended with `code`: records the exit first, then runs
 /// `after`, the steps that follow (post-phase, the tick's ask). A record that fails is returned,
 /// and `after` still runs, since a failed write must not swallow the phase's end.
