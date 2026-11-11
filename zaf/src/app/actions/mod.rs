@@ -23,8 +23,9 @@ pub use metadata::{
 };
 pub use phase::{
     CheckResult, ListedPhase, PHASES_DIR, Phase, PhaseFacts, PhaseRun, PhaseUnreadable, PrFacts,
-    PullFacts, ReviewFact, RunExit, Standing, StandingFacts, StandingUnreadable, WorkspaceFacts,
-    derive_phase, derive_standing, gather_phase_facts, gather_standing_facts,
+    PullFacts, ReviewFact, RunExit, Standing, StandingFacts, StandingUnreadable, WaitFailure,
+    WorkspaceFacts, derive_phase, derive_standing, gather_phase_facts, gather_standing_facts,
+    wait_failure,
 };
 pub use records::{SliceRecords, hand_back};
 pub use resolve::{
