@@ -243,7 +243,7 @@ pub struct EpicCandidate {
 }
 
 /// The epic launches the tick may start this tick, each as an [`EpicCandidate`]: the epics
-/// [`next_launch`] gives planning or the challenger. A team launch is not one (it is #449's),
+/// `next_launch` gives planning or the challenger. A team launch is not one (it is #449's),
 /// and an epic held by a question, a running instance or a launch already made is none.
 pub fn epic_candidates(snapshot: &Snapshot, state: &SpawnState) -> Vec<EpicCandidate> {
     let running = state.running_instances();

@@ -88,6 +88,9 @@ pub const EPIC_SIZE: TaskSize = TaskSize::XS;
 
 /// The one model a tick plans to start: a task's phase or an epic's launch,
 /// `PlannedModel { Phase { task, action, units } | Epic { epic, role, units } }`.
+///
+/// It is what `PlannedPhase` was before the epic launches joined the order: `plan()` returns at
+/// most one, each epic launch an [`EpicCandidate { epic, role, since }`](EpicCandidate).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlannedModel {
     /// A model phase of a task.
