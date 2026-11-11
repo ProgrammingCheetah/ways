@@ -45,6 +45,7 @@ fn at_merge(task: u64) -> TickTask {
                 merged_at: None,
                 head: Some("head".to_owned()),
                 checks: Vec::new(),
+                failed_checks: Vec::new(),
                 reviews: vec![ReviewFact {
                     head: Some("head".to_owned()),
                     posted_at: time(30),
