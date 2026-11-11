@@ -1282,3 +1282,88 @@ fn each_role_has_its_pack_brief() {
     }
     assert!(PLANNING_BRIEF.contains("zaf board file <epic>"));
 }
+
+/// A task claimed by instance 1, which dies with the first tick (pid 100): the claim is left to
+/// the tests to judge. Returns the state folder, the board and the claimed task.
+fn claimed_by_a_dead_instance(dir: &Path) -> (PathBuf, FakeBoard, TicketId) {
+    let state_dir = dir.join(".zaf");
+    let board = board();
+    prepare(&board, &state_dir, &manifest(), &|_| true, &holder(100)).expect("first tick");
+    let task = TicketId::from(3);
+    board.claim(task, &instance(1, 2)).expect("claims #3");
+    (state_dir, board, task)
+}
+
+/// Records a phase process of `task` held by `pid`, as the launcher does (#437).
+fn phase_runs(state_dir: &Path, task: TicketId, pid: u32) {
+    let run = state_dir.join("phases").join("implement-1");
+    std::fs::create_dir_all(&run).expect("run folder");
+    std::fs::write(run.join("task"), task.get().to_string()).expect("task");
+    std::fs::write(run.join("action"), "implement").expect("action");
+    std::fs::write(run.join("pid"), format!("{}\n", holder(pid))).expect("pid");
+}
+
+#[test]
+fn a_task_with_a_pr_is_held_by_the_forge() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (state_dir, board, task) = claimed_by_a_dead_instance(dir.path());
+    std::fs::create_dir_all(state_dir.join("slices")).expect("slices");
+    std::fs::write(state_dir.join("slices").join("3.pr"), "42").expect("pr record");
+
+    let table = |held: &Holder| held.pid != 100;
+    let screen = status::status(&board, &state_dir, 2, &table).expect("status");
+    assert!(screen.orphaned.is_empty(), "{:?}", screen.orphaned);
+    assert_eq!(screen.claimed.len(), 1);
+
+    let second = prepare(&board, &state_dir, &manifest(), &table, &tick()).expect("second tick");
+    assert!(second.released.is_empty(), "{:?}", second.released);
+    let claims = board.claims().expect("claims");
+    assert_eq!(claims.len(), 1, "the claim stays until the task is done");
+    assert_eq!(claims[0].task, task);
+}
+
+#[test]
+fn a_running_phase_holds_its_task() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (state_dir, board, task) = claimed_by_a_dead_instance(dir.path());
+    phase_runs(&state_dir, task, 777);
+
+    let table = |held: &Holder| held.pid != 100;
+    let screen = status::status(&board, &state_dir, 2, &table).expect("status");
+    assert!(screen.orphaned.is_empty(), "{:?}", screen.orphaned);
+
+    let second = prepare(&board, &state_dir, &manifest(), &table, &tick()).expect("second tick");
+    assert!(second.released.is_empty(), "{:?}", second.released);
+    assert_eq!(board.claims().expect("claims").len(), 1);
+
+    // The phase process is gone with no pull request: nothing holds the task any more.
+    let gone = |held: &Holder| held.pid != 100 && held.pid != 777;
+    let third = prepare(&board, &state_dir, &manifest(), &gone, &tick()).expect("third tick");
+    assert_eq!(third.released.len(), 1, "{:?}", third.released);
+    assert_eq!(third.released[0].task, task);
+}
+
+#[test]
+fn a_bare_orphan_is_still_released() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (state_dir, board, task) = claimed_by_a_dead_instance(dir.path());
+    // Another task's pull request and another task's phase hold nothing of #3.
+    std::fs::create_dir_all(state_dir.join("slices")).expect("slices");
+    std::fs::write(state_dir.join("slices").join("4.pr"), "43").expect("pr record");
+    phase_runs(&state_dir, TicketId::from(4), 777);
+
+    let table = |held: &Holder| held.pid != 100;
+    let screen = status::status(&board, &state_dir, 2, &table).expect("status");
+    assert_eq!(screen.orphaned.len(), 1);
+    assert_eq!(screen.orphaned[0].task, task.get());
+
+    let second = prepare(&board, &state_dir, &manifest(), &table, &tick()).expect("second tick");
+    assert_eq!(
+        second.released,
+        [Released {
+            task,
+            instance: instance(1, 2),
+        }]
+    );
+    assert!(board.claims().expect("claims").is_empty());
+}

@@ -4,7 +4,8 @@
 //! questions. The run folders and the process table give what is running: an instance runs
 //! while the process recorded in its run folder does, so one that died frees its slot at
 //! once, with no tick in between. A claim held by an instance that no longer runs is shown
-//! as orphaned, not claimed: the next tick releases it. The guard line is whatever
+//! as orphaned, not claimed: the next tick releases it, unless its task has a recorded pull request
+//! or a running phase, which hold it ([`spawn::held`]). The guard line is whatever
 //! `zaf guard` last wrote. The machine line counts every live zaf instance on the machine,
 //! from any project, as the process table reads it when asked ([`Status::with_machine`]);
 //! the budget line sets that use against the zaf home's `[spawn] budget`
@@ -244,14 +245,19 @@ fn read_spawn_state(
     state_dir: &Path,
     alive: &dyn Fn(&Holder) -> bool,
 ) -> Result<(spawn::SpawnState, Vec<spawn::runs::Run>), StatusError> {
-    spawn::derive(state_dir, alive).map_err(|error| match error {
+    spawn::derive(state_dir, alive).map_err(spawn_error)
+}
+
+/// A spawner read's failure as the screen's.
+fn spawn_error(error: spawn::SpawnError) -> StatusError {
+    match error {
         spawn::SpawnError::Read { path, reason } => StatusError::SpawnState { path, reason },
         spawn::SpawnError::Write { path, source } => StatusError::SpawnState {
             path,
             reason: source.to_string(),
         },
         spawn::SpawnError::Port(error) => StatusError::Board(error),
-    })
+    }
 }
 
 /// Reads the board, the run folders and `guard.json` into one screen; `alive` says whether a
@@ -293,7 +299,8 @@ pub fn status(
         }
     }
     let claims = board.claims()?;
-    let orphaned_claims = spawn::orphaned(&claims, &runs, alive);
+    let held = spawn::held(state_dir, alive).map_err(spawn_error)?;
+    let orphaned_claims = spawn::orphaned(&claims, &runs, alive, &held);
     let claim_line = |claim: &ClaimRecord| ClaimLine {
         task: claim.task.get(),
         instance: claim.instance.to_string(),
