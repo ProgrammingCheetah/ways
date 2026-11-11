@@ -328,14 +328,17 @@ fn assert_not_run_in(project: &Project, phase: &str) -> String {
 
 #[test]
 fn slices_have_valid_metadata() {
-    for name in ["slice-open", "slice-pr", "slice-merge", "slice-drop"] {
+    // The group of each: team and release, and the phase roles of the actions that call it (the
+    // ruling on #518): implement and fix open and publish a slice, merge lands one.
+    for (name, group) in [
+        ("slice-open", "# zaf group: team, release, implement, fix"),
+        ("slice-pr", "# zaf group: team, release, implement, fix"),
+        ("slice-merge", "# zaf group: team, release, merge"),
+        ("slice-drop", "# zaf group: team, release"),
+    ] {
         let text = action_text(name);
-        // The header zaf reads: a description, a team and release group, a task target.
-        for line in [
-            "# zaf mode: 750",
-            "# zaf group: team, release",
-            "# zaf target: task",
-        ] {
+        // The header zaf reads: a description, the group, a task target.
+        for line in ["# zaf mode: 750", group, "# zaf target: task"] {
             assert!(text.lines().any(|found| found == line), "{name}: {line}");
         }
         assert!(
@@ -345,10 +348,11 @@ fn slices_have_valid_metadata() {
         );
     }
     // The phases each runs in: open before the slice exists; the other two from `build`, which a
-    // failed task check keeps (ruling 26), and drop also once done.
+    // failed task check keeps (ruling 26), and drop also once done. `slice-pr` also runs in
+    // `publish`, where the `fix` phase finds a task whose CI failed before any `check pr` ran.
     for (name, phases) in [
         ("slice-open", "# zaf phases: claim"),
-        ("slice-pr", "# zaf phases: build, check, review"),
+        ("slice-pr", "# zaf phases: build, check, publish, review"),
         ("slice-merge", "# zaf phases: land"),
         ("slice-drop", "# zaf phases: build, check, done"),
     ] {
@@ -873,7 +877,7 @@ fn slice_pr_runs_from_build() {
     let (code, text) = action(&project, &["slice-pr", "2"]);
     assert_eq!(code, 125, "{text}");
     assert!(
-        text.contains("2 is in claim, not build, check, review"),
+        text.contains("2 is in claim, not build, check, publish, review"),
         "{text}"
     );
     assert!(

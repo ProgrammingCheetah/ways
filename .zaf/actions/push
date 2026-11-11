@@ -3,7 +3,7 @@
 # zaf 1: refused: uncommitted work, a backward or sideways move of the bookmark, a remote with work the slice lacks, no workspace for the slice, or a slice name that is not a workspace path
 # zaf 2: a backend failed (jj is missing or refused)
 # zaf mode: 750
-# zaf group: team, release
+# zaf group: team, release, implement, fix, merge
 slice=$1
 
 if [ -z "$ZAF_ROOT" ] || [ "$#" -ne 1 ]; then

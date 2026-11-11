@@ -3,7 +3,7 @@
 # zaf 1: refused: the arguments are not <slice> <base> <title> <body>, or the slice or base is not a usable branch name
 # zaf 2: a backend failed (gh is missing or refused, or printed no pull request number)
 # zaf mode: 750
-# zaf group: team, release
+# zaf group: team, release, implement, fix
 slice=$1
 base=$2
 title=$3

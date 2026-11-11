@@ -3,7 +3,7 @@
 # zaf 1: refused: the slice name leaves the workspaces directory
 # zaf 2: a backend failed (jj is missing or refused, or the directory could not be removed)
 # zaf mode: 750
-# zaf group: team, release
+# zaf group: team, release, merge
 slice=$1
 
 if [ -z "$ZAF_ROOT" ] || [ "$#" -ne 1 ]; then

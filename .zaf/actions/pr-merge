@@ -3,7 +3,7 @@
 # zaf 1: refused: the arguments are not <pr> [--squash] [--match-head-commit <sha>], the pull request is closed unmerged, or the forge refuses the merge (a head other than the named one is refused)
 # zaf 2: a backend failed (gh is missing or refused to read the pull request, or printed no state)
 # zaf mode: 750
-# zaf group: team, release
+# zaf group: team, release, merge
 pr=$1
 
 if [ -z "$ZAF_ROOT" ] || [ "$#" -lt 1 ]; then

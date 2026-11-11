@@ -3,7 +3,7 @@
 # zaf 1: refused: the arguments are not <task>, the base conflicts (the paths are in the log, the slice is unchanged), the base merge was pushed and needs a new `zaf check pr`, or a step refused
 # zaf 2: a backend failed (jj, gh or the board failed, or a step did not run (it exited 125), or a step ended with a code `slice-merge` does not know); after `pr-merge` the merge may already have happened
 # zaf mode: 750
-# zaf group: team, release
+# zaf group: team, release, merge
 # zaf target: task
 # zaf phases: land
 

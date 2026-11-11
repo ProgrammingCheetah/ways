@@ -1,0 +1,27 @@
+#!/bin/sh
+# zaf description: phase ci: wait for the forge's checks at the pull request's head with `ci-wait`; a failed check fails the wait and starts `fix`
+# zaf 1: refused: the argument is not <task>, or a check failed or was cancelled (named in the log)
+# zaf 2: a backend failed (gh is missing or refused, or the pull request has no head)
+# zaf 3: the checks were still running after the minutes `ci-wait` waits
+# zaf mode: 755
+# zaf target: task
+# zaf kind: wait
+# zaf ends: ci-done
+# zaf on-fail: fix
+
+# zaf sets ZAF_PR on a `target: task` run, from the task's record.
+if [ "$#" -ne 1 ] || [ -z "$ZAF_ROOT" ] || [ -z "$ZAF_PR" ]; then
+    echo "usage: ci <task>, run by zaf with ZAF_ROOT and ZAF_PR set" >&2
+    exit 1
+fi
+
+cd "$ZAF_ROOT" || exit 2
+
+# `ci-wait` ends with 1, 2 or 3, which this action declares as its own; 125, a step that never
+# ran, is a backend that failed.
+zaf do ci-wait "$ZAF_PR"
+status=$?
+case $status in
+    0 | 1 | 2 | 3) exit "$status" ;;
+    *) exit 2 ;;
+esac
