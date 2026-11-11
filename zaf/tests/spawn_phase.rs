@@ -351,3 +351,104 @@ fn a_killed_phase_records_its_signal() {
     // Let the orphaned action end, so the test leaves nothing running.
     release(&project);
 }
+
+/// Writes the project's `post-phase` hook: `body` under its description.
+fn post_phase(project: &Project, body: &str) {
+    let hooks = project.root.join(".zaf/actions/hooks");
+    fs::create_dir_all(&hooks).expect("hooks");
+    let file = hooks.join("post-phase");
+    fs::write(
+        &file,
+        format!(
+            "#!/bin/sh\n# zaf description: after each phase\n# zaf 1: the hook failed\n{body}\n"
+        ),
+    )
+    .expect("hook");
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).expect("mode");
+}
+
+/// Waits until the phase no longer reads running: the launcher, hook included, has gone.
+fn await_not_running(project: &Project) {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while matches!(standing(project), Standing::Running { .. }) {
+        assert!(Instant::now() < deadline, "the run never stopped running");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn post_phase_gets_the_exit_code() {
+    let project = project_running(|_| "exit 3\n".to_owned());
+    // The hook keeps what it is told, and whether the exit was already recorded when it ran.
+    post_phase(
+        &project,
+        "cat > post-phase-stdin\ncp \"$ZAF_RUN/exit\" exit-at-hook",
+    );
+
+    let run = start(&project);
+
+    await_file(&project.root.join("exit-at-hook"));
+    let told = fs::read_to_string(project.root.join("post-phase-stdin")).expect("stdin");
+    let told: serde_json::Value = serde_json::from_str(&told).expect("json");
+    assert_eq!(
+        told,
+        serde_json::json!({"task": 4, "action": "implement", "exit": 3})
+    );
+    // The exit file was there before the hook ran, and says what the hook was told.
+    assert_eq!(
+        fs::read_to_string(project.root.join("exit-at-hook")).expect("exit"),
+        "3\n"
+    );
+    assert_eq!(exit_of(&run), "3\n");
+}
+
+#[test]
+fn a_failing_post_phase_changes_nothing() {
+    let project = project_running(|_| "exit 3\n".to_owned());
+    post_phase(&project, "echo the hook broke\nexit 1");
+
+    let run = start(&project);
+
+    // The failure is in the run folder, with what the hook said.
+    await_file(&run.join("post-phase.log"));
+    let log = fs::read_to_string(run.join("post-phase.log")).expect("log");
+    assert!(log.contains("the hook broke"), "{log}");
+    // Nothing else moved: the exit is the child's, the phase did not end, and the run stopped.
+    assert_eq!(exit_of(&run), "3\n");
+    await_not_running(&project);
+    let Standing::Ready { action, .. } = standing(&project) else {
+        panic!("the task is not ready");
+    };
+    assert_eq!(action, ActionName::from("implement"));
+}
+
+#[test]
+fn no_hook_no_run() {
+    let project = project_running(|_| "exit 3\n".to_owned());
+    assert!(!project.root.join(".zaf/actions/hooks").exists());
+
+    let run = start(&project);
+
+    assert_eq!(exit_of(&run), "3\n");
+    await_not_running(&project);
+    // Give a launcher that wrongly ran a hook the time to leave its mark.
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(!run.join("post-phase.log").exists());
+    let logs: Vec<String> = fs::read_dir(project.root.join(".zaf/logs"))
+        .map(|entries| {
+            entries
+                .map(|entry| {
+                    entry
+                        .expect("entry")
+                        .file_name()
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        logs.iter().all(|name| !name.contains("post-phase")),
+        "{logs:?}"
+    );
+}
