@@ -188,7 +188,7 @@ fn tick(
     let phases = if manifest.phases.is_empty() {
         None
     } else {
-        let (tick, phase_code) = phase_tick(&path, composition, board.as_ref(), &prepared);
+        let (tick, phase_code) = phase_tick(&path, composition, board.as_ref(), &prepared, version);
         code = code.max(phase_code);
         if !cli.json {
             print!("{}", tick.render_text());
@@ -310,6 +310,7 @@ fn phase_tick(
     composition: &Composition,
     board: &dyn Board,
     prepared: &Prepared,
+    version: &str,
 ) -> (spawn::TickOutcome, u8) {
     let forge = match composition.forge() {
         Ok(forge) => forge,
@@ -363,6 +364,7 @@ fn phase_tick(
         &gathered.tasks,
         &in_use,
         &manifest.spawn.budget(),
+        version,
         &this_zaf,
     );
     for failure in &tick.failed {
@@ -372,17 +374,26 @@ fn phase_tick(
 }
 
 /// Runs steps 3 to 6 on `tasks`, each wait and the model phase started with `<zaf> spawn phase`,
-/// and gives what they did with the exit code: `2` when any step failed, `0` otherwise.
+/// and gives what they did with the exit code: `2` when any step failed, `0` otherwise. Each
+/// `zaf spawn phase` gets the tick's `version` as `ZAF_VERSION`, whatever the tick's own
+/// environment holds, so the phase and its actions can name their branches.
 fn phase_steps(
     board: &dyn Board,
     tasks: &[PhaseTask],
     in_use: &InUse,
     budget: &Budget,
+    version: &str,
     zaf: &dyn Fn() -> Result<Command, String>,
 ) -> (PhaseTick, u8) {
+    let versioned = || -> Result<Command, String> {
+        let mut command = zaf()?;
+        command.env(VERSION_VAR, version);
+        Ok(command)
+    };
     let mut run = run_zaf_action;
-    let mut launch = |task: TicketId, action: &ActionName| spawn_phase_with(zaf()?, task, action);
-    let mut start = |planned: &PlannedModel| start_model(zaf()?, planned);
+    let mut launch =
+        |task: TicketId, action: &ActionName| spawn_phase_with(versioned()?, task, action);
+    let mut start = |planned: &PlannedModel| start_model(versioned()?, planned);
     let mut log = |line: &str| eprintln!("{line}");
     let tick = spawn::run_steps(
         board,
@@ -760,6 +771,7 @@ mod tests {
             &[ready_at_implement(3), ready_at_implement(5)],
             &in_use,
             &Budget::default(),
+            "0.3.0",
             &zaf,
         );
         assert_eq!(code, BACKEND);
@@ -771,6 +783,37 @@ mod tests {
             tick.failed,
             ["zaf spawn phase 3 implement ended with exit 1"]
         );
+    }
+
+    #[test]
+    fn tick_hands_its_version_to_the_phase() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let seen = dir.path().join("version");
+        let body = format!("printf %s \"$ZAF_VERSION\" > '{}'", seen.display());
+        // The tick's own environment has no `ZAF_VERSION`, as in the bug.
+        let zaf = || {
+            let mut zaf = fake_zaf(dir.path(), &body);
+            zaf.env_remove("ZAF_VERSION");
+            Ok(zaf)
+        };
+        let in_use = InUse {
+            now: std::time::UNIX_EPOCH,
+            units: crate::domain::Units::default(),
+            e_live: false,
+            running_here: 0,
+            slots: 2,
+        };
+        let board = crate::fakes::FakeBoard::default();
+        let (_, code) = phase_steps(
+            &board,
+            &[ready_at_implement(3)],
+            &in_use,
+            &Budget::default(),
+            "0.3.0",
+            &zaf,
+        );
+        assert_eq!(code, OK);
+        assert_eq!(std::fs::read_to_string(seen).expect("the version"), "0.3.0");
     }
 
     #[test]
@@ -790,6 +833,7 @@ mod tests {
             &[ready_at_implement(3)],
             &in_use,
             &Budget::default(),
+            "0.3.0",
             &zaf,
         );
         assert_eq!(code, OK);
