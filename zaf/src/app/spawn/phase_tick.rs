@@ -10,8 +10,9 @@
 //! [`run_steps`] then runs the steps in the order of §5.1 and merges what each did into one
 //! [`TickOutcome`]: step 3 runs the ready `zaf`-kind actions ([`run_zaf_actions`]), step 4 launches
 //! the ready waits ([`launch_waits`]), step 5 raises a question on each wait that failed with no
-//! `on-fail` ([`ask_failed_waits`]), and step 6 starts at most one model phase
-//! ([`start_planned`]). A failed model start records nothing as started and tries no other item;
+//! `on-fail` ([`ask_failed_waits`]) or a model phase that failed three times in a row
+//! ([`ask_failed_models`], which also keeps that phase out of step 6, #550), and step 6 starts at
+//! most one model phase ([`start_planned`]). A failed model start records nothing as started and tries no other item;
 //! it is named in [`PhaseTick::failed`], and the next tick plans it again.
 //!
 //! Nothing about a standing is stored: each tick derives it again from the forge and the run
@@ -20,6 +21,7 @@
 use std::collections::BTreeMap;
 use std::time::SystemTime;
 
+use super::failures::{ask_failed_models, holds};
 use super::inline::{TickTask, run_zaf_actions};
 use super::outcome::TickOutcome;
 use super::phase::{Ports, listed};
@@ -170,8 +172,27 @@ pub fn run_steps(
             .failed
             .push(format!("cannot raise a question: {error}")),
     }
+    // A model phase that failed three times in a row is not planned, and a question is raised on
+    // its task (#550). When the board cannot say which are held, no model is started: a phase
+    // that keeps failing must not start again blind.
+    let held = match holds(board, tasks) {
+        Ok(held) => held,
+        Err(error) => {
+            tick.failed.push(format!(
+                "cannot read the questions of failing phases: {error}"
+            ));
+            return tick;
+        }
+    };
+    match ask_failed_models(board, &held) {
+        Ok(questions) => tick.outcome.questions.extend(questions),
+        Err(error) => tick
+            .failed
+            .push(format!("cannot raise a question: {error}")),
+    }
     let standings: Vec<TaskStanding> = tasks
         .iter()
+        .filter(|task| held.iter().all(|hold| hold.task != task.tick.task))
         .map(|task| TaskStanding::of(&task.tick, task.size))
         .collect();
     // No epic launch is a candidate here: the tick's launcher is not wired to start one by `zaf

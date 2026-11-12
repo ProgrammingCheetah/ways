@@ -23,6 +23,8 @@
 //!   reported. Written once the process starts.
 //! - `exit`: the process's exit code as a decimal number, written once the process has ended (the
 //!   ruling on #451); its modified time is when the run ended. Absent while the run goes.
+//! - `output`: what the action's `zaf do` printed, written by the launcher; for a failed run its
+//!   last line is the last line of the action's log. Absent in a folder from before it was kept.
 //!
 //! A run is live while its `pid` names a live process and no `exit` is there. A folder with a dead
 //! pid and no `exit` has ended with no exit code, which is never read as 0.
@@ -33,7 +35,9 @@ use crate::app::actions::{ActionKind, ActionName, PhaseEnd};
 
 mod gather;
 
-pub use gather::{PHASES_DIR, StandingUnreadable, gather_standing_facts, running_tasks};
+pub use gather::{
+    PHASES_DIR, StandingUnreadable, ended_instances, gather_standing_facts, running_tasks,
+};
 
 /// One entry of a task type's phase list, with what its action declares: the `kind`, `ends` and
 /// `on-fail` of its metadata.
@@ -143,7 +147,13 @@ pub struct PhaseRun {
     pub alive: bool,
     /// How it ended; none while it runs, and none for a dead process that recorded no code.
     pub exit: Option<RunExit>,
+    /// The last non-empty line of the run's `output`; none when it holds none.
+    pub last_line: Option<String>,
 }
+
+/// How many runs of one model phase on one task may end non-zero, one after another, before the
+/// tick stops starting it and raises a question instead (#550). A constant, not a setting.
+pub const MODEL_FAILURE_LIMIT: usize = 3;
 
 /// Everything the rule table reads about one task. The caller gathers it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,6 +178,26 @@ impl StandingFacts {
             .iter()
             .filter(|run| &run.action == action)
             .max_by_key(|run| run.started_at)
+    }
+
+    /// The runs of `action` that ended non-zero one after another, oldest first: the unbroken
+    /// tail of its runs by start. A run that is live, that ended with no exit code or that exited
+    /// 0 ends the streak, so a success between failures starts the count again.
+    #[must_use]
+    pub fn failed_streak(&self, action: &ActionName) -> Vec<&PhaseRun> {
+        let mut runs: Vec<&PhaseRun> = self
+            .runs
+            .iter()
+            .filter(|run| &run.action == action)
+            .collect();
+        runs.sort_by_key(|run| run.started_at);
+        let mut streak: Vec<&PhaseRun> = runs
+            .into_iter()
+            .rev()
+            .take_while(|run| run.exit.is_some_and(|exit| exit.code != 0))
+            .collect();
+        streak.reverse();
+        streak
     }
 
     /// The latest run of `action` that started at the pull request's current head.

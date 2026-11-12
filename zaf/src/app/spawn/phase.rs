@@ -43,6 +43,8 @@ pub const HEAD_FILE: &str = "head";
 pub const PID_FILE: &str = "pid";
 /// The file of a phase run folder that holds the process's exit code, written once it has ended.
 pub const EXIT_FILE: &str = "exit";
+/// The file of a phase run folder that holds what the action's `zaf do` printed (#550).
+pub const OUTPUT_FILE: &str = "output";
 
 /// Why a phase was not started.
 #[derive(Debug, thiserror::Error)]

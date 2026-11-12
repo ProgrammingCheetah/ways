@@ -16,12 +16,18 @@
 //! login to the Claude home's. A rerun with nothing changed writes nothing and issues no plugin
 //! command. A refusal (the pack at another version than its tag) is a worksheet step; a failed
 //! backend is a [`SetupError`].
+//!
+//! After the profiles, [`install_pack_actions`] copies the `actions/` folder of the pack installed
+//! in a generated profile into the zaf home's `actions/`: each file the machine tier lacks, with
+//! its mode bits, once. A name already there is left byte for byte, and nothing is deleted.
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use super::actions::{ACTIONS_DIR, check_name};
 use super::doctor::{Commands, Report, ToolStatus, design_dir, doctor_with};
 use super::profile::{self, ProfileError};
 use crate::composition::STATE_DIR;
@@ -281,6 +287,8 @@ pub struct SetupReport {
     pub clone: Option<CloneOutcome>,
     /// What the profile generation did; `None` when it refused.
     pub profiles: Option<profile::Report>,
+    /// The pack's actions put into the zaf home, and the names already there.
+    pub actions: PackActions,
     /// Doctor, run after the folders and the clone.
     pub doctor: Report,
     /// The Engineer's steps; empty when nothing is left.
@@ -306,6 +314,130 @@ impl SetupReport {
         lines.push("Tell me: the output of `zaf doctor`.".to_owned());
         lines
     }
+}
+
+/// What [`install_pack_actions`] did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PackActions {
+    /// The names copied into the zaf home's `actions/`, sorted.
+    pub installed: Vec<String>,
+    /// The names the machine tier already had, left as they are, sorted.
+    pub kept: Vec<String>,
+}
+
+impl PackActions {
+    /// The lines `setup` prints: one naming what it installed and one naming what it kept; none
+    /// for a list that is empty.
+    pub fn lines(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        if !self.installed.is_empty() {
+            lines.push(format!(
+                "installed {} pack actions into the machine tier: {}",
+                self.installed.len(),
+                self.installed.join(", ")
+            ));
+        }
+        if !self.kept.is_empty() {
+            lines.push(format!(
+                "kept the machine's own, unchanged: {}",
+                self.kept.join(", ")
+            ));
+        }
+        lines
+    }
+}
+
+/// Copies the files of the `actions/` folder of the pack installed in a generated profile that
+/// carries it into the zaf `home`'s `actions/`, each name the machine tier lacks, keeping its mode
+/// bits. A name already there (a file, a link or anything else) is left byte for byte and listed
+/// in [`PackActions::kept`]; nothing is overwritten or deleted. Only regular files are copied: a
+/// link, a folder (`hooks/` included) and a name an action may not have are skipped. Installs
+/// nothing without a home, a pack, an installed pack or a pack with no `actions/`.
+fn install_pack_actions(
+    root: &Path,
+    state_dir: &Path,
+    home: Option<&Path>,
+    manifest: &Manifest,
+) -> io::Result<PackActions> {
+    let mut done = PackActions::default();
+    let Some(home) = home else {
+        return Ok(done);
+    };
+    let Some(pack) = manifest
+        .pack
+        .as_ref()
+        .and_then(|pack| profile::pack_ref(root, pack).ok().flatten())
+    else {
+        return Ok(done);
+    };
+    let Some(profile) = profile::generated(manifest)
+        .into_iter()
+        .find(|profile| profile::carries_pack(*profile))
+    else {
+        return Ok(done);
+    };
+    let profile_home = profile::home(state_dir, profile);
+    let Some(installed) = profile::installed_path(&profile_home, &pack.to_string()) else {
+        return Ok(done);
+    };
+    let Ok(entries) = fs::read_dir(installed.join(ACTIONS_DIR)) else {
+        return Ok(done);
+    };
+    let mut files: Vec<(String, PathBuf)> = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        let path = entry.path();
+        if check_name(&name).is_ok() && fs::symlink_metadata(&path)?.is_file() {
+            files.push((name, path));
+        }
+    }
+    files.sort();
+    let target = home.join(ACTIONS_DIR);
+    for (name, path) in files {
+        fs::create_dir_all(&target)?;
+        if copy_new(&path, &target, &name)? {
+            done.installed.push(name);
+        } else {
+            done.kept.push(name);
+        }
+    }
+    Ok(done)
+}
+
+/// Copies `source` to `<dir>/<name>` with its mode bits unless something is there; whether it did.
+/// The bytes go to a temporary file first and are linked into place, which fails when the name
+/// exists, so a reader never sees half a file and a name made meanwhile is never replaced.
+fn copy_new(source: &Path, dir: &Path, name: &str) -> io::Result<bool> {
+    let target = dir.join(name);
+    if fs::symlink_metadata(&target).is_ok() {
+        return Ok(false);
+    }
+    let mode = fs::metadata(source)?.permissions().mode() & 0o777;
+    let temporary = dir.join(format!(".{name}.zaf-installing"));
+    match fs::remove_file(&temporary) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    let written = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        file.write_all(&fs::read(source)?)?;
+        file.set_permissions(fs::Permissions::from_mode(mode))?;
+        file.sync_all()?;
+        match fs::hard_link(&temporary, &target) {
+            Ok(()) => Ok(true),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
+            Err(error) => Err(error),
+        }
+    })();
+    let _ = fs::remove_file(&temporary);
+    written
 }
 
 fn clone_design(root: &Path, manifest: &Manifest, commands: &dyn Commands) -> Option<CloneOutcome> {
@@ -450,6 +582,11 @@ fn setup_with(
             Err(error) if error.is_refusal() => (None, Some(error)),
             Err(error) => return Err(SetupError::Profile(error)),
         };
+    let actions = if profiles.is_some() {
+        install_pack_actions(root, &state_dir, home, manifest)?
+    } else {
+        PackActions::default()
+    };
     let report = doctor_with(
         root,
         home,
@@ -470,6 +607,7 @@ fn setup_with(
         homes,
         clone,
         profiles,
+        actions,
         doctor: report,
         worksheet,
     })

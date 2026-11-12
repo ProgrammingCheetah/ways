@@ -169,6 +169,44 @@ pub fn running_tasks(
     Ok(tasks)
 }
 
+/// The instances of the phase run folders under `dir` that no longer run: a run folder with an
+/// exit recorded, or whose holder is gone. A folder with no `instance` file names none. An absent
+/// folder is none.
+pub fn ended_instances(
+    dir: &Path,
+    alive: &dyn Fn(&Holder) -> bool,
+) -> Result<BTreeSet<String>, String> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(source) if source.kind() == ErrorKind::NotFound => return Ok(BTreeSet::new()),
+        Err(source) => return Err(format!("{}: {source}", dir.display())),
+    };
+    let mut instances = BTreeSet::new();
+    for entry in entries {
+        let path = entry
+            .map_err(|source| format!("{}: {source}", dir.display()))?
+            .path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(task) =
+            read_text(&path.join("task"))?.and_then(|text| text.trim().parse::<TicketId>().ok())
+        else {
+            continue;
+        };
+        let Some(instance) = read_text(&path.join("instance"))?
+            .map(|text| text.trim().to_owned())
+            .filter(|text| !text.is_empty())
+        else {
+            continue;
+        };
+        if read_run(&path, task, alive)?.is_some_and(|run| !run.alive) {
+            instances.insert(instance);
+        }
+    }
+    Ok(instances)
+}
+
 /// One run folder; none when it is not `task`'s or is not a run folder.
 fn read_run(
     dir: &Path,
@@ -204,6 +242,13 @@ fn read_run(
         },
         None => None,
     };
+    let last_line = read_text(&dir.join("output"))?.and_then(|text| {
+        text.lines()
+            .rev()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .map(str::to_owned)
+    });
     let ended = exit_file.exists();
     let holder = read_text(&dir.join("pid"))?.and_then(|text| Holder::parse(&text));
     let alive = !ended && holder.as_ref().is_some_and(alive);
@@ -213,6 +258,7 @@ fn read_run(
         started_at,
         alive,
         exit,
+        last_line,
     }))
 }
 

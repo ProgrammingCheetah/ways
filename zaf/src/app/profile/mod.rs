@@ -670,6 +670,22 @@ pub fn installed_version(home: &Path, id: &str) -> Option<String> {
     Some(version.unwrap_or(UNKNOWN_VERSION).to_owned())
 }
 
+/// The folder a profile at `home` has `id` (`plugin@marketplace`) installed in, its `installPath`
+/// in `plugins/installed_plugins.json`; `None` when the file is missing or unreadable, `id` is not
+/// listed or no entry names an absolute path.
+pub fn installed_path(home: &Path, id: &str) -> Option<PathBuf> {
+    let text = fs::read_to_string(home.join(INSTALLED_PLUGINS_FILE)).ok()?;
+    let installed: Value = serde_json::from_str(&text).ok()?;
+    installed
+        .get("plugins")?
+        .get(id)?
+        .as_array()?
+        .iter()
+        .filter_map(|entry| entry.get("installPath")?.as_str())
+        .map(PathBuf::from)
+        .find(|path| path.is_absolute())
+}
+
 /// Whether `claude plugin marketplace list` shows a marketplace called `name`.
 fn lists_marketplace(listing: &str, name: &str) -> bool {
     listing
