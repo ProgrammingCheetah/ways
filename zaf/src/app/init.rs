@@ -3,12 +3,15 @@
 //! Four questions on a line each: project name, board repo, forge repo and the gate's
 //! full command. Each offers the value init can work out as the default a blank answer
 //! takes: the folder's name, the `owner/name` of the git remote `origin` (a GitHub one),
-//! and no gate. The rest of the manifest is left to the pack's defaults.
+//! and no gate. The written manifest also carries the standard values a tick needs: the
+//! claude runner, the roles the phase actions run as, the review steps, the phase lists
+//! and the pack's tag.
 
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::app::profile::ProfileError;
 use crate::manifest::{Manifest, ManifestError, ProjectFiles, ROOT_FILE};
 
 /// The file `init` writes.
@@ -29,6 +32,9 @@ pub enum InitError {
     /// The answers make a manifest that does not load; nothing was written.
     #[error(transparent)]
     Invalid(#[from] ManifestError),
+    /// The marketplace's current pack tag could not be learned; nothing was written.
+    #[error("the pack's current tag: {0}")]
+    Pack(#[from] ProfileError),
     /// Reading the answers or writing the file failed.
     #[error(transparent)]
     Io(#[from] io::Error),
@@ -117,15 +123,67 @@ fn quoted(text: &str) -> String {
     toml::Value::String(text.to_owned()).to_string()
 }
 
+/// Learns the marketplace's current pack tag, such as `teams-v2.0.0`; called once, after the
+/// answers are in and before anything is written.
+pub type LearnTag<'a> = &'a mut dyn FnMut() -> Result<String, ProfileError>;
+
+/// The standard values every new project's manifest carries after its own sections: ways'
+/// runner command and timeout, the roles the phase actions run as, the review steps and the
+/// phase lists. `[pack] tag` follows them.
+const STANDARD: &str = r#"
+[runners.claude]
+command = "claude -p {prompt} --model {model} --add-dir {root}"
+timeout_minutes = 45
+
+[roles.programmer]
+model = "sonnet"
+effort = "high"
+profile = "lean"
+turns = 150
+
+[roles.implement]
+model = "sonnet"
+effort = "high"
+profile = "lean"
+turns = 150
+
+[roles.fix]
+model = "sonnet"
+effort = "high"
+profile = "lean"
+turns = 150
+
+[roles.merge]
+model = "sonnet"
+effort = "high"
+profile = "lean"
+turns = 1
+
+[roles.release]
+model = "opus"
+effort = "xhigh"
+profile = "build"
+turns = 200
+
+[check.pr]
+steps = ["ci"]
+
+[phases]
+Task = ["implement", "ci", "review", "merge"]
+Bug = ["implement", "ci", "review", "merge"]
+"#;
+
 /// Writes `<dir>/.zaf.toml` from answers read on `input`, prompting on `output`;
 /// returns the file's path. Refuses, before asking anything, when `dir` holds any manifest
-/// file. See [`init_with_home`] to leave the zaf home's own `config.toml` out of that check.
+/// file. `learn_tag` gives `[pack] tag`. See [`init_with_home`] to leave the zaf home's own
+/// `config.toml` out of that check.
 pub fn init(
     dir: &Path,
+    learn_tag: LearnTag<'_>,
     input: &mut dyn BufRead,
     output: &mut dyn Write,
 ) -> Result<PathBuf, InitError> {
-    init_with_home(dir, None, input, output)
+    init_with_home(dir, None, learn_tag, input, output)
 }
 
 /// [`init`] knowing the zaf `home`: when `dir/.zaf` is the zaf home, its `config.toml` is the
@@ -133,6 +191,7 @@ pub fn init(
 pub fn init_with_home(
     dir: &Path,
     home: Option<&Path>,
+    learn_tag: LearnTag<'_>,
     input: &mut dyn BufRead,
     output: &mut dyn Write,
 ) -> Result<PathBuf, InitError> {
@@ -167,6 +226,8 @@ pub fn init_with_home(
     if !gate.is_empty() {
         text.push_str(&format!("\n[gate]\nfull = {}\n", quoted(&gate)));
     }
+    text.push_str(STANDARD);
+    text.push_str(&format!("\n[pack]\ntag = {}\n", quoted(&learn_tag()?)));
     text.parse::<Manifest>()?;
 
     let mut file = std::fs::OpenOptions::new()

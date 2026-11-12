@@ -6,8 +6,154 @@ use super::*;
 
 fn run(dir: &Path, answers: &str) -> (Result<PathBuf, InitError>, String) {
     let mut output = Vec::new();
-    let result = init(dir, &mut Cursor::new(answers.to_owned()), &mut output);
+    let mut learn = || Ok(TAG.to_owned());
+    let result = init(
+        dir,
+        &mut learn,
+        &mut Cursor::new(answers.to_owned()),
+        &mut output,
+    );
     (result, String::from_utf8(output).expect("utf-8 prompts"))
+}
+
+const TAG: &str = "teams-v2.0.0";
+
+fn run_standard(dir: &Path) -> PathBuf {
+    run(dir, "bookshelf\nexample/shelf\n\ncargo test\n")
+        .0
+        .expect("written")
+}
+
+#[test]
+fn init_writes_standard_manifest() {
+    use crate::domain::Profile;
+    use crate::domain::RoleName;
+    use crate::manifest::{CheckTarget, Effort, RunnerName};
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let manifest = Manifest::load(&run_standard(dir.path())).expect("loads");
+
+    let runner = manifest
+        .runners
+        .get(&RunnerName::from("claude"))
+        .expect("a claude runner");
+    assert_eq!(
+        runner.command.as_ref(),
+        "claude -p {prompt} --model {model} --add-dir {root}"
+    );
+    assert_eq!(runner.timeout_minutes, 45);
+
+    for (name, model, effort, profile, turns) in [
+        ("programmer", "sonnet", Effort::High, Profile::Lean, 150),
+        ("implement", "sonnet", Effort::High, Profile::Lean, 150),
+        ("fix", "sonnet", Effort::High, Profile::Lean, 150),
+        ("merge", "sonnet", Effort::High, Profile::Lean, 1),
+        ("release", "opus", Effort::Xhigh, Profile::Build, 200),
+    ] {
+        let role = manifest
+            .roles
+            .get(&RoleName::from(name))
+            .unwrap_or_else(|| panic!("{name}"));
+        assert_eq!(role.model.as_ref(), model, "{name}");
+        assert_eq!(role.effort, effort, "{name}");
+        assert_eq!(role.profile, profile, "{name}");
+        assert_eq!(role.turns, turns, "{name}");
+    }
+
+    let pr = manifest
+        .check
+        .targets
+        .get(&CheckTarget::Pr)
+        .expect("[check.pr]");
+    assert_eq!(pr.steps, ["ci"]);
+    let phases = ["implement", "ci", "review", "merge"];
+    for task_type in ["Task", "Bug"] {
+        let list = manifest.phases.get(task_type).expect(task_type);
+        let names: Vec<&str> = list.iter().map(|name| name.as_str()).collect();
+        assert_eq!(names, phases, "{task_type}");
+    }
+    let pack = manifest.pack.expect("[pack]");
+    assert_eq!(pack.tag.as_deref(), Some(TAG));
+    assert!(pack.path.is_none());
+    assert!(manifest.gate.is_some(), "the gate answer is still kept");
+}
+
+#[test]
+fn a_tag_that_cannot_be_learned_writes_nothing() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut learn = || {
+        Err(ProfileError::Install {
+            line: "claude plugin install".to_owned(),
+            output: "offline".to_owned(),
+        })
+    };
+    let result = init(
+        dir.path(),
+        &mut learn,
+        &mut Cursor::new("a\nb/c\n\n\n".to_owned()),
+        &mut Vec::new(),
+    );
+    assert!(matches!(result, Err(InitError::Pack(_))));
+    assert!(!dir.path().join(MANIFEST_FILE).exists());
+}
+
+/// Writes an action named `name` into the project's tier with `extra` metadata lines.
+fn write_action(root: &Path, name: &str, extra: &str) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = root.join(".zaf/actions");
+    fs::create_dir_all(&dir).expect("actions dir");
+    let file = dir.join(name);
+    fs::write(
+        &file,
+        format!("#!/bin/sh\n# zaf description: {name}\n# zaf 1: failed\n{extra}true\n"),
+    )
+    .expect("action");
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).expect("mode");
+}
+
+#[test]
+fn standard_manifest_passes_doctor_manifest_checks() {
+    use crate::app::doctor::{doctor_with, fake::FakeCommands};
+    use std::time::SystemTime;
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let manifest = Manifest::load(&run_standard(dir.path())).expect("loads");
+
+    // Actions that lean on the standard roles and phase lists, and nothing else.
+    let groups = "# zaf group: implement, fix, merge, release, programmer\n";
+    for name in ["slice-open", "slice-pr", "slice-merge", "slice-drop"] {
+        write_action(dir.path(), name, groups);
+    }
+    write_action(
+        dir.path(),
+        "implement",
+        "# zaf kind: model\n# zaf ends: pr-open\n",
+    );
+    write_action(dir.path(), "fix", "# zaf kind: model\n# zaf ends: exit\n");
+    write_action(dir.path(), "ci", "# zaf kind: wait\n# zaf ends: ci-done\n");
+    write_action(
+        dir.path(),
+        "review",
+        "# zaf kind: wait\n# zaf ends: review-posted\n",
+    );
+    write_action(dir.path(), "merge", "# zaf kind: zaf\n# zaf ends: merged\n");
+
+    let commands = FakeCommands::new().with("env", "{\"loggedIn\": true}\n");
+    let report = doctor_with(
+        dir.path(),
+        None,
+        &manifest,
+        &commands,
+        None,
+        SystemTime::now(),
+    );
+    let text = report.lines().join("\n");
+    assert!(!text.contains("names no role"), "{text}");
+    assert!(!text.contains("no runner"), "{text}");
+    assert!(report.actions.iter().all(|check| check.ok), "{text}");
+    assert_eq!(report.phases.len(), 8, "{text}");
+    assert!(report.phases.iter().all(|check| check.ok), "{text}");
 }
 
 #[test]
