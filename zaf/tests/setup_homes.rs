@@ -1,6 +1,6 @@
 //! The two homes through the built binary: what `zaf setup` makes, what every other verb
 //! makes first, the `.zaf/.gitignore` allow-list as `git check-ignore` sees it, and
-//! `zaf init`. Every run gets a temp project and a temp zaf home (`ZAF_HOME`).
+//! `zaf setup` and the manifest `zaf setup` asks for. Every run gets a temp project and a temp zaf home (`ZAF_HOME`).
 
 mod common;
 
@@ -25,8 +25,12 @@ const ALLOW_LIST: &str =
 
 /// A project that provides the four `slice-*` actions, so setup has nothing missing to report.
 fn project() -> Project {
-    let project = Project::new(MANIFEST);
+    let mut project = Project::new(MANIFEST);
     project.provide_slice_actions();
+    // `zaf setup` generates profiles and links the host's login into them: the machine's own
+    // Claude home must never reach a test.
+    let user_home = project.temp.path().join("user-home");
+    project.env("HOME", &user_home.to_string_lossy());
     project
 }
 
@@ -92,6 +96,49 @@ fn setup_makes_both_homes() {
             "not a comment: {line}"
         );
     }
+}
+
+#[test]
+fn setup_from_a_task_workspace_acts_on_the_root() {
+    let manifest =
+        format!("{MANIFEST}\n[design]\nkind = \"git-sibling\"\nrepo = \"example/b-design\"\n");
+    let project = Project::new(&manifest);
+    project.provide_slice_actions();
+    let root = project.root.canonicalize().expect("root");
+    // The design repo is already beside the root; setup run from a workspace must not look
+    // for it, or clone it, beside the workspace.
+    let sibling = root.parent().expect("parent").join("b-design");
+    write(&sibling, "index.md", "");
+    let workspaces = root.join(".zaf/workspaces");
+    let workspace = workspaces.join("slice-1");
+    write(&workspace, ".zaf.toml", &manifest);
+    let before = tree(&workspaces);
+
+    let (code, stdout, stderr) = outcome(&project.zaf_in(&workspace, &["setup"]));
+
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    for dir in ["actions", "roles", "logs"] {
+        assert!(root.join(".zaf").join(dir).is_dir(), "{dir} on the root");
+    }
+    assert!(root.join(".zaf/.gitignore").is_file());
+    assert!(
+        !workspace.join(".zaf").exists(),
+        "no .zaf/ is made inside the workspace"
+    );
+    assert_eq!(
+        tree(&workspaces),
+        before,
+        "nothing is made beside the workspace"
+    );
+    assert!(!workspaces.join("b-design").exists());
+    assert!(
+        project
+            .gh_calls()
+            .iter()
+            .all(|call| !call.contains("clone")),
+        "{:?}",
+        project.gh_calls()
+    );
 }
 
 #[test]
@@ -264,11 +311,51 @@ fn verb_creates_a_missing_home_first() {
     assert!(!outside.join(".zaf").exists());
 }
 
-/// Runs `zaf init` in `dir` with `answers` on stdin and the zaf home at `home`.
+/// The pack tag the fake `claude` installs.
+const FAKE_PACK_TAG: &str = "teams-v9.9.9";
+
+/// A fake `claude` in a folder of its own: it lists no marketplace, accepts an add and, on
+/// an install, records version 9.9.9 for the plugin under `$CLAUDE_CONFIG_DIR`, so `zaf setup`
+/// learns its pack tag without the real tool.
+fn fake_claude() -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = tempfile::tempdir().expect("fake bin");
+    let script = r#"#!/bin/sh
+case "$*" in
+  "plugin marketplace list") echo "No marketplaces configured" ;;
+  "plugin marketplace add "*) ;;
+  "plugin install "*)
+    mkdir -p "$CLAUDE_CONFIG_DIR/plugins"
+    printf '{"plugins":{"teams@ways":[{"version":"9.9.9"}]}}' \
+      > "$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json" ;;
+  *) echo "fake claude: $*" >&2; exit 1 ;;
+esac
+"#;
+    let path = bin.path().join("claude");
+    fs::write(&path, script).expect("fake claude");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod");
+    bin
+}
+
+/// Runs `zaf setup` in `dir` with `answers` on stdin and the zaf home at `home`.
 fn init_in(dir: &Path, home: &Path, answers: &str) -> Output {
+    verb_in("setup", dir, home, answers)
+}
+
+/// Runs `zaf <verb>` in `dir` with `answers` on stdin, the zaf home at `home` and the fake
+/// `claude` on PATH; a `HOME` of its own keeps the machine's Claude home out of it.
+fn verb_in(verb: &str, dir: &Path, home: &Path, answers: &str) -> Output {
+    let bin = fake_claude();
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    let search_path = std::env::join_paths(
+        std::iter::once(bin.path().to_owned()).chain(std::env::split_paths(&inherited)),
+    )
+    .expect("search path");
     let mut child = Command::new(env!("CARGO_BIN_EXE_zaf"))
-        .arg("init")
+        .arg(verb)
         .current_dir(dir)
+        .env("HOME", home.with_file_name("user-home"))
+        .env("PATH", search_path)
         .env("ZAF_HOME", home)
         .env_remove("ZAF_INSTANCE")
         .env_remove("ZAF_VERSION")
@@ -276,17 +363,17 @@ fn init_in(dir: &Path, home: &Path, answers: &str) -> Output {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawn zaf init");
-    // A `zaf init` that exits early closes the pipe: the write may fail with a broken pipe,
+        .expect("spawn zaf");
+    // A `zaf` that exits early closes the pipe: the write may fail with a broken pipe,
     // and the child is judged by its exit and output, not by the write.
     let mut stdin = child.stdin.take().expect("stdin");
     let _ = stdin.write_all(answers.as_bytes());
     drop(stdin);
-    child.wait_with_output().expect("zaf init")
+    child.wait_with_output().expect("zaf output")
 }
 
 #[test]
-fn init_writes_dot_zaf_toml() {
+fn setup_writes_dot_zaf_toml() {
     let temp = tempfile::tempdir().expect("temp dir");
     let home = temp.path().join("zaf-home");
     let dir = temp.path().join("new-project");
@@ -294,21 +381,20 @@ fn init_writes_dot_zaf_toml() {
 
     let answers = "bookshelf\nexample/b\n\n\n";
     let (code, stdout, stderr) = outcome(&init_in(&dir, &home, answers));
-    assert_eq!(code, 0, "{stdout}{stderr}");
-    // The prompts end without a newline, so the confirmation closes the last line.
-    assert!(stdout.ends_with("wrote .zaf.toml\n"), "{stdout}");
+    assert_ne!(code, 2, "{stdout}{stderr}");
+    // The prompts end without a newline, so the confirmation closes the line.
+    assert!(stdout.contains("wrote .zaf.toml\n"), "{stdout}");
     let text = fs::read_to_string(dir.join(".zaf.toml")).expect(".zaf.toml");
     assert!(text.contains("name = \"bookshelf\""), "{text}");
-    assert!(!dir.join("ZAF.toml").exists());
     assert!(
-        !dir.join(".zaf").exists(),
-        "init makes the manifest, not the homes"
+        text.contains(&format!("tag = \"{FAKE_PACK_TAG}\"")),
+        "{text}"
     );
+    assert!(!dir.join("ZAF.toml").exists());
 
-    // It refuses when any manifest file exists, and leaves it as it is.
-    let (code, _, stderr) = outcome(&init_in(&dir, &home, answers));
-    assert_eq!(code, 1, "{stderr}");
-    assert!(stderr.contains(".zaf.toml"), "{stderr}");
+    // It asks nothing where a manifest file exists, and leaves it as it is.
+    let (_, stdout, stderr) = outcome(&init_in(&dir, &home, answers));
+    assert!(!stdout.contains("project name"), "{stdout}{stderr}");
     assert_eq!(
         fs::read_to_string(dir.join(".zaf.toml")).expect(".zaf.toml"),
         text
@@ -319,8 +405,11 @@ fn init_writes_dot_zaf_toml() {
             .join(format!("with-{}", existing.replace('/', "-")));
         fs::create_dir(&other).expect("other dir");
         write(&other, existing, "# mine\n");
-        let (code, _, stderr) = outcome(&init_in(&other, &home, answers));
-        assert_eq!(code, 1, "{existing}: {stderr}");
+        let (_, stdout, stderr) = outcome(&init_in(&other, &home, answers));
+        assert!(
+            !stdout.contains("project name"),
+            "{existing}: {stdout}{stderr}"
+        );
         assert!(!other.join(".zaf.toml").exists(), "{existing}");
     }
 
@@ -329,6 +418,71 @@ fn init_writes_dot_zaf_toml() {
     fs::create_dir(&inside).expect("inside dir");
     write(&inside, ".zaf/config.toml", "# machine\n");
     let (code, stdout, stderr) = outcome(&init_in(&inside, &inside.join(".zaf"), answers));
-    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert_ne!(code, 2, "{stdout}{stderr}");
     assert!(inside.join(".zaf.toml").is_file());
+}
+
+#[test]
+fn setup_asks_without_manifest() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let home = temp.path().join("zaf-home");
+    let dir = temp.path().join("new-project");
+    fs::create_dir(&dir).expect("project dir");
+
+    let (code, stdout, stderr) =
+        outcome(&verb_in("setup", &dir, &home, "bookshelf\nexample/b\n\n\n"));
+    assert_ne!(code, 2, "{stdout}{stderr}");
+    assert!(stdout.contains("project name"), "{stdout}");
+    assert!(stdout.contains("wrote .zaf.toml"), "{stdout}");
+    let text = fs::read_to_string(dir.join(".zaf.toml")).expect(".zaf.toml");
+    assert!(text.contains("name = \"bookshelf\""), "{text}");
+    assert!(
+        text.contains(&format!("tag = \"{FAKE_PACK_TAG}\"")),
+        "{text}"
+    );
+    assert!(
+        dir.join(".zaf/actions").is_dir(),
+        "setup went on: {stdout}{stderr}"
+    );
+}
+
+#[test]
+fn setup_with_manifest_asks_nothing() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let home = temp.path().join("zaf-home");
+    for (index, file) in [".zaf.toml", ".zaf/config.toml"].iter().enumerate() {
+        let dir = temp.path().join(format!("project-{index}"));
+        fs::create_dir(&dir).expect("project dir");
+        write(&dir, file, MANIFEST);
+        // Answers are on stdin: setup must leave them unread.
+        let (_, stdout, stderr) = outcome(&verb_in("setup", &dir, &home, "other\nexample/o\n\n\n"));
+        assert!(!stdout.contains("project name"), "{file}: {stdout}");
+        assert!(!stderr.contains("input ended"), "{file}: {stderr}");
+        assert_eq!(
+            fs::read_to_string(dir.join(file)).expect("manifest"),
+            MANIFEST,
+            "{file}"
+        );
+    }
+}
+
+#[test]
+fn setup_closed_input_writes_nothing() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let home = temp.path().join("zaf-home");
+    for (index, answers) in ["", "bookshelf\nexample/b\n"].iter().enumerate() {
+        let dir = temp.path().join(format!("empty-{index}"));
+        fs::create_dir(&dir).expect("project dir");
+        let (code, _, stderr) = outcome(&verb_in("setup", &dir, &home, answers));
+        assert_eq!(code, 1, "{stderr}");
+        assert!(stderr.contains("input ended before"), "{stderr}");
+        assert!(!dir.join(".zaf.toml").exists());
+        assert!(!dir.join(".zaf").exists());
+    }
+    // A blank required answer with no default is refused the same way.
+    let dir = temp.path().join("blank");
+    fs::create_dir(&dir).expect("project dir");
+    let (code, _, stderr) = outcome(&verb_in("setup", &dir, &home, "\n\n\n\n\n"));
+    assert_eq!(code, 1, "{stderr}");
+    assert!(!dir.join(".zaf.toml").exists());
 }

@@ -1,4 +1,4 @@
-//! `zaf board ready|claim|report|question|ruling|done`.
+//! `zaf board ready|claim|report|handoff|question|ruling|done|file|lint`.
 //!
 //! The verbs that act as an instance (`claim`, `report`) read who it is from
 //! [`INSTANCE_VAR`], which the spawner sets, in the form the board prints it:
@@ -6,15 +6,15 @@
 
 use serde_json::json;
 
-use super::exit::{BACKEND, REFUSED, code_for, fail_composition};
+use super::exit::{BACKEND, OK, REFUSED, code_for, fail_composition};
 use super::slice::print;
 use super::{BoardAction, Cli};
 use crate::app::actions::SliceRecords;
 use crate::app::board::{
-    self, BoardError, ClaimCommand, DoneOutcome, ReportCommand, RulingCommand,
+    self, BoardError, ClaimCommand, DoneOutcome, FileOutcome, ReportCommand, RulingCommand,
 };
 use crate::composition::Composition;
-use crate::domain::{Instance, InstanceNumber, IssueNumber, RoleName};
+use crate::domain::{Instance, InstanceNumber, NewTask, RoleName, Ticket, TicketId, TicketState};
 use crate::ports::{ClaimOutcome, NewQuestion};
 
 /// The environment variable naming the instance a verb acts as.
@@ -37,19 +37,10 @@ pub fn run(cli: &Cli, action: &BoardAction) -> u8 {
     let board = board.as_ref();
     let done = match action {
         BoardAction::Ready => board::ready(board).map(|tickets| {
-            let json: Vec<_> = tickets
-                .iter()
-                .map(|ticket| {
-                    json!({
-                        "number": ticket.number.get(),
-                        "epic": ticket.epic.map(IssueNumber::get),
-                        "title": ticket.title,
-                    })
-                })
-                .collect();
+            let json: Vec<_> = tickets.iter().map(Ticket::summary).collect();
             let lines: Vec<String> = tickets
                 .iter()
-                .map(|ticket| format!("{} {}", ticket.number, ticket.title))
+                .map(|ticket| format!("{} {}", ticket.id, ticket.title))
                 .collect();
             let terse = if lines.is_empty() {
                 "no ready tasks".to_owned()
@@ -103,6 +94,17 @@ pub fn run(cli: &Cli, action: &BoardAction) -> u8 {
                 print(cli, &json, format!("{task} reported{lease}"))
             })
         }
+        BoardAction::Handoff { task, text } => {
+            let forge = match composition.forge() {
+                Ok(forge) => forge,
+                Err(error) => return fail_composition(&path, &error),
+            };
+            let records = SliceRecords::new(composition.root());
+            board::handoff(forge.as_ref(), &records, *task, text).map(|pr| {
+                let json = json!({ "task": task.get(), "pr": pr.get() });
+                print(cli, &json, format!("{task} handed off on {pr}"))
+            })
+        }
         BoardAction::Question { on, text, door } => {
             let command = NewQuestion {
                 on: *on,
@@ -134,6 +136,63 @@ pub fn run(cli: &Cli, action: &BoardAction) -> u8 {
                 print(cli, &json, format!("{task} {terse}"))
             })
         }
+        BoardAction::File {
+            epic,
+            title,
+            body,
+            body_file,
+            group,
+            kind,
+            blocked,
+        } => {
+            let body = match read_body(&path, body.as_deref(), body_file.as_deref()) {
+                Ok(body) => body,
+                Err(code) => return code,
+            };
+            let task = NewTask {
+                epic: *epic,
+                title: title.as_str().into(),
+                body: body.into(),
+                state: if *blocked {
+                    TicketState::Blocked
+                } else {
+                    TicketState::Ready
+                },
+                group: group.as_deref().map(Into::into),
+                kind: kind.as_str().into(),
+            };
+            board::file(board, &task).map(|outcome| {
+                let (word, terse) = match outcome {
+                    FileOutcome::Filed(_) => ("filed", "filed"),
+                    FileOutcome::AlreadyFiled(_) => ("already_filed", "already filed"),
+                };
+                let number = outcome.task();
+                let json = json!({ "task": number.get(), "epic": epic.get(), "outcome": word });
+                print(cli, &json, format!("{number} {terse} under {epic}"))
+            })
+        }
+        // One line per problem: `<field>: <value as written> (accepts: <forms>)` for a bad
+        // value, `<field>: missing` for a missing one, `line <n>: unknown field <label>` for an
+        // unknown one. `--json` prints `{"issue": <n>, "problems": [{"field", "value", "accepts"}]}`.
+        BoardAction::Lint { issue } => board::lint(board, *issue).map(|problems| {
+            let json = json!({
+                "issue": issue.get(),
+                "problems": problems
+                    .iter()
+                    .map(|problem| json!({
+                        "field": problem.name(),
+                        "value": problem.value(),
+                        "accepts": problem.accepts(),
+                    }))
+                    .collect::<Vec<_>>(),
+            });
+            let lines: Vec<String> = problems.iter().map(ToString::to_string).collect();
+            // A body that parses prints nothing unless the JSON asks for its empty list.
+            if !problems.is_empty() || cli.json {
+                print(cli, &json, lines.join("\n"));
+            }
+            if problems.is_empty() { OK } else { REFUSED }
+        }),
         BoardAction::Ruling { question, text } => {
             let command = RulingCommand {
                 question: *question,
@@ -142,7 +201,7 @@ pub fn run(cli: &Cli, action: &BoardAction) -> u8 {
             board::ruling(board, &command).map(|returned| {
                 let json = json!({
                     "question": question.get(),
-                    "ready": returned.map(IssueNumber::get),
+                    "ready": returned.map(TicketId::get),
                 });
                 let terse = match returned {
                     Some(task) => format!("{question} ruled; {task} ready"),
@@ -158,10 +217,36 @@ pub fn run(cli: &Cli, action: &BoardAction) -> u8 {
     })
 }
 
+/// The body `board file` was given: the `--body` text, or the `--body-file` contents (`-` is
+/// standard input). A file that does not read exits 2.
+fn read_body(path: &str, body: Option<&str>, file: Option<&std::path::Path>) -> Result<String, u8> {
+    if let Some(body) = body {
+        return Ok(body.to_owned());
+    }
+    let Some(file) = file else {
+        eprintln!("zaf {path}: give --body or --body-file");
+        return Err(BACKEND);
+    };
+    let read = if file.as_os_str() == "-" {
+        std::io::read_to_string(std::io::stdin())
+    } else {
+        std::fs::read_to_string(file)
+    };
+    read.map_err(|error| {
+        eprintln!("zaf {path}: reading {}: {error}", file.display());
+        BACKEND
+    })
+}
+
 /// The exit code a board error comes to.
 pub(super) fn exit_code(error: &BoardError) -> u8 {
     match error {
-        BoardError::BatchFull { .. } | BoardError::NotInLand { .. } => REFUSED,
+        BoardError::BatchFull { .. }
+        | BoardError::NotInLand { .. }
+        | BoardError::NoPullRequest(_)
+        | BoardError::NotATask(_)
+        | BoardError::NotAnOpeningState(_)
+        | BoardError::NoSuchType { .. } => REFUSED,
         // A read that failed is no answer about the task: exit 2, never a refusal.
         BoardError::Unreadable(_) => BACKEND,
         BoardError::Port(error) => code_for(error),
@@ -188,7 +273,7 @@ fn parse_instance(text: &str) -> Option<Instance> {
     }
     let instance = Instance {
         role: RoleName::from(role),
-        epic: epic.parse::<IssueNumber>().ok()?,
+        epic: epic.parse::<TicketId>().ok()?,
         number: InstanceNumber::from(number.parse::<u32>().ok()?),
     };
     Some(instance)

@@ -1,13 +1,14 @@
 use std::path::Path;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use super::*;
 use crate::app::check::{Engine, EngineSettings, Shell, StepPorts, Verdict};
 use crate::domain::{Location, Severity};
-use crate::fakes::{FakeForge, FakeRunner};
+use crate::fakes::{FakeForge, FakeRunner, PrRequest};
 use crate::manifest::RunnerName;
 use crate::ports::{
-    Author, BaseName, Check, Forge, GateRun, GateVerdict, PrMerge, PrRequest, ReviewComment,
+    Author, BaseName, Check, CommitId, Forge, GateRun, GateVerdict, PullRequest, ReviewComment,
     RuleId, RunOutput, RunRequest, Runner, ScanningAlert, SliceName,
 };
 
@@ -112,16 +113,16 @@ fn bare_action_step_is_an_error() {
 pub(super) struct SharedForge(pub Arc<FakeForge>);
 
 impl Forge for SharedForge {
-    fn open_pr(&self, request: &PrRequest) -> Result<PrNumber, PortError> {
-        self.0.open_pr(request)
-    }
-
     fn checks(&self, pr: PrNumber) -> Result<Vec<Check>, PortError> {
         self.0.checks(pr)
     }
 
     fn review_comments(&self, pr: PrNumber) -> Result<Vec<ReviewComment>, PortError> {
         self.0.review_comments(pr)
+    }
+
+    fn pull_request(&self, pr: PrNumber) -> Result<PullRequest, PortError> {
+        self.0.pull_request(pr)
     }
 
     fn head(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
@@ -140,8 +141,12 @@ impl Forge for SharedForge {
         self.0.scanning_alerts(pr)
     }
 
-    fn merge(&self, pr: PrNumber) -> Result<PrMerge, PortError> {
-        self.0.merge(pr)
+    fn handoff(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
+        self.0.handoff(pr)
+    }
+
+    fn set_handoff(&self, pr: PrNumber, text: &str) -> Result<(), PortError> {
+        self.0.set_handoff(pr, text)
     }
 }
 
@@ -198,6 +203,7 @@ pub(super) fn located(author: &str, body: &str, path: &str, line: u32) -> Review
             line: Some(line),
         }),
         head: None,
+        posted_at: SystemTime::UNIX_EPOCH,
     }
 }
 
@@ -210,7 +216,7 @@ pub(super) fn located_on(
     head: &str,
 ) -> ReviewComment {
     ReviewComment {
-        head: Some(head.to_owned()),
+        head: Some(CommitId::from(head)),
         ..located(author, body, path, line)
     }
 }

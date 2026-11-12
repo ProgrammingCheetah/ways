@@ -17,8 +17,8 @@ Each brief is an agent of this pack and runs as the session's main thread (`clau
 | team | the spawner | claims up to four ready tasks of one epic, spawns a programmer per task, checks, publishes and merges each, reports on the epic |
 | programmer | a team instance | one task, one round, green in its own workspace; asks the keeper for anything beyond its pack |
 | keeper | `zaf ask` | answers one to five design questions with verbatim quotes, or `not settled`; its rules are zaf's own keeper prompt, which this brief points to and never restates |
-| planning | by hand (its spawner launch is not built yet) | turns a signed epic into exact tasks in the task template |
-| challenger | by hand (its spawner launch is not built yet) | comments on every planned task that is not exact, before the Engineer signs the epic |
+| planning | the spawner, for a signed epic with no tasks | turns a signed epic into exact tasks in the task template, filed with `zaf board file` |
+| challenger | the spawner, once per epic after its first plan | comments on every planned task that is not exact; its report on the epic lets the teams start |
 | release | by hand (its spawner launch is not built yet) | checks a milestone's musts, gathers the release reviews and a retrospective, then files tasks or merges and tags |
 
 **One prefix.** Every brief opens with the exact bytes of zaf's interface page (`zaf/assets/interface.md` in the zaf source, also the Interface section of every `zaf brief` pack), so every instance's prompt shares a cached prefix. When that page changes, paste it again into all six, right after the frontmatter, and check:
@@ -29,7 +29,7 @@ for r in team programmer keeper planning challenger release; do f=agents/$r.md; 
 
 ## Launching an instance
 
-**The spawner.** `zaf spawn --once` runs one tick and exits; a timer runs it over and over. Each tick launches, within the slots and the budget guard, a team instance for an epic with ready, unclaimed, unblocked tasks. It sets `ZAF_INSTANCE` and `ZAF_VERSION` and starts the role's agent, `teams:<role>`, with the model, effort, turns and profile the manifest gives that role. The other launches are not built yet, and the tick names them as `not built`: a planning instance for a signed epic with no tasks (or a ruling newer than its plan), a challenger for a planned epic, and a release instance for a milestone whose epics are all done. Until they are, the Engineer launches those roles by hand, below.
+**The spawner.** `zaf spawn --once` runs one tick and exits; a timer runs it over and over. Each tick gives every open epic at most one launch, within the slots and the budget guard, by the epic's stage (`zaf epic list`): a planning instance for a signed epic with no tasks, once per signature; the challenger for a planned epic, once per epic; and a team instance for a challenged epic with ready, unclaimed, unblocked tasks. An unsigned epic (`zaf epic sign` is the Engineer's), a done one and one with a question open on it launch nothing. It sets `ZAF_INSTANCE` and `ZAF_VERSION` and starts the role with the model, effort, turns and profile the manifest gives it; planning and the challenger have pack defaults. The release launch is not built yet, and the tick names it as `not built`; until it is, and for a re-plan after a ruling, the Engineer launches those roles by hand, below.
 
 **By hand.** The Engineer runs one the same way, from the project root, with the two variables set:
 
@@ -41,7 +41,7 @@ claude --agent teams:team "Epic #<epic>."
 
 Swap the role and the prompt for the others: `teams:planning` or `teams:challenger` with `"Epic #<epic>."`, `teams:release` with the milestone, its issue and its `objectives.md`. Add `-p` to run it unattended. A programmer by hand needs its task opened first: `zaf slice open <task>`, `zaf brief <task>`, then `claude --agent teams:programmer "Task #<task>, round 1. Pack: <pack path>. Workspace: <workspace path>."`. `zaf board claim` and `zaf board report` refuse to run without `ZAF_INSTANCE`.
 
-**Before the first launch:** `zaf` on PATH, a manifest (`zaf init`), `zaf setup` (which also moves a retired `ZAF.toml`), and a clean `zaf doctor`, which this pack's hook prints at every session start in the project. Claude Code 2.1.296 or later (the team brief sets `autoCompactWindow`).
+**Before the first launch:** `zaf` on PATH, `zaf setup` (which asks for a manifest where there is none and also moves a retired `ZAF.toml`), and a clean `zaf doctor`, which this pack's hook prints at every session start in the project. Claude Code 2.1.296 or later (the team brief sets `autoCompactWindow`).
 
 ## The design session's routines
 

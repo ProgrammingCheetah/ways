@@ -1,9 +1,10 @@
 //! The sections of `ZAF.toml`, with the pack's defaults for the ones a project leaves out.
 
 use std::collections::BTreeMap;
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 
-use crate::domain::Profile;
+use crate::domain::{Budget, DEFAULT_RESERVE, Profile, SizeTable, TaskSize};
 use crate::newtype::text_newtype;
 
 text_newtype! {
@@ -46,6 +47,12 @@ text_newtype! {
     CommandLine
 }
 
+text_newtype! {
+    /// The name of an action: an entry of a task type's list under `[phases]`, or the one an
+    /// action's `on-fail` names.
+    ActionName
+}
+
 /// `[project]`: who the manifest is for.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -61,7 +68,14 @@ pub struct ProjectSection {
 pub enum BoardKind {
     /// Issues of a forge repository, with sub-issues and labels.
     GithubIssues,
+    /// Issues of a forge repository on a GitHub Project, each task's state in a field of the
+    /// Project instead of a label.
+    GithubProjects,
 }
+
+/// The single-select field a `github-projects` board keeps each task's state in, unless
+/// `[board] state_field` names another.
+pub const DEFAULT_STATE_FIELD: &str = "zaf state";
 
 /// `[board]`: required; the one port every project has.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
@@ -72,6 +86,17 @@ pub struct BoardSection {
     /// The repository holding the issues.
     #[serde(default)]
     pub repo: Option<RepoName>,
+    /// `github-projects`: the Project's number among its owner's projects.
+    #[serde(default)]
+    pub project: Option<u64>,
+    /// `github-projects`: the user or organization owning the Project; the repository's
+    /// owner when absent.
+    #[serde(default)]
+    pub owner: Option<String>,
+    /// `github-projects`: the single-select field holding each task's state;
+    /// [`DEFAULT_STATE_FIELD`] when absent.
+    #[serde(default)]
+    pub state_field: Option<String>,
 }
 
 /// The VCS backends zaf knows.
@@ -139,6 +164,9 @@ pub struct DesignSection {
     pub index: Option<PathBuf>,
 }
 
+/// The design index's file name when `[design] index` names none.
+pub const DEFAULT_DESIGN_INDEX: &str = "index.md";
+
 impl DesignSection {
     /// Where the design pages are on disk, for a project rooted at `root`; `None` for kind `none`.
     ///
@@ -159,6 +187,17 @@ impl DesignSection {
                 }
             },
         }
+    }
+
+    /// Where the design index is on disk, for a project rooted at `root`: `[design] index`
+    /// (default [`DEFAULT_DESIGN_INDEX`]) inside [`dir`](Self::dir); `None` for kind `none`.
+    /// `doctor`, the design adapter, `ask` and `brief` all take the index from here.
+    pub fn index_path(&self, root: &Path) -> Option<PathBuf> {
+        let index = self
+            .index
+            .as_deref()
+            .unwrap_or(Path::new(DEFAULT_DESIGN_INDEX));
+        self.dir(root).map(|dir| dir.join(index))
     }
 }
 
@@ -217,6 +256,10 @@ pub struct GateSection {
     /// One named test, with `{name}` and other placeholders.
     #[serde(default)]
     pub tests: Option<CommandLine>,
+    /// The command prefix of the machine's build slot: with it a gate line runs as
+    /// `<slot> sh -c '<line>'`, so every gate level waits for and holds the slot.
+    #[serde(default)]
+    pub slot: Option<CommandLine>,
 }
 
 /// `[runners.<name>]`: a command that runs a role, with `{prompt}`, `{dir}` and `{root}` placeholders (`{model}` and `{effort}` for a role).
@@ -270,8 +313,8 @@ pub struct RoleSection {
 }
 
 impl RoleSection {
-    /// The pack's roles: a programmer and a team instance.
-    pub(crate) fn pack_defaults() -> [(&'static str, Self); 2] {
+    /// The pack's roles: a programmer, a team instance, a planning instance and the challenger.
+    pub(crate) fn pack_defaults() -> [(&'static str, Self); 4] {
         let programmer = Self {
             model: ModelName::from("sonnet"),
             effort: Effort::High,
@@ -286,7 +329,23 @@ impl RoleSection {
             turns: 200,
             batch: Some(4),
         };
-        [("programmer", programmer), ("team", team)]
+        let planning = Self {
+            model: ModelName::from("opus"),
+            effort: Effort::Xhigh,
+            profile: Profile::Build,
+            turns: 80,
+            batch: None,
+        };
+        let challenger = Self {
+            turns: 60,
+            ..planning.clone()
+        };
+        [
+            ("programmer", programmer),
+            ("team", team),
+            ("planning", planning),
+            ("challenger", challenger),
+        ]
     }
 }
 
@@ -378,7 +437,8 @@ impl Default for AskSection {
     }
 }
 
-/// `[spawn]`: how many instances run at once and when the budget guard steps in.
+/// `[spawn]`: how many instances run at once, when the budget guard steps in, and the
+/// machine budget a launch must fit.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SpawnSection {
@@ -386,14 +446,92 @@ pub struct SpawnSection {
     pub slots: u32,
     /// Budget percentages at which the guard tightens, ascending. Default: 70, 85, 95.
     pub guard: Vec<u8>,
+    /// The machine budget, `[spawn] budget = <units>`, a positive integer read only from the
+    /// zaf home's `config.toml`: a project file that sets it fails the load. Unset means no
+    /// machine cap.
+    pub budget: Option<NonZeroU32>,
+    /// The reserve an E leaves of the budget, `[spawn] reserve = <units>`, read only from the
+    /// zaf home's `config.toml` like `budget`: a project file that sets it fails the load, and
+    /// so does a reserve at or above the budget. An E costs the budget minus the reserve.
+    /// Default: 6.
+    pub reserve: u32,
+    /// The minutes between the ticks of `zaf spawn --watch`, `[spawn] tick_minutes = <n>`, a
+    /// positive integer; 0 fails the load. Read from any project manifest layer, since it paces
+    /// one project's ticks and holds no machine resource (#421 ruling 25, the ruling on #428).
+    /// Default: 5.
+    pub tick_minutes: u32,
+    /// `[spawn.sizes]`: the units each size costs, over the defaults XS 1, S 2, M 4, L 8 and
+    /// XL 16.
+    pub sizes: SizesSection,
 }
+
+/// The minutes between `zaf spawn --watch` ticks when `[spawn] tick_minutes` is unset.
+pub const DEFAULT_TICK_MINUTES: u32 = 5;
 
 impl Default for SpawnSection {
     fn default() -> Self {
         Self {
             slots: 1,
             guard: vec![70, 85, 95],
+            budget: None,
+            reserve: DEFAULT_RESERVE,
+            tick_minutes: DEFAULT_TICK_MINUTES,
+            sizes: SizesSection::default(),
         }
+    }
+}
+
+impl SpawnSection {
+    /// The machine budget, its reserve and the size table these settings make.
+    #[must_use]
+    pub fn budget(&self) -> Budget {
+        Budget {
+            units: self.budget.map(NonZeroU32::get),
+            reserve: self.reserve,
+            sizes: self.sizes.table(),
+        }
+    }
+}
+
+/// `[spawn.sizes]`: the units a size costs, each a positive integer; a size left out keeps
+/// its default. The keys are XS, S, M, L and XL; any other key, `E` among them, fails the
+/// load, since an E costs the budget minus the reserve.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SizesSection {
+    /// The cost of an XS. Default: 1.
+    #[serde(rename = "XS")]
+    pub xs: Option<NonZeroU32>,
+    /// The cost of an S. Default: 2.
+    #[serde(rename = "S")]
+    pub s: Option<NonZeroU32>,
+    /// The cost of an M. Default: 4.
+    #[serde(rename = "M")]
+    pub m: Option<NonZeroU32>,
+    /// The cost of an L. Default: 8.
+    #[serde(rename = "L")]
+    pub l: Option<NonZeroU32>,
+    /// The cost of an XL. Default: 16.
+    #[serde(rename = "XL")]
+    pub xl: Option<NonZeroU32>,
+}
+
+impl SizesSection {
+    /// The size table: the defaults with each size set here laid over them.
+    #[must_use]
+    pub fn table(&self) -> SizeTable {
+        [
+            (TaskSize::XS, self.xs),
+            (TaskSize::S, self.s),
+            (TaskSize::M, self.m),
+            (TaskSize::L, self.l),
+            (TaskSize::XL, self.xl),
+        ]
+        .into_iter()
+        .fold(SizeTable::default(), |table, (size, units)| match units {
+            Some(units) => table.with(size, units.get()),
+            None => table,
+        })
     }
 }
 

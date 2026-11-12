@@ -38,7 +38,7 @@
     },
     {
       "name": "brief/",
-      "role": "`zaf brief`: task context pack (ticket, pages, a ## Rulings section with the questions and rulings on the task, nodes chain, style, interface page)",
+      "role": "`zaf brief`: task context pack (ticket, pages, a ## Rulings section with the questions and rulings on the task, nodes chain, style, interface page; for a resumed phase with a pull request also its diff, the findings at its head and the hand-off)",
       "node": false
     },
     {
@@ -67,6 +67,16 @@
       "node": false
     },
     {
+      "name": "epic.rs",
+      "role": "zaf epic list|sign: the open epics with their stage, and the signature refused when an instance runs above this process (process ancestry against the run folders)",
+      "node": false
+    },
+    {
+      "name": "epic/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
       "name": "guard.rs",
       "role": "`zaf guard`: weekly budget level to .zaf/guard.json",
       "node": false
@@ -78,7 +88,7 @@
     },
     {
       "name": "init.rs",
-      "role": "`zaf init`: minimal manifest from four questions",
+      "role": "the manifest questions `zaf setup` asks: minimal manifest from four questions",
       "node": false
     },
     {
@@ -128,18 +138,28 @@
     },
     {
       "name": "status.rs",
-      "role": "`zaf status`: board, instances, slots, guard on one screen",
+      "role": "`zaf status`: epics with their stage, board, instances, slots, guard on one screen",
       "node": false
     },
     {
       "name": "status/",
       "role": "tests.rs",
       "node": false
+    },
+    {
+      "name": "update.rs",
+      "role": "zaf update: the newest zaf-v* release read live, its archive checked by sha256, probed with --version, renamed over the running binary",
+      "node": false
+    },
+    {
+      "name": "update/",
+      "role": "tests.rs",
+      "node": false
     }
   ],
   "notes": [
     ".zaf/ file names are constants repeated per module (RUNS_DIR in brief, spawn and adapters::gate; asklog.jsonl in ask and setup)",
-    ".zaf/local.toml is read by guard ([budget]) and report (prices), never by the manifest",
+    ".zaf/local.toml is read by guard ([budget]) and report (prices) as well as by the manifest, which takes only [spawn] slots and [gate] slot from it",
     "Only lean and build profiles ship settings; design and review profiles get none from profile init"
   ]
 }

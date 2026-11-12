@@ -1,8 +1,8 @@
 {
   "path": "zaf/src/app/spawn",
-  "charted": "2026-11-03",
+  "charted": "2026-11-10",
   "short": "spawner tick: plan, reserve, launch",
-  "is": "One tick of the spawner, split into a pure planner, the .zaf/spawn.state slot file, and the I/O that reserves slots, launches team instances through the Runner port and records them on the epic.",
+  "is": "One tick of the spawner, split into a pure planner, the run folders that record each launch and the process holding it, the counter-only .zaf/spawn.state, and the I/O that reserves launches, runs planning and challenger instances through the Runner port and records them in their run folders and on the epic. Nothing it plans from is kept in step by hand: running instances, slots, live claims and each epic's stage are derived on every read.",
   "type": "code",
   "tags": [
     "category:source",
@@ -10,7 +10,8 @@
   ],
   "conventions": [
     "tick.rs stays pure (no port, no file); every side effect lives in mod.rs",
-    "Launch and exit are HTML-comment markers on the epic: `<!-- zaf:launch <instance> -->`, `<!-- zaf:exit <instance> <status> -->`"
+    "Launch and exit are HTML-comment markers on the epic: `<!-- zaf:launch <instance> -->`, `<!-- zaf:exit <instance> <status> -->`",
+    "Derive, never keep in step: whether a launch runs is its run folder's pid (pid plus start time) checked against the process table on every read; only the counter, the launch record and the exit are written"
   ],
   "entry_points": [
     "mod.rs",
@@ -18,13 +19,108 @@
   ],
   "fs": [
     {
+      "name": "blockers.rs",
+      "role": "Blocked by: parsing, the blocker graph, its cycles and dead blockers",
+      "node": false
+    },
+    {
+      "name": "blockers/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "failures.rs",
+      "role": "tick steps 5 and 6: a model phase whose last three runs on a task all ended non-zero is not started, and one question is raised on the task; derived from the phase run folders each tick, never stored; a ruling lets it start again",
+      "node": false
+    },
+    {
+      "name": "failures/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "inline.rs",
+      "role": "tick step 3: run each task's ready zaf-kind action with zaf do, one after another, at no budget cost; a failure never stops the rest",
+      "node": false
+    },
+    {
+      "name": "inline/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "question.rs",
+      "role": "tick step 5: a failed wait with no on-fail raises one question on its task, unless it has an open one; starts nothing, charges nothing",
+      "node": false
+    },
+    {
+      "name": "question/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "waits.rs",
+      "role": "tick step 4: launch each task's ready wait action detached with zaf spawn phase, never waiting for it, at no budget cost; a failed launch is logged and the rest still go",
+      "node": false
+    },
+    {
+      "name": "waits/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "outcome.rs",
+      "role": "TickOutcome { started, waits, ran, questions }: what a tick did; idle when all are empty",
+      "node": false
+    },
+    {
       "name": "mod.rs",
-      "role": "prepare, launch, launch_all, dry run",
+      "role": "prepare (lost, orphaned claims, plan, reserve under spawn.lock), launch, launch_all, dry run",
+      "node": false
+    },
+    {
+      "name": "phase.rs",
+      "role": "`zaf spawn phase`: checks the action is the task's current phase and none runs, takes the next instance number and writes the phase run folder under spawn.lock; reads it back for the launcher; records the child's exit code in the folder's `exit` file before anything that follows",
+      "node": false
+    },
+    {
+      "name": "phase/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "phase_tick.rs",
+      "role": "the phase steps of zaf spawn --once: derives each claimed or ready phased task's standing from the forge and the phase run folders, storing none, and runs tick steps 3 to 6 in order into one TickOutcome; an unreadable task is named and skipped",
+      "node": false
+    },
+    {
+      "name": "phase_tick/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "runs.rs",
+      "role": ".zaf/runs/<slug>/: launch.json, the holding process in pid, exit; Run::running reads the process table",
+      "node": false
+    },
+    {
+      "name": "runs/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "start.rs",
+      "role": "tick step 6: plan the one model phase to start, the longest ready (or failed wait's on-fail) that fits the budget, and start it without waiting; a phase ready STARVE_AFTER (30 minutes) that does not fit holds the budget, so no other model phase starts",
+      "node": false
+    },
+    {
+      "name": "start/",
+      "role": "tests.rs",
       "node": false
     },
     {
       "name": "state.rs",
-      "role": ".zaf/spawn.state: next instance number, slot-holding launches",
+      "role": ".zaf/spawn.state, the instance counter alone; derive() adds the launches that run now",
       "node": false
     },
     {
@@ -39,7 +135,7 @@
     },
     {
       "name": "tick.rs",
-      "role": "board snapshot, state, guard and settings in, launch plan out",
+      "role": "board snapshot, derived running launches, guard and settings in, launch plan out",
       "node": false
     },
     {
@@ -49,9 +145,9 @@
     }
   ],
   "notes": [
-    "Only the team-instance branch is built; tick.rs names planning, challenger and release as NOT_BUILT and skips them, and the teams README says so",
+    "Each open epic gets at most one launch a tick, by its stage: planning for a signed epic with no tasks (once per signature), the challenger for a planned one (once per epic), none for a challenged one (its tasks are built by their phases, never by a launched instance); tick.rs names release alone as NOT_BUILT",
     "The verb never loops; an external timer runs `zaf spawn --once`",
-    "The launch prompt and standing brief are assets/spawn/team-prompt.txt and team-brief.md",
-    "Slots and guard thresholds come from ZAF.toml [spawn]; the guard level is read from .zaf/guard.json; a batch of tasks shares one instance and one slot"
+    "The launch prompt is assets/spawn/epic-prompt.txt (planning, challenger); the pack's standing briefs are planning-brief.md and challenger-brief.md, and .zaf/roles/<role>.md wins over them",
+    "Slots and guard thresholds come from the manifest's [spawn]; the guard level is read from .zaf/guard.json; each launch holds one slot"
   ]
 }

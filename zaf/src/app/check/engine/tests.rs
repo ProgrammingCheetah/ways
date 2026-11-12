@@ -1,29 +1,30 @@
 use std::sync::Mutex;
+use std::time::SystemTime;
 
 use super::*;
 use crate::app::check::{CheckRecord, Target};
 use crate::domain::{Location, Profile, RoleName};
-use crate::fakes::{FakeForge, FakeRunner};
+use crate::fakes::{FakeForge, FakeRunner, PrRequest};
 use crate::manifest::CommandLine;
 use crate::ports::{
-    BaseName, Check, CheckName, CheckState, GateRun, GateVerdict, PrMerge, PrRequest,
-    ReviewComment, RunOutput, RunRequest, ScanningAlert, SliceName,
+    BaseName, Check, CheckName, CheckState, GateRun, GateVerdict, PullRequest, ReviewComment,
+    RunOutput, RunRequest, ScanningAlert, SliceName,
 };
 
 /// Lends a shared fake forge to a step's thread.
 struct SharedForge(Arc<FakeForge>);
 
 impl Forge for SharedForge {
-    fn open_pr(&self, request: &PrRequest) -> Result<PrNumber, PortError> {
-        self.0.open_pr(request)
-    }
-
     fn checks(&self, pr: PrNumber) -> Result<Vec<Check>, PortError> {
         self.0.checks(pr)
     }
 
     fn review_comments(&self, pr: PrNumber) -> Result<Vec<ReviewComment>, PortError> {
         self.0.review_comments(pr)
+    }
+
+    fn pull_request(&self, pr: PrNumber) -> Result<PullRequest, PortError> {
+        self.0.pull_request(pr)
     }
 
     fn head(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
@@ -42,8 +43,12 @@ impl Forge for SharedForge {
         self.0.scanning_alerts(pr)
     }
 
-    fn merge(&self, pr: PrNumber) -> Result<PrMerge, PortError> {
-        self.0.merge(pr)
+    fn handoff(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
+        self.0.handoff(pr)
+    }
+
+    fn set_handoff(&self, pr: PrNumber, text: &str) -> Result<(), PortError> {
+        self.0.set_handoff(pr, text)
     }
 }
 
@@ -417,10 +422,12 @@ fn ci_turns_each_failed_check_into_a_must_fix() {
         Check {
             name: CheckName::from("build"),
             state: CheckState::Passed,
+            finished_at: Some(SystemTime::UNIX_EPOCH),
         },
         Check {
             name: CheckName::from("test"),
             state: CheckState::Failed,
+            finished_at: Some(SystemTime::UNIX_EPOCH),
         },
     ];
     ports.forge.set_checks(pr, checks).expect("set");
@@ -441,6 +448,7 @@ fn ci_waits_on_pending_checks_and_gives_up_at_the_deadline() {
     let pending = vec![Check {
         name: CheckName::from("build"),
         state: CheckState::Pending,
+        finished_at: None,
     }];
     ports.forge.set_checks(pr, pending).expect("set");
     let dir = temp_dir();

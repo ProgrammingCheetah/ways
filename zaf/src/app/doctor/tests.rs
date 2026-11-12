@@ -15,7 +15,17 @@ fn manifest(extra: &str) -> Manifest {
 
 /// [`super::doctor`] with no zaf home, so no test reads the machine's own actions, over a project
 /// that provides the four `slice-*` names every project needs.
+///
+/// Every generated profile is stamped current first (which makes its home), so a test gets no
+/// stale-profile failure it did not ask for; see [`doctor_unstamped`] for the profiles not made.
 fn doctor(root: &Path, manifest: &Manifest, commands: &dyn Commands) -> Report {
+    profile::write_stamps(&root.join(STATE_DIR), manifest);
+    doctor_unstamped(root, manifest, commands)
+}
+
+/// [`doctor`] over profiles nobody generated: no homes, so none is named stale (a profile never
+/// generated is the pack check's and the worksheet's to say).
+fn doctor_unstamped(root: &Path, manifest: &Manifest, commands: &dyn Commands) -> Report {
     provide_slice_actions(root);
     super::doctor(root, None, manifest, commands)
 }
@@ -48,6 +58,38 @@ fn status_of(report: &Report, tool: &str) -> ToolStatus {
 }
 
 #[test]
+fn doctor_names_a_stale_profile() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(STATE_DIR);
+    profile::write_stamps(
+        &state,
+        &manifest("[forbidden]\ncommands = [\"git push\"]\n"),
+    );
+    let edited = manifest("[forbidden]\ncommands = [\"gh pr merge\"]\n");
+    provide_slice_actions(dir.path());
+    let report = super::doctor(dir.path(), None, &edited, &logged_in());
+    assert!(!report.passed());
+    let lines = report.lines();
+    assert!(
+        lines.contains(&"profile build is older than the manifest (forbidden changed)".to_owned()),
+        "{lines:?}"
+    );
+
+    fs::remove_file(state.join("profiles/build").join(profile::STAMP_FILE)).expect("remove");
+    let report = super::doctor(dir.path(), None, &edited, &logged_in());
+    assert!(!report.passed());
+    assert!(
+        report
+            .lines()
+            .contains(&"profile build has no stamp: run zaf profile init".to_owned())
+    );
+
+    profile::write_stamps(&state, &edited);
+    let report = super::doctor(dir.path(), None, &edited, &logged_in());
+    assert!(report.passed(), "{:?}", report.lines());
+}
+
+#[test]
 fn a_tool_that_satisfies_its_requirement_is_ok() {
     let dir = tempfile::tempdir().expect("temp dir");
     let manifest = manifest("[requires]\njj = \">=0.20\"\n");
@@ -60,7 +102,11 @@ fn a_tool_that_satisfies_its_requirement_is_ok() {
         }
     );
     assert!(report.passed());
-    assert_eq!(commands.calls(), [["jj", "--version"]]);
+    assert_eq!(
+        commands.calls()[0],
+        ["jj", "--version"],
+        "the tool is asked first; the stamped profiles' logins after"
+    );
 }
 
 #[test]
@@ -147,7 +193,7 @@ fn a_declared_design_dir_must_exist() {
     let before = doctor(&root, &manifest, &FakeCommands::new());
     assert_eq!(before.design.as_ref().map(|check| check.ok), Some(false));
     assert!(!before.passed());
-    assert!(before.lines()[0].starts_with("design dir: missing"));
+    assert!(before.lines()[0].starts_with("design dir not found: "));
     fs::create_dir(parent.path().join("b-design")).expect("design dir");
     fs::write(parent.path().join("b-design/index.md"), "").expect("index");
     assert!(doctor(&root, &manifest, &FakeCommands::new()).passed());
@@ -161,7 +207,7 @@ fn a_missing_design_index_fails_and_names_the_path() {
     let report = doctor(dir.path(), &manifest, &FakeCommands::new());
     assert!(!report.passed());
     let missing = format!(
-        "design index: missing ({})",
+        "design index not found: {}",
         dir.path().join("docs/index.md").display()
     );
     assert!(report.lines().contains(&missing), "{:?}", report.lines());
@@ -208,11 +254,35 @@ fn a_design_index_that_is_a_folder_is_missing() {
 }
 
 #[test]
-fn the_default_index_name_is_the_design_adapters() {
+fn the_design_index_is_the_manifests_own_path() {
+    let root = Path::new("/project");
+    let named = manifest("[design]\nkind = \"repo-dir\"\npath = \"docs\"\nindex = \"meta/p.md\"\n");
+    let default = manifest("[design]\nkind = \"repo-dir\"\npath = \"docs\"\n");
     assert_eq!(
-        DEFAULT_DESIGN_INDEX,
-        crate::adapters::design::DEFAULT_INDEX_FILE
+        named.design.index_path(root),
+        Some(PathBuf::from("/project/docs/meta/p.md"))
     );
+    assert_eq!(
+        default.design.index_path(root),
+        Some(
+            root.join("docs")
+                .join(crate::manifest::DEFAULT_DESIGN_INDEX)
+        )
+    );
+    assert_eq!(manifest("").design.index_path(root), None);
+}
+
+#[test]
+fn a_missing_actions_dir_fails_and_names_the_path() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    // The `doctor` helper provides the actions; the bare one does not.
+    let report = super::doctor(dir.path(), None, &manifest(""), &FakeCommands::new());
+    assert!(!report.passed());
+    let missing = format!(
+        "actions dir not found: {}",
+        dir.path().join(".zaf/actions").display()
+    );
+    assert!(report.lines().contains(&missing), "{:?}", report.lines());
 }
 
 #[test]
@@ -346,7 +416,7 @@ fn a_profile_without_a_login_is_missing_with_its_fix_and_the_doctor_still_passes
 fn a_profile_not_generated_yet_is_missing_without_asking() {
     let dir = tempfile::tempdir().expect("temp dir");
     let commands = FakeCommands::new().with("env", "ok");
-    let report = doctor(dir.path(), &manifest(""), &commands);
+    let report = doctor_unstamped(dir.path(), &manifest(""), &commands);
     assert_eq!(report.logins.len(), 2);
     assert!(report.logins.iter().all(|check| !check.ok));
     assert!(commands.calls().is_empty());
@@ -414,6 +484,7 @@ fn doctor_reports_a_stale_copy() {
     );
 
     provide_slice_actions(dir.path());
+    profile::write_stamps(&dir.path().join(STATE_DIR), &manifest(""));
     let report = doctor_with(
         dir.path(),
         None,
@@ -662,7 +733,7 @@ fn a_profile_not_generated_yet_has_its_pack_missing_without_asking() {
     let dir = tempfile::tempdir().expect("temp dir");
     write_marketplace(dir.path());
     let commands = FakeCommands::new();
-    let report = doctor(dir.path(), &manifest(PACK), &commands);
+    let report = doctor_unstamped(dir.path(), &manifest(PACK), &commands);
     assert!(
         report.lines().contains(
             &"profile build: pack missing (fix: zaf profile init installs it)".to_owned()
@@ -680,4 +751,54 @@ fn a_project_without_a_pack_has_no_pack_lines() {
     let report = doctor(dir.path(), &manifest(""), &commands);
     assert!(report.packs.is_empty());
     assert!(report.lines().iter().all(|line| !line.contains("pack")));
+}
+
+/// Writes `text` to `<root>/<name>`, making its folder.
+fn put(root: &Path, name: &str, text: &str) {
+    let file = root.join(name);
+    fs::create_dir_all(file.parent().expect("parent")).expect("folder");
+    fs::write(file, text).expect("file");
+}
+
+#[test]
+fn doctor_names_the_manifest_files_it_reads() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    put(dir.path(), ".zaf.toml", HEAD);
+    put(dir.path(), ".zaf/config.toml", "[spawn]\nslots = 2\n");
+    put(dir.path(), ".zaf/local.toml", "[spawn]\nslots = 4\n");
+    let report = doctor(dir.path(), &manifest(""), &FakeCommands::new());
+    let expected = [
+        dir.path().join(".zaf/local.toml"),
+        dir.path().join(".zaf.toml"),
+        dir.path().join(".zaf/config.toml"),
+    ];
+    assert_eq!(report.manifest, expected, "highest layer first");
+    let named: Vec<String> = expected
+        .iter()
+        .map(|file| file.display().to_string())
+        .collect();
+    let line = format!("manifest: {}", named.join(", "));
+    assert!(report.lines().contains(&line), "{:?}", report.lines());
+    // Without a local file it is not named.
+    fs::remove_file(dir.path().join(".zaf/local.toml")).expect("remove");
+    let report = doctor(dir.path(), &manifest(""), &FakeCommands::new());
+    assert_eq!(report.manifest, expected[1..]);
+}
+
+#[test]
+fn doctor_warns_about_an_unread_toml() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    put(dir.path(), ".zaf.toml", HEAD);
+    put(dir.path(), ".zaf/local.toml", "");
+    put(dir.path(), ".zaf/extra.toml", "[spawn]\nslots = 9\n");
+    // A `.toml` below `.zaf/` is nobody's file to warn about.
+    put(dir.path(), ".zaf/profiles/p/settings.toml", "");
+    let report = doctor(dir.path(), &manifest(""), &FakeCommands::new());
+    let warnings: Vec<String> = report
+        .lines()
+        .into_iter()
+        .filter(|line| line.starts_with("unread:"))
+        .collect();
+    assert_eq!(warnings, ["unread: .zaf/extra.toml"]);
+    assert!(report.passed(), "a warning does not fail the report");
 }

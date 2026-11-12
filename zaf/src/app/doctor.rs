@@ -7,12 +7,14 @@
 //! run with `CLAUDE_CONFIG_DIR` set to it; a missing login is reported with its fix,
 //! never fixed, and does not fail the doctor. Its line also says what its `.credentials.json`
 //! is: shared with the Claude home, or a copy that goes stale; the token is never printed.
-//! Each profile that carries the pack reports the version its `plugins/installed_plugins.json`
-//! records, or that the pack is missing; a missing pack, or a version other than the source
+//! Each profile that carries the pack reports the version [`profile::installed_version`] reads from
+//! its `plugins/installed_plugins.json` (the reader `zaf profile init` uses), or that the pack is missing; a missing pack, or a version other than the source
 //! pack's `plugin.json` declares, fails the report, and `zaf profile init` installs or updates it. Every action either tier provides is
 //! reported with its validity and its mode; an invalid file fails the report (see [`ActionCheck`]).
 //! Every action name the project needs is reported with the tier that provides it; a needed name
-//! with no provider fails the report (see [`NeededCheck`]).
+//! with no provider fails the report (see [`NeededCheck`]). Every action a `[phases]` list names is
+//! reported too; one with no provider, no `kind` or no `ends` fails the report (see
+//! [`PhaseCheck`]).
 
 use std::fmt;
 use std::fs;
@@ -20,28 +22,26 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::app::actions::ACTIONS_DIR;
 use crate::app::profile::{self, CONFIG_DIR_VAR, CREDENTIALS_FILE};
 use crate::composition::STATE_DIR;
-use crate::manifest::{DesignSection, Manifest, Requirement, ToolName};
+use crate::manifest::{DesignSection, Manifest, Requirement, ToolName, files_read};
 
 mod actions;
 pub mod fake;
 mod needed;
+mod phases;
 
 pub use actions::ActionCheck;
 pub use needed::NeededCheck;
+pub use phases::PhaseCheck;
 
-/// The design index's name when `[design] index` names none; the design adapter's default,
-/// which a test keeps in step (the app layer does not import adapters).
-const DEFAULT_DESIGN_INDEX: &str = "index.md";
 /// Where a credentials file holds its access token's expiry, in milliseconds since the epoch.
 const EXPIRES_AT: &str = "/claudeAiOauth/expiresAt";
-/// Where Claude records a profile's installed plugins, under the profile's home.
-const INSTALLED_PLUGINS_FILE: &str = "plugins/installed_plugins.json";
 /// A plugin's own manifest, under its source folder.
 const PLUGIN_FILE: &str = ".claude-plugin/plugin.json";
 /// What an installed pack that records no version is reported as.
-const UNKNOWN_VERSION: &str = "unknown";
+const UNKNOWN_VERSION: &str = profile::UNKNOWN_VERSION;
 
 /// What a finished command wrote.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -260,11 +260,16 @@ pub struct Report {
     pub design_index: Option<PathCheck>,
     /// The workspaces folder, which must be creatable.
     pub workspaces: PathCheck,
+    /// The project's own actions folder, `<root>/.zaf/actions`; `zaf setup` makes it.
+    pub actions_dir: PathCheck,
     /// One entry per generated profile; informational, it never fails the report.
     pub logins: Vec<LoginCheck>,
     /// One entry per generated profile that carries the pack, when the manifest has a `[pack]`;
     /// a stale or a missing pack fails the report.
     pub packs: Vec<PackCheck>,
+    /// One entry per generated profile older than the manifest or zaf, or with no stamp;
+    /// any fails the report, as `zaf spawn` refuses it.
+    pub stale: Vec<profile::StaleProfile>,
     /// One entry per action either tier provides, in name order; an invalid one fails the report.
     pub actions: Vec<ActionCheck>,
     /// Why the actions folders could not be read, when they could not; it fails the report.
@@ -272,6 +277,15 @@ pub struct Report {
     /// One entry per action name the project needs, in name order, with the tier that provides it;
     /// a name with no provider fails the report.
     pub needed: Vec<NeededCheck>,
+    /// One entry per action of a `[phases]` list, in task type and list order; one that no tier
+    /// provides, or that has no `kind` or no `ends`, fails the report.
+    pub phases: Vec<PhaseCheck>,
+    /// The manifest files the load read, highest layer first; informational. Printed as
+    /// `manifest: <files>`.
+    pub manifest: Vec<PathBuf>,
+    /// The other `.toml` files directly inside the project's `.zaf/` folder, which nothing
+    /// reads; a warning, it never fails the report.
+    pub unread: Vec<PathBuf>,
 }
 
 impl Report {
@@ -279,12 +293,15 @@ impl Report {
     pub fn passed(&self) -> bool {
         self.tools.iter().all(|check| check.status.is_ok())
             && self.packs.iter().all(|check| check.ok)
+            && self.stale.is_empty()
             && self.actions.iter().all(|check| check.ok)
             && self.actions_error.is_none()
             && self.needed.iter().all(|check| check.ok)
+            && self.phases.iter().all(|check| check.ok)
             && self.design.as_ref().is_none_or(|check| check.ok)
             && self.design_index.as_ref().is_none_or(|check| check.ok)
             && self.workspaces.ok
+            && self.actions_dir.ok
     }
 
     /// The tools that are missing, too old or unknown.
@@ -301,24 +318,61 @@ impl Report {
             .collect();
         lines.extend(self.design.iter().map(PathCheck::line));
         lines.extend(self.design_index.iter().map(PathCheck::line));
+        lines.push(self.actions_dir.line());
         lines.extend(self.logins.iter().map(LoginCheck::line));
         lines.extend(self.packs.iter().map(PackCheck::line));
+        lines.extend(self.stale.iter().map(profile::StaleProfile::line));
         lines.extend(self.actions.iter().flat_map(ActionCheck::lines));
         lines.extend(self.actions_error.clone());
         lines.extend(self.needed.iter().flat_map(NeededCheck::lines));
+        lines.extend(self.phases.iter().flat_map(PhaseCheck::lines));
         lines.push(self.workspaces.line());
+        if !self.manifest.is_empty() {
+            let files: Vec<String> = self
+                .manifest
+                .iter()
+                .map(|file| file.display().to_string())
+                .collect();
+            lines.push(format!("manifest: {}", files.join(", ")));
+        }
+        for file in &self.unread {
+            if let Some(name) = file.file_name() {
+                lines.push(format!("unread: {STATE_DIR}/{}", name.to_string_lossy()));
+            }
+        }
         lines
     }
 }
 
+/// The `.toml` files directly inside `<root>/.zaf/` that no load reads: every one but the
+/// project's `config.toml` and `local.toml`, in name order.
+fn unread_tomls(root: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(root.join(STATE_DIR)) else {
+        return Vec::new();
+    };
+    let mut files: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "toml"))
+        .filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name != "config.toml" && name != "local.toml")
+        })
+        .collect();
+    files.sort();
+    files
+}
+
 impl PathCheck {
+    /// `<what>: ok (<path>)`, or the failure with the absolute path tried:
+    /// `<what> not found: <path>`, and `workspaces dir not creatable: <path>`.
     fn line(&self) -> String {
-        let state = match (self.what, self.ok) {
-            (_, true) => "ok",
-            ("design dir" | "design index", false) => "missing",
-            (_, false) => "not creatable",
-        };
-        format!("{}: {state} ({})", self.what, self.path.display())
+        let path = self.path.display();
+        match (self.what, self.ok) {
+            (what, true) => format!("{what}: ok ({path})"),
+            ("workspaces dir", false) => format!("workspaces dir not creatable: {path}"),
+            (what, false) => format!("{what} not found: {path}"),
+        }
     }
 }
 
@@ -485,7 +539,7 @@ pub fn packs(root: &Path, manifest: &Manifest) -> Vec<PackCheck> {
             let home = profile::home(&state_dir, name);
             let version = pack_ref
                 .as_ref()
-                .and_then(|pack_ref| installed_version(&home, &pack_ref.to_string()));
+                .and_then(|pack_ref| profile::installed_version(&home, &pack_ref.to_string()));
             let mut check = PackCheck {
                 profile: name.to_string(),
                 pack: pack_ref.as_ref().map(ToString::to_string),
@@ -497,24 +551,6 @@ pub fn packs(root: &Path, manifest: &Manifest) -> Vec<PackCheck> {
             check
         })
         .collect()
-}
-
-/// The version a profile at `home` has installed for `id` (`plugin@marketplace`), from its
-/// `plugins/installed_plugins.json`; `unknown` when installed with no version, `None` when the
-/// file is missing or unreadable or does not list `id`.
-fn installed_version(home: &Path, id: &str) -> Option<String> {
-    let text = fs::read_to_string(home.join(INSTALLED_PLUGINS_FILE)).ok()?;
-    let installed: serde_json::Value = serde_json::from_str(&text).ok()?;
-    let entries = installed.get("plugins")?.get(id)?.as_array()?;
-    if entries.is_empty() {
-        return None;
-    }
-    let version = entries
-        .iter()
-        .find_map(|entry| entry.get("version")?.as_str())
-        .map(str::trim)
-        .filter(|version| !version.is_empty());
-    Some(version.unwrap_or(UNKNOWN_VERSION).to_owned())
 }
 
 /// The version the pack's own `.claude-plugin/plugin.json` declares under `source`; `None` when
@@ -558,21 +594,13 @@ pub fn doctor_with(
         .iter()
         .map(|(tool, requirement)| check_tool(commands, tool, requirement))
         .collect();
-    let design_path = design_dir(root, &manifest.design);
-    let design_index = design_path.as_ref().map(|dir| {
-        let index = manifest
-            .design
-            .index
-            .as_deref()
-            .unwrap_or(Path::new(DEFAULT_DESIGN_INDEX));
-        let path = dir.join(index);
-        PathCheck {
-            what: "design index",
-            ok: path.is_file(),
-            path,
-        }
+    // Both paths come from the manifest's own functions, as for `ask`, `brief` and `setup`.
+    let design_index = manifest.design.index_path(root).map(|path| PathCheck {
+        what: "design index",
+        ok: path.is_file(),
+        path,
     });
-    let design = design_path.map(|path| PathCheck {
+    let design = design_dir(root, &manifest.design).map(|path| PathCheck {
         what: "design dir",
         ok: path.is_dir(),
         path,
@@ -583,18 +611,30 @@ pub fn doctor_with(
         ok: creatable(&workspaces_path),
         path: workspaces_path,
     };
+    let actions_path = root.join(STATE_DIR).join(ACTIONS_DIR);
+    let actions_dir = PathCheck {
+        what: "actions dir",
+        ok: actions_path.is_dir(),
+        path: actions_path,
+    };
     let (actions, actions_error) = actions::check_actions(root, zaf_home, manifest);
     let needed = needed::check_needed(root, zaf_home, manifest);
+    let phases = phases::check_phases(root, zaf_home, manifest);
     Report {
         tools,
         design,
         design_index,
         workspaces,
+        actions_dir,
         logins: logins(root, manifest, commands, claude_home, now),
         packs: packs(root, manifest),
+        stale: profile::stale_homes(&root.join(STATE_DIR), manifest),
         actions,
         actions_error,
         needed,
+        phases,
+        manifest: files_read(root, zaf_home),
+        unread: unread_tomls(root),
     }
 }
 

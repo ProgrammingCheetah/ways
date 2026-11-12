@@ -1,7 +1,7 @@
 use super::*;
-use crate::domain::{AskKind, PageStatus, TaskLabel};
+use crate::domain::{AskKind, PageStatus, Ticket, TicketState};
 use crate::fakes::{FakeBoard, FakeDesign, FakeRunner};
-use crate::ports::{RunOutput, Ticket};
+use crate::ports::RunOutput;
 
 const BODY: &str = "\
 Goal: Members export their reading list as CSV.
@@ -49,11 +49,13 @@ impl Scene {
     fn new() -> Self {
         let board = FakeBoard::default();
         board.add_ticket(Ticket {
-            number: task(),
-            epic: Some(IssueNumber::from(10)),
-            title: "Export a reading list".to_owned(),
-            body: BODY.to_owned(),
-            label: Some(TaskLabel::Claimed),
+            id: task(),
+            epic: Some(TicketId::from(10)),
+            title: "Export a reading list".into(),
+            body: BODY.into(),
+            state: Some(TicketState::Claimed),
+            url: "".into(),
+            kind: None,
         });
         let design = FakeDesign::default();
         design.add_page(page("1001", PageStatus::Decided, EXPORT_PAGE));
@@ -122,8 +124,8 @@ impl Scene {
     }
 }
 
-fn task() -> IssueNumber {
-    IssueNumber::from(12)
+fn task() -> TicketId {
+    TicketId::from(12)
 }
 
 fn noon() -> SystemTime {
@@ -336,13 +338,15 @@ fn a_failed_ask_is_not_served_from_the_log_and_the_next_ask_runs_again() {
 #[test]
 fn a_second_ask_on_another_task_appends_its_own_lines() {
     let scene = Scene::new();
-    let other = IssueNumber::from(13);
+    let other = TicketId::from(13);
     scene.board.add_ticket(Ticket {
-        number: other,
-        epic: Some(IssueNumber::from(10)),
-        title: "Import a reading list".to_owned(),
-        body: BODY.to_owned(),
-        label: Some(TaskLabel::Claimed),
+        id: other,
+        epic: Some(TicketId::from(10)),
+        title: "Import a reading list".into(),
+        body: BODY.into(),
+        state: Some(TicketState::Claimed),
+        url: "".into(),
+        kind: None,
     });
     let not_settled = "q1: not settled\n    next: question ticket on #12 (door: no)\n";
     Scene::record(&scene.local, not_settled);
@@ -867,11 +871,15 @@ fn titled(id: &str, title: &str, text: &str) -> Page {
 fn scene_naming_no_pages() -> Scene {
     let scene = Scene::new();
     scene.board.add_ticket(Ticket {
-        number: task(),
-        epic: Some(IssueNumber::from(10)),
-        title: "Export a reading list".to_owned(),
-        body: BODY.replace("Design pages: 1001 (decided)", "Design pages: none"),
-        label: Some(TaskLabel::Claimed),
+        id: task(),
+        epic: Some(TicketId::from(10)),
+        title: "Export a reading list".into(),
+        body: BODY
+            .replace("Design pages: 1001 (decided)", "Design pages: none")
+            .into(),
+        state: Some(TicketState::Claimed),
+        url: "".into(),
+        kind: None,
     });
     let design = FakeDesign::default();
     design.add_page(titled(

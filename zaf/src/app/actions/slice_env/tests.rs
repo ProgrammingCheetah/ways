@@ -6,8 +6,8 @@ use std::path::PathBuf;
 
 use super::*;
 use crate::app::actions::{Caller, MINUTE, Nesting, RunOutcome, RunResult, run_action};
+use crate::domain::Ticket;
 use crate::fakes::FakeBoard;
-use crate::ports::Ticket;
 
 const TASK: u64 = 200;
 const EPIC: u64 = 103;
@@ -98,11 +98,13 @@ impl Place {
 fn board() -> FakeBoard {
     let board = FakeBoard::default();
     board.add_ticket(Ticket {
-        number: IssueNumber::from(TASK),
-        epic: Some(IssueNumber::from(EPIC)),
-        title: TITLE.to_owned(),
-        body: String::new(),
-        label: None,
+        id: TicketId::from(TASK),
+        epic: Some(TicketId::from(EPIC)),
+        title: TITLE.into(),
+        body: "".into(),
+        state: None,
+        url: "".into(),
+        kind: None,
     });
     board
 }

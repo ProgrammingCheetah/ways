@@ -3,7 +3,7 @@
 # zaf 1: conflicted: the merge stops on conflicts, the paths are in the log and the slice is unchanged
 # zaf 2: a backend failed or the call was refused (the arguments are not <slice> <base>, the slice is not open on that base, it has uncommitted work, jj is missing or the fetch failed); the slice is unchanged
 # zaf mode: 750
-# zaf group: team, release
+# zaf group: team, release, merge
 slice=$1
 base=$2
 

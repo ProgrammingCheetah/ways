@@ -4,13 +4,13 @@ use super::*;
 
 #[test]
 fn task_label_tokens_are_pinned() {
-    let tokens: Vec<String> = TaskLabel::VARIANTS
+    let tokens: Vec<String> = TicketState::VARIANTS
         .iter()
         .map(ToString::to_string)
         .collect();
     assert_eq!(tokens, ["ready", "claimed", "blocked", "question", "done"]);
-    for label in TaskLabel::VARIANTS {
-        assert_eq!(label.to_string().parse::<TaskLabel>(), Ok(*label));
+    for label in TicketState::VARIANTS {
+        assert_eq!(label.to_string().parse::<TicketState>(), Ok(*label));
     }
 }
 

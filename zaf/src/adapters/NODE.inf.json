@@ -1,6 +1,6 @@
 {
   "path": "zaf/src/adapters",
-  "charted": "2026-11-03",
+  "charted": "2026-11-10",
   "short": "live adapters over external CLIs",
   "is": "The live port implementations: a directory design source, a shell gate, the GitHub board and forge through gh, a jj VCS, a process runner and the system shell.",
   "type": "code",
@@ -47,7 +47,7 @@
     },
     {
       "name": "github/",
-      "role": "board on issues, forge on PRs, GhCommand, comment notes, gh JSON rows",
+      "role": "board on issues or a Project (state in labels or a Project field, github/state.rs), forge on PRs, GhCommand with gh api graphql, comment notes, gh JSON rows",
       "node": false
     },
     {
@@ -58,6 +58,11 @@
     {
       "name": "jj/",
       "role": "the jj command door",
+      "node": false
+    },
+    {
+      "name": "process.rs",
+      "role": "the process table: a Holder (pid plus start time), whether it still runs, and this process's ancestors, from /proc or ps",
       "node": false
     },
     {
@@ -84,7 +89,8 @@
   "notes": [
     "Claims and heartbeats are plain issue comments; reports and rulings open with a hidden HTML marker (github/notes.rs)",
     "github/tests.rs puts zaf/tests/fixtures/gh first on PATH; jj/tests.rs drives a real jj",
-    "One adapter per kind today: board github-issues, forge github, vcs jj, design repo-dir or git-sibling; a git Vcs adapter is a named later use case",
-    "The gate's run folder carries a .gitignore of `*`, so gate logs never show as uncommitted work"
+    "One adapter per kind today: board github-issues or github-projects, forge github, vcs jj, design repo-dir or git-sibling; a git Vcs adapter is a named later use case",
+    "The gate's run folder carries a .gitignore of `*`, so gate logs never show as uncommitted work",
+    "A GraphQL call GitHub calls transient (two writes to one Project at once) is tried three more times; unit tests zero the pauses"
   ]
 }

@@ -10,6 +10,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use super::slot::Slot;
 use crate::manifest::CommandLine;
 use crate::ports::{GateRun, GateVerdict, PortError, Shell};
 
@@ -22,6 +23,7 @@ pub struct SystemShell {
     dir: PathBuf,
     timeout: Duration,
     env: BTreeMap<String, String>,
+    slot: Option<(Slot, String)>,
 }
 
 impl SystemShell {
@@ -33,7 +35,16 @@ impl SystemShell {
             dir: dir.to_owned(),
             timeout,
             env: BTreeMap::new(),
+            slot: None,
         }
+    }
+
+    /// The same shell with every line run inside `slot`, its record naming `level`; with no
+    /// slot, lines run as they are.
+    #[must_use]
+    pub fn with_slot(mut self, slot: Option<Slot>, level: &str) -> Self {
+        self.slot = slot.map(|slot| (slot, level.to_owned()));
+        self
     }
 
     /// The same shell with `env` set on every line, on top of the inherited environment: a
@@ -48,7 +59,12 @@ impl SystemShell {
 impl Shell for SystemShell {
     fn run(&self, line: &CommandLine) -> Result<GateRun, PortError> {
         // `exec 2>&1` first, so even a syntax error in the line is reported on the captured stream.
-        let script = format!("exec 2>&1\n{}", line.as_ref());
+        // The record lives as long as the run: it drops when this function returns.
+        let (_held, line_to_run) = match &self.slot {
+            Some((slot, level)) => (Some(slot.hold(level)?), slot.command(line.as_ref())),
+            None => (None, line.as_ref().to_owned()),
+        };
+        let script = format!("exec 2>&1\n{line_to_run}");
         let mut command = Command::new("sh");
         command
             .arg("-c")

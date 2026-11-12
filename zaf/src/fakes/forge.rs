@@ -2,13 +2,37 @@
 
 use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::time::SystemTime;
 
 use crate::ports::{
-    Check, Forge, PortError, PrMerge, PrNumber, PrRequest, ReviewComment, ScanningAlert,
+    BaseName, Check, Forge, PortError, PrNumber, PullRequest, ReviewComment, ScanningAlert,
+    SliceName,
 };
 
+/// What a pull request is opened from and into.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrRequest {
+    /// The slice it carries.
+    pub slice: SliceName,
+    /// The line it targets.
+    pub base: BaseName,
+    /// Its title.
+    pub title: String,
+    /// Its body.
+    pub body: String,
+}
+
+/// What merging a pull request did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrMerge {
+    /// It merged now.
+    Merged,
+    /// It had merged before; nothing changed.
+    AlreadyMerged,
+}
+
 #[derive(Debug, Clone)]
-struct PullRequest {
+struct OpenPull {
     request: PrRequest,
     checks: Vec<Check>,
     comments: Vec<ReviewComment>,
@@ -16,13 +40,17 @@ struct PullRequest {
     head: Option<String>,
     files: Vec<String>,
     merged: bool,
+    handoff: Option<String>,
+    opened_at: SystemTime,
+    merged_at: Option<SystemTime>,
 }
 
 #[derive(Debug, Default)]
 struct State {
-    pulls: BTreeMap<PrNumber, PullRequest>,
+    pulls: BTreeMap<PrNumber, OpenPull>,
     next_number: u64,
     merged_fails: bool,
+    handoff_fails: bool,
 }
 
 /// A forge held in memory. Arrange reviews with [`FakeForge::set_checks`]
@@ -76,9 +104,29 @@ impl FakeForge {
         Ok(())
     }
 
+    /// Sets the time a pull request opened; a new one opened at the epoch.
+    pub fn set_opened_at(&self, pr: PrNumber, at: SystemTime) -> Result<(), PortError> {
+        let mut state = self.state();
+        state.pull_mut(pr)?.opened_at = at;
+        Ok(())
+    }
+
+    /// Sets the time a pull request merged; [`FakeForge::merge`] sets it to the epoch when none
+    /// was arranged first.
+    pub fn set_merged_at(&self, pr: PrNumber, at: SystemTime) -> Result<(), PortError> {
+        let mut state = self.state();
+        state.pull_mut(pr)?.merged_at = Some(at);
+        Ok(())
+    }
+
     /// Makes every [`Forge::merged`] read fail with a backend error, as a forge that is down does.
     pub fn fail_merged_reads(&self) {
         self.state().merged_fails = true;
+    }
+
+    /// Makes every [`Forge::handoff`] and [`Forge::set_handoff`] call fail with a backend error.
+    pub fn fail_handoffs(&self) {
+        self.state().handoff_fails = true;
     }
 
     /// The request a pull request was opened with.
@@ -92,15 +140,17 @@ impl FakeForge {
 }
 
 impl State {
-    fn pull_mut(&mut self, pr: PrNumber) -> Result<&mut PullRequest, PortError> {
+    fn pull_mut(&mut self, pr: PrNumber) -> Result<&mut OpenPull, PortError> {
         self.pulls
             .get_mut(&pr)
             .ok_or_else(|| PortError::NotFound(format!("pull request {pr}")))
     }
 }
 
-impl Forge for FakeForge {
-    fn open_pr(&self, request: &PrRequest) -> Result<PrNumber, PortError> {
+impl FakeForge {
+    /// Opens a pull request for a slice; a slice with an open one gets that one back. Opening
+    /// is an action's work in zaf, so the port has no such call; this arranges the scene.
+    pub fn open_pr(&self, request: &PrRequest) -> Result<PrNumber, PortError> {
         let mut state = self.state();
         let existing = state
             .pulls
@@ -112,7 +162,7 @@ impl Forge for FakeForge {
         }
         state.next_number += 1;
         let number = PrNumber::from(state.next_number);
-        let pull = PullRequest {
+        let pull = OpenPull {
             request: request.clone(),
             checks: Vec::new(),
             comments: Vec::new(),
@@ -120,11 +170,28 @@ impl Forge for FakeForge {
             head: None,
             files: Vec::new(),
             merged: false,
+            handoff: None,
+            opened_at: SystemTime::UNIX_EPOCH,
+            merged_at: None,
         };
         state.pulls.insert(number, pull);
         Ok(number)
     }
 
+    /// Merges the pull request; one already merged is [`PrMerge::AlreadyMerged`].
+    pub fn merge(&self, pr: PrNumber) -> Result<PrMerge, PortError> {
+        let mut state = self.state();
+        let pull = state.pull_mut(pr)?;
+        if pull.merged {
+            return Ok(PrMerge::AlreadyMerged);
+        }
+        pull.merged = true;
+        pull.merged_at.get_or_insert(SystemTime::UNIX_EPOCH);
+        Ok(PrMerge::Merged)
+    }
+}
+
+impl Forge for FakeForge {
     fn checks(&self, pr: PrNumber) -> Result<Vec<Check>, PortError> {
         let mut state = self.state();
         Ok(state.pull_mut(pr)?.checks.clone())
@@ -133,6 +200,15 @@ impl Forge for FakeForge {
     fn review_comments(&self, pr: PrNumber) -> Result<Vec<ReviewComment>, PortError> {
         let mut state = self.state();
         Ok(state.pull_mut(pr)?.comments.clone())
+    }
+
+    fn pull_request(&self, pr: PrNumber) -> Result<PullRequest, PortError> {
+        let mut state = self.state();
+        let pull = state.pull_mut(pr)?;
+        Ok(PullRequest {
+            opened_at: pull.opened_at,
+            merged_at: pull.merged_at,
+        })
     }
 
     fn head(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
@@ -158,13 +234,20 @@ impl Forge for FakeForge {
         Ok(state.pull_mut(pr)?.alerts.clone())
     }
 
-    fn merge(&self, pr: PrNumber) -> Result<PrMerge, PortError> {
+    fn handoff(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
         let mut state = self.state();
-        let pull = state.pull_mut(pr)?;
-        if pull.merged {
-            return Ok(PrMerge::AlreadyMerged);
+        if state.handoff_fails {
+            return Err(PortError::Backend("the forge is down".to_owned()));
         }
-        pull.merged = true;
-        Ok(PrMerge::Merged)
+        Ok(state.pull_mut(pr)?.handoff.clone())
+    }
+
+    fn set_handoff(&self, pr: PrNumber, text: &str) -> Result<(), PortError> {
+        let mut state = self.state();
+        if state.handoff_fails {
+            return Err(PortError::Backend("the forge is down".to_owned()));
+        }
+        state.pull_mut(pr)?.handoff = Some(text.to_owned());
+        Ok(())
     }
 }

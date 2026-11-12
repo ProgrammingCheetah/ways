@@ -24,8 +24,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::brief::{RUNS_DIR, ensure_runs_dir, named_pages};
 use crate::domain::{
-    Answer, AnsweredQuestion, Ask, AskError, Instance, IssueNumber, PageId, PageStatus, Profile,
-    Question, QuestionId, QuoteCheckError, RoleName, TaskTemplate, Verdict,
+    Answer, AnsweredQuestion, Ask, AskError, Instance, PageId, PageStatus, Profile, Question,
+    QuestionId, QuoteCheckError, RoleName, TaskTemplate, TicketId, Verdict,
 };
 use crate::manifest::Rung;
 use crate::ports::{Board, Design, Page, PortError, RunRequest, Runner};
@@ -70,7 +70,7 @@ pub struct LadderRung<'a> {
 #[derive(Debug, Clone, Copy)]
 pub struct AskQuery<'a> {
     /// The task whose named pages go first.
-    pub task: IssueNumber,
+    pub task: TicketId,
     /// Who asks, for the log.
     pub from: &'a str,
     /// Each question as `<kind>: <question>`.
@@ -298,7 +298,7 @@ pub fn ask(query: &AskQuery<'_>, ports: &AskPorts<'_>) -> Result<AskOutcome, Ask
     let mut unreadable: Vec<(QuestionId, PageId)> = Vec::new();
     if !open.is_empty() {
         let ticket = ports.board.task(query.task).map_err(AskFailure::Board)?;
-        let template = ticket.body.parse::<TaskTemplate>().ok();
+        let template = ticket.template().ok();
         let chosen =
             choose_pages(ports.design, template.as_ref(), &open).map_err(AskFailure::Design)?;
         let mut fresh_reads = chosen.reads.iter();
@@ -307,7 +307,7 @@ pub fn ask(query: &AskQuery<'_>, ports: &AskPorts<'_>) -> Result<AskOutcome, Ask
                 *read = fresh_reads.next().cloned().unwrap_or_default();
             }
         }
-        parsed.context = vec![ticket.title];
+        parsed.context = vec![ticket.title.to_string()];
         parsed.questions = open;
         let prompt = keeper_prompt(query, &parsed, &chosen.index, &chosen.pages)?;
         // A keeper run can outlive `zaf ask` (a caller's timeout kills the process, the
@@ -704,6 +704,7 @@ fn try_rung(
         prompt: prompt.to_owned(),
         dir,
         env: std::collections::BTreeMap::new(),
+        holder_file: None,
     };
     let output = match runner.run(&request) {
         Ok(output) => output,
@@ -822,7 +823,7 @@ fn run_dir(query: &AskQuery<'_>, index: usize, rung: &Rung) -> Result<PathBuf, A
     Ok(dir)
 }
 
-fn not_settled(id: QuestionId, task: IssueNumber) -> AnsweredQuestion {
+fn not_settled(id: QuestionId, task: TicketId) -> AnsweredQuestion {
     AnsweredQuestion {
         id,
         verdict: Verdict::NotSettled {

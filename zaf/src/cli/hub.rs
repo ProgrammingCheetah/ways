@@ -16,6 +16,7 @@ use std::time::{Duration, SystemTime};
 
 use super::exit::{self, BACKEND, OK, REFUSED};
 use super::{Cli, HubAction, Verb};
+use crate::adapters::process;
 use crate::app::check::Target;
 use crate::app::guard;
 use crate::app::hub::{
@@ -26,7 +27,7 @@ use crate::app::report::PriceTable;
 use crate::app::report::ledger::{LEDGER_FILE, Ledger, LedgerRow};
 use crate::app::{actions::SliceRecords, spawn};
 use crate::composition::{Composition, zaf_home};
-use crate::domain::IssueNumber;
+use crate::domain::TicketId;
 
 /// How much of a hook's payload is read: a tool call with its output can be large, and the hook
 /// needs only its first fields.
@@ -103,7 +104,7 @@ pub fn leave_tool_report(payload: &str, here: Option<&Path>, home: Option<&Path>
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Event {
     /// The task it is about, when the verb names one.
-    pub task: Option<IssueNumber>,
+    pub task: Option<TicketId>,
     /// What happened, in general words.
     pub what: &'static str,
     /// Whether a refusal (exit 1) still counts: a check that finds a failure has still run.
@@ -111,7 +112,7 @@ pub struct Event {
 }
 
 impl Event {
-    fn done(task: impl Into<Option<IssueNumber>>, what: &'static str) -> Option<Self> {
+    fn done(task: impl Into<Option<TicketId>>, what: &'static str) -> Option<Self> {
         Some(Self {
             task: task.into(),
             what,
@@ -119,7 +120,7 @@ impl Event {
         })
     }
 
-    fn check(task: Option<IssueNumber>, what: &'static str) -> Option<Self> {
+    fn check(task: Option<TicketId>, what: &'static str) -> Option<Self> {
         Some(Self {
             task,
             what,
@@ -144,8 +145,12 @@ pub fn event_of(verb: &Verb) -> Option<Event> {
             super::BoardAction::Done { task } => Event::done(*task, "finished"),
             super::BoardAction::Question { on, .. } => Event::done(*on, "question raised"),
             super::BoardAction::Ruling { .. } => Event::done(None, "question ruled"),
+            super::BoardAction::File { .. } => Event::done(None, "task filed"),
             // A heartbeat on the ticket and a listing change nothing the hub shows.
-            super::BoardAction::Ready | super::BoardAction::Report { .. } => None,
+            super::BoardAction::Ready
+            | super::BoardAction::Report { .. }
+            | super::BoardAction::Handoff { .. }
+            | super::BoardAction::Lint { .. } => None,
         },
         Verb::Slice { action } => match action {
             super::SliceAction::Open { task } => Event::done(*task, "slice opened"),
@@ -163,7 +168,7 @@ pub fn event_of(verb: &Verb) -> Option<Event> {
             let task = rest
                 .first()
                 .and_then(|word| word.to_str())
-                .and_then(|word| word.trim_start_matches('#').parse::<IssueNumber>().ok());
+                .and_then(|word| word.trim_start_matches('#').parse::<TicketId>().ok());
             match name.to_str()? {
                 "slice-open" => Event::done(task, "slice opened"),
                 "slice-pr" => Event::done(task, "pull request opened"),
@@ -321,7 +326,8 @@ fn show(cli: &Cli, port: Option<u16>) -> u8 {
     let project = composition.manifest().project.name.to_string();
     let slots_total = composition.manifest().spawn.slots;
     let gatherer = |now: SystemTime| {
-        let running = spawn::load(&state_dir).map_or(0, |state| state.running());
+        let running =
+            spawn::derive(&state_dir, &process::alive).map_or(0, |(state, _)| state.running());
         let ledger = ledger_rows(&composition);
         gather(&HubInputs {
             board: board.as_ref(),

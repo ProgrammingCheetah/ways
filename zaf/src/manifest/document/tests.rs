@@ -317,10 +317,13 @@ fn project_and_board_alone_load_with_the_pack_defaults() {
     assert_eq!(manifest.isolation.kind, IsolationKind::Process);
     assert!(manifest.forbidden.commands.is_empty());
     let role_names: Vec<&str> = manifest.roles.keys().map(AsRef::as_ref).collect();
-    assert_eq!(role_names, ["programmer", "team"]);
+    assert_eq!(role_names, ["challenger", "planning", "programmer", "team"]);
     let team = &manifest.roles[&RoleName::from("team")];
     assert_eq!(team.profile, Profile::Build);
     assert_eq!(team.batch, Some(4));
+    let planning = &manifest.roles[&RoleName::from("planning")];
+    assert_eq!((planning.profile, planning.turns), (Profile::Build, 80));
+    assert_eq!(manifest.roles[&RoleName::from("challenger")].turns, 60);
 }
 
 #[test]
@@ -509,6 +512,46 @@ fn a_partial_section_keeps_the_defaults_it_leaves_out() {
     let manifest = load(&only_slots).expect("loads");
     assert_eq!(manifest.spawn.slots, 3);
     assert_eq!(manifest.spawn.guard, [70, 85, 95]);
+}
+
+#[test]
+fn a_zero_interval_fails() {
+    let zero = with("[spawn]\ntick_minutes = 0\n");
+    let error = load(&zero).expect_err("a watch with no interval");
+    assert!(
+        matches!(
+            error,
+            ManifestError::Invalid {
+                section: "spawn",
+                key: "tick_minutes",
+                ..
+            }
+        ),
+        "{error}"
+    );
+    // From any project layer, not only the one file `load` reads.
+    let folder = format!("[project]\nname = \"p\"\n{BOARD}[spawn]\ntick_minutes = 0\n");
+    let error = load_layers(&[(".zaf/config.toml", &folder)], None).expect_err("folder");
+    assert!(error.to_string().contains("tick_minutes"), "{error}");
+}
+
+#[test]
+fn the_tick_interval_defaults_to_five_minutes_and_reads_from_the_project_layers() {
+    assert_eq!(load(MINIMAL).expect("loads").spawn.tick_minutes, 5);
+    let set = load(&with("[spawn]\ntick_minutes = 2\n")).expect("loads");
+    assert_eq!(set.spawn.tick_minutes, 2);
+    assert_eq!(
+        set.spawn.slots, 1,
+        "the rest of the section keeps its defaults"
+    );
+
+    let root = "[project]\nname = \"p\"\n[spawn]\ntick_minutes = 3\n";
+    let folder = format!("[project]\nname = \"p\"\n{BOARD}[spawn]\ntick_minutes = 7\n");
+    let folder_only = load_layers(&[(".zaf/config.toml", &folder)], None).expect("folder");
+    assert_eq!(folder_only.spawn.tick_minutes, 7);
+    let both = load_layers(&[(".zaf.toml", root), (".zaf/config.toml", &folder)], None)
+        .expect("both load");
+    assert_eq!(both.spawn.tick_minutes, 3, "the root file wins a conflict");
 }
 
 #[test]
@@ -774,4 +817,210 @@ fn env_table_cannot_set_any_zaf_name() {
     // Names that merely hold ZAF are fine.
     let manifest = load(&with("[env]\nMY_ZAF_CACHE = \"x\"\nZAFFER = \"y\"\n")).expect("loads");
     assert_eq!(manifest.env.vars().len(), 2);
+}
+
+#[test]
+fn a_projects_board_needs_its_project_and_reads_its_optional_keys() {
+    let without_project =
+        "[project]\nname = \"b\"\n[board]\nkind = \"github-projects\"\nrepo = \"example/b\"\n";
+    assert!(matches!(
+        load(without_project),
+        Err(ManifestError::MissingKey {
+            section: "board",
+            key: "project",
+            ..
+        })
+    ));
+    let full = "[project]\nname = \"b\"\n[board]\nkind = \"github-projects\"\nrepo = \"example/b\"\n\
+                project = 4\nowner = \"example-org\"\nstate_field = \"Stage\"\n";
+    let manifest = load(full).expect("a projects board loads");
+    assert_eq!(manifest.board.kind, BoardKind::GithubProjects);
+    assert_eq!(manifest.board.project, Some(4));
+    assert_eq!(manifest.board.owner.as_deref(), Some("example-org"));
+    assert_eq!(manifest.board.state_field.as_deref(), Some("Stage"));
+}
+
+fn names(list: &[ActionName]) -> Vec<&str> {
+    list.iter().map(ActionName::as_str).collect()
+}
+
+#[test]
+fn a_type_has_its_phase_list() {
+    let manifest = load(&with(
+        "[phases]\nTask = [\"implement\", \"ci\", \"merge\"]\n",
+    ))
+    .expect("loads");
+    let list = manifest.phase_list("Task").expect("a list for Task");
+    assert_eq!(names(list), ["implement", "ci", "merge"]);
+    assert_eq!(manifest.phase_list("Bug"), None, "no list for Bug");
+    assert!(load(MINIMAL).expect("loads").phases.is_empty());
+}
+
+#[test]
+fn an_empty_list_fails() {
+    let error = load(&with("[phases]\nTask = [\"implement\"]\nBug = []\n")).expect_err("empty");
+    assert!(
+        matches!(error, ManifestError::EmptyPhaseList { .. }),
+        "{error}"
+    );
+    assert!(
+        error.to_string().contains("`Bug`"),
+        "names the type: {error}"
+    );
+}
+
+#[test]
+fn a_name_twice_fails() {
+    let error = load(&with("[phases]\nBug = [\"fix\", \"ci\", \"fix\"]\n")).expect_err("twice");
+    assert!(
+        matches!(error, ManifestError::PhaseListedTwice { .. }),
+        "{error}"
+    );
+    let text = error.to_string();
+    assert!(text.contains("`fix`") && text.contains("`Bug`"), "{text}");
+    // The same name in two types' lists is no repeat.
+    load(&with("[phases]\nTask = [\"ci\"]\nBug = [\"ci\"]\n")).expect("one list each");
+}
+
+#[test]
+fn a_higher_layer_replaces_a_list() {
+    let root = "[phases]\nTask = [\"build\", \"merge\"]\n";
+    let folder = format!(
+        "[project]\nname = \"p\"\n{BOARD}[phases]\nTask = [\"implement\", \"ci\", \"merge\"]\nBug = [\"fix\"]\n"
+    );
+    let manifest =
+        load_layers(&[(".zaf.toml", root), (".zaf/config.toml", &folder)], None).expect("loads");
+    assert_eq!(
+        names(manifest.phase_list("Task").expect("Task")),
+        ["build", "merge"],
+        "the root's list replaces the folder's whole list, never merged"
+    );
+    assert_eq!(
+        names(manifest.phase_list("Bug").expect("Bug")),
+        ["fix"],
+        "a type only the lower layer lists keeps its list"
+    );
+}
+
+/// A project file that sets the slots to 2 and the guard thresholds, for the local layer to
+/// lay over.
+fn project_file() -> String {
+    format!("[project]\nname = \"p\"\n{BOARD}[spawn]\nslots = 2\nguard = [60, 80, 90]\n")
+}
+
+/// The failure of loading `local` as `.zaf/local.toml` over the project file, as text.
+fn local_refusal(local: &str) -> String {
+    let project = project_file();
+    load_layers(&[(".zaf.toml", &project), (".zaf/local.toml", local)], None)
+        .expect_err(local)
+        .to_string()
+}
+
+#[test]
+fn local_toml_overrides_the_project_slots() {
+    let project = project_file();
+    let folder = "[spawn]\nslots = 3\n";
+    let manifest = load_layers(
+        &[
+            (".zaf.toml", &project),
+            (".zaf/config.toml", folder),
+            (".zaf/local.toml", "[spawn]\nslots = 4\n"),
+        ],
+        None,
+    )
+    .expect("loads");
+    assert_eq!(manifest.spawn.slots, 4, "the local file is the top layer");
+    assert_eq!(
+        manifest.spawn.guard,
+        [60, 80, 90],
+        "what local leaves out stays"
+    );
+}
+
+#[test]
+fn local_toml_refuses_other_settings() {
+    for (local, key) in [
+        ("[forbidden]\ncommands = [\"x\"]\n", "[forbidden]"),
+        ("[requires]\njj = \"*\"\n", "[requires]"),
+        ("[spawn]\nguard = [1, 2, 3]\n", "[spawn] guard"),
+        ("[spawn]\nslots = 4\nguard = [1, 2, 3]\n", "[spawn] guard"),
+        ("[runners.x]\ncommand = \"x\"\n", "[runners]"),
+        ("[project]\nname = \"other\"\n", "[project]"),
+        ("[gate]\nfull = \"true\"\n", "[gate] full"),
+        ("[auth]\ntoken_env = \"X\"\n[env]\nA = \"b\"\n", "[env]"),
+        ("[report]\nother = 1\n", "[report] other"),
+        ("[forbidden]\n", "[forbidden]"),
+        ("stray = 1\n", "stray"),
+    ] {
+        let message = local_refusal(local);
+        assert!(
+            message.contains(&format!(
+                ".zaf/local.toml may set only [spawn] slots, [gate] slot and its own tables; \
+                 it sets {key}"
+            )),
+            "{local}: {message}"
+        );
+    }
+}
+
+#[test]
+fn local_toml_refuses_the_machine_budget() {
+    // The machine budget, reserve and size table are #414's and #434's: not yet allowed here.
+    for (local, key) in [
+        ("[spawn]\nbudget = 5\n", "[spawn] budget"),
+        ("[spawn]\nreserve = 10\n", "[spawn] reserve"),
+        ("[spawn.sizes]\nS = 1\n", "[spawn] sizes"),
+    ] {
+        let message = local_refusal(local);
+        assert!(message.contains(&format!("it sets {key}")), "{message}");
+        assert!(message.contains(".zaf/local.toml"), "{message}");
+    }
+}
+
+#[test]
+fn local_toml_keeps_the_weekly_budget() {
+    let project = project_file();
+    let with_local = load_layers(
+        &[
+            (".zaf.toml", &project),
+            (".zaf/local.toml", "[budget]\nweekly_usd = 100\n"),
+        ],
+        None,
+    )
+    .expect("a weekly budget loads");
+    let without = load_layers(&[(".zaf.toml", &project)], None).expect("loads");
+    assert_eq!(with_local, without, "[budget] never reaches the manifest");
+}
+
+#[test]
+fn local_toml_keeps_its_own_tables() {
+    let project = project_file();
+    let local = "[budget]\nweekly_usd = 100\n\
+                 [report.prices]\nclaude-opus-5-5 = [8.0, 10.0, 0.4, 40.0]\n\
+                 [auth]\ntoken_env = \"ZAF_TOKEN\"\n\
+                 [spawn]\nslots = 6\n";
+    let manifest = load_layers(&[(".zaf.toml", &project), (".zaf/local.toml", local)], None)
+        .expect("its own tables load");
+    assert_eq!(manifest.spawn.slots, 6);
+    let without = load_layers(&[(".zaf.toml", &project)], None).expect("loads");
+    assert_eq!(
+        Manifest {
+            spawn: without.spawn.clone(),
+            ..manifest
+        },
+        without,
+        "only the slots moved"
+    );
+}
+
+#[test]
+fn no_local_toml_loads_as_before() {
+    let project = project_file();
+    let manifest = load_layers(&[(".zaf.toml", &project)], None).expect("loads");
+    assert_eq!(manifest.spawn.slots, 2);
+    assert_eq!(manifest.spawn.guard, [60, 80, 90]);
+    // An empty local file changes nothing either.
+    let empty = load_layers(&[(".zaf.toml", &project), (".zaf/local.toml", "")], None)
+        .expect("an empty local file loads");
+    assert_eq!(empty, manifest);
 }

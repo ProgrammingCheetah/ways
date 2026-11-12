@@ -2,29 +2,31 @@ use super::*;
 use crate::domain::{InstanceNumber, RoleName};
 use crate::fakes::FakeBoard;
 
-fn ticket(number: u64, label: TaskLabel) -> Ticket {
+fn ticket(number: u64, label: TicketState) -> Ticket {
     Ticket {
-        number: IssueNumber::from(number),
-        epic: Some(IssueNumber::from(1)),
-        title: format!("task {number}"),
-        body: String::new(),
-        label: Some(label),
+        id: TicketId::from(number),
+        epic: Some(TicketId::from(1)),
+        title: format!("task {number}").into(),
+        body: "".into(),
+        state: Some(label),
+        url: "".into(),
+        kind: None,
     }
 }
 
 fn instance(number: u32) -> Instance {
     Instance {
         role: RoleName::from("programmer"),
-        epic: IssueNumber::from(1),
+        epic: TicketId::from(1),
         number: InstanceNumber::from(number),
     }
 }
 
 fn seeded() -> FakeBoard {
     let board = FakeBoard::default();
-    board.add_ticket(ticket(2, TaskLabel::Ready));
-    board.add_ticket(ticket(3, TaskLabel::Blocked));
-    board.add_ticket(ticket(4, TaskLabel::Ready));
+    board.add_ticket(ticket(2, TicketState::Ready));
+    board.add_ticket(ticket(3, TicketState::Blocked));
+    board.add_ticket(ticket(4, TicketState::Ready));
     board
 }
 
@@ -32,15 +34,15 @@ fn seeded() -> FakeBoard {
 fn ready_lists_only_ready_tasks_in_order() {
     let board = seeded();
     let port: &dyn Board = &board;
-    let numbers: Vec<IssueNumber> = port
+    let numbers: Vec<TicketId> = port
         .ready()
         .expect("ready")
         .iter()
-        .map(|ticket| ticket.number)
+        .map(|ticket| ticket.id)
         .collect();
-    assert_eq!(numbers, [IssueNumber::from(2), IssueNumber::from(4)]);
+    assert_eq!(numbers, [TicketId::from(2), TicketId::from(4)]);
     assert!(matches!(
-        port.task(IssueNumber::from(9)),
+        port.task(TicketId::from(9)),
         Err(PortError::NotFound(_))
     ));
 }
@@ -49,7 +51,7 @@ fn ready_lists_only_ready_tasks_in_order() {
 fn claims_are_idempotent_for_the_holder_and_exclusive_for_others() {
     let board = seeded();
     let port: &dyn Board = &board;
-    let task = IssueNumber::from(2);
+    let task = TicketId::from(2);
     assert_eq!(port.claim(task, &instance(1)), Ok(ClaimOutcome::Claimed));
     assert_eq!(
         port.claim(task, &instance(1)),
@@ -60,18 +62,18 @@ fn claims_are_idempotent_for_the_holder_and_exclusive_for_others() {
         Err(PortError::Conflict(_))
     ));
     assert!(matches!(
-        port.claim(IssueNumber::from(3), &instance(1)),
+        port.claim(TicketId::from(3), &instance(1)),
         Err(PortError::Rejected(_))
     ));
     assert_eq!(
-        port.task(task).expect("task").label,
-        Some(TaskLabel::Claimed)
+        port.task(task).expect("task").state,
+        Some(TicketState::Claimed)
     );
     assert!(
         port.ready()
             .expect("ready")
             .iter()
-            .all(|ticket| ticket.number != task)
+            .all(|ticket| ticket.id != task)
     );
 }
 
@@ -79,7 +81,7 @@ fn claims_are_idempotent_for_the_holder_and_exclusive_for_others() {
 fn leases_beat_and_release_back_to_ready() {
     let board = seeded();
     let port: &dyn Board = &board;
-    let task = IssueNumber::from(4);
+    let task = TicketId::from(4);
     port.claim(task, &instance(1)).expect("claim");
     let first_beat = port.claims().expect("claims")[0].heartbeat;
     port.heartbeat(task, &instance(1)).expect("heartbeat");
@@ -92,8 +94,8 @@ fn leases_beat_and_release_back_to_ready() {
         .expect("a release by a non-holder is quiet");
     assert_eq!(port.claims().expect("claims").len(), 1);
     assert_eq!(
-        port.task(task).expect("task").label,
-        Some(TaskLabel::Claimed)
+        port.task(task).expect("task").state,
+        Some(TicketState::Claimed)
     );
     assert!(
         board.comments(task).is_empty(),
@@ -103,7 +105,10 @@ fn leases_beat_and_release_back_to_ready() {
     port.release(task, &instance(1))
         .expect("a second release is quiet");
     assert!(port.claims().expect("claims").is_empty());
-    assert_eq!(port.task(task).expect("task").label, Some(TaskLabel::Ready));
+    assert_eq!(
+        port.task(task).expect("task").state,
+        Some(TicketState::Ready)
+    );
     let comments = board.comments(task);
     assert_eq!(comments.len(), 1, "only the first release comments");
     assert!(
@@ -116,12 +121,12 @@ fn leases_beat_and_release_back_to_ready() {
 fn a_release_keeps_question_and_done_and_adds_no_ready() {
     let board = seeded();
     let port: &dyn Board = &board;
-    for (task, label) in [(2, TaskLabel::Question), (4, TaskLabel::Done)] {
-        let task = IssueNumber::from(task);
+    for (task, label) in [(2, TicketState::Question), (4, TicketState::Done)] {
+        let task = TicketId::from(task);
         port.claim(task, &instance(1)).expect("claim");
-        port.label(task, label).expect("label");
+        port.set_state(task, label).expect("label");
         port.release(task, &instance(1)).expect("release");
-        assert_eq!(port.task(task).expect("task").label, Some(label));
+        assert_eq!(port.task(task).expect("task").state, Some(label));
         assert!(port.claims().expect("claims").is_empty());
         assert_eq!(board.comments(task).len(), 1);
     }
@@ -132,9 +137,12 @@ fn a_release_keeps_question_and_done_and_adds_no_ready() {
 fn labels_comments_and_one_report_per_instance() {
     let board = seeded();
     let port: &dyn Board = &board;
-    let task = IssueNumber::from(2);
-    port.label(task, TaskLabel::Done).expect("label");
-    assert_eq!(port.task(task).expect("task").label, Some(TaskLabel::Done));
+    let task = TicketId::from(2);
+    port.set_state(task, TicketState::Done).expect("label");
+    assert_eq!(
+        port.task(task).expect("task").state,
+        Some(TicketState::Done)
+    );
     port.comment(task, "first").expect("comment");
     port.comment(task, "second").expect("comment");
     assert_eq!(board.comments(task), ["first", "second"]);
@@ -150,15 +158,15 @@ fn questions_open_and_take_one_ruling() {
     let board = seeded();
     let port: &dyn Board = &board;
     let new_question = NewQuestion {
-        on: IssueNumber::from(2),
+        on: TicketId::from(2),
         text: "Which columns does the export carry?".to_owned(),
         door: true,
     };
     let question = port.open_question(&new_question).expect("question");
-    assert_eq!(question, IssueNumber::from(5));
+    assert_eq!(question, TicketId::from(5));
     assert_eq!(
-        port.task(question).expect("question ticket").label,
-        Some(TaskLabel::Question)
+        port.task(question).expect("question ticket").state,
+        Some(TicketState::Question)
     );
     port.record_ruling(question, "Title and author.")
         .expect("ruling");
@@ -175,18 +183,18 @@ fn questions_open_and_take_one_ruling() {
 #[test]
 fn a_question_body_names_the_issue_it_was_raised_on() {
     let asked = NewQuestion {
-        on: IssueNumber::from(12),
+        on: TicketId::from(12),
         text: "Which columns?".to_owned(),
         door: false,
     };
     assert_eq!(
         NewQuestion::raised_on(&asked.body()),
-        Some(IssueNumber::from(12))
+        Some(TicketId::from(12))
     );
     let with_newline = format!("{}\n", asked.body());
     assert_eq!(
         NewQuestion::raised_on(&with_newline),
-        Some(IssueNumber::from(12))
+        Some(TicketId::from(12))
     );
     assert_eq!(NewQuestion::raised_on(""), None);
     assert_eq!(NewQuestion::raised_on("Goal: export the list"), None);
@@ -196,7 +204,7 @@ fn a_question_body_names_the_issue_it_was_raised_on() {
 #[test]
 fn a_question_body_followed_by_its_text_still_names_the_issue() {
     let asked = NewQuestion {
-        on: IssueNumber::from(12),
+        on: TicketId::from(12),
         text: "Which columns?\nAnd which order?".to_owned(),
         door: false,
     };
@@ -206,14 +214,16 @@ fn a_question_body_followed_by_its_text_still_names_the_issue() {
     );
     assert_eq!(
         NewQuestion::raised_on(&asked.body()),
-        Some(IssueNumber::from(12))
+        Some(TicketId::from(12))
     );
     let ticket = Ticket {
-        number: IssueNumber::from(30),
+        id: TicketId::from(30),
         epic: None,
-        title: "Which columns?".to_owned(),
-        body: asked.body(),
-        label: None,
+        title: "Which columns?".into(),
+        body: asked.body().into(),
+        state: None,
+        url: "".into(),
+        kind: None,
     };
     assert_eq!(NewQuestion::text_of(&ticket), asked.text);
     assert!(asked.is_asked_by(&ticket));
@@ -222,7 +232,7 @@ fn a_question_body_followed_by_its_text_still_names_the_issue() {
 #[test]
 fn a_question_with_no_word_break_is_cut_at_the_limit() {
     let asked = NewQuestion {
-        on: IssueNumber::from(12),
+        on: TicketId::from(12),
         text: "x".repeat(QUESTION_TITLE_LIMIT + 50),
         door: false,
     };
@@ -234,23 +244,23 @@ fn a_ruling_returns_the_waiting_task_to_ready_and_names_it() {
     let board = seeded();
     let port: &dyn Board = &board;
     let ask = |on: u64| NewQuestion {
-        on: IssueNumber::from(on),
+        on: TicketId::from(on),
         text: "Which columns?".to_owned(),
         door: false,
     };
     let waiting = port.open_question(&ask(2)).expect("question");
-    port.label(IssueNumber::from(2), TaskLabel::Question)
+    port.set_state(TicketId::from(2), TicketState::Question)
         .expect("the task waits");
     let finished = port.open_question(&ask(4)).expect("question");
-    port.label(IssueNumber::from(4), TaskLabel::Done)
+    port.set_state(TicketId::from(4), TicketState::Done)
         .expect("the task is done");
     assert_eq!(
         port.record_ruling(waiting, "Title."),
-        Ok(Some(IssueNumber::from(2)))
+        Ok(Some(TicketId::from(2)))
     );
     assert_eq!(
-        port.task(IssueNumber::from(2)).expect("task").label,
-        Some(TaskLabel::Ready)
+        port.task(TicketId::from(2)).expect("task").state,
+        Some(TicketState::Ready)
     );
     assert_eq!(
         port.record_ruling(waiting, "Title."),
@@ -259,8 +269,8 @@ fn a_ruling_returns_the_waiting_task_to_ready_and_names_it() {
     );
     assert_eq!(port.record_ruling(finished, "Title."), Ok(None));
     assert_eq!(
-        port.task(IssueNumber::from(4)).expect("task").label,
-        Some(TaskLabel::Done)
+        port.task(TicketId::from(4)).expect("task").state,
+        Some(TicketState::Done)
     );
 }
 
@@ -269,7 +279,7 @@ fn open_questions_list_in_order_and_leave_the_waiting_task_out() {
     let board = seeded();
     let port: &dyn Board = &board;
     let ask = |on: u64, text: &str| NewQuestion {
-        on: IssueNumber::from(on),
+        on: TicketId::from(on),
         text: text.to_owned(),
         door: false,
     };
@@ -277,13 +287,13 @@ fn open_questions_list_in_order_and_leave_the_waiting_task_out() {
     let second = ask(4, "Which quoting?");
     let opened_first = port.open_question(&first).expect("first");
     let opened_second = port.open_question(&second).expect("second");
-    port.label(IssueNumber::from(2), TaskLabel::Question)
+    port.set_state(TicketId::from(2), TicketState::Question)
         .expect("the task waits on its question");
-    let listed: Vec<IssueNumber> = port
+    let listed: Vec<TicketId> = port
         .questions()
         .expect("questions")
         .iter()
-        .map(|ticket| ticket.number)
+        .map(|ticket| ticket.id)
         .collect();
     assert_eq!(
         listed,
@@ -298,4 +308,104 @@ fn open_questions_list_in_order_and_leave_the_waiting_task_out() {
     assert!(!first.is_asked_by(&remaining[0]));
     let same_text_elsewhere = ask(3, "Which quoting?");
     assert!(!same_text_elsewhere.is_asked_by(&remaining[0]));
+}
+
+#[test]
+fn the_fake_tells_the_four_issue_states_apart() {
+    let board = seeded();
+    board.add_ticket(ticket(5, TicketState::Done));
+    board.add_ticket(ticket(6, TicketState::Blocked));
+    board.close_not_planned(TicketId::from(6));
+    board.add_ticket(ticket(7, TicketState::Blocked));
+    board.close(TicketId::from(7));
+    let port: &dyn Board = &board;
+    let state = |number: u64| port.standing(TicketId::from(number));
+
+    assert_eq!(state(3), Ok(Standing::Open));
+    assert_eq!(state(5), Ok(Standing::Done));
+    assert_eq!(state(6), Ok(Standing::ClosedNotPlanned));
+    assert_eq!(
+        state(7),
+        Ok(Standing::Done),
+        "closed as completed, no label"
+    );
+    assert_eq!(state(99), Ok(Standing::Missing));
+}
+
+/// A board that implements only what [`Board::standing`]'s default reads: `task`.
+struct TaskOnly(Vec<Ticket>);
+
+impl Board for TaskOnly {
+    fn task(&self, number: TicketId) -> Result<Ticket, PortError> {
+        match number.get() {
+            13 => Err(PortError::Backend("gh: 502".to_owned())),
+            _ => self
+                .0
+                .iter()
+                .find(|ticket| ticket.id == number)
+                .cloned()
+                .ok_or_else(|| PortError::NotFound(number.to_string())),
+        }
+    }
+
+    fn ready(&self) -> Result<Vec<Ticket>, PortError> {
+        unreachable!("not read")
+    }
+
+    fn claim(&self, _: TicketId, _: &Instance) -> Result<ClaimOutcome, PortError> {
+        unreachable!("not read")
+    }
+
+    fn heartbeat(&self, _: TicketId, _: &Instance) -> Result<(), PortError> {
+        unreachable!("not read")
+    }
+
+    fn claims(&self) -> Result<Vec<ClaimRecord>, PortError> {
+        unreachable!("not read")
+    }
+
+    fn release(&self, _: TicketId, _: &Instance) -> Result<(), PortError> {
+        unreachable!("not read")
+    }
+
+    fn set_state(&self, _: TicketId, _: TicketState) -> Result<(), PortError> {
+        unreachable!("not read")
+    }
+
+    fn comment(&self, _: TicketId, _: &str) -> Result<(), PortError> {
+        unreachable!("not read")
+    }
+
+    fn report(&self, _: TicketId, _: &Instance, _: &str) -> Result<(), PortError> {
+        unreachable!("not read")
+    }
+
+    fn questions(&self) -> Result<Vec<Ticket>, PortError> {
+        unreachable!("not read")
+    }
+
+    fn open_question(&self, _: &NewQuestion) -> Result<TicketId, PortError> {
+        unreachable!("not read")
+    }
+
+    fn record_ruling(&self, _: TicketId, _: &str) -> Result<Option<TicketId>, PortError> {
+        unreachable!("not read")
+    }
+}
+
+#[test]
+fn the_default_issue_state_reads_the_task_and_never_calls_a_missing_one_closed() {
+    let board = TaskOnly(vec![
+        ticket(3, TicketState::Blocked),
+        ticket(4, TicketState::Done),
+    ]);
+
+    assert_eq!(board.standing(TicketId::from(3)), Ok(Standing::Open));
+    assert_eq!(board.standing(TicketId::from(4)), Ok(Standing::Done));
+    assert_eq!(board.standing(TicketId::from(9)), Ok(Standing::Missing));
+    assert_eq!(
+        board.standing(TicketId::from(13)),
+        Err(PortError::Backend("gh: 502".to_owned())),
+        "a backend failure is not a dead blocker"
+    );
 }

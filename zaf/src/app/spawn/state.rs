@@ -1,15 +1,18 @@
-//! `.zaf/spawn.state`: the next instance number and the launches still holding a slot.
+//! `.zaf/spawn.state` holds the instance counter and nothing else; the running launches are
+//! read from the run folders each time ([`derive`]).
 //!
-//! The file is the shape `zaf status` reads: one [`Launch`] per task, every task
-//! of a batch under the same instance, plus the `next_instance` counter. An
-//! instance holds one slot however many tasks it carries.
+//! [`SpawnState`] is the shape the tick and `zaf status` read: one [`Launch`] per task of
+//! every launch that runs now, every task of a batch under the same instance, plus the
+//! `next_instance` counter. An instance holds one slot however many tasks it carries. Only
+//! the counter is saved: a live source answers everything else.
 
 use std::path::Path;
 
 use super::SpawnError;
-use super::tick::PlannedLaunch;
+use super::runs::{self, Run};
 use crate::app::status::{Launch, SPAWN_STATE_FILE};
 use crate::domain::Instance;
+use crate::ports::Holder;
 
 /// The number the first instance gets.
 const FIRST_INSTANCE: u32 = 1;
@@ -18,18 +21,16 @@ fn first_instance() -> u32 {
     FIRST_INSTANCE
 }
 
-/// What `.zaf/spawn.state` holds.
+/// The instance counter as saved, and the launches running now as read.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SpawnState {
     /// The number the next instance gets.
     #[serde(default = "first_instance")]
     pub next_instance: u32,
-    /// The launches holding a slot, one entry per task.
-    #[serde(default)]
+    /// The launches running now, one entry per task: read from the run folders by
+    /// [`derive`], never saved.
+    #[serde(skip)]
     pub launches: Vec<Launch>,
-    /// Questions the spawner raised; kept as read, empty for now.
-    #[serde(default)]
-    pub questions: Vec<u64>,
 }
 
 impl Default for SpawnState {
@@ -37,13 +38,12 @@ impl Default for SpawnState {
         Self {
             next_instance: FIRST_INSTANCE,
             launches: Vec::new(),
-            questions: Vec::new(),
         }
     }
 }
 
 impl SpawnState {
-    /// The instances holding a slot, each once, in the order they were recorded.
+    /// The instances holding a slot, each once, in the order they were read.
     pub fn instances(&self) -> Vec<&str> {
         let mut seen: Vec<&str> = Vec::new();
         for launch in &self.launches {
@@ -61,7 +61,7 @@ impl SpawnState {
         self.instances().len()
     }
 
-    /// The running instances, each once, in the order they were recorded.
+    /// The running instances, each once, in the order they were read.
     ///
     /// A recorded name that is not an instance is counted by [`running`](Self::running)
     /// (it holds a slot) but cannot be listed here.
@@ -78,65 +78,60 @@ impl SpawnState {
         self.launches
             .iter()
             .filter(|launch| launch.instance == name)
-            .map(|launch| launch.task)
+            .filter_map(|launch| launch.task)
             .collect()
-    }
-
-    /// Drops every instance whose process is gone and returns them.
-    ///
-    /// `alive` answers for a recorded pid; an instance recorded without one
-    /// cannot be checked and is dropped too, so it never holds a slot forever.
-    pub fn prune(&mut self, alive: &dyn Fn(u32) -> bool) -> Vec<String> {
-        let lost: Vec<String> = self
-            .instances()
-            .into_iter()
-            .filter(|instance| {
-                !self
-                    .launches
-                    .iter()
-                    .filter(|launch| launch.instance == *instance)
-                    .any(|launch| launch.pid.is_some_and(alive))
-            })
-            .map(str::to_owned)
-            .collect();
-        self.launches
-            .retain(|launch| !lost.contains(&launch.instance));
-        lost
-    }
-
-    /// Records the planned launches under `pid`, not yet started, and advances the
-    /// counter past them (the plan numbers its launches from the counter, in order).
-    pub fn reserve(&mut self, planned: &[PlannedLaunch], pid: u32) {
-        for launch in planned {
-            let instance = launch.instance.to_string();
-            for task in &launch.tasks {
-                self.launches.push(Launch {
-                    task: task.get(),
-                    instance: instance.clone(),
-                    pid: Some(pid),
-                    started_at: None,
-                });
-            }
-            self.next_instance = self.next_instance.saturating_add(1);
-        }
-    }
-
-    /// Marks an instance's entries as started at `at` (RFC 3339).
-    pub fn start(&mut self, instance: &str, at: &str) {
-        for launch in &mut self.launches {
-            if launch.instance == instance {
-                launch.started_at = Some(at.to_owned());
-            }
-        }
-    }
-
-    /// Drops an instance's entries: it exited and its slot is free.
-    pub fn finish(&mut self, instance: &str) {
-        self.launches.retain(|launch| launch.instance != instance);
     }
 }
 
-/// Reads `<state dir>/spawn.state`; an absent file is the empty state.
+/// The saved counter with the launches that run now, read from `runs`: one [`Launch`] per
+/// task of each run whose holder `alive` confirms, and one with no task for a run launched
+/// with none. The counter never falls behind a run
+/// folder already there, so an instance number is never used twice.
+pub fn with_runs(saved: &SpawnState, runs: &[Run], alive: &dyn Fn(&Holder) -> bool) -> SpawnState {
+    let mut launches = Vec::new();
+    for run in runs.iter().filter(|run| run.running(alive)) {
+        let Some(record) = &run.record else {
+            continue;
+        };
+        let pid = run.holder.as_ref().map(|holder| holder.pid);
+        // A launch with no task still holds a slot: one entry with no task stands for it.
+        let tasks: Vec<Option<u64>> = if record.tasks.is_empty() {
+            vec![None]
+        } else {
+            record.tasks.iter().copied().map(Some).collect()
+        };
+        for task in tasks {
+            launches.push(Launch {
+                task,
+                instance: record.instance.clone(),
+                pid,
+                started_at: record.started_at.clone(),
+            });
+        }
+    }
+    let past_runs = runs
+        .iter()
+        .filter_map(Run::number)
+        .max()
+        .map_or(FIRST_INSTANCE, |highest| highest.saturating_add(1));
+    SpawnState {
+        next_instance: saved.next_instance.max(past_runs),
+        launches,
+    }
+}
+
+/// Reads the counter and the run folders, and keeps the launches that run now.
+pub fn derive(
+    state_dir: &Path,
+    alive: &dyn Fn(&Holder) -> bool,
+) -> Result<(SpawnState, Vec<Run>), SpawnError> {
+    let saved = load(state_dir)?;
+    let runs = runs::read_all(state_dir)?;
+    Ok((with_runs(&saved, &runs, alive), runs))
+}
+
+/// Reads `<state dir>/spawn.state`; an absent file is the empty state. Fields an older zaf
+/// saved (its launches and questions) are ignored.
 pub fn load(state_dir: &Path) -> Result<SpawnState, SpawnError> {
     let path = state_dir.join(SPAWN_STATE_FILE);
     let text = match std::fs::read_to_string(&path) {
@@ -157,7 +152,7 @@ pub fn load(state_dir: &Path) -> Result<SpawnState, SpawnError> {
     })
 }
 
-/// Writes `<state dir>/spawn.state`, creating the folder.
+/// Writes `<state dir>/spawn.state` (the counter alone), creating the folder.
 pub fn save(state_dir: &Path, state: &SpawnState) -> Result<(), SpawnError> {
     let path = state_dir.join(SPAWN_STATE_FILE);
     let text = serde_json::to_string_pretty(state).unwrap_or_default();

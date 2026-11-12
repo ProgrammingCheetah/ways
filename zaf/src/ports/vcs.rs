@@ -1,4 +1,4 @@
-//! The VCS, in slice terms: open, merge the base in, commit, publish, inspect.
+//! The VCS, in slice terms, for what zaf reads of a slice: its latest commit and its change.
 //!
 //! Slice terms, not VCS terms (branch, worktree, bookmark, stage), because
 //! VCSes disagree on the latter and a verb should not care.
@@ -22,38 +22,6 @@ text_newtype! {
 text_newtype! {
     /// The id the VCS gave a commit.
     CommitId
-}
-
-/// What opening a slice did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SliceOpening {
-    /// A new slice and workspace exist.
-    Opened,
-    /// The slice already existed on the same base; nothing changed.
-    AlreadyOpen,
-}
-
-/// What merging the base into a slice did.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BaseMerge {
-    /// The slice already had the base.
-    UpToDate,
-    /// The base's new work is in the slice.
-    Merged,
-    /// The merge stopped on conflicts in these paths; the slice is unchanged.
-    Conflicted {
-        /// The conflicting paths.
-        paths: Vec<String>,
-    },
-}
-
-/// What publishing a slice did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Publication {
-    /// New commits reached the remote.
-    Published,
-    /// The remote already had every commit.
-    AlreadyPublished,
 }
 
 /// Lines added and removed in one file.
@@ -85,33 +53,12 @@ impl fmt::Display for DiffStat {
     }
 }
 
-/// The VCS behind every slice.
+/// The VCS behind every slice, read only: the slice's own work (open, merge the base in, commit,
+/// publish, drop) is the project's `slice-*` actions.
 pub trait Vcs {
-    /// Opens a slice and its workspace at a base. Opening an existing slice on
-    /// the same base succeeds with [`SliceOpening::AlreadyOpen`]; on another base it is a conflict.
-    fn open_slice(&self, slice: &SliceName, base: &BaseName) -> Result<SliceOpening, PortError>;
-
-    /// Merges the slice's base into it as the base stands on the remote: fetches first, and
-    /// moves a lagging local base to the fetched revision. A failed fetch is
-    /// [`PortError::Backend`] and leaves the slice unchanged. Never rewrites the slice's history.
-    fn merge_base(&self, slice: &SliceName) -> Result<BaseMerge, PortError>;
-
-    /// Commits the slice's uncommitted work; nothing to commit is [`PortError::Rejected`].
-    fn commit(&self, slice: &SliceName, message: &str) -> Result<CommitId, PortError>;
-
-    /// Publishes the slice's latest commit, even one made by hand: the slice's line
-    /// first moves forward to it (a backwards move is a conflict), then is pushed
-    /// plainly; a remote with work the slice lacks is a conflict, never overwritten.
-    /// Uncommitted work is [`PortError::Rejected`]: commit first.
-    fn publish(&self, slice: &SliceName) -> Result<Publication, PortError>;
-
-    /// Whether the slice has no uncommitted work.
-    fn is_clean(&self, slice: &SliceName) -> Result<bool, PortError>;
-
-    /// The commit [`publish`](Self::publish) would move the slice's line to, by its git id: the
-    /// workspace's latest commit, hand-made or not, with uncommitted work no part of it. The
-    /// workspace is the one the slice record names. A directory that is no workspace is
-    /// [`PortError::NotFound`].
+    /// The workspace's latest commit by its git id, hand-made or not, with uncommitted work no
+    /// part of it. The workspace is the one the slice record names. A directory that is no
+    /// workspace is [`PortError::NotFound`].
     fn latest_commit(&self, workspace: &Path) -> Result<CommitId, PortError>;
 
     /// The change in a workspace against its base, stat only. The workspace is the one the
@@ -127,9 +74,6 @@ pub trait Vcs {
         base: &BaseName,
         path: &str,
     ) -> Result<String, PortError>;
-
-    /// Removes the slice's workspace; a slice already gone succeeds quietly.
-    fn drop_slice(&self, slice: &SliceName) -> Result<(), PortError>;
 }
 
 #[cfg(test)]

@@ -227,7 +227,7 @@ pub(super) fn run_named(name: &str, args: &[OsString], only: Option<Tier>) -> Ru
 }
 
 /// Prints a run's outcome and returns its code.
-fn print_outcome(cli: &Cli, outcome: &RunOutcome) -> u8 {
+pub(super) fn print_outcome(cli: &Cli, outcome: &RunOutcome) -> u8 {
     if cli.json {
         println!(
             "{}",
@@ -299,11 +299,16 @@ fn list(cli: &Cli, path: &str) -> u8 {
         let rows: Vec<_> = listed
             .iter()
             .map(|action| {
-                serde_json::json!({
+                let mut row = serde_json::json!({
                     "name": action.name,
                     "tier": action.tier.to_string(),
                     "description": action.description,
-                })
+                });
+                // Only an action that declares a kind has one to show.
+                if let Some(kind) = action.kind {
+                    row["kind"] = kind.to_string().into();
+                }
+                row
             })
             .collect();
         println!("{}", serde_json::Value::Array(rows));

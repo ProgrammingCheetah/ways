@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use super::*;
 use crate::app::status;
-use crate::domain::{InstanceNumber, TaskLabel};
+use crate::domain::{InstanceNumber, Ticket, TicketState};
 use crate::fakes::{FakeBoard, FakeRunner};
-use crate::ports::{ClaimOutcome, ClaimRecord, NewQuestion, RunOutput, Ticket};
+use crate::ports::{ClaimOutcome, ClaimRecord, NewQuestion, RunOutput};
 
 /// Lends one fake board to every launch thread.
 struct SharedBoard(Arc<FakeBoard>);
@@ -13,41 +13,41 @@ impl Board for SharedBoard {
     fn ready(&self) -> Result<Vec<Ticket>, PortError> {
         self.0.ready()
     }
-    fn task(&self, number: IssueNumber) -> Result<Ticket, PortError> {
+    fn task(&self, number: TicketId) -> Result<Ticket, PortError> {
         self.0.task(number)
     }
-    fn claim(&self, task: IssueNumber, instance: &Instance) -> Result<ClaimOutcome, PortError> {
+    fn claim(&self, task: TicketId, instance: &Instance) -> Result<ClaimOutcome, PortError> {
         self.0.claim(task, instance)
     }
-    fn heartbeat(&self, task: IssueNumber, instance: &Instance) -> Result<(), PortError> {
+    fn heartbeat(&self, task: TicketId, instance: &Instance) -> Result<(), PortError> {
         self.0.heartbeat(task, instance)
     }
     fn claims(&self) -> Result<Vec<ClaimRecord>, PortError> {
         self.0.claims()
     }
-    fn release(&self, task: IssueNumber, instance: &Instance) -> Result<(), PortError> {
+    fn release(&self, task: TicketId, instance: &Instance) -> Result<(), PortError> {
         self.0.release(task, instance)
     }
-    fn label(&self, task: IssueNumber, label: TaskLabel) -> Result<(), PortError> {
-        self.0.label(task, label)
+    fn set_state(&self, task: TicketId, label: TicketState) -> Result<(), PortError> {
+        self.0.set_state(task, label)
     }
-    fn comment(&self, issue: IssueNumber, body: &str) -> Result<(), PortError> {
+    fn comment(&self, issue: TicketId, body: &str) -> Result<(), PortError> {
         self.0.comment(issue, body)
     }
-    fn report(&self, task: IssueNumber, instance: &Instance, body: &str) -> Result<(), PortError> {
+    fn report(&self, task: TicketId, instance: &Instance, body: &str) -> Result<(), PortError> {
         self.0.report(task, instance, body)
     }
     fn questions(&self) -> Result<Vec<Ticket>, PortError> {
         self.0.questions()
     }
-    fn open_question(&self, question: &NewQuestion) -> Result<IssueNumber, PortError> {
+    fn open_question(&self, question: &NewQuestion) -> Result<TicketId, PortError> {
         self.0.open_question(question)
     }
     fn record_ruling(
         &self,
-        question: IssueNumber,
+        question: TicketId,
         ruling: &str,
-    ) -> Result<Option<IssueNumber>, PortError> {
+    ) -> Result<Option<TicketId>, PortError> {
         self.0.record_ruling(question, ruling)
     }
 }
@@ -82,39 +82,63 @@ batch = 2
 
 const OWN_PID: u32 = 4242;
 
+/// The tick running the test, as the holder of what it reserves.
+fn tick() -> Holder {
+    holder(OWN_PID)
+}
+
+fn holder(pid: u32) -> Holder {
+    Holder {
+        pid,
+        start: "1000".to_owned(),
+    }
+}
+
 fn manifest() -> Manifest {
     MANIFEST.parse().expect("manifest parses")
 }
 
-fn ticket(number: u64, epic: Option<u64>, body: &str, label: TaskLabel) -> Ticket {
+/// A task body that follows the template, blocked as `blocked_by` says.
+fn task_body(blocked_by: &str) -> String {
+    format!(
+        "Goal: do it\nOwned paths: src/\nInterfaces: none\nDesign pages: none\n\
+         Acceptance:\n  - it works\nTests: it_works\nSecurity trigger: no\n\
+         Model: sonnet\nSize: S\nBlocked by: {blocked_by}\n"
+    )
+}
+
+/// A ticket; a ready one gets a body that follows the template, with the `Blocked by:` line
+/// of `body` when it has one.
+fn ticket(number: u64, epic: Option<u64>, body: &str, label: TicketState) -> Ticket {
+    let body = match (label, body.strip_prefix("Blocked by: ")) {
+        (TicketState::Ready, Some(blocked_by)) => task_body(blocked_by),
+        (TicketState::Ready, None) if body.is_empty() => task_body("—"),
+        _ => body.to_owned(),
+    };
     Ticket {
-        number: IssueNumber::from(number),
-        epic: epic.map(IssueNumber::from),
-        title: format!("Issue {number}"),
-        body: body.to_owned(),
-        label: Some(label),
+        id: TicketId::from(number),
+        epic: epic.map(TicketId::from),
+        title: format!("Issue {number}").into(),
+        body: body.into(),
+        state: Some(label),
+        url: "".into(),
+        kind: None,
     }
 }
 
-fn epic(number: u64) -> Ticket {
-    Ticket {
-        label: None,
-        ..ticket(number, None, "", TaskLabel::Ready)
-    }
-}
-
-/// Epic #2 with ready tasks #3, #4, #5 (#5 blocked by the open #6) and a
-/// closed blocker #7 on #4; epic #12 with ready task #13.
+/// Epics #2 and #12, each signed with no task of its own, so each gets a planning launch; and
+/// the ready tasks #3, #4, #5 (#5 blocked by the open #6), a closed blocker #7 and #13, none
+/// of an epic here, for the tests that claim a task or read a blocker.
 fn board() -> FakeBoard {
     let board = FakeBoard::default();
-    board.add_ticket(epic(2));
-    board.add_ticket(ticket(3, Some(2), "Blocked by: —", TaskLabel::Ready));
-    board.add_ticket(ticket(4, Some(2), "Blocked by: #7", TaskLabel::Ready));
-    board.add_ticket(ticket(5, Some(2), "Blocked by: #6", TaskLabel::Ready));
-    board.add_ticket(ticket(6, Some(2), "", TaskLabel::Blocked));
-    board.add_ticket(ticket(7, Some(2), "", TaskLabel::Done));
-    board.add_ticket(epic(12));
-    board.add_ticket(ticket(13, Some(12), "", TaskLabel::Ready));
+    board.add_challenged_epic(TicketId::from(2), "Issue 2");
+    board.add_challenged_epic(TicketId::from(12), "Issue 12");
+    board.add_ticket(ticket(3, None, "Blocked by: —", TicketState::Ready));
+    board.add_ticket(ticket(4, None, "Blocked by: #7", TicketState::Ready));
+    board.add_ticket(ticket(5, None, "Blocked by: #6", TicketState::Ready));
+    board.add_ticket(ticket(6, None, "", TicketState::Blocked));
+    board.add_ticket(ticket(7, None, "", TicketState::Done));
+    board.add_ticket(ticket(13, None, "", TicketState::Ready));
     board
 }
 
@@ -127,14 +151,25 @@ fn context(state_dir: &Path) -> LaunchContext {
     }
 }
 
-fn team() -> RoleName {
-    RoleName::from(TEAM_ROLE)
+/// The instances running now, every recorded process taken as alive.
+fn running(state_dir: &Path) -> Vec<String> {
+    derive(state_dir, &|_| true)
+        .expect("derives")
+        .0
+        .instances()
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+}
+
+fn planning() -> RoleName {
+    RoleName::from(PLANNING_ROLE)
 }
 
 fn instance(number: u32, epic: u64) -> Instance {
     Instance {
-        role: team(),
-        epic: IssueNumber::from(epic),
+        role: planning(),
+        epic: TicketId::from(epic),
         number: InstanceNumber::from(number),
     }
 }
@@ -146,41 +181,55 @@ fn a_launch_through_the_runner_records_launch_and_exit_and_frees_its_slot() {
     let board = board();
     let runner = FakeRunner::default();
     runner.record(
-        team(),
+        planning(),
         RunOutput {
             exit_code: 0,
             transcript: "merged #3 and #4\n".to_owned(),
         },
     );
 
-    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, OWN_PID).expect("prepares");
+    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
     let first = &prepared.plan.launches[0];
     assert_eq!(first.instance, instance(1, 2));
-    assert_eq!(first.tasks, [IssueNumber::from(3), IssueNumber::from(4)]);
 
-    // Reserved before running: `zaf status` reads the same file.
-    let reserved = load(&state_dir).expect("loads");
+    // Reserved before running, held by the tick: `zaf status` reads the same run folders.
+    let (reserved, _) = derive(&state_dir, &|_| true).expect("derives");
     assert_eq!(reserved.next_instance, 3);
     assert_eq!(
-        reserved.instances(),
-        ["team instance 1 on #2", "team instance 2 on #12"]
+        load(&state_dir).expect("loads").next_instance,
+        3,
+        "the counter is saved"
     );
-    let screen = status::status(&board, &state_dir, 2).expect("status reads the state");
-    assert_eq!(screen.running.len(), 3);
-    assert_eq!(screen.running[0].task, 3);
+    assert_eq!(
+        reserved.instances(),
+        ["planning instance 1 on #2", "planning instance 2 on #12"]
+    );
+    let run_dir = state_dir.join(RUNS_DIR).join("planning-instance-1-on-2");
+    let held = std::fs::read_to_string(run_dir.join(runs::HOLDER_FILE)).expect("holder");
+    assert_eq!(Holder::parse(&held), Some(tick()));
+    let screen = status::status(&board, &state_dir, 2, &|_| true).expect("status reads the state");
+    assert_eq!(screen.running.len(), 2);
+    assert_eq!(screen.running[0].task, None);
     assert_eq!(screen.running[0].pid, Some(OWN_PID));
 
     let done = launch(&board, &runner, &context(&state_dir), first).expect("launches");
     assert_eq!(done.exit, LaunchExit::Code(0));
     assert_eq!(
-        board.comments(IssueNumber::from(2)),
+        board.comments(TicketId::from(2)),
         [
-            "<!-- zaf:launch team instance 1 on #2 -->",
-            "<!-- zaf:exit team instance 1 on #2 0 -->",
+            "<!-- zaf:launch planning instance 1 on #2 -->",
+            "<!-- zaf:exit planning instance 1 on #2 0 -->",
         ]
     );
-    let run_dir = state_dir.join(RUNS_DIR).join("team-instance-1-on-2");
     assert_eq!(done.run_dir, run_dir);
+    assert_eq!(
+        std::fs::read_to_string(run_dir.join(runs::EXIT_FILE)).expect("exit"),
+        "0\n"
+    );
+    assert!(
+        !run_dir.join(runs::HOLDER_FILE).exists(),
+        "nothing holds an ended launch"
+    );
     assert_eq!(
         std::fs::read_to_string(run_dir.join(REPORT_FILE)).expect("report"),
         "merged #3 and #4\n"
@@ -189,22 +238,30 @@ fn a_launch_through_the_runner_records_launch_and_exit_and_frees_its_slot() {
     let requests = runner.requests();
     assert_eq!(requests.len(), 1);
     let request = &requests[0];
-    assert_eq!(request.role, team());
+    assert_eq!(request.role, planning());
     assert_eq!(request.profile, Profile::Build);
     assert_eq!(request.dir, run_dir);
+    assert_eq!(
+        request.holder_file,
+        Some(run_dir.join(runs::HOLDER_FILE)),
+        "the runner records the instance's own process"
+    );
     let brief = run_dir.join(BRIEF_FILE);
     assert_eq!(
         request.prompt,
         format!(
-            "You are team instance 1 on #2, the team instance for epic #2 of project bookshelf. \
-             Tasks: #3 #4. Read {} first and follow it exactly.",
+            "You are planning instance 1 on #2, the planning instance for epic #2 of project \
+             bookshelf. Read {} first and follow it exactly.",
             brief.display()
         )
     );
-    assert_eq!(std::fs::read_to_string(&brief).expect("brief"), TEAM_BRIEF);
+    assert_eq!(
+        std::fs::read_to_string(&brief).expect("brief"),
+        PLANNING_BRIEF
+    );
 
-    let after = load(&state_dir).expect("loads");
-    assert_eq!(after.instances(), ["team instance 2 on #12"]);
+    let (after, _) = derive(&state_dir, &|_| true).expect("derives");
+    assert_eq!(after.instances(), ["planning instance 2 on #12"]);
     assert_eq!(after.next_instance, 3);
 }
 
@@ -213,8 +270,8 @@ fn a_launch_marks_its_start_in_the_state() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state_dir = dir.path().join(".zaf");
     let board = board();
-    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, OWN_PID).expect("prepares");
-    let mut state = load(&state_dir).expect("loads");
+    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
+    let (state, _) = derive(&state_dir, &|_| true).expect("derives");
     assert!(
         state
             .launches
@@ -233,14 +290,24 @@ fn a_launch_marks_its_start_in_the_state() {
     .expect("records the failed run");
     assert!(matches!(done.exit, LaunchExit::Error(_)));
     assert_eq!(
-        board.comments(IssueNumber::from(12)),
+        board.comments(TicketId::from(12)),
         [
-            "<!-- zaf:launch team instance 2 on #12 -->",
-            "<!-- zaf:exit team instance 2 on #12 error -->",
+            "<!-- zaf:launch planning instance 2 on #12 -->",
+            "<!-- zaf:exit planning instance 2 on #12 error -->",
         ]
     );
-    state = load(&state_dir).expect("loads");
-    assert_eq!(state.instances(), ["team instance 1 on #2"]);
+    assert_eq!(running(&state_dir), ["planning instance 1 on #2"]);
+    let run_dir = state_dir.join(RUNS_DIR).join("planning-instance-2-on-12");
+    assert_eq!(
+        std::fs::read_to_string(run_dir.join(runs::EXIT_FILE)).expect("exit"),
+        "error\n"
+    );
+    let found = runs::read_all(&state_dir).expect("reads");
+    let started = found[1]
+        .record
+        .as_ref()
+        .and_then(|record| record.started_at.clone());
+    assert!(started.is_some(), "the start is recorded in the run folder");
 }
 
 /// A runner whose every run fails with the given error.
@@ -264,9 +331,9 @@ fn timeout_text_in_another_error_is_not_a_timeout() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state_dir = dir.path().join(".zaf");
     let board = board();
-    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, OWN_PID).expect("prepares");
+    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
     let first = &prepared.plan.launches[0];
-    let task = IssueNumber::from(3);
+    let task = TicketId::from(3);
     board.claim(task, &first.instance).expect("claims #3");
 
     let lookalike = FailingRunner(PortError::Unavailable(
@@ -285,17 +352,13 @@ fn timed_out_launch_releases_its_claims() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state_dir = dir.path().join(".zaf");
     let board = board();
-    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, OWN_PID).expect("prepares");
+    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
     let first = &prepared.plan.launches[0];
-    let (stuck, waiting, other) = (
-        IssueNumber::from(3),
-        IssueNumber::from(4),
-        IssueNumber::from(13),
-    );
+    let (stuck, waiting, other) = (TicketId::from(3), TicketId::from(4), TicketId::from(13));
     board.claim(stuck, &first.instance).expect("claims #3");
     board.claim(waiting, &first.instance).expect("claims #4");
     board
-        .label(waiting, TaskLabel::Question)
+        .set_state(waiting, TicketState::Question)
         .expect("#4 waits on a question");
     // Held by another instance: stays held.
     board.claim(other, &instance(2, 12)).expect("claims #13");
@@ -304,20 +367,20 @@ fn timed_out_launch_releases_its_claims() {
 
     assert!(done.exit.timed_out());
     assert_eq!(done.exit.status(), "timeout");
-    let epic_comments = board.comments(IssueNumber::from(2));
+    let epic_comments = board.comments(TicketId::from(2));
     assert!(
-        epic_comments.contains(&"<!-- zaf:exit team instance 1 on #2 timeout -->".to_owned()),
+        epic_comments.contains(&"<!-- zaf:exit planning instance 1 on #2 timeout -->".to_owned()),
         "{epic_comments:?}"
     );
-    let label = |task| board.task(task).expect("task").label;
-    assert_eq!(label(stuck), Some(TaskLabel::Ready));
-    assert_eq!(label(waiting), Some(TaskLabel::Question));
-    assert_eq!(label(other), Some(TaskLabel::Claimed));
+    let label = |task| board.task(task).expect("task").state;
+    assert_eq!(label(stuck), Some(TicketState::Ready));
+    assert_eq!(label(waiting), Some(TicketState::Question));
+    assert_eq!(label(other), Some(TicketState::Claimed));
     for task in [stuck, waiting] {
         let comments = board.comments(task);
         assert_eq!(comments.len(), 1, "{comments:?}");
         assert!(
-            comments[0].starts_with("released from team instance 1 on #2 at "),
+            comments[0].starts_with("released from planning instance 1 on #2 at "),
             "{comments:?}"
         );
     }
@@ -326,8 +389,8 @@ fn timed_out_launch_releases_its_claims() {
     assert_eq!(claims.len(), 1);
     assert_eq!(claims[0].task, other);
     assert_eq!(
-        load(&state_dir).expect("loads").instances(),
-        ["team instance 2 on #12"],
+        running(&state_dir),
+        ["planning instance 2 on #12"],
         "the slot is freed"
     );
 }
@@ -337,14 +400,14 @@ fn a_launch_that_did_not_time_out_keeps_its_claims() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state_dir = dir.path().join(".zaf");
     let board = board();
-    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, OWN_PID).expect("prepares");
+    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
     let first = &prepared.plan.launches[0];
-    let task = IssueNumber::from(3);
+    let task = TicketId::from(3);
     board.claim(task, &first.instance).expect("claims #3");
 
     let exited = FakeRunner::default();
     exited.record(
-        team(),
+        planning(),
         RunOutput {
             exit_code: 1,
             transcript: String::new(),
@@ -367,19 +430,19 @@ fn a_launch_that_did_not_time_out_keeps_its_claims() {
 fn the_projects_own_brief_wins_over_the_pack() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state_dir = dir.path().join(".zaf");
-    let own = state_dir.join(ROLES_DIR).join("team.md");
+    let own = state_dir.join(ROLES_DIR).join("planning.md");
     std::fs::create_dir_all(own.parent().expect("parent")).expect("dirs");
     std::fs::write(&own, "our own brief").expect("writes");
     let board = board();
     let runner = FakeRunner::default();
     runner.record(
-        team(),
+        planning(),
         RunOutput {
             exit_code: 3,
             transcript: String::new(),
         },
     );
-    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, OWN_PID).expect("prepares");
+    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
     let done = launch(
         &board,
         &runner,
@@ -396,36 +459,114 @@ fn the_projects_own_brief_wins_over_the_pack() {
     assert!(!done.run_dir.join(BRIEF_FILE).exists());
     assert!(
         board
-            .comments(IssueNumber::from(2))
-            .contains(&"<!-- zaf:exit team instance 1 on #2 3 -->".to_owned())
+            .comments(TicketId::from(2))
+            .contains(&"<!-- zaf:exit planning instance 1 on #2 3 -->".to_owned())
     );
 }
 
 #[test]
-fn prepare_skips_blocked_and_claimed_tasks_read_from_the_board() {
+fn ready_tasks_read_from_the_board_start_no_team_instance() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state_dir = dir.path().join(".zaf");
     let board = board();
-    let holder = instance(9, 2);
-    board
-        .claim(IssueNumber::from(3), &holder)
-        .expect("claims #3");
-    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, OWN_PID).expect("prepares");
+    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
     let plan = &prepared.plan;
-    assert_eq!(plan.launches[0].tasks, [IssueNumber::from(4)]);
     assert!(
         plan.launches
             .iter()
-            .all(|launch| !launch.tasks.contains(&IssueNumber::from(3)))
+            .all(|launch| launch.instance.role == planning()),
+        "{}",
+        plan.render_text()
+    );
+    assert!(!plan.render_text().contains("team"));
+}
+
+#[test]
+fn a_missing_blocker_is_dead() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let board = FakeBoard::default();
+    board.add_challenged_epic(TicketId::from(2), "Issue 2");
+    board.add_ticket(ticket(3, Some(2), "Blocked by: #99", TicketState::Ready));
+
+    let prepared = plan_only(&board, &state_dir, &manifest(), &|_| true).expect("plans");
+    let text = prepared.plan.render_text();
+    assert!(text.contains("dead blocker #99 on #3: not an issue\n"));
+
+    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
+    assert!(
+        prepared
+            .plan
+            .render_text()
+            .contains("dead blocker #99 on #3: not an issue\n")
     );
     assert_eq!(
-        plan.tasks,
-        [(
-            IssueNumber::from(5),
-            TaskSkip::Blocked(vec![IssueNumber::from(6)])
-        )]
+        prepared.plan.to_json(&[], &[])["dead_blockers"],
+        serde_json::json!([{ "blocker": 99, "on": 3, "reason": "not an issue" }])
     );
-    assert!(plan.render_text().contains("#5 skipped: blocked by #6"));
+}
+
+#[test]
+fn a_blocker_closed_as_not_planned_is_dead() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let board = FakeBoard::default();
+    board.add_challenged_epic(TicketId::from(2), "Issue 2");
+    board.add_ticket(ticket(3, Some(2), "Blocked by: #6, #7", TicketState::Ready));
+    board.add_ticket(ticket(6, Some(2), "", TicketState::Blocked));
+    board.close_not_planned(TicketId::from(6));
+    board.add_ticket(ticket(7, Some(2), "", TicketState::Done));
+    board.close(TicketId::from(7));
+
+    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
+    let text = prepared.plan.render_text();
+    assert!(text.contains("dead blocker #6 on #3: closed as not planned\n"));
+    assert!(
+        !text.contains("dead blocker #7"),
+        "a closed issue labelled done is closed for good"
+    );
+}
+
+#[test]
+fn a_blocker_closed_without_the_done_label_launches_no_team() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let board = FakeBoard::default();
+    board.add_challenged_epic(TicketId::from(2), "Issue 2");
+    board.add_ticket(ticket(3, Some(2), "Blocked by: #6", TicketState::Ready));
+    board.add_ticket(ticket(6, Some(2), "", TicketState::Claimed));
+    board.close(TicketId::from(6));
+
+    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
+
+    assert!(
+        prepared.plan.launches.is_empty(),
+        "{}",
+        prepared.plan.render_text()
+    );
+}
+
+#[test]
+fn the_snapshot_reads_a_cycle_through_open_tasks_that_are_not_ready() {
+    let board = FakeBoard::default();
+    board.add_challenged_epic(TicketId::from(2), "Issue 2");
+    board.add_ticket(ticket(3, Some(2), "Blocked by: #4", TicketState::Ready));
+    board.add_ticket(ticket(4, Some(2), "Blocked by: #5", TicketState::Blocked));
+    board.add_ticket(ticket(5, Some(2), "Blocked by: #4", TicketState::Blocked));
+
+    let read = snapshot(&board, &[]).expect("snapshot");
+    assert_eq!(
+        read.open.keys().copied().collect::<Vec<_>>(),
+        [TicketId::from(4), TicketId::from(5)]
+    );
+    let text = tick::plan(
+        &read,
+        &SpawnState::default(),
+        Level::Green,
+        Settings::from(&manifest()),
+    )
+    .render_text();
+    assert!(text.contains("blocker cycle: #4 → #5 → #4\n"));
 }
 
 #[test]
@@ -433,8 +574,8 @@ fn a_second_tick_sees_the_reserved_slots_taken() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state_dir = dir.path().join(".zaf");
     let board = board();
-    prepare(&board, &state_dir, &manifest(), &|_| true, OWN_PID).expect("first tick");
-    let second = prepare(&board, &state_dir, &manifest(), &|_| true, OWN_PID).expect("second tick");
+    prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("first tick");
+    let second = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("second tick");
     assert!(second.plan.launches.is_empty());
     assert_eq!(second.plan.slots.free, 0);
 }
@@ -444,19 +585,28 @@ fn a_launch_whose_process_is_gone_is_recorded_as_lost() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state_dir = dir.path().join(".zaf");
     let board = board();
-    prepare(&board, &state_dir, &manifest(), &|_| true, 100).expect("first tick");
-    let second =
-        prepare(&board, &state_dir, &manifest(), &|pid| pid != 100, OWN_PID).expect("second tick");
+    prepare(&board, &state_dir, &manifest(), &|_| true, &holder(100)).expect("first tick");
+    let second = prepare(
+        &board,
+        &state_dir,
+        &manifest(),
+        &|held| held.pid != 100,
+        &tick(),
+    )
+    .expect("second tick");
     assert_eq!(
         second.lost,
-        ["team instance 1 on #2", "team instance 2 on #12"]
+        ["planning instance 1 on #2", "planning instance 2 on #12"]
     );
     assert!(
         board
-            .comments(IssueNumber::from(2))
-            .contains(&"<!-- zaf:exit team instance 1 on #2 lost -->".to_owned())
+            .comments(TicketId::from(2))
+            .contains(&"<!-- zaf:exit planning instance 1 on #2 lost -->".to_owned())
     );
-    assert_eq!(second.plan.launches[0].instance, instance(3, 2));
+    assert!(
+        second.plan.launches.is_empty(),
+        "an epic is planned once, a lost launch included"
+    );
 }
 
 #[test]
@@ -464,23 +614,25 @@ fn a_lost_instances_tasks_are_released_and_a_question_is_kept() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state_dir = dir.path().join(".zaf");
     let board = board();
-    prepare(&board, &state_dir, &manifest(), &|_| true, 100).expect("first tick");
+    prepare(&board, &state_dir, &manifest(), &|_| true, &holder(100)).expect("first tick");
     let lost = instance(1, 2);
-    let (waiting, stuck, other) = (
-        IssueNumber::from(4),
-        IssueNumber::from(3),
-        IssueNumber::from(13),
-    );
+    let (waiting, stuck, other) = (TicketId::from(4), TicketId::from(3), TicketId::from(13));
     board.claim(stuck, &lost).expect("claims #3");
     board.claim(waiting, &lost).expect("claims #4");
     board
-        .label(waiting, TaskLabel::Question)
+        .set_state(waiting, TicketState::Question)
         .expect("#4 waits on a question");
     // Held by an instance that is not lost: stays held.
     board.claim(other, &instance(9, 12)).expect("claims #13");
 
-    let second =
-        prepare(&board, &state_dir, &manifest(), &|pid| pid != 100, OWN_PID).expect("second tick");
+    let second = prepare(
+        &board,
+        &state_dir,
+        &manifest(),
+        &|held| held.pid != 100,
+        &tick(),
+    )
+    .expect("second tick");
 
     let expected = vec![
         Released {
@@ -493,15 +645,15 @@ fn a_lost_instances_tasks_are_released_and_a_question_is_kept() {
         },
     ];
     assert_eq!(second.released, expected);
-    let label = |task| board.task(task).expect("task").label;
-    assert_eq!(label(stuck), Some(TaskLabel::Ready));
-    assert_eq!(label(waiting), Some(TaskLabel::Question));
-    assert_eq!(label(other), Some(TaskLabel::Claimed));
+    let label = |task| board.task(task).expect("task").state;
+    assert_eq!(label(stuck), Some(TicketState::Ready));
+    assert_eq!(label(waiting), Some(TicketState::Question));
+    assert_eq!(label(other), Some(TicketState::Claimed));
     for task in [stuck, waiting] {
         let comments = board.comments(task);
         assert_eq!(comments.len(), 1, "{comments:?}");
         assert!(
-            comments[0].starts_with("released from team instance 1 on #2 at "),
+            comments[0].starts_with("released from planning instance 1 on #2 at "),
             "{comments:?}"
         );
     }
@@ -516,11 +668,11 @@ fn a_tick_with_nothing_lost_releases_nothing() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state_dir = dir.path().join(".zaf");
     let board = board();
-    prepare(&board, &state_dir, &manifest(), &|_| true, 100).expect("first tick");
+    prepare(&board, &state_dir, &manifest(), &|_| true, &holder(100)).expect("first tick");
     board
-        .claim(IssueNumber::from(3), &instance(1, 2))
+        .claim(TicketId::from(3), &instance(1, 2))
         .expect("claims #3");
-    let second = prepare(&board, &state_dir, &manifest(), &|_| true, OWN_PID).expect("second tick");
+    let second = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("second tick");
     assert!(second.released.is_empty());
     assert_eq!(board.claims().expect("claims").len(), 1);
 }
@@ -542,29 +694,34 @@ fn the_guard_file_sets_the_level_and_its_absence_is_green() {
     .expect("writes");
     let board = board();
     let state_dir = dir.path();
-    let prepared = prepare(&board, state_dir, &manifest(), &|_| true, OWN_PID).expect("tick");
+    let prepared = prepare(&board, state_dir, &manifest(), &|_| true, &tick()).expect("tick");
     assert!(prepared.plan.launches.is_empty());
     std::fs::write(dir.path().join(GUARD_FILE), "{").expect("writes");
     assert!(read_guard(dir.path()).is_err());
 }
 
 #[test]
-fn the_unbuilt_branches_print_skipped_and_launch_nothing() {
+fn a_signed_epic_with_no_task_launches_planning_and_only_release_is_unbuilt() {
     let dir = tempfile::tempdir().expect("temp dir");
     let board = FakeBoard::default();
-    board.add_ticket(epic(2));
-    let prepared = prepare(&board, dir.path(), &manifest(), &|_| true, OWN_PID).expect("prepares");
-    assert!(prepared.plan.launches.is_empty());
+    board.add_challenged_epic(TicketId::from(2), "Issue 2");
+    let prepared = prepare(&board, dir.path(), &manifest(), &|_| true, &tick()).expect("prepares");
+    let launched: Vec<String> = prepared
+        .plan
+        .launches
+        .iter()
+        .map(|launch| launch.instance.to_string())
+        .collect();
+    assert_eq!(launched, ["planning instance 1 on #2"]);
     let text = prepared.plan.render_text();
-    for branch in ["planning", "challenger", "release"] {
-        assert!(
-            text.contains(&format!("{branch}: skipped: not built")),
-            "{text}"
-        );
-    }
+    assert!(text.contains("release: skipped: not built"), "{text}");
+    assert!(!text.contains("planning: skipped"), "{text}");
     let json = prepared.plan.to_json(&[], &[]);
-    assert_eq!(json["skipped"]["branches"][0]["reason"], "not built");
-    assert_eq!(json["launched"], serde_json::json!([]));
+    assert_eq!(json["skipped"]["branches"][0]["branch"], "release");
+    assert_eq!(
+        json["skipped"]["branches"].as_array().map(Vec::len),
+        Some(1)
+    );
 }
 
 #[test]
@@ -575,31 +732,17 @@ fn json_names_every_launch_and_every_skipped_epic() {
         .replace("slots = 2", "slots = 1")
         .parse()
         .expect("manifest parses");
-    let prepared = prepare(&board, dir.path(), &manifest, &|_| true, OWN_PID).expect("tick");
+    let prepared = prepare(&board, dir.path(), &manifest, &|_| true, &tick()).expect("tick");
     let json = prepared.plan.to_json(&[], &[]);
     assert_eq!(json["skipped"]["epics"][0]["epic"], 12);
     assert_eq!(json["skipped"]["epics"][0]["reason"], "no_free_slot");
-    assert_eq!(json["skipped"]["tasks"][0]["reason"], "blocked");
-    assert_eq!(
-        json["skipped"]["tasks"][0]["detail"],
-        serde_json::json!([6])
-    );
+    assert!(json["skipped"].get("tasks").is_none(), "{json}");
     assert_eq!(json["slots"]["free"], 1);
 }
 
 #[test]
 fn the_slug_turns_spaces_and_hashes_into_single_dashes() {
-    assert_eq!(slug(&instance(12, 16)), "team-instance-12-on-16");
-}
-
-#[test]
-fn the_team_profile_comes_from_the_manifest() {
-    let lean: Manifest = MANIFEST
-        .replace("profile = \"build\"", "profile = \"lean\"")
-        .parse()
-        .expect("manifest parses");
-    assert_eq!(team_profile(&lean), Profile::Lean);
-    assert_eq!(Settings::from(&lean).batch, 2);
+    assert_eq!(slug(&instance(12, 16)), "planning-instance-12-on-16");
 }
 
 #[test]
@@ -608,12 +751,12 @@ fn a_launch_puts_its_environment_on_the_request() {
     let state_dir = dir.path().join(".zaf");
     let board = board();
     let runner = FakeRunner::default();
-    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, OWN_PID).expect("prepares");
+    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
     let context = LaunchContext {
         env: BTreeMap::from([
             (
                 "ZAF_INSTANCE".to_owned(),
-                "team instance 1 on #2".to_owned(),
+                "planning instance 1 on #2".to_owned(),
             ),
             ("ZAF_VERSION".to_owned(), "0.3.0".to_owned()),
         ]),
@@ -622,7 +765,74 @@ fn a_launch_puts_its_environment_on_the_request() {
     launch(&board, &runner, &context, &prepared.plan.launches[0]).expect("records the run");
     let requests = runner.requests();
     assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].env, context.env);
+    let mut expected = context.env.clone();
+    expected.insert(RUN_VAR.to_owned(), requests[0].dir.display().to_string());
+    expected.insert(SIZE_VAR.to_owned(), "XS".to_owned());
+    assert_eq!(requests[0].env, expected);
+}
+
+#[test]
+fn a_launch_carries_its_run_and_size() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let board = board();
+    let runner = FakeRunner::default();
+    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
+    let context = LaunchContext {
+        env: BTreeMap::from([(
+            "ZAF_INSTANCE".to_owned(),
+            "planning instance 1 on #2".to_owned(),
+        )]),
+        ..context(&state_dir)
+    };
+    launch(&board, &runner, &context, &prepared.plan.launches[0]).expect("records the run");
+    let requests = runner.requests();
+    let env = &requests[0].env;
+    let run_dir = state_dir.join(RUNS_DIR).join("planning-instance-1-on-2");
+    assert!(run_dir.is_absolute());
+    assert_eq!(env[RUN_VAR], run_dir.display().to_string());
+    assert_eq!(
+        env["ZAF_INSTANCE"], "planning instance 1 on #2",
+        "beside its name"
+    );
+    assert_eq!(
+        env.get(SIZE_VAR).map(String::as_str),
+        Some("XS"),
+        "a planning launch is the smallest size"
+    );
+    assert_eq!(launch_size(&planning()), Some(TaskSize::XS));
+    assert_eq!(
+        launch_size(&RoleName::from(CHALLENGER_ROLE)),
+        Some(TaskSize::XS)
+    );
+}
+
+#[test]
+fn a_launch_names_its_run_folder_absolutely_from_a_relative_state_folder() {
+    let env = run_env(Path::new(".zaf/runs/planning-instance-1-on-2"), &planning());
+    let run = Path::new(&env[RUN_VAR]);
+    assert!(run.is_absolute(), "{}", run.display());
+    assert!(run.ends_with(".zaf/runs/planning-instance-1-on-2"));
+}
+
+#[test]
+fn a_planning_launch_is_xs() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let board = FakeBoard::default();
+    board.add_challenged_epic(TicketId::from(2), "Issue 2");
+    let runner = FakeRunner::default();
+    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
+    let planned = &prepared.plan.launches[0];
+    assert_eq!(planned.instance.role, RoleName::from(PLANNING_ROLE));
+
+    launch(&board, &runner, &context(&state_dir), planned).expect("launches");
+
+    let requests = runner.requests();
+    let run_dir = state_dir.join(RUNS_DIR).join("planning-instance-1-on-2");
+    assert_eq!(requests[0].dir, run_dir);
+    assert_eq!(requests[0].env[RUN_VAR], run_dir.display().to_string());
+    assert_eq!(requests[0].env[SIZE_VAR], "XS");
 }
 
 #[test]
@@ -637,7 +847,7 @@ fn spawn_launches_with_env() {
     let root = Path::new("/work/bookshelf");
     let board = board();
     let runner = FakeRunner::default();
-    let prepared = prepare(&board, &state_dir, &manifest, &|_| true, OWN_PID).expect("prepares");
+    let prepared = prepare(&board, &state_dir, &manifest, &|_| true, &tick()).expect("prepares");
     let context = LaunchContext {
         env: manifest_env(&manifest, root, "0-3").expect("resolves"),
         ..context(&state_dir)
@@ -657,6 +867,8 @@ fn spawn_launches_with_env() {
                 "feature/release-0-3@origin".to_owned()
             ),
             ("HOME".to_owned(), "/from/manifest".to_owned()),
+            (RUN_VAR.to_owned(), requests[0].dir.display().to_string()),
+            (SIZE_VAR.to_owned(), "XS".to_owned()),
         ])
     );
 }
@@ -679,14 +891,14 @@ fn launches_run_in_parallel_threads_and_all_are_joined() {
     let runner = Arc::new(FakeRunner::default());
     for _ in 0..2 {
         runner.record(
-            team(),
+            planning(),
             RunOutput {
                 exit_code: 0,
                 transcript: "done\n".to_owned(),
             },
         );
     }
-    let prepared = prepare(&*board, &state_dir, &manifest(), &|_| true, OWN_PID).expect("prepares");
+    let prepared = prepare(&*board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
     assert_eq!(prepared.plan.launches.len(), 2);
     let jobs: Vec<_> = prepared
         .plan
@@ -703,7 +915,7 @@ fn launches_run_in_parallel_threads_and_all_are_joined() {
             )
         })
         .collect();
-    let ports = || -> Result<LaunchPorts, PortError> {
+    let ports = |_: &RoleName| -> Result<LaunchPorts, PortError> {
         Ok((
             Box::new(SharedBoard(Arc::clone(&board))),
             Box::new(SharedRunner(Arc::clone(&runner))),
@@ -718,7 +930,7 @@ fn launches_run_in_parallel_threads_and_all_are_joined() {
     assert_eq!(done[1].instance, instance(2, 12));
     assert!(done.iter().all(|d| d.exit == LaunchExit::Code(0)));
     assert!(
-        load(&state_dir).expect("loads").instances().is_empty(),
+        running(&state_dir).is_empty(),
         "every slot is freed when the tick returns, none lost to a racing write"
     );
     let mut seen: Vec<String> = runner
@@ -727,9 +939,12 @@ fn launches_run_in_parallel_threads_and_all_are_joined() {
         .map(|request| request.env["ZAF_INSTANCE"].clone())
         .collect();
     seen.sort();
-    assert_eq!(seen, ["team instance 1 on #2", "team instance 2 on #12"]);
-    assert_eq!(board.comments(IssueNumber::from(2)).len(), 2);
-    assert_eq!(board.comments(IssueNumber::from(12)).len(), 2);
+    assert_eq!(
+        seen,
+        ["planning instance 1 on #2", "planning instance 2 on #12"]
+    );
+    assert_eq!(board.comments(TicketId::from(2)).len(), 2);
+    assert_eq!(board.comments(TicketId::from(12)).len(), 2);
 }
 
 #[test]
@@ -737,22 +952,23 @@ fn a_thread_without_ports_frees_its_slot_and_reports() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state_dir = dir.path().join(".zaf");
     let board = board();
-    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, OWN_PID).expect("prepares");
+    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
     let jobs: Vec<_> = prepared
         .plan
         .launches
         .iter()
         .map(|planned| (planned, context(&state_dir)))
         .collect();
-    let ports =
-        || -> Result<LaunchPorts, PortError> { Err(PortError::Unavailable("no gh".to_owned())) };
+    let ports = |_: &RoleName| -> Result<LaunchPorts, PortError> {
+        Err(PortError::Unavailable("no gh".to_owned()))
+    };
     let results = launch_all(&jobs, &ports);
     assert!(
         results
             .iter()
             .all(|r| matches!(r, Err(SpawnError::Port(_))))
     );
-    assert!(load(&state_dir).expect("loads").instances().is_empty());
+    assert!(running(&state_dir).is_empty());
 }
 
 #[test]
@@ -760,21 +976,22 @@ fn a_panicking_launch_thread_frees_its_slot() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state_dir = dir.path().join(".zaf");
     let board = board();
-    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, OWN_PID).expect("prepares");
+    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
     let jobs: Vec<_> = prepared
         .plan
         .launches
         .iter()
         .map(|planned| (planned, context(&state_dir)))
         .collect();
-    let ports = || -> Result<LaunchPorts, PortError> { panic!("a launch thread panics") };
+    let ports =
+        |_: &RoleName| -> Result<LaunchPorts, PortError> { panic!("a launch thread panics") };
     let results = launch_all(&jobs, &ports);
     assert!(
         results
             .iter()
             .all(|r| matches!(r, Err(SpawnError::Port(PortError::Backend(_)))))
     );
-    assert!(load(&state_dir).expect("loads").instances().is_empty());
+    assert!(running(&state_dir).is_empty());
 }
 
 #[test]
@@ -804,21 +1021,22 @@ fn a_dry_run_names_each_launch_and_its_command_line_and_writes_nothing() {
         env.insert("CLAUDE_CONFIG_DIR".to_owned(), home.clone());
         Ok((format!("claude -p '{}' --model opus", request.prompt), env))
     };
-    let dry = dry_run(&jobs, &profile_dir, &describe).expect("describes");
+    let dir_of = |_| profile_dir.clone();
+    let dry = dry_run(&jobs, &dir_of, &describe).expect("describes");
     let text: String = dry.iter().map(DryLaunch::render_text).collect();
-    let brief = state_dir
-        .join(RUNS_DIR)
-        .join("team-instance-1-on-2")
-        .join(BRIEF_FILE);
+    let run_dir = state_dir.join(RUNS_DIR).join("planning-instance-1-on-2");
+    let brief = run_dir.join(BRIEF_FILE);
     let first = format!(
-        "would launch team instance 1 on #2\n  epic #2\n  tasks #3 #4\n  profile {home}\n  \
-         env CLAUDE_CONFIG_DIR={home}\n  env ZAF_INSTANCE=team instance 1 on #2\n  \
-         command claude -p 'You are team instance 1 on #2, the team instance for epic #2 of \
-         project bookshelf. Tasks: #3 #4. Read {} first and follow it exactly.' --model opus\n",
+        "would launch planning instance 1 on #2\n  epic #2\n  profile {home}\n  \
+         env CLAUDE_CONFIG_DIR={home}\n  env ZAF_INSTANCE=planning instance 1 on #2\n  \
+         env ZAF_RUN={}\n  env ZAF_SIZE=XS\n  \
+         command claude -p 'You are planning instance 1 on #2, the planning instance for epic #2 of \
+         project bookshelf. Read {} first and follow it exactly.' --model opus\n",
+        run_dir.display(),
         brief.display()
     );
     assert!(text.starts_with(&first), "{text}");
-    assert!(text.contains("would launch team instance 2 on #12\n  epic #12\n  tasks #13\n"));
+    assert!(text.contains("would launch planning instance 2 on #12\n  epic #12\n  profile"));
     assert!(
         !state_dir.join(status::SPAWN_STATE_FILE).exists(),
         "no state file"
@@ -827,8 +1045,8 @@ fn a_dry_run_names_each_launch_and_its_command_line_and_writes_nothing() {
         !state_dir.exists(),
         "nothing written under the state folder"
     );
-    assert!(board.comments(IssueNumber::from(2)).is_empty());
-    assert!(board.comments(IssueNumber::from(12)).is_empty());
+    assert!(board.comments(TicketId::from(2)).is_empty());
+    assert!(board.comments(TicketId::from(12)).is_empty());
 }
 
 #[test]
@@ -836,12 +1054,12 @@ fn a_dry_run_reports_a_dead_launch_as_lost_without_recording_it() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state_dir = dir.path().join(".zaf");
     let board = board();
-    prepare(&board, &state_dir, &manifest(), &|_| true, OWN_PID).expect("reserves");
+    prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("reserves");
     let before = std::fs::read(state_dir.join(status::SPAWN_STATE_FILE)).expect("state");
     let dry = plan_only(&board, &state_dir, &manifest(), &|_| false).expect("plans");
     assert_eq!(
         dry.lost,
-        ["team instance 1 on #2", "team instance 2 on #12"]
+        ["planning instance 1 on #2", "planning instance 2 on #12"]
     );
     assert_eq!(
         std::fs::read(state_dir.join(status::SPAWN_STATE_FILE)).expect("state"),
@@ -849,7 +1067,323 @@ fn a_dry_run_reports_a_dead_launch_as_lost_without_recording_it() {
         "the state is untouched"
     );
     assert!(
-        board.comments(IssueNumber::from(2)).is_empty(),
+        board.comments(TicketId::from(2)).is_empty(),
         "no lost comment"
     );
+}
+
+/// The instance's own process takes over its launch from the tick, as the runner does.
+fn instance_holds(state_dir: &Path, slug: &str, pid: u32) {
+    std::fs::write(
+        state_dir.join(RUNS_DIR).join(slug).join(runs::HOLDER_FILE),
+        format!("{}\n", holder(pid)),
+    )
+    .expect("the instance records itself");
+}
+
+#[test]
+fn a_killed_tick_leaves_its_running_instance_its_slot_and_its_claims() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let board = board();
+    prepare(&board, &state_dir, &manifest(), &|_| true, &holder(100)).expect("first tick");
+    instance_holds(&state_dir, "planning-instance-1-on-2", 500);
+    board
+        .claim(TicketId::from(3), &instance(1, 2))
+        .expect("the instance claims #3");
+
+    // The first tick (100) is gone; instance 1 (500) still runs; instance 2 never started.
+    let table = |held: &Holder| held.pid == 500;
+    let second = prepare(&board, &state_dir, &manifest(), &table, &tick()).expect("second tick");
+
+    assert_eq!(second.lost, ["planning instance 2 on #12"]);
+    assert!(second.released.is_empty(), "{:?}", second.released);
+    assert_eq!(
+        board.claims().expect("claims").len(),
+        1,
+        "the claim is kept"
+    );
+    assert_eq!(second.plan.slots.running, 1, "instance 1 keeps its slot");
+    assert!(second.plan.launches.is_empty());
+}
+
+#[test]
+fn a_tick_that_outlives_its_instance_holds_no_slot_and_the_next_tick_releases_its_task() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let board = board();
+    prepare(&board, &state_dir, &manifest(), &|_| true, &holder(100)).expect("first tick");
+    instance_holds(&state_dir, "planning-instance-1-on-2", 500);
+    instance_holds(&state_dir, "planning-instance-2-on-12", 600);
+    let stuck = TicketId::from(3);
+    board
+        .claim(stuck, &instance(1, 2))
+        .expect("the instance claims #3");
+
+    // The first tick (100) still runs; both instances have died without an exit.
+    let table = |held: &Holder| held.pid == 100;
+    let screen = status::status(&board, &state_dir, 2, &table).expect("status");
+    assert_eq!(screen.slots.free, 2, "free at once, before any tick");
+    assert_eq!(screen.orphaned.len(), 1);
+
+    let second = prepare(&board, &state_dir, &manifest(), &table, &tick()).expect("second tick");
+    assert_eq!(
+        second.lost,
+        ["planning instance 1 on #2", "planning instance 2 on #12"]
+    );
+    assert_eq!(
+        second.released,
+        [Released {
+            task: stuck,
+            instance: instance(1, 2),
+        }]
+    );
+    assert_eq!(second.plan.slots.running, 0);
+}
+
+#[test]
+fn a_lost_launch_is_recorded_once() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let board = board();
+    prepare(&board, &state_dir, &manifest(), &|_| true, &holder(100)).expect("first tick");
+    let table = |held: &Holder| held.pid != 100;
+    let second = prepare(&board, &state_dir, &manifest(), &table, &tick()).expect("second tick");
+    assert_eq!(second.lost.len(), 2);
+    let third = prepare(&board, &state_dir, &manifest(), &table, &tick()).expect("third tick");
+    assert!(third.lost.is_empty(), "{:?}", third.lost);
+    let lost_comments = board
+        .comments(TicketId::from(2))
+        .into_iter()
+        .filter(|comment| comment.ends_with(" lost -->"))
+        .count();
+    assert_eq!(lost_comments, 1);
+}
+
+#[test]
+fn a_planning_launch_runs_its_role_with_the_planning_brief_and_no_task() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let board = FakeBoard::default();
+    board.add_challenged_epic(TicketId::from(2), "Issue 2");
+    let planning = RoleName::from(PLANNING_ROLE);
+    let runner = FakeRunner::default();
+    runner.record(
+        planning.clone(),
+        RunOutput {
+            exit_code: 0,
+            transcript: "filed #3\n".to_owned(),
+        },
+    );
+    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
+    let planned = &prepared.plan.launches[0];
+    assert_eq!(planned.instance.role, planning);
+    let (reserved, _) = derive(&state_dir, &|_| true).expect("derives");
+    assert_eq!(
+        reserved.running(),
+        1,
+        "a launch with no task holds its slot"
+    );
+
+    let done = launch(&board, &runner, &context(&state_dir), planned).expect("launches");
+    assert_eq!(done.exit, LaunchExit::Code(0));
+    let requests = runner.requests();
+    let request = &requests[0];
+    assert_eq!(request.role, planning);
+    let run_dir = state_dir.join(RUNS_DIR).join("planning-instance-1-on-2");
+    let brief = run_dir.join(BRIEF_FILE);
+    assert_eq!(
+        request.prompt,
+        format!(
+            "You are planning instance 1 on #2, the planning instance for epic #2 of project \
+             bookshelf. Read {} first and follow it exactly.",
+            brief.display()
+        )
+    );
+    assert_eq!(
+        std::fs::read_to_string(&brief).expect("brief"),
+        PLANNING_BRIEF
+    );
+
+    // The run ended after the signature, so the next tick does not plan the epic again.
+    let again = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
+    assert!(again.plan.launches.is_empty());
+    assert_eq!(
+        again.plan.epics,
+        [(TicketId::from(2), EpicSkip::PlannedNothing)]
+    );
+}
+
+#[test]
+fn each_role_has_its_pack_brief() {
+    assert_eq!(pack_brief(&RoleName::from(PLANNING_ROLE)), PLANNING_BRIEF);
+    assert_eq!(
+        pack_brief(&RoleName::from(CHALLENGER_ROLE)),
+        CHALLENGER_BRIEF
+    );
+    for brief in [PLANNING_BRIEF, CHALLENGER_BRIEF] {
+        assert!(brief.contains("zaf epic show <epic>"), "{brief}");
+        assert!(brief.contains("zaf board report <epic>"), "{brief}");
+    }
+    assert!(PLANNING_BRIEF.contains("zaf board file <epic>"));
+}
+
+/// A task claimed by instance 1, which dies with the first tick (pid 100): the claim is left to
+/// the tests to judge. Returns the state folder, the board and the claimed task.
+fn claimed_by_a_dead_instance(dir: &Path) -> (PathBuf, FakeBoard, TicketId) {
+    let state_dir = dir.join(".zaf");
+    let board = board();
+    prepare(&board, &state_dir, &manifest(), &|_| true, &holder(100)).expect("first tick");
+    let task = TicketId::from(3);
+    board.claim(task, &instance(1, 2)).expect("claims #3");
+    (state_dir, board, task)
+}
+
+/// Records a phase process of `task` held by `pid`, as the launcher does (#437).
+fn phase_runs(state_dir: &Path, task: TicketId, pid: u32) {
+    let run = state_dir.join("phases").join("implement-1");
+    std::fs::create_dir_all(&run).expect("run folder");
+    std::fs::write(run.join("task"), task.get().to_string()).expect("task");
+    std::fs::write(run.join("action"), "implement").expect("action");
+    std::fs::write(run.join("pid"), format!("{}\n", holder(pid))).expect("pid");
+}
+
+#[test]
+fn a_task_with_a_pr_is_held_by_the_forge() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (state_dir, board, task) = claimed_by_a_dead_instance(dir.path());
+    std::fs::create_dir_all(state_dir.join("slices")).expect("slices");
+    std::fs::write(state_dir.join("slices").join("3.pr"), "42").expect("pr record");
+
+    let table = |held: &Holder| held.pid != 100;
+    let screen = status::status(&board, &state_dir, 2, &table).expect("status");
+    assert!(screen.orphaned.is_empty(), "{:?}", screen.orphaned);
+    assert_eq!(screen.claimed.len(), 1);
+
+    let second = prepare(&board, &state_dir, &manifest(), &table, &tick()).expect("second tick");
+    assert!(second.released.is_empty(), "{:?}", second.released);
+    let claims = board.claims().expect("claims");
+    assert_eq!(claims.len(), 1, "the claim stays until the task is done");
+    assert_eq!(claims[0].task, task);
+}
+
+#[test]
+fn a_running_phase_holds_its_task() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (state_dir, board, task) = claimed_by_a_dead_instance(dir.path());
+    phase_runs(&state_dir, task, 777);
+
+    let table = |held: &Holder| held.pid != 100;
+    let screen = status::status(&board, &state_dir, 2, &table).expect("status");
+    assert!(screen.orphaned.is_empty(), "{:?}", screen.orphaned);
+
+    let second = prepare(&board, &state_dir, &manifest(), &table, &tick()).expect("second tick");
+    assert!(second.released.is_empty(), "{:?}", second.released);
+    assert_eq!(board.claims().expect("claims").len(), 1);
+
+    // The phase process is gone with no pull request: nothing holds the task any more.
+    let gone = |held: &Holder| held.pid != 100 && held.pid != 777;
+    let third = prepare(&board, &state_dir, &manifest(), &gone, &tick()).expect("third tick");
+    assert_eq!(third.released.len(), 1, "{:?}", third.released);
+    assert_eq!(third.released[0].task, task);
+}
+
+#[test]
+fn a_bare_orphan_is_still_released() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (state_dir, board, task) = claimed_by_a_dead_instance(dir.path());
+    // Another task's pull request and another task's phase hold nothing of #3.
+    std::fs::create_dir_all(state_dir.join("slices")).expect("slices");
+    std::fs::write(state_dir.join("slices").join("4.pr"), "43").expect("pr record");
+    phase_runs(&state_dir, TicketId::from(4), 777);
+
+    let table = |held: &Holder| held.pid != 100;
+    let screen = status::status(&board, &state_dir, 2, &table).expect("status");
+    assert_eq!(screen.orphaned.len(), 1);
+    assert_eq!(screen.orphaned[0].task, task.get());
+
+    let second = prepare(&board, &state_dir, &manifest(), &table, &tick()).expect("second tick");
+    assert_eq!(
+        second.released,
+        [Released {
+            task,
+            instance: instance(1, 2),
+        }]
+    );
+    assert!(board.claims().expect("claims").is_empty());
+}
+
+/// A task claimed by the phase instance `implement instance 130 on #2`, whose phase run folder
+/// is written as `start` writes it (#549): the folder, the board, the task and the instance.
+fn claimed_by_a_phase_instance(
+    state_dir: &Path,
+    pid: u32,
+) -> (PathBuf, FakeBoard, TicketId, Instance) {
+    let board = board();
+    let task = TicketId::from(3);
+    let claimant = Instance {
+        role: RoleName::from("implement"),
+        epic: TicketId::from(2),
+        number: InstanceNumber::from(130),
+    };
+    board.claim(task, &claimant).expect("claims #3");
+    let run = state_dir
+        .join("phases")
+        .join("implement-instance-130-on-2-task-3");
+    std::fs::create_dir_all(&run).expect("run folder");
+    std::fs::write(run.join("action"), "implement").expect("action");
+    std::fs::write(run.join("instance"), claimant.to_string()).expect("instance");
+    std::fs::write(run.join("pid"), format!("{}\n", holder(pid))).expect("pid");
+    std::fs::write(run.join("task"), task.get().to_string()).expect("task");
+    (run, board, task, claimant)
+}
+
+#[test]
+fn dead_phase_claim_is_released() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let (run, board, task, claimant) = claimed_by_a_phase_instance(&state_dir, 777);
+    std::fs::write(run.join("exit"), "1\n").expect("exit");
+
+    // The process is still in the table, but the run recorded its exit: it no longer runs.
+    let table = |_: &Holder| true;
+    let screen = status::status(&board, &state_dir, 2, &table).expect("status");
+    assert_eq!(screen.orphaned.len(), 1);
+
+    let tick = prepare(&board, &state_dir, &manifest(), &table, &tick()).expect("tick");
+    assert_eq!(
+        tick.released,
+        [Released {
+            task,
+            instance: claimant,
+        }]
+    );
+    assert!(board.claims().expect("claims").is_empty());
+}
+
+#[test]
+fn dead_phase_claim_with_no_process_and_no_exit_is_released() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let (_, board, task, _) = claimed_by_a_phase_instance(&state_dir, 778);
+
+    let table = |held: &Holder| held.pid != 778;
+    let tick = prepare(&board, &state_dir, &manifest(), &table, &tick()).expect("tick");
+    assert_eq!(tick.released.len(), 1, "{:?}", tick.released);
+    assert_eq!(tick.released[0].task, task);
+}
+
+#[test]
+fn running_phase_claim_is_kept() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let (_, board, _, _) = claimed_by_a_phase_instance(&state_dir, 777);
+
+    let table = |_: &Holder| true;
+    let screen = status::status(&board, &state_dir, 2, &table).expect("status");
+    assert!(screen.orphaned.is_empty(), "{:?}", screen.orphaned);
+
+    let tick = prepare(&board, &state_dir, &manifest(), &table, &tick()).expect("tick");
+    assert!(tick.released.is_empty(), "{:?}", tick.released);
+    assert_eq!(board.claims().expect("claims").len(), 1);
 }

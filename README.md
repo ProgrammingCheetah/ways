@@ -44,11 +44,11 @@ In a repo the Engineer doesn't own (the push remote's owner is neither their for
 5. **Optional: name** your organizations, only if some of your own repos live under an organization. Add this line to your shell profile (`~/.zshrc` or `~/.bashrc`; on Windows run `setx WAYS_OWN_ORGS example-org`), with several organizations comma-separated (spaces around the commas are ignored), then open a new terminal. Skip it where no organization is yours, as on a work computer.
    `export WAYS_OWN_ORGS=example-org`
    Done when: `printenv WAYS_OWN_ORGS` (PowerShell: `$env:WAYS_OWN_ORGS`) prints your organization(s).
-6. **Install** `zaf`: open https://github.com/ProgrammingCheetah/ways/releases, download the latest `zaf-v*` archive for your platform (Linux x86_64 or macOS Apple silicon), unpack it, and put its `zaf` binary on your PATH.
+6. **Install** `zaf`: open https://github.com/ProgrammingCheetah/ways/releases, download the latest `zaf-v*` archive for your platform (Linux x86_64 or macOS Apple silicon), unpack it, and put its `zaf` binary on your PATH. From then on, `zaf update` replaces it with the newest release (`zaf update --check` only says whether one is out).
    `zaf --version`
    Done when: it prints a version number.
-7. **Run** `zaf init` at your work project's root folder and answer its four questions (project name, board repo, forge repo, gate command).
-   `cd <your project root> && zaf init`
+7. **Run** `zaf setup` at your work project's root folder and answer its four questions (project name, board repo, forge repo, gate command).
+   `cd <your project root> && zaf setup`
    Done when: the output ends with `wrote .zaf.toml`.
 8. **Run** `zaf setup`, do the steps it prints, and run it again until nothing is left.
    `cd <your project root> && zaf setup`
@@ -65,7 +65,7 @@ To get worksheets like this one from Claude in every project, also run `claude p
 
 ## Updating
 
-`claude plugin marketplace update ways`, then `claude plugin update teams@ways` (and each other pack you use), then start a new session. Or turn on auto-update: `/plugin` → **Marketplaces** → `ways` → **Enable auto-update**. `main` is the release channel and stays shippable: every commit on it is a new version of the plugins. Only `teams` carries a version number in its `plugin.json` (2.1.0), which `zaf doctor` reports; the other packs carry none. The `zaf` binary is released separately, from tags `zaf-vX.Y.Z`.
+`claude plugin marketplace update ways`, then `claude plugin update teams@ways` (and each other pack you use), then start a new session. Or turn on auto-update: `/plugin` → **Marketplaces** → `ways` → **Enable auto-update**. `main` is the release channel and stays shippable: every commit on it is a new version of the plugins. Only `teams` carries a version number in its `plugin.json` (2.1.1), which `zaf doctor` reports; the other packs carry none. The `zaf` binary is released separately, from tags `zaf-vX.Y.Z`.
 
 ## Layout
 

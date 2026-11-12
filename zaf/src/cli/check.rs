@@ -11,14 +11,14 @@ use std::time::{Duration, SystemTime};
 
 use super::Cli;
 use super::exit::{self, BACKEND, REFUSED};
-use super::slice::VERSION_VAR;
+use super::slice::{VERSION_VAR, refuse_not_open};
 use crate::adapters::gate::RUNS_DIR;
 use crate::app::actions::{RunOutcome, SliceRecords};
 use crate::app::check::{
     CheckRecord, Engine, EngineSettings, Shell, Step, StepPorts, Target, TaskInputs, check_task,
 };
 use crate::composition::{Composition, CompositionError};
-use crate::domain::{IssueNumber, SecurityTrigger, TaskTemplate};
+use crate::domain::{SecurityTrigger, TaskTemplate, TicketId};
 use crate::manifest::{CheckTarget, CommandLine, RunnerName};
 use crate::ports::{Board, Forge, Gate, GateRun, PortError, PrNumber, Runner, Shell as ShellPort};
 
@@ -34,7 +34,7 @@ pub fn run(cli: &Cli, target: &str, status: bool) -> u8 {
 }
 
 /// Checks a task's acceptance lines and declared interfaces (`check <task>` by another name).
-pub fn verify(cli: &Cli, task: IssueNumber) -> u8 {
+pub fn verify(cli: &Cli, task: TicketId) -> u8 {
     check(cli, Target::Task(task), false)
 }
 
@@ -108,7 +108,7 @@ fn check_task_target(
     path: &str,
     composition: &Composition,
     target: &Target,
-    task: IssueNumber,
+    task: TicketId,
     env: &BTreeMap<String, String>,
 ) -> Result<(CheckRecord, String), u8> {
     let board = composition
@@ -123,13 +123,13 @@ fn check_task_with_board(
     composition: &Composition,
     board: &dyn Board,
     target: &Target,
-    task: IssueNumber,
+    task: TicketId,
     env: &BTreeMap<String, String>,
 ) -> Result<(CheckRecord, String), u8> {
     let ports = TaskPorts {
         board,
         gate_in: &|dir| composition.gate_in_with_env(dir, env),
-        shell_in: &|dir| Box::new(DirShell(composition.shell_in_with_env(dir, env))),
+        shell_in: &|dir| Box::new(DirShell(composition.tests_shell_in_with_env(dir, env))),
     };
     check_task_in_slice(path, composition, &ports, target, task)
 }
@@ -142,17 +142,16 @@ fn check_task_in_slice(
     composition: &Composition,
     ports: &TaskPorts<'_>,
     target: &Target,
-    task: IssueNumber,
+    task: TicketId,
 ) -> Result<(CheckRecord, String), u8> {
     let Some(dir) = SliceRecords::new(composition.root()).workspace(task) else {
-        eprintln!("zaf {path}: {}", not_open(task));
-        return Err(REFUSED);
+        return Err(refuse_not_open(path, composition, task));
     };
     let ticket = ports
         .board
         .task(task)
         .map_err(|error| exit::fail(path, &error))?;
-    let template = ticket.body.parse::<TaskTemplate>().map_err(|error| {
+    let template = ticket.template().map_err(|error| {
         eprintln!("zaf {path}: {task} is not a task ticket: {error}");
         REFUSED
     })?;
@@ -179,20 +178,12 @@ fn check_task_in_slice(
     Ok((CheckRecord::from_task(target, &check, began), line))
 }
 
-/// Why a task with no slice record is refused.
-pub(super) fn not_open(task: IssueNumber) -> String {
-    format!(
-        "slice for {task} is not open; run zaf do slice-open {}",
-        task.get()
-    )
-}
-
 fn check_pr_target(
     path: &str,
     composition: &Composition,
     target: &Target,
     pr: PrNumber,
-    task: Option<IssueNumber>,
+    task: Option<TicketId>,
     env: &BTreeMap<String, String>,
 ) -> Result<CheckRecord, u8> {
     let configured = composition
@@ -252,13 +243,13 @@ fn run_steps(
 fn task_template(
     path: &str,
     composition: &Composition,
-    task: IssueNumber,
+    task: TicketId,
 ) -> Result<TaskTemplate, u8> {
     let board = composition
         .board()
         .map_err(|error| exit::fail_composition(path, &error))?;
     let ticket = board.task(task).map_err(|error| exit::fail(path, &error))?;
-    ticket.body.parse::<TaskTemplate>().map_err(|error| {
+    ticket.template().map_err(|error| {
         eprintln!("zaf {path}: {task} is not a task ticket: {error}");
         REFUSED
     })
@@ -409,7 +400,7 @@ mod tests {
     const SLICE: &str = "feature/0.1.1-37-46";
 
     /// A task ticket whose checks need no test run and no symbol: the gate line decides.
-    fn ticket() -> crate::ports::Ticket {
+    fn ticket() -> crate::domain::Ticket {
         let body = "Goal: gate the slice.\n\
             Owned paths: src/lib.rs\n\
             Interfaces: none\n\
@@ -422,12 +413,14 @@ mod tests {
             Model: sonnet\n\
             Size: S\n\
             Blocked by: —\n";
-        crate::ports::Ticket {
-            number: IssueNumber::from(46),
-            epic: Some(IssueNumber::from(37)),
-            title: "check gates the slice".to_owned(),
-            body: body.to_owned(),
-            label: None,
+        crate::domain::Ticket {
+            id: TicketId::from(46),
+            epic: Some(TicketId::from(37)),
+            title: "check gates the slice".into(),
+            body: body.into(),
+            state: None,
+            url: "".into(),
+            kind: None,
         }
     }
 
@@ -475,9 +468,9 @@ mod tests {
             gate_in: &gate_in,
             shell_in: &|_| Box::new(NoShell),
         };
-        let target = Target::Task(IssueNumber::from(46));
+        let target = Target::Task(TicketId::from(46));
         let outcome =
-            check_task_in_slice("check", composition, &ports, &target, IssueNumber::from(46));
+            check_task_in_slice("check", composition, &ports, &target, TicketId::from(46));
         let runs = ran.lock().expect("lock").clone();
         (outcome, runs)
     }
@@ -534,13 +527,13 @@ HOME = "/overridden"
         let board = crate::fakes::FakeBoard::default();
         board.add_ticket(ticket());
         let env = composition.project_env(None).expect("resolves");
-        let target = Target::Task(IssueNumber::from(46));
+        let target = Target::Task(TicketId::from(46));
         let (record, _) = check_task_with_board(
             "check",
             &composition,
             &board,
             &target,
-            IssueNumber::from(46),
+            TicketId::from(46),
             &env,
         )
         .expect("checked");
@@ -589,12 +582,11 @@ HOME = "/overridden"
         // A workspace that predates the records sits where the patterns would put it: no record,
         // so it is refused rather than guessed at.
         std::fs::create_dir_all(dir.path().join(".zaf/workspaces").join(SLICE)).expect("old");
+        // With `slice-open` provided, the refusal is the slice not being open.
+        std::fs::create_dir_all(dir.path().join(".zaf/actions")).expect("actions");
+        std::fs::write(dir.path().join(".zaf/actions/slice-open"), "#!/bin/sh\n").expect("action");
         let (outcome, runs) = check_with_fakes(&composition);
         assert_eq!(outcome.err(), Some(REFUSED));
-        assert_eq!(
-            not_open(IssueNumber::from(46)),
-            "slice for #46 is not open; run zaf do slice-open 46"
-        );
         assert!(runs.is_empty(), "the gate ran at {runs:?}");
         // A record whose workspace has gone is no record either.
         let gone = dir.path().join("gone");
@@ -608,10 +600,6 @@ HOME = "/overridden"
     struct SharedForge(Arc<crate::fakes::FakeForge>);
 
     impl Forge for SharedForge {
-        fn open_pr(&self, request: &crate::ports::PrRequest) -> Result<PrNumber, PortError> {
-            self.0.open_pr(request)
-        }
-
         fn checks(&self, pr: PrNumber) -> Result<Vec<crate::ports::Check>, PortError> {
             self.0.checks(pr)
         }
@@ -621,6 +609,10 @@ HOME = "/overridden"
             pr: PrNumber,
         ) -> Result<Vec<crate::ports::ReviewComment>, PortError> {
             self.0.review_comments(pr)
+        }
+
+        fn pull_request(&self, pr: PrNumber) -> Result<crate::ports::PullRequest, PortError> {
+            self.0.pull_request(pr)
         }
 
         fn head(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
@@ -642,8 +634,12 @@ HOME = "/overridden"
             self.0.scanning_alerts(pr)
         }
 
-        fn merge(&self, pr: PrNumber) -> Result<crate::ports::PrMerge, PortError> {
-            self.0.merge(pr)
+        fn handoff(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
+            self.0.handoff(pr)
+        }
+
+        fn set_handoff(&self, pr: PrNumber, text: &str) -> Result<(), PortError> {
+            self.0.set_handoff(pr, text)
         }
     }
 
@@ -681,7 +677,7 @@ HOME = "/overridden"
     fn pull_request(head: Option<&str>) -> (Arc<crate::fakes::FakeForge>, PrNumber) {
         let forge = Arc::new(crate::fakes::FakeForge::default());
         let pr = forge
-            .open_pr(&crate::ports::PrRequest {
+            .open_pr(&crate::fakes::PrRequest {
                 slice: crate::ports::SliceName::from("feature/one-task"),
                 base: crate::ports::BaseName::from("feature/one"),
                 title: "#7 one task".to_owned(),

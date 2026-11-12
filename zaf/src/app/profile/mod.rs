@@ -10,13 +10,20 @@
 //! set to the profile (a raw copy under `plugins/` is invisible to Claude):
 //! - `[pack] path`: the project root is added as a marketplace (its
 //!   `.claude-plugin/marketplace.json` names the marketplace and lists the pack) and the
-//!   pack is installed from it. What is already added or installed is read from
-//!   `claude plugin list` and `claude plugin marketplace list`, and issues no command, unless
-//!   the pack's `plugin.json` now declares another version than the listing shows: then
+//!   pack is installed from it. What is installed is read with [`installed_version`] from the
+//!   profile's `plugins/installed_plugins.json`, and what is added from
+//!   `claude plugin marketplace list`; neither issues a command, unless the pack's
+//!   `plugin.json` now declares another version than the one installed: then
 //!   `claude plugin marketplace update` and `claude plugin update` bring the profile to it.
-//! - `[pack] tag`: the pack is installed from the marketplace on GitHub at that tag.
+//! - `[pack] tag`: the `ways` marketplace on GitHub is added unless `claude plugin marketplace
+//!   list` shows it, then `claude plugin install teams@ways` runs. Claude Code offers no version
+//!   pin, so the version installed is read with [`installed_version`], recorded under
+//!   `plugins/.zaf-pack-tag`, and must be the tag's version, else init refuses
+//!   ([`ProfileError::PackVersion`]). A rerun whose record matches the tag runs nothing.
 //!
-//! The two share the install step. The profile's settings enable the pack.
+//! The two share the install step. The profile's settings enable the pack, and are written
+//! before the pack step (so a failed install never leaves a profile without its denies) and
+//! again after it when the install changed them.
 //!
 //! The login is shared, never copied: a profile's `.credentials.json` is a symlink to the one
 //! file in the Claude home, so a rotated refresh token reaches every profile at once. The
@@ -32,6 +39,11 @@ use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value, json};
+
+mod stamp;
+#[cfg(test)]
+pub use stamp::write_stamps;
+pub use stamp::{PARTS, Reason, STAMP_FILE, StaleProfile, stale, stale_homes};
 
 use crate::app::actions::forbidden_action;
 use crate::app::brief::INTERFACE_PAGE;
@@ -51,19 +63,21 @@ pub const PROFILE_DIRS: [&str; 3] = ["projects", "memory", "plugins"];
 pub const PACK_PLUGIN: &str = "teams";
 /// The marketplace the pack is published in, by its own name.
 pub const PACK_MARKETPLACE: &str = "ways";
-/// Where the marketplace is, as `claude plugin install --marketplace` takes it.
+/// Where the marketplace is, as `claude plugin marketplace add` takes it.
 pub const MARKETPLACE_SOURCE: &str = "ProgrammingCheetah/ways";
+/// Where Claude records a profile's installed plugins, under the profile's home.
+pub const INSTALLED_PLUGINS_FILE: &str = "plugins/installed_plugins.json";
 /// The marketplace file at the project root, which names the marketplace and lists the pack.
 pub const MARKETPLACE_FILE: &str = ".claude-plugin/marketplace.json";
 /// The variable that points Claude Code at a profile instead of the host's home.
 pub const CONFIG_DIR_VAR: &str = "CLAUDE_CONFIG_DIR";
-/// The record, under a profile's `plugins/`, of the tag installed from the marketplace,
+/// The record, under a profile's `plugins/`, of the version installed from the marketplace,
 /// so a rerun with the same tag installs nothing.
 pub const INSTALLED_TAG_FILE: &str = ".zaf-pack-tag";
 /// A plugin's own manifest, under its source folder.
 const PLUGIN_FILE: &str = ".claude-plugin/plugin.json";
-/// What [`listed_version`] says of a listed plugin that shows no `Version:` line.
-const UNKNOWN_VERSION: &str = "unknown";
+/// What [`installed_version`] says of an installed plugin that records no version.
+pub const UNKNOWN_VERSION: &str = "unknown";
 /// The file a Claude home keeps its login in.
 pub const CREDENTIALS_FILE: &str = ".credentials.json";
 /// The Claude home's folder under the user's home.
@@ -167,6 +181,23 @@ pub enum ProfileError {
         /// What it said.
         output: String,
     },
+    /// The marketplace's pack installed at another version than `[pack] tag` asks for.
+    #[error("pack {plugin} is {installed}, manifest asks {tag}")]
+    PackVersion {
+        /// The plugin's name.
+        plugin: String,
+        /// The version installed.
+        installed: String,
+        /// The tag as the manifest spells it.
+        tag: String,
+    },
+}
+
+impl ProfileError {
+    /// Whether the state refused (a version the manifest does not ask for), not a failed backend.
+    pub fn is_refusal(&self) -> bool {
+        matches!(self, Self::PackVersion { .. })
+    }
 }
 
 fn io_error(path: &Path) -> impl FnOnce(io::Error) -> ProfileError {
@@ -189,7 +220,7 @@ pub fn init(
 }
 
 /// [`init`] against a given Claude home; `None`, when there is none, links nothing.
-fn init_with(
+pub(super) fn init_with(
     root: &Path,
     state_dir: &Path,
     manifest: &Manifest,
@@ -223,6 +254,13 @@ fn init_with(
             }
         }
         let pack = pack_ref.as_ref().filter(|_| carries_pack(profile));
+        let settings = settings_for(profile, template, manifest, pack)?;
+        let claude_md = claude_md(project.as_deref());
+        let files = [("settings.json", settings), ("CLAUDE.md", claude_md)];
+        // Before the pack: a failed install must never leave the profile without its denies.
+        for (name, bytes) in &files {
+            record(state_dir, &home.join(name), bytes, &mut report)?;
+        }
         if let (Some(pack_section), Some(pack)) = (&manifest.pack, pack) {
             register(
                 root,
@@ -233,13 +271,14 @@ fn init_with(
                 shell,
                 &mut report,
             )?;
+            // After the pack: an install may touch the settings, and the generated bytes must win.
+            for (name, bytes) in &files {
+                record(state_dir, &home.join(name), bytes, &mut report)?;
+            }
         }
-        // After the pack: an install may touch the settings, and the generated bytes must win.
-        let settings = settings_for(profile, template, manifest, pack)?;
-        let claude_md = claude_md(project.as_deref());
-        for (name, bytes) in [("settings.json", settings), ("CLAUDE.md", claude_md)] {
-            record(state_dir, &home.join(name), &bytes, &mut report)?;
-        }
+        // Last: a profile whose generation failed above keeps no stamp, or its old one.
+        let stamp = stamp::bytes(manifest, project.as_deref());
+        record(state_dir, &home.join(STAMP_FILE), &stamp, &mut report)?;
         report.profiles.push(profile.to_string());
     }
     Ok(report)
@@ -424,7 +463,7 @@ fn register(
 ) -> Result<(), ProfileError> {
     if pack.path.is_some() {
         let id = pack_ref.to_string();
-        if let Some(have) = listed_version(&run(shell, &plugin_line(home, "list"))?, &id) {
+        if let Some(have) = installed_version(home, &id) {
             let wanted = pack
                 .path
                 .as_deref()
@@ -436,29 +475,88 @@ fn register(
                 _ => Ok(()),
             };
         }
-        let marketplaces = run(shell, &plugin_line(home, "marketplace list"))?;
-        if !lists_marketplace(&marketplaces, &pack_ref.marketplace) {
-            let add = format!(
-                "{} {}",
-                plugin_line(home, "marketplace add"),
-                single_quote(&root.to_string_lossy())
-            );
-            run(shell, &add)?;
-        }
-        let line = install_line(home, &id, None);
+        add_marketplace(shell, home, &pack_ref.marketplace, &root.to_string_lossy())?;
+        let line = install_line(home, &id);
         return install(shell, state_dir, home, &id, &line, report);
     }
     let Some(tag) = &pack.tag else {
         return Ok(());
     };
+    let asked = tag_version(tag);
     let marker = home.join("plugins").join(INSTALLED_TAG_FILE);
-    if fs::read_to_string(&marker).is_ok_and(|installed| installed.trim() == tag) {
+    if fs::read_to_string(&marker).is_ok_and(|installed| installed.trim() == asked) {
         return Ok(());
     }
-    let spec = format!("{PACK_PLUGIN}@{tag}");
-    let line = install_line(home, &spec, Some(MARKETPLACE_SOURCE));
-    install(shell, state_dir, home, &spec, &line, report)?;
-    record(state_dir, &marker, format!("{tag}\n").as_bytes(), report)
+    add_marketplace(shell, home, &pack_ref.marketplace, MARKETPLACE_SOURCE)?;
+    let id = pack_ref.to_string();
+    let line = install_line(home, &id);
+    install(shell, state_dir, home, &id, &line, report)?;
+    // Claude Code offers no version pin: what the install recorded is what the profile holds.
+    let Some(installed) = installed_version(home, &id) else {
+        return Err(ProfileError::Install {
+            line,
+            output: format!("{id} is not in {INSTALLED_PLUGINS_FILE} after the install"),
+        });
+    };
+    if installed != asked {
+        return Err(ProfileError::PackVersion {
+            plugin: pack_ref.plugin.clone(),
+            installed,
+            tag: tag.clone(),
+        });
+    }
+    record(
+        state_dir,
+        &marker,
+        format!("{installed}\n").as_bytes(),
+        report,
+    )
+}
+
+/// The tag of the marketplace's current pack, learned in a scratch profile at `scratch`: adds
+/// the marketplace there, installs the pack and reads the version Claude recorded, so no tag
+/// is compiled into zaf. The scratch profile is the caller's to remove.
+pub fn current_pack_tag(shell: &dyn Shell, scratch: &Path) -> Result<String, ProfileError> {
+    add_marketplace(shell, scratch, PACK_MARKETPLACE, MARKETPLACE_SOURCE)?;
+    let id = format!("{PACK_PLUGIN}@{PACK_MARKETPLACE}");
+    let line = install_line(scratch, &id);
+    run(shell, &line)?;
+    match installed_version(scratch, &id) {
+        Some(version) if version != UNKNOWN_VERSION => Ok(format!("{PACK_PLUGIN}-v{version}")),
+        _ => Err(ProfileError::Install {
+            line,
+            output: format!("{id} has no version in {INSTALLED_PLUGINS_FILE} after the install"),
+        }),
+    }
+}
+
+/// The version a `[pack] tag` names: the tag without a leading `teams-v` or `v`.
+fn tag_version(tag: &str) -> &str {
+    let tag = tag.trim();
+    let release = format!("{PACK_PLUGIN}-v");
+    tag.strip_prefix(release.as_str())
+        .or_else(|| tag.strip_prefix('v'))
+        .unwrap_or(tag)
+}
+
+/// Adds the marketplace `name` from `source` to the profile at `home`, unless
+/// `claude plugin marketplace list` already shows it.
+fn add_marketplace(
+    shell: &dyn Shell,
+    home: &Path,
+    name: &str,
+    source: &str,
+) -> Result<(), ProfileError> {
+    let marketplaces = run(shell, &plugin_line(home, "marketplace list"))?;
+    if !lists_marketplace(&marketplaces, name) {
+        let add = format!(
+            "{} {}",
+            plugin_line(home, "marketplace add"),
+            single_quote(source)
+        );
+        run(shell, &add)?;
+    }
+    Ok(())
 }
 
 /// The install step both sources share: runs `line` and reports `spec` installed.
@@ -540,15 +638,10 @@ fn plugin_line(home: &Path, subcommand: &str) -> String {
     )
 }
 
-/// `claude plugin install <spec>` into the profile at `home`, from `marketplace` on GitHub
-/// when one is given, else from a marketplace the profile already has.
-fn install_line(home: &Path, spec: &str, marketplace: Option<&str>) -> String {
-    let mut line = format!("{} {}", plugin_line(home, "install"), single_quote(spec));
-    if let Some(marketplace) = marketplace {
-        line.push_str(" --marketplace ");
-        line.push_str(&single_quote(marketplace));
-    }
-    line
+/// `claude plugin install <spec>` into the profile at `home`, from a marketplace the profile
+/// already has (the spec's `@<marketplace>` names it).
+fn install_line(home: &Path, spec: &str) -> String {
+    format!("{} {}", plugin_line(home, "install"), single_quote(spec))
 }
 
 /// Wraps text in single quotes for a POSIX shell.
@@ -556,28 +649,41 @@ fn single_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
-/// The version `claude plugin list` shows for `id` (`plugin@marketplace`); `None` when `id`
-/// is not listed, `unknown` when it is listed without a `Version:` line.
+/// The version a profile at `home` has installed for `id` (`plugin@marketplace`), from its
+/// `plugins/installed_plugins.json`: `unknown` when installed with no version, `None` when the
+/// file is missing or unreadable or does not list `id` (the pack is not installed).
 ///
-/// An entry is its header line (the line with `id` as a word) and the lines after it up to
-/// a blank line or the next entry's header.
-pub fn listed_version(listing: &str, id: &str) -> Option<String> {
-    let mut lines = listing.lines();
-    lines.find(|line| line.split_whitespace().any(|word| bare(word) == id))?;
-    for line in lines {
-        if line.trim().is_empty() || is_header(line) {
-            break;
-        }
-        let version = line
-            .trim()
-            .split_once(':')
-            .filter(|(key, _)| key.trim().eq_ignore_ascii_case("version"))
-            .and_then(|(_, value)| value.split_whitespace().next());
-        if let Some(version) = version {
-            return Some(bare(version).to_owned());
-        }
+/// The one reader of the installed version: `profile init` and `zaf doctor` both ask it.
+/// Its interface: `profile::installed_version(home, id) -> Option<String>`.
+pub fn installed_version(home: &Path, id: &str) -> Option<String> {
+    let text = fs::read_to_string(home.join(INSTALLED_PLUGINS_FILE)).ok()?;
+    let installed: Value = serde_json::from_str(&text).ok()?;
+    let entries = installed.get("plugins")?.get(id)?.as_array()?;
+    if entries.is_empty() {
+        return None;
     }
-    Some(UNKNOWN_VERSION.to_owned())
+    let version = entries
+        .iter()
+        .find_map(|entry| entry.get("version")?.as_str())
+        .map(str::trim)
+        .filter(|version| !version.is_empty());
+    Some(version.unwrap_or(UNKNOWN_VERSION).to_owned())
+}
+
+/// The folder a profile at `home` has `id` (`plugin@marketplace`) installed in, its `installPath`
+/// in `plugins/installed_plugins.json`; `None` when the file is missing or unreadable, `id` is not
+/// listed or no entry names an absolute path.
+pub fn installed_path(home: &Path, id: &str) -> Option<PathBuf> {
+    let text = fs::read_to_string(home.join(INSTALLED_PLUGINS_FILE)).ok()?;
+    let installed: Value = serde_json::from_str(&text).ok()?;
+    installed
+        .get("plugins")?
+        .get(id)?
+        .as_array()?
+        .iter()
+        .filter_map(|entry| entry.get("installPath")?.as_str())
+        .map(PathBuf::from)
+        .find(|path| path.is_absolute())
 }
 
 /// Whether `claude plugin marketplace list` shows a marketplace called `name`.
@@ -585,14 +691,6 @@ fn lists_marketplace(listing: &str, name: &str) -> bool {
     listing
         .lines()
         .any(|line| line.split_whitespace().any(|word| bare(word) == name))
-}
-
-/// A header line names a plugin: its first word, past any bullet, holds an `@` and no `:`.
-fn is_header(line: &str) -> bool {
-    line.split_whitespace()
-        .map(bare)
-        .find(|word| word.chars().any(char::is_alphanumeric))
-        .is_some_and(|word| word.contains('@') && !word.contains(':'))
 }
 
 /// A word without the quotes, commas and brackets a listing wraps it in.
@@ -813,25 +911,90 @@ fn tool_rules(command: &CommandLine) -> Vec<String> {
 }
 
 /// Where flags may stand in a `zaf do <name>` line: before `do`, after it, both or neither.
+/// Every other forbidden entry gets the same forms between its tool and its subcommand.
 /// A permission pattern's `*` matches any text, spaces included, so `-*` is a flag and whatever
 /// it takes (`--tier machine`, `--tier=machine`, `--json`).
 const DO_FORMS: [&str; 4] = ["zaf do", "zaf -* do", "zaf do -*", "zaf -* do -*"];
 
-/// Each forbidden command, bare and with any arguments, sorted. A forbidden `zaf do <name>`
-/// is denied again with flags before `do` or before the name (`zaf --more do land 12`,
-/// `zaf do --json land 12`, `zaf do --tier=machine land 12`), so a flag cannot walk round it.
+/// Each tool's escape hatches: subcommands of a tool the profile allows with `Bash(<tool> *)`
+/// that run any program or rewrite the tool's own config. Denied whenever the tool is allowed,
+/// from `[requires]` or from a gate line; a tool the profile does not allow adds none.
+const HATCHES: [(&str, &[&str]); 3] = [
+    ("jj", &["util", "config set", "config edit"]),
+    ("gh", &["alias", "extension"]),
+    ("yarn", &["exec", "node", "dlx"]),
+];
+
+/// The tools whose config flag can define an alias, so the flag is denied anywhere on the line.
+const CONFIG_FLAG_TOOLS: [&str; 1] = ["jj"];
+
+/// The four deny rules of `<tool> <sub...>`: bare, with arguments, and each with flags between
+/// the tool and the subcommand (`jj --no-pager git push`, `gh -R owner/repo pr merge 12`).
+fn flag_forms(tool: &str, sub: &str) -> [String; 4] {
+    [
+        format!("Bash({tool} {sub})"),
+        format!("Bash({tool} {sub} *)"),
+        format!("Bash({tool} -* {sub})"),
+        format!("Bash({tool} -* {sub} *)"),
+    ]
+}
+
+/// The tools the profile allows with a `Bash(<tool> *)` rule: every `[requires]` tool and every
+/// tool a gate line invokes.
+fn allowed_tools(manifest: &Manifest) -> Vec<String> {
+    let mut tools: Vec<String> = manifest.requires.keys().map(ToString::to_string).collect();
+    for command in gate_commands(manifest) {
+        for rule in tool_rules(command) {
+            if let Some(tool) = rule
+                .strip_prefix("Bash(")
+                .and_then(|rest| rest.strip_suffix(" *)"))
+            {
+                tools.push(tool.to_owned());
+            }
+        }
+    }
+    tools
+}
+
+/// Each forbidden command, bare and with any arguments, and again with flags between its tool
+/// and its subcommand, plus the escape hatches ([`HATCHES`]) of every allowed tool, sorted. A
+/// forbidden `zaf do <name>` is denied again with flags before `do` or before the name
+/// (`zaf --more do land 12`, `zaf do --json land 12`, `zaf do --tier=machine land 12`), so a
+/// flag cannot walk round it.
 fn deny_rules(manifest: &Manifest) -> Vec<String> {
     let mut rules: Vec<String> = Vec::new();
     for command in &manifest.forbidden.commands {
         let bare = allow_rule(command);
         let with_args = format!("{} *)", bare.trim_end_matches(')'));
+        let line = bare
+            .strip_prefix("Bash(")
+            .and_then(|rest| rest.strip_suffix(')'))
+            .unwrap_or_default()
+            .to_owned();
         rules.push(bare);
         rules.push(with_args);
+        if let Some((tool, sub)) = line.split_once(' ')
+            && !sub.trim().is_empty()
+        {
+            rules.extend(flag_forms(tool, sub.trim()));
+        }
         if let Some(name) = forbidden_action(command.as_ref()) {
             for form in DO_FORMS {
                 rules.push(format!("Bash({form} {name})"));
                 rules.push(format!("Bash({form} {name} *)"));
             }
+        }
+    }
+    let allowed = allowed_tools(manifest);
+    for (tool, subs) in HATCHES {
+        if !allowed.iter().any(|allowed| allowed == tool) {
+            continue;
+        }
+        for sub in subs {
+            rules.extend(flag_forms(tool, sub));
+        }
+        if CONFIG_FLAG_TOOLS.contains(&tool) {
+            rules.push(format!("Bash({tool} *--config*)"));
         }
     }
     rules.sort();

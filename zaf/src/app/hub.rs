@@ -10,6 +10,7 @@
 use std::time::Duration;
 
 use super::actions::Phase;
+use crate::domain::EpicStage;
 
 mod dashboard;
 mod draw;
@@ -39,6 +40,8 @@ pub struct Snapshot {
 pub struct EpicRow {
     /// Its issue number.
     pub number: u64,
+    /// Where it stands, derived from the board.
+    pub stage: EpicStage,
     /// Its tasks done.
     pub done: u32,
     /// Its tasks, done ones included.

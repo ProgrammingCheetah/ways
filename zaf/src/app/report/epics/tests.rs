@@ -4,23 +4,24 @@ use serde_json::json;
 
 use super::super::ledger::{LEDGER_FILE, Ledger, Source};
 use super::*;
-use crate::domain::TaskLabel;
+use crate::domain::{Ticket, TicketState};
 use crate::fakes::FakeBoard;
-use crate::ports::Ticket;
 
 const OPUS: &str = "claude-opus-5-5";
 
-fn number(n: u64) -> IssueNumber {
-    IssueNumber::from(n)
+fn number(n: u64) -> TicketId {
+    TicketId::from(n)
 }
 
-fn ticket(n: u64, epic: Option<u64>, label: Option<TaskLabel>) -> Ticket {
+fn ticket(n: u64, epic: Option<u64>, state: Option<TicketState>) -> Ticket {
     Ticket {
-        number: number(n),
+        id: number(n),
         epic: epic.map(number),
-        title: format!("task {n}"),
-        body: String::new(),
-        label,
+        title: format!("task {n}").into(),
+        body: "".into(),
+        state,
+        url: "".into(),
+        kind: None,
     }
 }
 
@@ -52,10 +53,10 @@ fn run(run_id: &str, role: Option<&str>, epic: Option<u64>, tasks: &[u64]) -> Le
 
 fn board() -> FakeBoard {
     let board = FakeBoard::default();
-    board.add_ticket(ticket(96, Some(103), Some(TaskLabel::Done)));
-    board.add_ticket(ticket(97, Some(103), Some(TaskLabel::Claimed)));
-    board.add_ticket(ticket(40, Some(37), Some(TaskLabel::Done)));
-    board.add_ticket(ticket(41, Some(37), Some(TaskLabel::Done)));
+    board.add_ticket(ticket(96, Some(103), Some(TicketState::Done)));
+    board.add_ticket(ticket(97, Some(103), Some(TicketState::Claimed)));
+    board.add_ticket(ticket(40, Some(37), Some(TicketState::Done)));
+    board.add_ticket(ticket(41, Some(37), Some(TicketState::Done)));
     board
 }
 
@@ -156,14 +157,14 @@ fn an_epic_with_no_task_done_has_no_per_task_figure() {
 }
 
 /// A task ticket whose body reads, so the board gives it a size.
-fn sized(n: u64, label: Option<TaskLabel>, size: &str) -> Ticket {
+fn sized(n: u64, label: Option<TicketState>, size: &str) -> Ticket {
     let body = format!(
         "Goal: g\nOwned paths: p\nInterfaces: i\nDesign pages: d\nArchitecture: none\n\
          Acceptance:\n  - a\nTests: t\nSecurity trigger: no\nModel: sonnet\nSize: {size}\n\
          Blocked by: —\n"
     );
     Ticket {
-        body,
+        body: body.into(),
         ..ticket(n, Some(103), label)
     }
 }
@@ -174,10 +175,10 @@ const ONE_RUN: f64 = 4.0 + 5.0 + 0.2 + 20.0;
 #[test]
 fn median_splits_across_named_tasks() {
     let board = board();
-    board.add_ticket(sized(98, Some(TaskLabel::Done), "S"));
-    board.add_ticket(sized(99, Some(TaskLabel::Done), "M"));
-    board.add_ticket(sized(100, Some(TaskLabel::Claimed), "S"));
-    board.add_ticket(sized(101, Some(TaskLabel::Done), "S"));
+    board.add_ticket(sized(98, Some(TicketState::Done), "S"));
+    board.add_ticket(sized(99, Some(TicketState::Done), "M"));
+    board.add_ticket(sized(100, Some(TicketState::Claimed), "S"));
+    board.add_ticket(sized(101, Some(TicketState::Done), "S"));
     let rows = [
         // Two named tasks: half each, and the claimed one's half is in no median.
         run("a", Some("programmer"), Some(103), &[101, 100]),
@@ -210,7 +211,7 @@ fn median_splits_across_named_tasks() {
 #[test]
 fn unsized_task_is_in_no_median() {
     let board = board();
-    board.add_ticket(sized(98, Some(TaskLabel::Done), "S"));
+    board.add_ticket(sized(98, Some(TicketState::Done), "S"));
     // #96 is done but its body does not read, so it has no size.
     let rows = [
         run("a", Some("programmer"), Some(103), &[96]),
@@ -238,7 +239,7 @@ fn small_epic(board: &FakeBoard, epic: u64, first: u64, count: u64, saved: bool)
         .map(|task| {
             board.add_ticket(Ticket {
                 epic: Some(number(epic)),
-                ..sized(task, Some(TaskLabel::Done), "S")
+                ..sized(task, Some(TicketState::Done), "S")
             });
             let mut one = run(&format!("r{task}"), Some("programmer"), Some(epic), &[task]);
             if saved {
@@ -421,7 +422,7 @@ fn json_rows_carry_the_note_and_every_figure() {
 fn a_board_failure_is_an_error_but_a_missing_task_is_not() {
     struct Down;
     impl Board for Down {
-        fn task(&self, _: IssueNumber) -> Result<Ticket, PortError> {
+        fn task(&self, _: TicketId) -> Result<Ticket, PortError> {
             Err(PortError::Backend("gh is down".to_owned()))
         }
         fn ready(&self) -> Result<Vec<Ticket>, PortError> {
@@ -429,29 +430,29 @@ fn a_board_failure_is_an_error_but_a_missing_task_is_not() {
         }
         fn claim(
             &self,
-            _: IssueNumber,
+            _: TicketId,
             _: &crate::domain::Instance,
         ) -> Result<crate::ports::ClaimOutcome, PortError> {
             unreachable!()
         }
-        fn heartbeat(&self, _: IssueNumber, _: &crate::domain::Instance) -> Result<(), PortError> {
+        fn heartbeat(&self, _: TicketId, _: &crate::domain::Instance) -> Result<(), PortError> {
             unreachable!()
         }
         fn claims(&self) -> Result<Vec<crate::ports::ClaimRecord>, PortError> {
             unreachable!()
         }
-        fn release(&self, _: IssueNumber, _: &crate::domain::Instance) -> Result<(), PortError> {
+        fn release(&self, _: TicketId, _: &crate::domain::Instance) -> Result<(), PortError> {
             unreachable!()
         }
-        fn label(&self, _: IssueNumber, _: TaskLabel) -> Result<(), PortError> {
+        fn set_state(&self, _: TicketId, _: TicketState) -> Result<(), PortError> {
             unreachable!()
         }
-        fn comment(&self, _: IssueNumber, _: &str) -> Result<(), PortError> {
+        fn comment(&self, _: TicketId, _: &str) -> Result<(), PortError> {
             unreachable!()
         }
         fn report(
             &self,
-            _: IssueNumber,
+            _: TicketId,
             _: &crate::domain::Instance,
             _: &str,
         ) -> Result<(), PortError> {
@@ -460,10 +461,10 @@ fn a_board_failure_is_an_error_but_a_missing_task_is_not() {
         fn questions(&self) -> Result<Vec<Ticket>, PortError> {
             unreachable!()
         }
-        fn open_question(&self, _: &crate::ports::NewQuestion) -> Result<IssueNumber, PortError> {
+        fn open_question(&self, _: &crate::ports::NewQuestion) -> Result<TicketId, PortError> {
             unreachable!()
         }
-        fn record_ruling(&self, _: IssueNumber, _: &str) -> Result<Option<IssueNumber>, PortError> {
+        fn record_ruling(&self, _: TicketId, _: &str) -> Result<Option<TicketId>, PortError> {
             unreachable!()
         }
     }

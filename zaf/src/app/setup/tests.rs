@@ -1,7 +1,112 @@
 use std::fs;
+use std::sync::Mutex;
 
 use super::*;
 use crate::app::doctor::fake::FakeCommands;
+use crate::manifest::CommandLine;
+use crate::ports::{GateRun, GateVerdict, PortError};
+
+/// A shell that records each `claude plugin` line and answers it; an install records the
+/// plugin at `version` in the profile's `plugins/installed_plugins.json`, as Claude does.
+struct RecordingShell {
+    version: &'static str,
+    install_path: Option<PathBuf>,
+    lines: Mutex<Vec<String>>,
+}
+
+impl RecordingShell {
+    fn new() -> Self {
+        Self::installing("2.1.0")
+    }
+
+    fn installing(version: &'static str) -> Self {
+        Self {
+            version,
+            install_path: None,
+            lines: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// An install that records the pack at `path`, as Claude records its `installPath`.
+    fn installing_at(path: &Path) -> Self {
+        Self {
+            install_path: Some(path.to_owned()),
+            ..Self::new()
+        }
+    }
+
+    fn lines(&self) -> Vec<String> {
+        self.lines.lock().expect("lock").clone()
+    }
+}
+
+impl Shell for RecordingShell {
+    fn run(&self, line: &CommandLine) -> Result<GateRun, PortError> {
+        self.lines.lock().expect("lock").push(line.to_string());
+        let text = line.as_ref();
+        if text.contains(" claude plugin install ") {
+            let mut quoted = text.split('\'');
+            if let (Some(home), Some(id)) = (quoted.nth(1), quoted.nth(1)) {
+                let home = Path::new(home);
+                fs::create_dir_all(home.join("plugins")).expect("plugins dir");
+                let mut entry = serde_json::json!({ "scope": "user", "version": self.version });
+                if let Some(path) = &self.install_path {
+                    entry["installPath"] = path.display().to_string().into();
+                }
+                let record = serde_json::json!({ "version": 2, "plugins": { id: [entry] } });
+                fs::write(
+                    home.join(profile::INSTALLED_PLUGINS_FILE),
+                    record.to_string(),
+                )
+                .expect("records the install");
+            }
+        }
+        let output = if text.ends_with("claude plugin marketplace list") {
+            "No marketplaces configured\n"
+        } else if text.ends_with("claude plugin list") {
+            "No plugins installed\n"
+        } else {
+            ""
+        };
+        Ok(GateRun {
+            verdict: GateVerdict::Passed,
+            output: output.to_owned(),
+        })
+    }
+}
+
+/// Whether a doctor call is the login check of a generated profile.
+fn is_login_check(call: &[String]) -> bool {
+    call.len() == 5 && call[0] == "env" && call[2..] == ["claude", "auth", "status"]
+}
+
+/// [`super::setup`] with no Claude home and a fresh shell: nothing is linked.
+fn setup(
+    root: &Path,
+    home: Option<&Path>,
+    manifest: &Manifest,
+    commands: &dyn Commands,
+) -> Result<SetupReport, SetupError> {
+    super::setup_with(root, home, manifest, commands, &RecordingShell::new(), None)
+}
+
+/// [`super::setup_with`] through a fresh shell.
+fn setup_with(
+    root: &Path,
+    home: Option<&Path>,
+    manifest: &Manifest,
+    commands: &dyn Commands,
+    claude_home: Option<&Path>,
+) -> Result<SetupReport, SetupError> {
+    super::setup_with(
+        root,
+        home,
+        manifest,
+        commands,
+        &RecordingShell::new(),
+        claude_home,
+    )
+}
 
 const HEAD: &str =
     "[project]\nname = \"bookshelf\"\n[board]\nkind = \"github-issues\"\nrepo = \"example/b\"\n";
@@ -114,6 +219,7 @@ fn ensure_homes_keeps_every_kind_of_old_gitignore() {
 fn setup_replaces_an_old_star_gitignore_and_keeps_another() {
     let (_dir, root, home) = places();
     provide_slice_actions(&root);
+    profile::write_stamps(&root.join(STATE_DIR), &manifest(""));
     fs::write(root.join(".zaf/.gitignore"), "*\n").expect("an old file");
     let commands = FakeCommands::new();
     let report = setup(&root, Some(&home), &manifest(""), &commands).expect("sets up");
@@ -153,6 +259,7 @@ fn setup_is_idempotent() {
     let (_dir, root, home) = places();
     provide_slice_actions(&root);
     let manifest = manifest("");
+    profile::write_stamps(&root.join(STATE_DIR), &manifest);
     let commands = FakeCommands::new();
     let first = setup(&root, Some(&home), &manifest, &commands).expect("sets up");
     assert!(first.is_ready());
@@ -191,8 +298,8 @@ fn the_worksheet_names_each_missing_tool() {
         commands
             .calls()
             .iter()
-            .all(|call| call[1..] == ["--version"]),
-        "setup only asks for versions, it installs nothing: {:?}",
+            .all(|call| call[1..] == ["--version"] || is_login_check(call)),
+        "setup only asks for versions and logins, it installs nothing: {:?}",
         commands.calls()
     );
 }
@@ -204,6 +311,7 @@ fn a_declared_sibling_design_repo_is_cloned_when_missing() {
     let manifest = manifest(
         "[design]\nkind = \"git-sibling\"\nrepo = \"example/b-design\"\npath = \"../b-design\"\n",
     );
+    profile::write_stamps(&root.join(STATE_DIR), &manifest);
     let commands = FakeCommands::new().with("gh", "ok");
     let report = setup(&root, Some(&home), &manifest, &commands).expect("sets up");
     assert_eq!(report.clone, Some(CloneOutcome::Cloned));
@@ -219,7 +327,11 @@ fn a_declared_sibling_design_repo_is_cloned_when_missing() {
     let again = FakeCommands::new();
     let report = setup(&root, Some(&home), &manifest, &again).expect("sets up");
     assert_eq!(report.clone, Some(CloneOutcome::Present));
-    assert!(again.calls().is_empty(), "nothing to clone, nothing run");
+    assert!(
+        again.calls().iter().all(|call| call[0] != "gh"),
+        "nothing to clone, nothing cloned: {:?}",
+        again.calls()
+    );
     assert!(report.is_ready());
 }
 
@@ -248,7 +360,11 @@ fn other_design_kinds_clone_nothing() {
     let commands = FakeCommands::new();
     let report = setup(&root, Some(&home), &manifest, &commands).expect("sets up");
     assert_eq!(report.clone, None);
-    assert!(commands.calls().is_empty());
+    assert!(
+        commands.calls().iter().all(|call| is_login_check(call)),
+        "no clone: {:?}",
+        commands.calls()
+    );
 }
 
 #[test]
@@ -276,9 +392,14 @@ fn setup_links_the_home_credentials_into_a_profile_already_there() {
         "doctor runs after the link: {:?}",
         first.doctor.lines()
     );
-    assert!(
-        !root.join(".zaf/profiles/lean").exists(),
-        "a profile not generated stays for `zaf profile init`"
+    assert_eq!(
+        fs::read_link(
+            root.join(".zaf/profiles/lean")
+                .join(profile::CREDENTIALS_FILE)
+        )
+        .expect("a symlink"),
+        source,
+        "a profile setup generates is linked too"
     );
     setup_with(&root, Some(&home), &manifest, &commands, Some(&claude_home)).expect("again");
     assert_eq!(fs::read_link(&link).expect("a symlink"), source);
@@ -381,4 +502,325 @@ fn ensure_homes_leaves_a_legacy_manifest_where_it_is() {
     ensure_homes(Some(&root), Some(&home)).expect("makes the homes");
     assert_eq!(read(&root.join("ZAF.toml")), HEAD);
     assert!(!root.join(".zaf.toml").exists());
+}
+
+const TAGGED: &str = "[pack]\ntag = \"teams-v2.1.0\"\n";
+
+type Files = std::collections::BTreeMap<PathBuf, Vec<u8>>;
+
+/// Every file under `dir`, by relative path, with its bytes; a symlink counts as its target path.
+fn snapshot(dir: &Path) -> Files {
+    fn walk(base: &Path, dir: &Path, into: &mut Files) {
+        for entry in fs::read_dir(dir).expect("a folder") {
+            let path = entry.expect("an entry").path();
+            let relative = path.strip_prefix(base).expect("under base").to_owned();
+            if fs::symlink_metadata(&path).expect("there").is_symlink() {
+                let target = fs::read_link(&path).expect("a link");
+                into.insert(relative, target.display().to_string().into_bytes());
+            } else if path.is_dir() {
+                walk(base, &path, into);
+            } else {
+                into.insert(relative, fs::read(&path).expect("a file"));
+            }
+        }
+    }
+    let mut files = Files::new();
+    walk(dir, dir, &mut files);
+    files
+}
+
+#[test]
+fn setup_generates_profiles() {
+    let (_dir, root, home) = places();
+    let manifest = manifest(TAGGED);
+    let commands = FakeCommands::new();
+    let shell = RecordingShell::new();
+
+    let report =
+        super::setup_with(&root, Some(&home), &manifest, &commands, &shell, None).expect("sets up");
+
+    for name in ["build", "lean"] {
+        let profile = root.join(".zaf/profiles").join(name);
+        for file in ["settings.json", "CLAUDE.md", profile::STAMP_FILE] {
+            assert!(profile.join(file).is_file(), "{name} has {file}");
+        }
+    }
+    let written = report.profiles.expect("the generation ran");
+    assert!(!written.unchanged());
+    let mut generated = written.profiles.clone();
+    generated.sort();
+    assert_eq!(generated, ["build", "lean"]);
+    assert!(
+        shell
+            .lines()
+            .iter()
+            .any(|line| line.contains(" install 'teams@ways'")),
+        "the pack is installed: {:?}",
+        shell.lines()
+    );
+}
+
+#[test]
+fn setup_rerun_issues_no_plugin_command() {
+    let (_dir, root, home) = places();
+    let manifest = manifest(TAGGED);
+    let commands = FakeCommands::new();
+    let shell = RecordingShell::new();
+    super::setup_with(&root, Some(&home), &manifest, &commands, &shell, None).expect("first");
+    let issued = shell.lines().len();
+    assert!(issued > 0, "the first run installed the pack");
+    let before = snapshot(&root.join(".zaf/profiles"));
+
+    let second =
+        super::setup_with(&root, Some(&home), &manifest, &commands, &shell, None).expect("again");
+
+    assert_eq!(
+        shell.lines().len(),
+        issued,
+        "no plugin command: {:?}",
+        shell.lines()
+    );
+    assert_eq!(
+        snapshot(&root.join(".zaf/profiles")),
+        before,
+        "no profile file changed"
+    );
+    assert!(second.profiles.expect("ran").unchanged());
+}
+
+#[test]
+fn setup_pack_refusal_is_a_step() {
+    let (_dir, root, home) = places();
+    let manifest = manifest(TAGGED);
+    let commands = FakeCommands::new();
+    let shell = RecordingShell::installing("2.0.3");
+
+    let report = super::setup_with(&root, Some(&home), &manifest, &commands, &shell, None)
+        .expect("a refusal is a step, not an error");
+
+    assert!(report.profiles.is_none());
+    assert!(!report.is_ready(), "setup exits 1");
+    let lines = report.worksheet_lines();
+    assert!(lines[0].starts_with("1. "), "{lines:?}");
+    assert!(
+        lines[0].contains("pack teams is 2.0.3, manifest asks teams-v2.1.0"),
+        "the step names what it said: {lines:?}"
+    );
+}
+
+const PACK_ACTIONS: usize = 17;
+
+/// A pack folder with `PACK_ACTIONS` action files (`action-00` and so on, the first `750`), a
+/// link and a folder that must not be copied.
+fn pack_with_actions(dir: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let pack = dir.join("pack");
+    let actions = pack.join("actions");
+    fs::create_dir_all(actions.join("hooks")).expect("pack folders");
+    for number in 0..PACK_ACTIONS {
+        let file = actions.join(format!("action-{number:02}"));
+        fs::write(
+            &file,
+            format!("#!/bin/sh\n# zaf description: pack action {number}\n# zaf 1: failed\ntrue\n"),
+        )
+        .expect("action");
+        let mode = if number == 0 { 0o750 } else { 0o755 };
+        fs::set_permissions(&file, fs::Permissions::from_mode(mode)).expect("mode");
+    }
+    std::os::unix::fs::symlink("/etc/passwd", actions.join("linked")).expect("link");
+    fs::write(actions.join("hooks/pre-tick"), "#!/bin/sh\n").expect("hook");
+    pack
+}
+
+fn mode_of(path: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(path).expect("a file").permissions().mode() & 0o777
+}
+
+#[test]
+fn setup_installs_pack_actions() {
+    let (dir, root, home) = places();
+    let pack = pack_with_actions(dir.path());
+    let shell = RecordingShell::installing_at(&pack);
+
+    let report = super::setup_with(
+        &root,
+        Some(&home),
+        &manifest(TAGGED),
+        &FakeCommands::new(),
+        &shell,
+        None,
+    )
+    .expect("sets up");
+
+    let installed = home.join("actions");
+    let mut names: Vec<String> = fs::read_dir(&installed)
+        .expect("the machine tier")
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .into_string()
+                .expect("utf-8")
+        })
+        .collect();
+    names.sort();
+    let expected: Vec<String> = (0..PACK_ACTIONS)
+        .map(|n| format!("action-{n:02}"))
+        .collect();
+    assert_eq!(
+        names, expected,
+        "the 17 and nothing else, no temporary file"
+    );
+    assert_eq!(report.actions.installed, expected);
+    assert!(report.actions.kept.is_empty());
+    for name in &expected {
+        let want = if name == "action-00" { 0o750 } else { 0o755 };
+        assert_eq!(
+            mode_of(&installed.join(name)),
+            want,
+            "{name} keeps its mode"
+        );
+        assert_eq!(
+            read(&installed.join(name)),
+            read(&pack.join("actions").join(name))
+        );
+    }
+    let lines = report.actions.lines();
+    assert_eq!(lines.len(), 1, "one line: {lines:?}");
+    assert!(
+        lines[0].starts_with("installed 17 pack actions"),
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn setup_keeps_edited_machine_action() {
+    let (dir, root, home) = places();
+    let pack = pack_with_actions(dir.path());
+    let shell = RecordingShell::installing_at(&pack);
+    let manifest = manifest(TAGGED);
+    let commands = FakeCommands::new();
+    super::setup_with(&root, Some(&home), &manifest, &commands, &shell, None).expect("first");
+    let edited = home.join("actions/action-03");
+    fs::write(&edited, "#!/bin/sh\n# the Engineer's own\n").expect("edit");
+    fs::remove_file(home.join("actions/action-04")).expect("remove one");
+    let before = snapshot(&home.join("actions"));
+
+    let second =
+        super::setup_with(&root, Some(&home), &manifest, &commands, &shell, None).expect("again");
+
+    assert_eq!(read(&edited), "#!/bin/sh\n# the Engineer's own\n");
+    let after = snapshot(&home.join("actions"));
+    assert_eq!(
+        after.len(),
+        PACK_ACTIONS,
+        "the removed one is back, nothing else is"
+    );
+    for (name, bytes) in &before {
+        assert_eq!(&after[name], bytes, "{name:?} is as it was");
+    }
+    assert_eq!(second.actions.installed, ["action-04"]);
+    assert_eq!(second.actions.kept.len(), PACK_ACTIONS - 1);
+    assert!(second.actions.kept.contains(&"action-03".to_owned()));
+    assert_eq!(
+        second.actions.lines().len(),
+        2,
+        "one line each, installed and kept"
+    );
+}
+
+#[test]
+fn setup_installs_nothing_without_a_pack_or_its_actions() {
+    let (dir, root, home) = places();
+    let commands = FakeCommands::new();
+    let none = super::setup_with(
+        &root,
+        Some(&home),
+        &manifest(""),
+        &commands,
+        &RecordingShell::new(),
+        None,
+    )
+    .expect("no pack");
+    assert_eq!(none.actions, PackActions::default());
+    assert!(none.actions.lines().is_empty());
+
+    let bare = dir.path().join("bare-pack");
+    fs::create_dir(&bare).expect("a pack with no actions");
+    let shell = RecordingShell::installing_at(&bare);
+    let report = super::setup_with(
+        &root,
+        Some(&home),
+        &manifest(TAGGED),
+        &commands,
+        &shell,
+        None,
+    )
+    .expect("no actions folder");
+    assert_eq!(report.actions, PackActions::default());
+    assert!(
+        fs::read_dir(home.join("actions"))
+            .expect("tier")
+            .next()
+            .is_none()
+    );
+}
+
+#[test]
+fn project_action_shadows_installed() {
+    let (dir, root, home) = places();
+    let pack = pack_with_actions(dir.path());
+    let shell = RecordingShell::installing_at(&pack);
+    super::setup_with(
+        &root,
+        Some(&home),
+        &manifest(TAGGED),
+        &FakeCommands::new(),
+        &shell,
+        None,
+    )
+    .expect("sets up");
+
+    let found = crate::app::actions::resolve(&root, &home, "action-05")
+        .expect("resolves")
+        .expect("found");
+    assert_eq!(found.tier, crate::app::actions::Tier::Machine);
+    assert_eq!(found.path, home.join("actions/action-05"));
+
+    fs::create_dir_all(root.join(".zaf/actions")).expect("project actions");
+    fs::write(root.join(".zaf/actions/action-05"), "#!/bin/sh\n").expect("own action");
+    let found = crate::app::actions::resolve(&root, &home, "action-05")
+        .expect("resolves")
+        .expect("found");
+    assert_eq!(found.tier, crate::app::actions::Tier::Project);
+    assert_eq!(found.shadows, Some(crate::app::actions::Tier::Machine));
+}
+
+/// A shell whose every command fails.
+struct Failing;
+
+impl Shell for Failing {
+    fn run(&self, _line: &CommandLine) -> Result<GateRun, PortError> {
+        Ok(GateRun {
+            verdict: GateVerdict::Failed,
+            output: "no network".to_owned(),
+        })
+    }
+}
+
+#[test]
+fn setup_fails_when_a_plugin_command_fails() {
+    let (_dir, root, home) = places();
+    let error = super::setup_with(
+        &root,
+        Some(&home),
+        &manifest(TAGGED),
+        &FakeCommands::new(),
+        &Failing,
+        None,
+    )
+    .expect_err("a failed backend");
+    assert!(matches!(error, SetupError::Profile(_)), "{error}");
 }

@@ -11,11 +11,11 @@ use crate::app::actions::{
     TASK_TITLE_VAR,
 };
 use crate::app::check::{CheckRecord, Verdict};
-use crate::domain::Instance;
-use crate::fakes::{FakeBoard, FakeForge, FakeVcs};
+use crate::domain::{Instance, Ticket};
+use crate::fakes::{FakeBoard, FakeForge, FakeVcs, PrRequest};
 use crate::ports::{
-    BaseName, Check, ClaimOutcome, ClaimRecord, NewQuestion, PrMerge, PrNumber, PrRequest,
-    ReviewComment, ScanningAlert, SliceName, Ticket,
+    BaseName, Check, ClaimOutcome, ClaimRecord, NewQuestion, PrNumber, PullRequest, ReviewComment,
+    ScanningAlert, SliceName,
 };
 
 const TASK: u64 = 203;
@@ -26,8 +26,8 @@ const LONG_AGO: &str = "2001-01-01T00:00:00Z";
 /// After any record a test writes.
 const LATER: &str = "2999-01-01T00:00:00Z";
 
-fn task() -> IssueNumber {
-    IssueNumber::from(TASK)
+fn task() -> TicketId {
+    TicketId::from(TASK)
 }
 
 /// A project on disk and the fakes behind it, holding one task.
@@ -41,7 +41,7 @@ struct Scene {
 }
 
 impl Scene {
-    fn new(label: TaskLabel) -> Self {
+    fn new(label: TicketState) -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let base = fs::canonicalize(dir.path()).expect("real path");
         let (root, workspace) = (base.join("project"), base.join("workspace"));
@@ -49,11 +49,13 @@ impl Scene {
         fs::create_dir_all(&workspace).expect("mkdir");
         let board = FakeBoard::default();
         board.add_ticket(Ticket {
-            number: task(),
-            epic: Some(IssueNumber::from(103)),
-            title: "Team Phases".to_owned(),
-            body: String::new(),
-            label: Some(label),
+            id: task(),
+            epic: Some(TicketId::from(103)),
+            title: "Team Phases".into(),
+            body: "".into(),
+            state: Some(label),
+            url: "".into(),
+            kind: None,
         });
         Self {
             _dir: dir,
@@ -92,9 +94,7 @@ impl Scene {
     fn open_slice(&self) {
         self.record_workspace();
         let slice = SliceName::from(SLICE);
-        self.vcs
-            .open_slice(&slice, &BaseName::from(BASE))
-            .expect("open");
+        self.vcs.open(&slice, &BaseName::from(BASE));
         self.vcs.place(&slice, &self.workspace).expect("place");
     }
 
@@ -141,7 +141,7 @@ impl Scene {
 
     /// The workspace at the pull request's head, with `verdict` the result for that head.
     fn reviewed(verdict: Verdict) -> Self {
-        let scene = Self::new(TaskLabel::Claimed);
+        let scene = Self::new(TicketState::Claimed);
         scene.open_slice();
         let head = scene.commit();
         let pr = scene.open_pr(Some(&head));
@@ -193,26 +193,26 @@ const EVERY_PHASE: &str = "unclaimed,claim,build,check,publish,review,land,done"
 
 /// One scene per phase, each derived, in lifecycle order.
 fn every_phase() -> String {
-    let claim = Scene::new(TaskLabel::Ready);
+    let claim = Scene::new(TicketState::Ready);
     claim.claim();
-    let build = Scene::new(TaskLabel::Claimed);
+    let build = Scene::new(TicketState::Claimed);
     build.open_slice();
-    let check = Scene::new(TaskLabel::Claimed);
+    let check = Scene::new(TicketState::Claimed);
     check.open_slice();
     check.task_check(Verdict::Clean, LONG_AGO);
-    let publish = Scene::new(TaskLabel::Claimed);
+    let publish = Scene::new(TicketState::Claimed);
     publish.open_slice();
     let head = publish.commit();
     publish.open_pr(Some(&head));
     let scenes = [
-        Scene::new(TaskLabel::Ready),
+        Scene::new(TicketState::Ready),
         claim,
         build,
         check,
         publish,
         Scene::reviewed(Verdict::StepFailed),
         Scene::reviewed(Verdict::Clean),
-        Scene::new(TaskLabel::Done),
+        Scene::new(TicketState::Done),
     ];
     let phases: Vec<String> = scenes
         .iter()
@@ -321,26 +321,29 @@ fn the_facts_come_from_their_sources() {
 
 #[test]
 fn nothing_recorded_gathers_no_records() {
-    let facts = Scene::new(TaskLabel::Ready).gather().expect("facts");
+    let facts = Scene::new(TicketState::Ready).gather().expect("facts");
     assert_eq!(facts, PhaseFacts::default());
 }
 
 #[test]
 fn the_done_label_is_done_whatever_the_records_say() {
     let scene = Scene::reviewed(Verdict::Clean);
-    scene.board.label(task(), TaskLabel::Done).expect("label");
+    scene
+        .board
+        .set_state(task(), TicketState::Done)
+        .expect("label");
     assert_eq!(scene.phase(), Phase::Done);
 }
 
 #[test]
 fn a_claimed_label_needs_the_claim_comment() {
-    let without = Scene::new(TaskLabel::Claimed);
+    let without = Scene::new(TicketState::Claimed);
     let facts = without.gather().expect("facts");
     assert!(facts.claimed);
     assert!(!facts.claim_comment);
     assert_eq!(without.phase(), Phase::Unclaimed);
 
-    let with = Scene::new(TaskLabel::Ready);
+    let with = Scene::new(TicketState::Ready);
     with.claim();
     assert!(with.gather().expect("facts").claim_comment);
     assert_eq!(with.phase(), Phase::Claim);
@@ -348,14 +351,16 @@ fn a_claimed_label_needs_the_claim_comment() {
 
 #[test]
 fn another_tasks_lease_is_not_this_ones() {
-    let scene = Scene::new(TaskLabel::Claimed);
-    let other = IssueNumber::from(TASK + 1);
+    let scene = Scene::new(TicketState::Claimed);
+    let other = TicketId::from(TASK + 1);
     scene.board.add_ticket(Ticket {
-        number: other,
+        id: other,
         epic: None,
-        title: "Another".to_owned(),
-        body: String::new(),
-        label: Some(TaskLabel::Ready),
+        title: "Another".into(),
+        body: "".into(),
+        state: Some(TicketState::Ready),
+        url: "".into(),
+        kind: None,
     });
     let instance: Instance = "team instance 33 on #103".parse().expect("instance");
     scene.board.claim(other, &instance).expect("claim");
@@ -364,11 +369,11 @@ fn another_tasks_lease_is_not_this_ones() {
 
 #[test]
 fn a_lease_without_the_claimed_label_does_not_count() {
-    let scene = Scene::new(TaskLabel::Ready);
+    let scene = Scene::new(TicketState::Ready);
     scene.claim();
     scene
         .board
-        .label(task(), TaskLabel::Question)
+        .set_state(task(), TicketState::Question)
         .expect("label");
     let facts = scene.gather().expect("facts");
     assert!(!facts.claimed);
@@ -396,7 +401,7 @@ fn uncommitted_work_leaves_the_latest_commit_where_it_was() {
 
 #[test]
 fn a_workspace_record_that_does_not_hold_is_no_workspace() {
-    let scene = Scene::new(TaskLabel::Claimed);
+    let scene = Scene::new(TicketState::Claimed);
     write(&scene.root.join(".zaf/slices/203"), "relative/path");
     assert_eq!(scene.gather().expect("facts").workspace, None);
     assert_eq!(scene.phase(), Phase::Unclaimed);
@@ -404,7 +409,7 @@ fn a_workspace_record_that_does_not_hold_is_no_workspace() {
 
 #[test]
 fn a_clean_result_for_an_older_head_is_no_result() {
-    let scene = Scene::new(TaskLabel::Claimed);
+    let scene = Scene::new(TicketState::Claimed);
     scene.open_slice();
     let head = scene.commit();
     let pr = scene.open_pr(Some(&head));
@@ -414,7 +419,7 @@ fn a_clean_result_for_an_older_head_is_no_result() {
 
 #[test]
 fn a_forge_that_reports_no_head_is_no_result() {
-    let scene = Scene::new(TaskLabel::Claimed);
+    let scene = Scene::new(TicketState::Claimed);
     scene.open_slice();
     let head = scene.commit();
     let pr = scene.open_pr(None);
@@ -425,7 +430,7 @@ fn a_forge_that_reports_no_head_is_no_result() {
 
 #[test]
 fn a_malformed_result_is_no_result() {
-    let scene = Scene::new(TaskLabel::Claimed);
+    let scene = Scene::new(TicketState::Claimed);
     scene.open_slice();
     let head = scene.commit();
     let pr = scene.open_pr(Some(&head));
@@ -436,7 +441,7 @@ fn a_malformed_result_is_no_result() {
 
 #[test]
 fn the_pr_records_time_is_held_against_the_task_check() {
-    let scene = Scene::new(TaskLabel::Claimed);
+    let scene = Scene::new(TicketState::Claimed);
     scene.open_slice();
     let head = scene.commit();
     scene.open_pr(Some(&head));
@@ -465,18 +470,18 @@ impl Board for BrokenBoard<'_> {
         self.inner.ready()
     }
 
-    fn task(&self, number: IssueNumber) -> Result<Ticket, PortError> {
+    fn task(&self, number: TicketId) -> Result<Ticket, PortError> {
         if self.task {
             return Err(broken());
         }
         self.inner.task(number)
     }
 
-    fn claim(&self, task: IssueNumber, instance: &Instance) -> Result<ClaimOutcome, PortError> {
+    fn claim(&self, task: TicketId, instance: &Instance) -> Result<ClaimOutcome, PortError> {
         self.inner.claim(task, instance)
     }
 
-    fn heartbeat(&self, task: IssueNumber, instance: &Instance) -> Result<(), PortError> {
+    fn heartbeat(&self, task: TicketId, instance: &Instance) -> Result<(), PortError> {
         self.inner.heartbeat(task, instance)
     }
 
@@ -487,19 +492,19 @@ impl Board for BrokenBoard<'_> {
         self.inner.claims()
     }
 
-    fn release(&self, task: IssueNumber, instance: &Instance) -> Result<(), PortError> {
+    fn release(&self, task: TicketId, instance: &Instance) -> Result<(), PortError> {
         self.inner.release(task, instance)
     }
 
-    fn label(&self, task: IssueNumber, label: TaskLabel) -> Result<(), PortError> {
-        self.inner.label(task, label)
+    fn set_state(&self, task: TicketId, label: TicketState) -> Result<(), PortError> {
+        self.inner.set_state(task, label)
     }
 
-    fn comment(&self, issue: IssueNumber, body: &str) -> Result<(), PortError> {
+    fn comment(&self, issue: TicketId, body: &str) -> Result<(), PortError> {
         self.inner.comment(issue, body)
     }
 
-    fn report(&self, task: IssueNumber, instance: &Instance, body: &str) -> Result<(), PortError> {
+    fn report(&self, task: TicketId, instance: &Instance, body: &str) -> Result<(), PortError> {
         self.inner.report(task, instance, body)
     }
 
@@ -507,15 +512,15 @@ impl Board for BrokenBoard<'_> {
         self.inner.questions()
     }
 
-    fn open_question(&self, question: &NewQuestion) -> Result<IssueNumber, PortError> {
+    fn open_question(&self, question: &NewQuestion) -> Result<TicketId, PortError> {
         self.inner.open_question(question)
     }
 
     fn record_ruling(
         &self,
-        question: IssueNumber,
+        question: TicketId,
         ruling: &str,
-    ) -> Result<Option<IssueNumber>, PortError> {
+    ) -> Result<Option<TicketId>, PortError> {
         self.inner.record_ruling(question, ruling)
     }
 }
@@ -524,16 +529,16 @@ impl Board for BrokenBoard<'_> {
 struct BrokenForge<'a>(&'a FakeForge);
 
 impl Forge for BrokenForge<'_> {
-    fn open_pr(&self, request: &PrRequest) -> Result<PrNumber, PortError> {
-        self.0.open_pr(request)
-    }
-
     fn checks(&self, pr: PrNumber) -> Result<Vec<Check>, PortError> {
         self.0.checks(pr)
     }
 
     fn review_comments(&self, pr: PrNumber) -> Result<Vec<ReviewComment>, PortError> {
         self.0.review_comments(pr)
+    }
+
+    fn pull_request(&self, pr: PrNumber) -> Result<PullRequest, PortError> {
+        self.0.pull_request(pr)
     }
 
     fn head(&self, _pr: PrNumber) -> Result<Option<String>, PortError> {
@@ -552,14 +557,18 @@ impl Forge for BrokenForge<'_> {
         self.0.scanning_alerts(pr)
     }
 
-    fn merge(&self, pr: PrNumber) -> Result<PrMerge, PortError> {
-        self.0.merge(pr)
+    fn handoff(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
+        self.0.handoff(pr)
+    }
+
+    fn set_handoff(&self, pr: PrNumber, text: &str) -> Result<(), PortError> {
+        self.0.set_handoff(pr, text)
     }
 }
 
 /// A scene that would be `land`, so that a failed read has a phase to fall back from.
 fn landable() -> Scene {
-    let scene = Scene::new(TaskLabel::Ready);
+    let scene = Scene::new(TicketState::Ready);
     scene.claim();
     scene.open_slice();
     let head = scene.commit();
@@ -597,8 +606,8 @@ fn a_board_that_cannot_answer_refuses() {
 
 #[test]
 fn a_task_the_board_does_not_know_refuses() {
-    let scene = Scene::new(TaskLabel::Ready);
-    let unknown = IssueNumber::from(TASK + 1);
+    let scene = Scene::new(TicketState::Ready);
+    let unknown = TicketId::from(TASK + 1);
     let refusal = gather_phase_facts(
         &scene.board,
         &scene.forge,
@@ -627,7 +636,7 @@ fn claims_the_board_cannot_list_refuse() {
 
 #[test]
 fn claims_are_not_read_for_a_task_that_is_not_claimed() {
-    let scene = Scene::new(TaskLabel::Ready);
+    let scene = Scene::new(TicketState::Ready);
     let board = BrokenBoard {
         inner: &scene.board,
         task: false,
@@ -650,7 +659,7 @@ fn a_forge_that_cannot_answer_refuses() {
 
 #[test]
 fn a_pull_request_the_forge_does_not_know_refuses() {
-    let scene = Scene::new(TaskLabel::Claimed);
+    let scene = Scene::new(TicketState::Claimed);
     scene.open_slice();
     scene.record_pr(PrNumber::from(404));
     let refusal = scene.gather().expect_err("a refusal");
@@ -662,7 +671,7 @@ fn a_pull_request_the_forge_does_not_know_refuses() {
 fn a_latest_commit_that_cannot_be_read_refuses() {
     // The workspace record holds and the pull request is clean at "abc", but the VCS knows
     // no slice there: this is a failed read, so it is never a phase.
-    let scene = Scene::new(TaskLabel::Claimed);
+    let scene = Scene::new(TicketState::Claimed);
     scene.record_workspace();
     let pr = scene.open_pr(Some("abc"));
     scene.pr_check(pr, Verdict::Clean, "abc", LONG_AGO);

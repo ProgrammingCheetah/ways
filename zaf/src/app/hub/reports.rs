@@ -11,7 +11,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::domain::IssueNumber;
+use crate::domain::TicketId;
 
 /// The word of a ticket with no report on it.
 pub const WORKING: &str = "working";
@@ -30,7 +30,7 @@ pub struct Report {
     /// When it was made, to the second.
     pub at: SystemTime,
     /// The task it is about, when there is one.
-    pub task: Option<IssueNumber>,
+    pub task: Option<TicketId>,
     /// Who made it: one word.
     pub worker: String,
     /// What happened, in general words.
@@ -78,7 +78,7 @@ impl Report {
         let seconds = parts.next()?.parse::<u64>().ok()?;
         let task = match parts.next()? {
             "-" => None,
-            number => Some(IssueNumber::from(number.parse::<u64>().ok()?)),
+            number => Some(TicketId::from(number.parse::<u64>().ok()?)),
         };
         let worker = parts.next()?.to_owned();
         let what = parts.next()?.trim().to_owned();
@@ -128,7 +128,7 @@ fn trim(path: &Path) -> std::io::Result<()> {
 
 /// The last report on `task`: its word and when it was made. None when there is none, so the
 /// ticket says [`WORKING`] and no time.
-pub fn last_report(state_dir: &Path, task: IssueNumber) -> Option<(String, SystemTime)> {
+pub fn last_report(state_dir: &Path, task: TicketId) -> Option<(String, SystemTime)> {
     let text = fs::read_to_string(reports_file(state_dir)).ok()?;
     text.lines()
         .rev()

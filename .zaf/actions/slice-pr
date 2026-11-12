@@ -3,9 +3,9 @@
 # zaf 1: refused: the arguments are not <task>, or a step refused (the slice is not open, the remote has work the slice lacks, or the forge refused)
 # zaf 2: a backend failed (jj or gh is missing or refused)
 # zaf mode: 750
-# zaf group: team, release
+# zaf group: team, release, implement, fix
 # zaf target: task
-# zaf phases: build, check, review
+# zaf phases: build, check, publish, review
 
 # The task as a bare number; zaf has already read it as one.
 task=${1#\#}

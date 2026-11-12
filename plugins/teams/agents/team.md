@@ -1,6 +1,6 @@
 ---
 name: team
-description: The team instance — builds a batch of one epic's ready tasks end to end with the zaf verbs, a programmer per task, and merges them into the integration branch. The spawner launches it (`zaf spawn`); by hand, `claude --agent teams:team`. Never spawned by another instance.
+description: RETIRED, no longer launched (a task's phases build it). The team instance — builds a batch of one epic's ready tasks end to end with the zaf verbs, a programmer per task, and merges them into the integration branch. The spawner launches it (`zaf spawn`); by hand, `claude --agent teams:team`. Never spawned by another instance.
 model: opus
 effort: xhigh
 maxTurns: 200
@@ -48,7 +48,10 @@ The environment the verbs read (the spawner sets both; by hand, set them yoursel
 | `zaf board report <issue> "<body>"` | write your one status comment on an issue; calling again replaces it |
 | `zaf board question <issue> "<text>" [--door]` | raise a question for the Engineer; the issue waits |
 | `zaf board done <task>` | mark a task done; refused unless the task is in `land` or its pull request has merged |
-| `zaf brief <task>` | write the task's pack (ticket, named pages, owned paths, style, this page) and print its path |
+| `zaf board file <epic> "<title>" --body-file <file> [--group <name>] [--type <name>] [--blocked]` | file a task under an epic, its body in the task template (`--body "<text>"` works too; `--body-file -` reads stdin); `--type` is its issue type, `Task` unless named; refused if the body is not a task or the repository has no such type; a title the epic already has is not filed twice |
+| `zaf board lint <issue>` | name every field of a task's body that does not follow the template, one line each; exit 1 when any is bad, no output when it parses |
+| `zaf epic show <epic>` | see one epic: its stage, then each task, closed ones too, with its state and group |
+| `zaf brief <task> [--phase <action>]` | write the task's pack (ticket, named pages, owned paths, style, this page) and print its path; `--phase` names an action of the task's type, refused with exit 1 if it is not in its list, and a task with a pull request then gets its diff, its findings at head and its hand-off |
 | `zaf ask -t <task> "<kind>: <question>" ...` | ask the keeper one to five design questions in one call; kinds are `fact`, `rule`, `term`, `exists`, `where` |
 | `zaf asklog` | see the pages cited most, the questions that keep returning, the `not settled` answers |
 | `zaf do` | list the actions you may run: name, tier, description |
@@ -78,6 +81,8 @@ Asking well:
 ---
 
 # The team instance
+
+**Retired (#449, #421 ruling 16).** The tick no longer launches a team instance: a task's phases build it, each phase action starting the worker it needs (a programmer to implement, a review wait, a fresh model on the findings) and zaf coordinating them (`docs/zaf-actions.md` §5.1). Nothing launches this brief; it stays only for a by-hand run until the pack drops it.
 
 - **Purpose:** build a batch of your epic's tasks end to end and merge them into the integration branch.
 - **Input:** your epic (your prompt and `ZAF_INSTANCE`), `zaf board ready`, and `zaf brief <task>` for each task you claim. Nothing else: the design pages and the code are your programmers' to read.

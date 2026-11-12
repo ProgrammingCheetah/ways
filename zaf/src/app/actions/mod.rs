@@ -17,19 +17,26 @@ mod run;
 mod slice_env;
 
 pub use caller::{Caller, INSTANCE_VAR};
-pub use metadata::{ActionMetadata, ActionMode, Bits, MetadataError, ParsedAction, Target, parse};
+pub use metadata::{
+    ActionKind, ActionMetadata, ActionMode, ActionName, Bits, MetadataError, ParsedAction,
+    PhaseEnd, Target, parse,
+};
 pub use phase::{
-    Phase, PhaseFacts, PhaseUnreadable, PrFacts, WorkspaceFacts, derive_phase, gather_phase_facts,
+    CheckResult, ListedPhase, MODEL_FAILURE_LIMIT, PHASES_DIR, Phase, PhaseFacts, PhaseRun,
+    PhaseUnreadable, PrFacts, PullFacts, ReviewFact, RunExit, Standing, StandingFacts,
+    StandingUnreadable, WaitFailure, WorkspaceFacts, derive_phase, derive_standing,
+    ended_instances, gather_phase_facts, gather_standing_facts, running_tasks, wait_failure,
 };
 pub use records::{SliceRecords, hand_back};
 pub use resolve::{
-    ACTIONS_DIR, ResolveError, Resolved, Tier, can_shadow, check_name, list, resolve, resolve_in,
-    same_file,
+    ACTIONS_DIR, HOOK_EVENTS, HOOKS_DIR, ResolveError, Resolved, Tier, can_shadow, check_name,
+    hook, hook_file, hook_file_in, list, list_hooks, resolve, resolve_in, same_file,
 };
 pub use run::{
-    ACTION_VAR, CHAIN_VAR, DEPTH_VAR, LOG_VAR, ListedAction, MAX_DEPTH, MINUTE, NOT_RUN_EXIT,
-    Nesting, ROOT_VAR, Refused, RunOutcome, RunRequest, RunResult, TIMEOUT_EXIT, forbidden_action,
-    last_lines, list_actions, read_action, refuse_forbidden, run_action,
+    ACTION_VAR, CHAIN_VAR, DEPTH_VAR, LOG_VAR, ListedAction, MAX_DEPTH, MINUTE, NO_SUCH_ACTION,
+    NOT_RUN_EXIT, Nesting, ROOT_VAR, Refused, RunOutcome, RunRequest, RunResult, TIMEOUT_EXIT,
+    forbidden_action, last_lines, list_actions, read_action, refuse_forbidden, run_action,
+    run_hook, run_hook_with_input,
 };
 pub use slice_env::{BASE_VAR, PR_VAR, SLICE_VAR, SliceContext, TASK_TITLE_VAR};
 

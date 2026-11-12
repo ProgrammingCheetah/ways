@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use crate::app::setup::ensure_homes;
 use crate::composition::Composition;
-use crate::domain::IssueNumber;
+use crate::domain::{DEFAULT_TASK_TYPE, TicketId};
 use crate::manifest::ProjectFiles;
 
 pub mod ask;
@@ -20,17 +20,19 @@ pub mod changes;
 pub mod check;
 pub mod do_action;
 pub mod doctor;
+pub mod epic;
 pub mod exit;
 pub mod guard;
 pub mod hub;
-pub mod init;
 pub mod profile;
 pub mod progress;
 pub mod report;
 pub mod setup;
 pub mod slice;
 pub mod spawn;
+pub mod spawn_phase;
 pub mod status;
+pub mod update;
 
 pub use exit::NOT_IMPLEMENTED;
 
@@ -67,7 +69,7 @@ pub enum Verb {
     Ask {
         /// The task whose named pages are searched first.
         #[arg(short, long)]
-        task: IssueNumber,
+        task: TicketId,
         /// Each question as `<kind>: <question>`.
         #[arg(required = true, num_args = 1..=5)]
         questions: Vec<String>,
@@ -75,7 +77,12 @@ pub enum Verb {
     /// Build a task's context pack: ticket, named pages, owned paths, style, help.
     Brief {
         /// The task.
-        task: IssueNumber,
+        task: TicketId,
+        /// The phase action the pack is for, one of its task type's `[phases]` list; a task with
+        /// a pull request then gets its diff, new findings and hand-off. The call is
+        /// `zaf brief <task> --phase <action>`, refused with exit 1 for an unlisted action.
+        #[arg(long)]
+        phase: Option<String>,
     },
     /// Run the configured check steps for a task, a pull request or a milestone.
     Check {
@@ -88,7 +95,7 @@ pub enum Verb {
     /// A task's change: stat first, hunks on request.
     Changes {
         /// The task.
-        task: IssueNumber,
+        task: TicketId,
         /// Show the hunks of this file.
         #[arg(long)]
         path: Option<String>,
@@ -96,7 +103,7 @@ pub enum Verb {
     /// Check a task's acceptance lines and declared interfaces.
     Verify {
         /// The task.
-        task: IssueNumber,
+        task: TicketId,
     },
     /// Open, publish, merge or drop a task's slice.
     Slice {
@@ -104,8 +111,12 @@ pub enum Verb {
         #[command(subcommand)]
         action: SliceAction,
     },
-    /// Run the spawner's tick.
+    /// Run the spawner's tick, or start one phase action of a task.
+    #[command(args_conflicts_with_subcommands = true)]
     Spawn {
+        /// What to start; none runs the tick.
+        #[command(subcommand)]
+        action: Option<SpawnAction>,
         /// One tick, then exit.
         #[arg(long)]
         once: bool,
@@ -115,6 +126,13 @@ pub enum Verb {
         /// Plan the tick and print each launch's command line; launch nothing, write nothing.
         #[arg(long)]
         dry_run: bool,
+        /// With `--once`: exit 0 at once, doing nothing, when another tick holds `spawn.lock`.
+        #[arg(long, requires = "once")]
+        no_wait: bool,
+        /// Tick in the foreground each `[spawn] tick_minutes` until stopped; a failed tick is
+        /// logged and the loop goes on. Each tick is `--once --no-wait`.
+        #[arg(long, conflicts_with_all = ["once", "dry_run"])]
+        watch: bool,
     },
     /// The ask log: top pages, recurring questions, gaps.
     Asklog,
@@ -124,12 +142,6 @@ pub enum Verb {
     Report(report::ReportArgs),
     /// The budget state the spawner reads.
     Guard,
-    /// Write a minimal manifest by asking.
-    Init {
-        /// Read an earlier configuration file instead of asking.
-        #[arg(long)]
-        from_teams: bool,
-    },
     /// Validate the manifest and verify the required tools.
     Doctor,
     /// Make the project's `.zaf/` and the zaf home, run doctor and print what is left to do.
@@ -159,6 +171,36 @@ pub enum Verb {
         #[command(subcommand)]
         action: ProgressAction,
     },
+    /// Replace this zaf with the newest release; up to date prints nothing.
+    Update {
+        /// Only say whether a newer release is out (exit 1 when one is); change nothing.
+        #[arg(long)]
+        check: bool,
+    },
+    /// The open epics and where each stands; the Engineer's signature on one.
+    Epic {
+        /// What to do with the epics.
+        #[command(subcommand)]
+        action: EpicAction,
+    },
+}
+
+/// `zaf epic …`.
+#[derive(Debug, clap::Subcommand, strum::IntoStaticStr)]
+#[strum(serialize_all = "kebab-case")]
+pub enum EpicAction {
+    /// List the open epics, each with its stage and its tasks done.
+    List,
+    /// Show one open epic and its tasks, closed ones too, each with its state and group.
+    Show {
+        /// The epic.
+        epic: TicketId,
+    },
+    /// Sign an epic as its body reads now; an edit voids it. Refused inside an instance.
+    Sign {
+        /// The epic.
+        epic: TicketId,
+    },
 }
 
 /// `zaf progress …`.
@@ -168,7 +210,7 @@ pub enum ProgressAction {
     /// Declare the phases this model goes through on a task, in order.
     Plan {
         /// The task.
-        task: IssueNumber,
+        task: TicketId,
         /// The phases, one word each.
         #[arg(required = true, num_args = 1..)]
         phases: Vec<String>,
@@ -179,12 +221,31 @@ pub enum ProgressAction {
     /// Report that this model is now in one of its declared phases.
     At {
         /// The task.
-        task: IssueNumber,
+        task: TicketId,
         /// The phase, as declared.
         phase: String,
         /// The role the phase is for; the role `ZAF_INSTANCE` names when not given.
         #[arg(long)]
         role: Option<String>,
+    },
+}
+
+/// `zaf spawn …`, beside the flags of the tick.
+#[derive(Debug, clap::Subcommand, strum::IntoStaticStr)]
+#[strum(serialize_all = "kebab-case")]
+pub enum SpawnAction {
+    /// Start a task's current phase action as a process of its own and return at once.
+    Phase {
+        /// The task.
+        task: TicketId,
+        /// The phase action: the task's current one.
+        action: String,
+    },
+    /// The launcher `phase` starts: runs the action of a phase run folder and waits on it.
+    #[command(hide = true)]
+    PhaseRun {
+        /// The phase run folder.
+        run_folder: PathBuf,
     },
 }
 
@@ -206,19 +267,27 @@ pub enum BoardAction {
     /// Claim a task under a lease.
     Claim {
         /// The task.
-        task: IssueNumber,
+        task: TicketId,
     },
     /// Write the instance's status comment on a task.
     Report {
         /// The task.
-        task: IssueNumber,
+        task: TicketId,
         /// The report.
         body: String,
+    },
+    // The verb as typed: zaf board handoff <task> "<text>"
+    /// Leave the hand-off comment on a task's recorded pull request; a second call replaces it.
+    Handoff {
+        /// The task.
+        task: TicketId,
+        /// The hand-off.
+        text: String,
     },
     /// Raise a question for the Engineer on an issue.
     Question {
         /// The issue that waits.
-        on: IssueNumber,
+        on: TicketId,
         /// The question.
         text: String,
         /// A one-way decision.
@@ -228,14 +297,45 @@ pub enum BoardAction {
     /// Record the Engineer's ruling on a question.
     Ruling {
         /// The question.
-        question: IssueNumber,
+        question: TicketId,
         /// The ruling.
         text: String,
     },
     /// Mark a task done once its work has landed: in land, or when its recorded pull request has merged.
     Done {
         /// The task.
-        task: IssueNumber,
+        task: TicketId,
+    },
+    /// File a task under an epic, its body in the task template; a title the epic already has is not filed twice.
+    File {
+        /// The epic.
+        epic: TicketId,
+        /// The task's title.
+        title: String,
+        /// The task's body.
+        #[arg(
+            long,
+            conflicts_with = "body_file",
+            required_unless_present = "body_file"
+        )]
+        body: Option<String>,
+        /// A file holding the task's body; `-` reads standard input.
+        #[arg(long)]
+        body_file: Option<PathBuf>,
+        /// The task's group (its `group:<name>` label on GitHub).
+        #[arg(long)]
+        group: Option<String>,
+        /// The task's issue type, by the forge's name; the repository must define it.
+        #[arg(long = "type", value_name = "NAME", default_value = DEFAULT_TASK_TYPE)]
+        kind: String,
+        /// Open it blocked, not ready: its `Blockers` are not done yet.
+        #[arg(long)]
+        blocked: bool,
+    },
+    /// Name every field of a task's body that does not follow the template.
+    Lint {
+        /// The task.
+        issue: TicketId,
     },
 }
 
@@ -246,22 +346,22 @@ pub enum SliceAction {
     /// Open the task's slice and workspace.
     Open {
         /// The task.
-        task: IssueNumber,
+        task: TicketId,
     },
     /// Publish the slice and open or update its pull request.
     Pr {
         /// The task.
-        task: IssueNumber,
+        task: TicketId,
     },
     /// Merge the slice's pull request when the merge conditions hold.
     Merge {
         /// The task.
-        task: IssueNumber,
+        task: TicketId,
     },
     /// Drop the slice and its workspace.
     Drop {
         /// The task.
-        task: IssueNumber,
+        task: TicketId,
     },
 }
 
@@ -282,7 +382,9 @@ impl Verb {
             Self::Slice { action } => Some(action.into()),
             Self::Profile { action } => Some(action.into()),
             Self::Hub { action, .. } => action.as_ref().map(Into::into),
+            Self::Spawn { action, .. } => action.as_ref().map(Into::into),
             Self::Progress { action } => Some(action.into()),
+            Self::Epic { action } => Some(action.into()),
             _ => None,
         };
         action.map_or_else(|| verb.to_owned(), |action| format!("{verb} {action}"))
@@ -312,7 +414,9 @@ where
                     ..
                 }
             );
-            if !cfg!(test) && !hook && !matches!(cli.verb, Verb::Setup) {
+            // Updating the binary touches no project and makes no home.
+            let homeless = matches!(cli.verb, Verb::Setup | Verb::Update { .. });
+            if !cfg!(test) && !hook && !homeless {
                 first_run();
             }
             dispatch(&cli)
@@ -369,27 +473,45 @@ fn run_verb(cli: &Cli) -> u8 {
     match &cli.verb {
         Verb::Board { action } => board::run(cli, action),
         Verb::Ask { task, questions } => ask::run(cli, *task, questions),
-        Verb::Brief { task } => brief::run(cli, *task),
+        Verb::Brief { task, phase } => brief::run(cli, *task, phase.as_deref()),
         Verb::Check { target, status } => check::run(cli, target, *status),
         Verb::Changes { task, path } => changes::run(cli, *task, path.as_deref()),
         Verb::Verify { task } => check::verify(cli, *task),
         Verb::Slice { action } => slice::run(cli, action),
         Verb::Asklog => asklog::run(cli),
-        Verb::Init { from_teams } => init::run(cli, *from_teams),
         Verb::Doctor => doctor::run(cli),
         Verb::Setup => setup::run(cli),
         Verb::Status => status::run(cli),
         Verb::Report(args) => report::run(cli, args),
         Verb::Guard => guard::run(cli),
         Verb::Spawn {
+            action: Some(SpawnAction::Phase { task, action }),
+            ..
+        } => spawn_phase::run(cli, *task, action),
+        Verb::Spawn {
+            action: Some(SpawnAction::PhaseRun { run_folder }),
+            ..
+        } => spawn_phase::launcher(cli, run_folder),
+        Verb::Spawn {
+            action: None,
             once,
             version,
             dry_run,
-        } => spawn::run(cli, *once, version.as_deref(), *dry_run),
+            no_wait,
+            watch,
+        } => {
+            if *watch {
+                spawn::watch(cli, version.as_deref())
+            } else {
+                spawn::run(cli, *once, version.as_deref(), *dry_run, *no_wait)
+            }
+        }
         Verb::Profile { action } => profile::run(cli, action),
         Verb::Do(args) => do_action::run(cli, args),
         Verb::Hub { action, port } => hub::run(cli, action.as_ref(), *port),
         Verb::Progress { action } => progress::run(cli, action),
+        Verb::Update { check } => update::run(cli, *check),
+        Verb::Epic { action } => epic::run(cli, action),
     }
 }
 

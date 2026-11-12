@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use super::*;
 use crate::app::check::step::tests::{ForgePorts, SharedForge, context, forge_with_pr};
@@ -8,8 +8,7 @@ use crate::app::check::{Shell, StepPorts};
 use crate::fakes::FakeForge;
 use crate::manifest::{CommandLine, RunnerName};
 use crate::ports::{
-    Check, CheckName, Forge, GateRun, PrMerge, PrNumber, PrRequest, ReviewComment, Runner,
-    ScanningAlert,
+    Check, CheckName, Forge, GateRun, PrNumber, PullRequest, ReviewComment, Runner, ScanningAlert,
 };
 
 fn source() -> FindingSource {
@@ -17,9 +16,14 @@ fn source() -> FindingSource {
 }
 
 fn check(name: &str, state: CheckState) -> Check {
+    let finished_at = match state {
+        CheckState::Pending => None,
+        CheckState::Passed | CheckState::Failed => Some(SystemTime::UNIX_EPOCH),
+    };
     Check {
         name: CheckName::from(name),
         state,
+        finished_at,
     }
 }
 
@@ -32,10 +36,6 @@ struct ScriptedForge {
 }
 
 impl Forge for ScriptedForge {
-    fn open_pr(&self, request: &PrRequest) -> Result<PrNumber, PortError> {
-        self.inner.open_pr(request)
-    }
-
     fn checks(&self, _pr: PrNumber) -> Result<Vec<Check>, PortError> {
         *self.polls.lock().expect("polls") += 1;
         let mut script = self.script.lock().expect("script");
@@ -49,6 +49,10 @@ impl Forge for ScriptedForge {
 
     fn review_comments(&self, pr: PrNumber) -> Result<Vec<ReviewComment>, PortError> {
         self.inner.review_comments(pr)
+    }
+
+    fn pull_request(&self, pr: PrNumber) -> Result<PullRequest, PortError> {
+        self.inner.pull_request(pr)
     }
 
     fn head(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
@@ -67,8 +71,12 @@ impl Forge for ScriptedForge {
         self.inner.scanning_alerts(pr)
     }
 
-    fn merge(&self, pr: PrNumber) -> Result<PrMerge, PortError> {
-        self.inner.merge(pr)
+    fn handoff(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
+        self.inner.handoff(pr)
+    }
+
+    fn set_handoff(&self, pr: PrNumber, text: &str) -> Result<(), PortError> {
+        self.inner.set_handoff(pr, text)
     }
 }
 

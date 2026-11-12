@@ -2,7 +2,7 @@
   "path": "zaf/tests",
   "charted": "2026-11-03",
   "short": "binary-level integration tests with a fake gh",
-  "is": "Integration tests that run the built zaf binary in a temp project against a scripted fake gh and, for slices, a throwaway jj repository with a bare remote.",
+  "is": "Integration tests that run the built zaf binary in a temp project against a scripted fake gh and, for slices, a throwaway jj repository with a bare remote. Two crates read no binary: architecture.rs holds the layers to their imports, and board_contract.rs checks every Board backend the same way.",
   "type": "code",
   "tags": [
     "category:tests",
@@ -15,6 +15,16 @@
     "common/mod.rs"
   ],
   "fs": [
+    {
+      "name": "architecture.rs",
+      "role": "each layer names only the crate modules it may; the domain names none outside itself",
+      "node": false
+    },
+    {
+      "name": "board_contract.rs",
+      "role": "the Board contract over an Arrange trait: always on FakeBoard, on GitHub issues when ZAF_CONTRACT_REPO names a scratch repo",
+      "node": false
+    },
     {
       "name": "cli_board.rs",
       "role": "board verbs: terse and JSON forms, exits 0, 1, 2",
@@ -31,13 +41,18 @@
       "node": false
     },
     {
-      "name": "ways_manifest.rs",
-      "role": "the ways repo's own .zaf.toml loads, ZAF.toml is gone, and doctor finds every needed action in the project tier with no machine dependency",
+      "name": "fixtures/",
+      "role": "gh: fake gh shell script",
       "node": false
     },
     {
-      "name": "fixtures/",
-      "role": "gh: fake gh shell script",
+      "name": "spawn_phase.rs",
+      "role": "spawn phase: the caller does not wait, the run sees ZAF_RUN, ZAF_SIZE and ZAF_INSTANCE, a non-current or running phase is refused, a started phase reads Running",
+      "node": false
+    },
+    {
+      "name": "ways_manifest.rs",
+      "role": "the ways repo's own .zaf.toml loads, ZAF.toml is gone, and doctor finds every needed action in the project tier with no machine dependency",
       "node": false
     }
   ],

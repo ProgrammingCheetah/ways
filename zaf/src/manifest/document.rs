@@ -5,10 +5,11 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use super::sections::{
-    ActionsSection, AskSection, BoardKind, BoardSection, BranchesSection, ChecksSection,
-    DesignKind, DesignSection, EnvSection, ForbiddenSection, ForgeKind, ForgeSection, GateSection,
-    IsolationKind, IsolationSection, PackSection, ProjectSection, RoleSection, RunnerName,
-    RunnerSection, SpawnSection, StyleSection, ToolName, VcsSection, WorkspacesSection,
+    ActionName, ActionsSection, AskSection, BoardKind, BoardSection, BranchesSection,
+    ChecksSection, DesignKind, DesignSection, EnvSection, ForbiddenSection, ForgeKind,
+    ForgeSection, GateSection, IsolationKind, IsolationSection, PackSection, ProjectSection,
+    RoleSection, RunnerName, RunnerSection, SpawnSection, StyleSection, ToolName, VcsSection,
+    WorkspacesSection,
 };
 use super::{ManifestError, Requirement, layers};
 use crate::domain::{MAX_QUESTIONS, RoleName};
@@ -75,9 +76,20 @@ pub struct Manifest {
     /// `[env]`: variables for every child, merged key by key across the layers.
     #[serde(default)]
     pub env: EnvSection,
+    /// `[phases]`: a task type's name (the forge's issue type, such as `Task` or `Bug`) to its
+    /// ordered list of action names, as in `Task = ["implement", "ci", "merge"]`. A higher layer
+    /// replaces a type's whole list. Read as `Manifest.phases: BTreeMap<String, Vec<ActionName>>`.
+    #[serde(default)]
+    pub phases: BTreeMap<String, Vec<ActionName>>,
 }
 
 impl Manifest {
+    /// The ordered phase actions of the task type `task_type`; none when `[phases]` has no list
+    /// for it: `Manifest::phase_list(type) -> Option<&[ActionName]>`.
+    pub fn phase_list(&self, task_type: &str) -> Option<&[ActionName]> {
+        self.phases.get(task_type).map(Vec::as_slice)
+    }
+
     /// Reads, defaults and validates the one manifest file at `path`; an error names it.
     pub fn load(path: &Path) -> Result<Self, ManifestError> {
         let table = layers::read_table(path)?;
@@ -103,13 +115,43 @@ impl Manifest {
     pub fn validate(&self) -> Result<(), ManifestError> {
         self.validate_ports()?;
         self.validate_paths()?;
-        self.validate_limits()
+        self.validate_limits()?;
+        self.validate_phases()
+    }
+
+    /// A phase list zaf could not run: empty, or naming an action twice.
+    fn validate_phases(&self) -> Result<(), ManifestError> {
+        for (task_type, list) in &self.phases {
+            if list.is_empty() {
+                return Err(ManifestError::EmptyPhaseList {
+                    task_type: task_type.clone(),
+                });
+            }
+            for (at, name) in list.iter().enumerate() {
+                if list[..at].contains(name) {
+                    return Err(ManifestError::PhaseListedTwice {
+                        task_type: task_type.clone(),
+                        name: name.to_string(),
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 
     fn validate_ports(&self) -> Result<(), ManifestError> {
         match self.board.kind {
             BoardKind::GithubIssues => {
                 require_key("board", "repo", self.board.kind, self.board.repo.is_some())?
+            }
+            BoardKind::GithubProjects => {
+                require_key("board", "repo", self.board.kind, self.board.repo.is_some())?;
+                require_key(
+                    "board",
+                    "project",
+                    self.board.kind,
+                    self.board.project.is_some(),
+                )?;
             }
         }
         if let Some(forge) = &self.forge {
@@ -176,6 +218,18 @@ impl Manifest {
         }
         if self.spawn.slots == 0 {
             return Err(invalid("spawn", "slots", "must be at least 1"));
+        }
+        if self.spawn.tick_minutes == 0 {
+            return Err(invalid("spawn", "tick_minutes", "must be at least 1"));
+        }
+        if let Some(budget) = self.spawn.budget
+            && self.spawn.reserve >= budget.get()
+        {
+            return Err(invalid(
+                "spawn",
+                "reserve",
+                &format!("must be under the budget of {budget} units"),
+            ));
         }
         let guard = &self.spawn.guard;
         let ascending = guard.windows(2).all(|pair| pair[0] < pair[1]);

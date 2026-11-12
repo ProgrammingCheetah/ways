@@ -18,8 +18,8 @@ fn every_verb_is_listed() {
         verbs,
         [
             "board", "ask", "brief", "check", "changes", "verify", "slice", "spawn", "asklog",
-            "status", "report", "guard", "init", "doctor", "setup", "profile", "do", "hub",
-            "progress",
+            "status", "report", "guard", "doctor", "setup", "profile", "do", "hub", "progress",
+            "update", "epic",
         ]
     );
     let board = command.find_subcommand("board").expect("board");
@@ -29,7 +29,9 @@ fn every_verb_is_listed() {
         .collect();
     assert_eq!(
         board_actions,
-        ["ready", "claim", "report", "question", "ruling", "done"]
+        [
+            "ready", "claim", "report", "handoff", "question", "ruling", "done", "file", "lint"
+        ]
     );
     let slice = command.find_subcommand("slice").expect("slice");
     let slice_actions: Vec<&str> = slice
@@ -47,15 +49,16 @@ const BUILT: &[&str] = &[
     "board ready",
     "board claim",
     "board report",
+    "board handoff",
     "board question",
     "board ruling",
     "board done",
+    "board lint",
     "brief",
     "changes",
     "check",
     "doctor",
     "guard",
-    "init",
     "profile init",
     "report",
     "setup",
@@ -72,6 +75,7 @@ const BUILT: &[&str] = &[
 fn every_unbuilt_verb_exits_not_implemented() {
     let invocations: [&[&str]; 24] = [
         &["board", "ready"],
+        &["board", "lint", "2"],
         &["board", "done", "2"],
         &["board", "claim", "#2"],
         &["board", "report", "2", "working"],
@@ -91,7 +95,6 @@ fn every_unbuilt_verb_exits_not_implemented() {
         &["status", "--json"],
         &["report", "--more"],
         &["guard"],
-        &["init", "--from-teams"],
         &["doctor"],
         &["setup"],
         &["profile", "init"],
@@ -110,19 +113,22 @@ fn every_unbuilt_verb_exits_not_implemented() {
 /// the forge failing the merged read when `forge_down`.
 fn board_done_exit(pr: &str, forge_down: bool) -> u8 {
     use crate::app::actions::SliceRecords;
-    use crate::domain::{IssueNumber, TaskLabel};
-    use crate::fakes::{FakeBoard, FakeForge, FakeVcs};
-    use crate::ports::{BaseName, Board, Forge, PrRequest, SliceName, Ticket};
+    use crate::domain::Ticket;
+    use crate::domain::{TicketId, TicketState};
+    use crate::fakes::{FakeBoard, FakeForge, FakeVcs, PrRequest};
+    use crate::ports::{BaseName, Board, SliceName};
 
     let dir = tempfile::tempdir().expect("tempdir");
-    let task = IssueNumber::from(319);
+    let task = TicketId::from(319);
     let board = FakeBoard::default();
     board.add_ticket(Ticket {
-        number: task,
+        id: task,
         epic: None,
-        title: "Task".to_owned(),
-        body: String::new(),
-        label: Some(TaskLabel::Ready),
+        title: "Task".into(),
+        body: "".into(),
+        state: Some(TicketState::Ready),
+        url: "".into(),
+        kind: None,
     });
     let forge = FakeForge::default();
     let request = PrRequest {
@@ -141,8 +147,8 @@ fn board_done_exit(pr: &str, forge_down: bool) -> u8 {
     let records = SliceRecords::new(dir.path());
     let outcome = crate::app::board::done(&board, &forge, &FakeVcs::default(), &records, task);
     let error = outcome.expect_err("no task is done here");
-    let ready = board.task(task).expect("task").label;
-    assert_eq!(ready, Some(TaskLabel::Ready), "nothing changed");
+    let ready = board.task(task).expect("task").state;
+    assert_eq!(ready, Some(TicketState::Ready), "nothing changed");
     board::exit_code(&error)
 }
 
@@ -154,6 +160,37 @@ fn board_done_forge_failure_exits_2() {
     assert_eq!(board_done_exit("404", false), 2);
     // An open pull request is a refusal, not a failure.
     assert_eq!(board_done_exit("1", false), 1);
+}
+
+#[test]
+fn board_handoff_exits_0_written_1_without_a_pr_and_2_when_the_forge_fails() {
+    use crate::app::actions::SliceRecords;
+    use crate::domain::TicketId;
+    use crate::fakes::{FakeForge, PrRequest};
+    use crate::ports::{BaseName, SliceName};
+
+    let task = TicketId::from(433);
+    let forge = FakeForge::default();
+    let request = PrRequest {
+        slice: SliceName::from("feature/0.3.0-421-433"),
+        base: BaseName::from("feature/0.3.0"),
+        title: "Task".to_owned(),
+        body: String::new(),
+    };
+    let pr = forge.open_pr(&request).expect("open pr");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let records = SliceRecords::new(dir.path());
+    let slices = dir.path().join(".zaf/slices");
+    std::fs::create_dir_all(&slices).expect("mkdir");
+    let exit = |forge: &FakeForge| {
+        let result = crate::app::board::handoff(forge, &records, task, "text");
+        result.map_or_else(|error| board::exit_code(&error), |_| 0)
+    };
+    assert_eq!(exit(&forge), 1, "no recorded pull request");
+    std::fs::write(slices.join("433.pr"), pr.get().to_string()).expect("write");
+    assert_eq!(exit(&forge), 0);
+    forge.fail_handoffs();
+    assert_eq!(exit(&forge), 2);
 }
 
 #[test]
@@ -171,4 +208,10 @@ fn usage_errors_and_help_keep_clap_codes() {
     assert_eq!(run(["zaf", "brief", "not-a-number"]), 2);
     let six_questions = ["zaf", "ask", "-t", "2", "a", "b", "c", "d", "e", "f"];
     assert_eq!(run(six_questions), 2);
+}
+
+#[test]
+fn init_verb_is_gone() {
+    assert_eq!(run(["zaf", "init"]), 2, "an unknown verb exits 2");
+    assert_eq!(run(["zaf", "init", "--from-teams"]), 2);
 }

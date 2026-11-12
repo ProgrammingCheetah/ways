@@ -1,52 +1,120 @@
-//! `zaf spawn --once`: one tick of the spawner, the team-instance branch.
+//! `zaf spawn --once`: one tick of the spawner: planning and challenger launches, each open
+//! epic getting the one its stage calls for ([`tick`]); a challenged epic's tasks are built by
+//! their phases, never by a launched instance; the release branch is not built.
 //!
-//! [`prepare`] drops the launches whose process is gone, reads the board, the
-//! state and the guard, plans the tick with [`tick::plan`] and reserves the
-//! planned launches in `.zaf/spawn.state`, so each holds its slot from the
-//! plan on. [`launch`] then runs one through the Runner port: it records the
-//! launch on the epic, runs the `team` role in `.zaf/runs/<instance slug>/`,
-//! keeps the instance's output as `report.md` there, records the exit on the
-//! epic and frees the slot. Launch and exit are HTML comments on the epic:
-//! `<!-- zaf:launch <instance> -->` and `<!-- zaf:exit <instance> <status> -->`,
-//! the status being the exit code, `error` when the runner could not run,
-//! `timeout` when the run passed its time bound, or `lost` for a launch whose
-//! process vanished without one. A lost or timed-out instance's claims go back
-//! to the board: [`prepare`] releases each task a lost one still held, and
-//! [`launch`] those of one that timed out.
+//! Nothing the tick plans from is kept in step by hand: each read derives it.
+//! Whether a launch still runs comes from its run folder and the process table
+//! ([`runs`]), which launches still hold slots follows from that, a claim counts
+//! only while its instance runs (unless its task has a recorded pull request or a running
+//! phase, see [`held`]), and the board answers the rest. `.zaf/spawn.state`
+//! keeps only the instance counter.
+//!
+//! [`prepare`] records `lost` for a launch that ended with nobody there to record
+//! it, releases every task claimed by an instance that no longer runs, reads the
+//! board and the guard, plans the tick with [`tick::plan`] and reserves each planned
+//! launch in its run folder, held by the tick until the instance starts. [`launch`]
+//! then runs one through the Runner port: it records the launch on the epic, runs
+//! the instance's role in `.zaf/runs/<instance slug>/`, where the runner records the
+//! instance's own process, with `ZAF_RUN` naming that folder and `ZAF_SIZE` its size
+//! ([`launch_size`]) in its environment, keeps the instance's output as `report.md` there and
+//! records the exit in the run folder and on the epic. Launch and exit are HTML
+//! comments on the epic: `<!-- zaf:launch <instance> -->` and
+//! `<!-- zaf:exit <instance> <status> -->`, the status being the exit code, `error`
+//! when the runner could not run, `timeout` when the run passed its time bound, or
+//! `lost`. A timed-out instance's claims go back to the board at its exit.
+//!
+//! The phase tick's step 3 ([`inline`]) runs every ready `zaf`-kind action with `zaf do`, one
+//! after another, at no cost to the budget; [`outcome::TickOutcome`] is what a tick did, its
+//! `ran` filled from there. Step 5 ([`question`]) raises one question on each task whose wait
+//! failed with no `on-fail`, at no cost either; its tasks fill `questions`. Step 4 ([`waits`])
+//! launches every ready `wait` action detached with `zaf spawn phase`, at no cost and never
+//! waiting for one; the waits it launched fill `waits`, and they are not the tick's one model start.
+//! Step 6 ([`start`]) starts at most one model phase, the longest ready that fits the budget,
+//! never waiting for it; it fills `started`. [`phase_tick`] assembles them: it derives the
+//! standing of every claimed or ready task whose type has a `[phases]` list from the forge and
+//! the phase run folders, storing none of it, and runs steps 3 to 6 on them in that order into
+//! one outcome. Such a task is the phase steps' alone: the tick's plan launches no instance
+//! for a task. Step 7 ([`post_tick`]) runs the `post-tick` hook with the whole
+//! outcome as JSON on its stdin.
 //!
 //! A dry run ([`plan_only`] and [`dry_run`]) plans the same tick and describes
 //! each launch it would make, writing nothing: no state, no run folder, no comment.
+//!
+//! [`phase`] starts one phase action of a task (`zaf spawn phase`): it takes the next instance
+//! number from the same counter, under the same lock, and writes a phase run folder in
+//! `.zaf/phases/` rather than `.zaf/runs/`.
 
+pub mod blockers;
+pub mod failures;
+pub mod inline;
+pub mod outcome;
+pub mod phase;
+pub mod phase_tick;
+pub mod post_tick;
+pub mod question;
+pub mod runs;
+pub mod start;
 mod state;
 pub mod tick;
+pub mod waits;
+pub mod watch;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
 use std::time::SystemTime;
 
-pub use state::{SpawnState, load, save};
+pub use inline::{TickTask, run_inline, run_zaf_actions};
+pub use outcome::{Ran, Started, TickOutcome};
+pub use phase_tick::{
+    Gathered, PhaseTask, PhaseTick, Steps, Unreadable, gather, phased, run_steps,
+};
+pub use question::{ask_failed_waits, ask_outcome, question_text};
+use runs::Run;
+pub use start::{
+    EPIC_SIZE, InUse, PlannedModel, STARVE_AFTER, TaskStanding, start_outcome, start_planned,
+};
+pub use state::{SpawnState, derive, load, save};
 pub use tick::{
-    EpicSkip, NOT_BUILT, Plan, PlannedLaunch, Settings, SlotCount, Snapshot, TEAM_ROLE, TaskSkip,
+    EpicCandidate, EpicSkip, NOT_BUILT, PLANNING_ROLE, PastLaunch, Plan, PlannedLaunch, Settings,
+    SlotCount, Snapshot,
+};
+pub use waits::{launch_outcome, launch_waits};
+
+use super::actions::{PHASES_DIR, SliceRecords, ended_instances, running_tasks};
+use super::guard::{GUARD_FILE, Level};
+use crate::domain::{CHALLENGER_ROLE, Instance, Profile, RoleName, TaskSize, TicketId};
+use crate::manifest::{Manifest, ManifestError};
+use crate::ports::{
+    Board, ClaimRecord, Holder, NewQuestion, PortError, RUN_VAR, RunRequest, Runner, SIZE_VAR,
 };
 
-use super::guard::{GUARD_FILE, Level};
-use crate::domain::{Instance, IssueNumber, Profile, RoleName, TaskLabel};
-use crate::manifest::{Manifest, ManifestError};
-use crate::ports::{Board, ClaimRecord, PortError, RunRequest, Runner};
-
-/// The one-line launch prompt of a team instance, with `{instance}`, `{epic}`,
-/// `{project}`, `{tasks}` and `{brief}` placeholders.
-pub const TEAM_PROMPT: &str = include_str!(concat!(
+/// The one-line launch prompt of an instance the tick launches (planning, the
+/// challenger), with `{instance}`, `{role}`, `{epic}`, `{project}` and `{brief}` placeholders.
+pub const EPIC_PROMPT: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/assets/spawn/team-prompt.txt"
+    "/assets/spawn/epic-prompt.txt"
 ));
 
-/// The team instance's standing brief when the project keeps none of its own.
-pub const TEAM_BRIEF: &str = include_str!(concat!(
+/// The planning instance's standing brief when the project keeps none of its own.
+pub const PLANNING_BRIEF: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/assets/spawn/team-brief.md"
+    "/assets/spawn/planning-brief.md"
 ));
+
+/// The challenger's standing brief when the project keeps none of its own.
+pub const CHALLENGER_BRIEF: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/spawn/challenger-brief.md"
+));
+
+/// The pack's standing brief for `role`: the challenger's, or the planning instance's for any
+/// other role the tick launches.
+pub fn pack_brief(role: &RoleName) -> &'static str {
+    match role.as_str() {
+        CHALLENGER_ROLE => CHALLENGER_BRIEF,
+        _ => PLANNING_BRIEF,
+    }
+}
 
 /// The folder under the state folder holding one run folder per instance.
 pub const RUNS_DIR: &str = "runs";
@@ -111,85 +179,206 @@ pub fn read_guard(state_dir: &Path) -> Result<Level, SpawnError> {
         })
 }
 
-/// Reads what the tick needs from the board: the ready tasks, the live claims,
-/// and which of the ready tasks' blockers are closed (labelled `done`).
-pub fn snapshot(board: &dyn Board) -> Result<Snapshot, PortError> {
+/// Reads what the tick needs from the board: the ready tasks, the open tasks their blockers
+/// lead to and the blockers that can never close (see [`blockers`]); the open epics and the
+/// issues an open question waits on; and, from `runs`, every launch recorded so far.
+pub fn snapshot(board: &dyn Board, runs: &[Run]) -> Result<Snapshot, PortError> {
     let ready = board.ready()?;
-    let claimed = board
-        .claims()?
-        .into_iter()
-        .map(|claim| claim.task)
-        .collect();
-    let named: BTreeSet<IssueNumber> = ready
-        .iter()
-        .flat_map(|ticket| tick::blockers(&ticket.body))
-        .collect();
-    let mut closed = BTreeSet::new();
-    for blocker in named {
-        match board.task(blocker) {
-            Ok(ticket) if ticket.label == Some(TaskLabel::Done) => {
-                closed.insert(blocker);
-            }
-            Ok(_) | Err(PortError::NotFound(_)) => {}
-            Err(error) => return Err(error),
-        }
+    let found = blockers::read(board, &ready)?;
+    let mut open = found.graph;
+    for ticket in &ready {
+        open.remove(&ticket.id);
     }
+    let questioned = board
+        .questions()?
+        .iter()
+        .filter_map(|question| NewQuestion::raised_on(question.body.as_str()))
+        .collect();
     Ok(Snapshot {
         ready,
-        claimed,
-        closed,
+        open,
+        dead: found.dead,
+        epics: board.epics()?,
+        questioned,
+        launched: runs.iter().filter_map(past_launch).collect(),
+    })
+}
+
+/// A run folder's launch, when it records the instance and a readable reservation time.
+fn past_launch(run: &Run) -> Option<PastLaunch> {
+    let record = run.record.as_ref()?;
+    Some(PastLaunch {
+        instance: record.instance.parse().ok()?,
+        reserved_at: humantime::parse_rfc3339_weak(&record.reserved_at).ok()?,
     })
 }
 
 /// What [`prepare`] did before any launch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prepared {
-    /// The tick's plan; its launches are reserved in the state.
+    /// The tick's plan; its launches are reserved in their run folders.
     pub plan: Plan,
-    /// Instances dropped because their process is gone, each recorded as `lost`.
+    /// Launches that ended with nobody there to record it, each recorded as `lost`.
     pub lost: Vec<String>,
-    /// The tasks a lost instance held that went back to the board, each released.
+    /// The tasks claimed by an instance that no longer runs, each released.
     pub released: Vec<Released>,
 }
 
-/// A task released from a lost instance.
+/// A task released from an instance that no longer runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Released {
     /// The task.
-    pub task: IssueNumber,
-    /// The lost instance that held it.
+    pub task: TicketId,
+    /// The instance that held it.
     pub instance: Instance,
 }
 
-/// Plans one tick and reserves its launches under `pid`, the process that will run them.
+/// The file a tick holds locked from reading the counter to saving it, so two ticks never
+/// plan the same instance number or the same slot.
+pub const SPAWN_LOCK_FILE: &str = "spawn.lock";
+
+/// Takes the spawner's lock, waiting for a tick that holds it; the OS drops it with the file.
+fn lock(state_dir: &Path) -> Result<std::fs::File, SpawnError> {
+    let (file, path) = open_lock(state_dir)?;
+    file.lock()
+        .map(|()| file)
+        .map_err(|source| SpawnError::Write { path, source })
+}
+
+/// The lock file, created when it is missing, and its path; nothing locked yet.
+fn open_lock(state_dir: &Path) -> Result<(std::fs::File, PathBuf), SpawnError> {
+    let path = state_dir.join(SPAWN_LOCK_FILE);
+    std::fs::create_dir_all(state_dir)
+        .and_then(|()| {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .write(true)
+                .open(&path)
+        })
+        .map(|file| (file, path.clone()))
+        .map_err(|source| SpawnError::Write { path, source })
+}
+
+/// Whether another tick holds the spawner's lock right now, found without waiting for it: the
+/// lock is taken and let go at once when it is free. A tick that takes it between this look and its
+/// own `prepare` is waited for there, as plain `--once` waits (`zaf spawn --once --no-wait`).
+pub fn lock_is_held(state_dir: &Path) -> Result<bool, SpawnError> {
+    let (file, path) = open_lock(state_dir)?;
+    match file.try_lock() {
+        Ok(()) => Ok(false),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(true),
+        Err(std::fs::TryLockError::Error(source)) => Err(SpawnError::Write { path, source }),
+    }
+}
+
+/// The tasks held by the forge's facts or by a running phase, whatever instance claimed them:
+/// those with a recorded pull request (`.zaf/slices/<task>.pr`) and those with a live phase
+/// process (`.zaf/phases/`, #437). A phase run folder that cannot be read is an error, never a
+/// guess, so no claim is released on a read that failed.
+pub fn held(
+    state_dir: &Path,
+    alive: &dyn Fn(&Holder) -> bool,
+) -> Result<BTreeSet<TicketId>, SpawnError> {
+    let phases = state_dir.join(PHASES_DIR);
+    let mut held = SliceRecords::in_state_dir(state_dir).tasks_with_pr();
+    held.extend(
+        running_tasks(&phases, alive).map_err(|reason| SpawnError::Read {
+            path: phases,
+            reason,
+        })?,
+    );
+    Ok(held)
+}
+
+/// The instances of the phase run folders (`.zaf/phases/`) that no longer run: an `exit` recorded,
+/// or a holder that is gone. A phase run folder that cannot be read is an error, never a guess.
+pub fn ended_phases(
+    state_dir: &Path,
+    alive: &dyn Fn(&Holder) -> bool,
+) -> Result<BTreeSet<String>, SpawnError> {
+    let phases = state_dir.join(PHASES_DIR);
+    ended_instances(&phases, alive).map_err(|reason| SpawnError::Read {
+        path: phases,
+        reason,
+    })
+}
+
+/// `orphaned(claims, runs, ended, alive, held)`: the claims held by an instance this machine
+/// started that no longer runs: its launch run folder is there and its holder is dead, or its
+/// phase run folder is in `ended` (see [`ended_phases`]). A claim by an instance with no run
+/// folder here (one started by hand, or on another machine) is not this machine's to judge, so
+/// it stays. A task in `held` (see [`held`]) is not orphaned: a task with a recorded pull request
+/// is held by its forge facts and one with a running phase by that phase, so its claim stays
+/// until the task is done (the ruling on #426).
+pub fn orphaned<'a>(
+    claims: &'a [ClaimRecord],
+    runs: &[Run],
+    ended: &BTreeSet<String>,
+    alive: &dyn Fn(&Holder) -> bool,
+    held: &BTreeSet<TicketId>,
+) -> Vec<&'a ClaimRecord> {
+    let gone: BTreeSet<&str> = runs
+        .iter()
+        .filter(|run| !run.running(alive))
+        .map(|run| run.slug.as_str())
+        .collect();
+    claims
+        .iter()
+        .filter(|claim| {
+            gone.contains(slug(&claim.instance).as_str())
+                || ended.contains(&claim.instance.to_string())
+        })
+        .filter(|claim| !held.contains(&claim.task))
+        .collect()
+}
+
+/// Plans one tick and reserves its launches, each held by `holder`, the process that will
+/// run them, until its runner starts the instance.
 ///
-/// `alive` says whether a recorded pid still runs; the launches of a dead one
-/// are dropped, their exit recorded on the epic as `lost`, and every task they
-/// still held released, so another instance can claim it.
+/// Before planning, the run folders and the process table are read: a launch that ended
+/// with nobody to record it gets `lost` on its epic and in its run folder, and every task
+/// claimed by an instance that no longer runs is released, so another instance can claim it.
 pub fn prepare(
     board: &dyn Board,
     state_dir: &Path,
     manifest: &Manifest,
-    alive: &dyn Fn(u32) -> bool,
-    pid: u32,
+    alive: &dyn Fn(&Holder) -> bool,
+    holder: &Holder,
 ) -> Result<Prepared, SpawnError> {
-    let mut state = load(state_dir)?;
-    let lost = state.prune(alive);
-    let mut released = Vec::new();
-    if !lost.is_empty() {
-        let claims = board.claims()?;
-        for instance in &lost {
-            let Ok(parsed) = instance.parse::<Instance>() else {
-                continue;
-            };
-            board.comment(parsed.epic, &exit_marker(instance, "lost"))?;
-            released.extend(release_held(board, &claims, &parsed)?);
-        }
+    let _held = lock(state_dir)?;
+    let (mut state, found) = state::derive(state_dir, alive)?;
+    let mut lost = Vec::new();
+    for run in found.iter().filter(|run| run.lost(alive)) {
+        let Some(instance) = run.instance() else {
+            continue;
+        };
+        let name = instance.to_string();
+        board.comment(instance.epic, &exit_marker(&name, runs::LOST))?;
+        runs::finish(&run.dir, runs::LOST)?;
+        lost.push(name);
     }
-    let snapshot = snapshot(board)?;
+    let claims = board.claims()?;
+    let mut released = Vec::new();
+    let held = held(state_dir, alive)?;
+    let ended = ended_phases(state_dir, alive)?;
+    for claim in orphaned(&claims, &found, &ended, alive, &held) {
+        board.release(claim.task, &claim.instance)?;
+        released.push(Released {
+            task: claim.task,
+            instance: claim.instance.clone(),
+        });
+    }
+    let snapshot = snapshot(board, &found)?;
     let level = read_guard(state_dir)?;
     let plan = tick::plan(&snapshot, &state, level, Settings::from(manifest));
-    state.reserve(&plan.launches, pid);
+    let now = humantime::format_rfc3339_seconds(SystemTime::now()).to_string();
+    for planned in &plan.launches {
+        runs::reserve(state_dir, planned, holder, &now)?;
+        state.next_instance = state
+            .next_instance
+            .max(planned.instance.number.get().saturating_add(1));
+    }
     save(state_dir, &state)?;
     Ok(Prepared {
         plan,
@@ -241,16 +430,15 @@ pub fn slug(instance: &Instance) -> String {
     slug
 }
 
-/// The launch prompt: one line naming the instance, the epic, the project and the tasks,
-/// pointing at the standing brief.
+/// The launch prompt: one line naming the instance, the role, the epic and the project,
+/// pointing at the standing brief ([`EPIC_PROMPT`]).
 pub fn prompt(launch: &PlannedLaunch, project: &str, brief: &Path) -> String {
-    let tasks: Vec<String> = launch.tasks.iter().map(ToString::to_string).collect();
-    TEAM_PROMPT
+    EPIC_PROMPT
         .trim_end()
         .replace("{instance}", &launch.instance.to_string())
+        .replace("{role}", launch.instance.role.as_str())
         .replace("{epic}", &launch.instance.epic.to_string())
         .replace("{project}", project)
-        .replace("{tasks}", &tasks.join(" "))
         .replace("{brief}", &brief.display().to_string())
 }
 
@@ -261,7 +449,7 @@ pub struct LaunchContext {
     pub state_dir: PathBuf,
     /// The project's name, for the prompt.
     pub project: String,
-    /// The team role's profile.
+    /// The launched role's profile.
     pub profile: Profile,
     /// The environment the launch's process runs with, on its [`RunRequest`].
     pub env: BTreeMap<String, String>,
@@ -318,30 +506,18 @@ impl LaunchExit {
 pub struct Launched {
     /// The instance.
     pub instance: Instance,
-    /// Its tasks.
-    pub tasks: Vec<IssueNumber>,
     /// How it ended.
     pub exit: LaunchExit,
     /// Its run folder, holding `report.md`.
     pub run_dir: PathBuf,
 }
 
-/// Held while a launch reads, changes and writes `.zaf/spawn.state`, so launches
-/// running in parallel threads do not overwrite one another's entries.
-static STATE_LOCK: Mutex<()> = Mutex::new(());
-
-/// Loads the state, applies `change` and saves it, all under [`STATE_LOCK`].
-fn update(state_dir: &Path, change: impl FnOnce(&mut SpawnState)) -> Result<(), SpawnError> {
-    let _held = STATE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
-    let mut state = load(state_dir)?;
-    change(&mut state);
-    save(state_dir, &state)
-}
-
-/// Runs one reserved launch to its exit and frees its slot.
+/// Runs one reserved launch to its exit and records how it ended in its run folder.
 ///
-/// The standing brief is `<state dir>/roles/team.md` when present, else the
-/// pack's, written into the run folder. A runner that cannot run is recorded
+/// The standing brief is `<state dir>/roles/<role>.md` when present, else the
+/// pack's, written into the run folder. The runner writes the instance's own
+/// process into the run folder's `pid` once it starts, so the launch is held by
+/// the instance, not by this tick. A runner that cannot run is recorded
 /// as an `error` exit, not returned as an error; a board or file failure is.
 /// A run that timed out is recorded as a `timeout` exit and every task the
 /// instance still held is released; any other exit keeps its claims.
@@ -352,26 +528,32 @@ pub fn launch(
     planned: &PlannedLaunch,
 ) -> Result<Launched, SpawnError> {
     let instance = planned.instance.to_string();
-    let started = start(board, context, planned);
-    let (run_dir, request) = match started {
-        Ok(started) => started,
+    let run_dir = run_dir(context, planned);
+    let request = match start(board, context, planned) {
+        Ok(request) => request,
         Err(error) => {
-            update(&context.state_dir, |state| state.finish(&instance))?;
+            runs::finish(&run_dir, &LaunchExit::Error(String::new()).status())?;
             return Err(error);
         }
     };
-    let exit = match runner.run(&request) {
+    let (exit, written) = match runner.run(&request) {
         Ok(output) => {
             let report = run_dir.join(REPORT_FILE);
-            std::fs::write(&report, &output.transcript).map_err(|source| SpawnError::Write {
-                path: report,
-                source,
-            })?;
-            LaunchExit::Code(output.exit_code)
+            let written =
+                std::fs::write(&report, &output.transcript).map_err(|source| SpawnError::Write {
+                    path: report,
+                    source,
+                });
+            (LaunchExit::Code(output.exit_code), written)
         }
-        Err(error @ PortError::TimedOut { .. }) => LaunchExit::TimedOut(error.to_string()),
-        Err(error) => LaunchExit::Error(error.to_string()),
+        Err(error @ PortError::TimedOut { .. }) => {
+            (LaunchExit::TimedOut(error.to_string()), Ok(()))
+        }
+        Err(error) => (LaunchExit::Error(error.to_string()), Ok(())),
     };
+    // The end is recorded before anything that can fail, so the slot is free whatever follows.
+    runs::finish(&run_dir, &exit.status())?;
+    written?;
     board.comment(
         planned.instance.epic,
         &exit_marker(&instance, &exit.status()),
@@ -380,17 +562,15 @@ pub fn launch(
         // A timed-out instance is as good as lost: its tasks go back to the board.
         release_held(board, &board.claims()?, &planned.instance)?;
     }
-    update(&context.state_dir, |state| state.finish(&instance))?;
     Ok(Launched {
         instance: planned.instance.clone(),
-        tasks: planned.tasks.clone(),
         exit,
         run_dir,
     })
 }
 
-/// A way to get a board and a runner of one's own, for a launch thread.
-pub type PortsFn<'a> = dyn Fn() -> Result<LaunchPorts, PortError> + Sync + 'a;
+/// A way to get a board and a runner of one's own for a role, for a launch thread.
+pub type PortsFn<'a> = dyn Fn(&RoleName) -> Result<LaunchPorts, PortError> + Sync + 'a;
 
 /// The board and the runner one launch thread works with.
 pub type LaunchPorts = (Box<dyn Board>, Box<dyn Runner>);
@@ -399,9 +579,9 @@ pub type LaunchPorts = (Box<dyn Board>, Box<dyn Runner>);
 ///
 /// Each job is a launch with the context it runs under (its own environment).
 /// A thread builds its own board and runner with `ports`, so the ports need not
-/// be shared; the state file is shared and updated under a lock. The results
-/// come back in the jobs' order. A thread that cannot get its ports, or that
-/// panics, frees the launch's slot and reports the failure.
+/// be shared; each launch writes only its own run folder. The results come back
+/// in the jobs' order. A thread that cannot get its ports, or that panics,
+/// records an `error` exit in its run folder and reports the failure.
 pub fn launch_all(
     jobs: &[(&PlannedLaunch, LaunchContext)],
     ports: &PortsFn<'_>,
@@ -410,13 +590,13 @@ pub fn launch_all(
         let handles: Vec<_> = jobs
             .iter()
             .map(|(planned, context)| {
-                scope.spawn(move || match ports() {
+                scope.spawn(move || match ports(&planned.instance.role) {
                     Ok((board, runner)) => {
                         launch(board.as_ref(), runner.as_ref(), context, planned)
                     }
                     Err(error) => {
-                        let instance = planned.instance.to_string();
-                        update(&context.state_dir, |state| state.finish(&instance))?;
+                        let status = LaunchExit::Error(String::new()).status();
+                        runs::finish(&run_dir(context, planned), &status)?;
                         Err(SpawnError::Port(error))
                     }
                 })
@@ -427,9 +607,9 @@ pub fn launch_all(
             .zip(jobs)
             .map(|(handle, (planned, context))| {
                 handle.join().unwrap_or_else(|_| {
-                    // A panicked launch still frees its slot, so the next tick can use it.
-                    let instance = planned.instance.to_string();
-                    update(&context.state_dir, |state| state.finish(&instance))?;
+                    // A panicked launch still records its end, so its slot is free.
+                    let status = LaunchExit::Error(String::new()).status();
+                    runs::finish(&run_dir(context, planned), &status)?;
                     Err(SpawnError::Port(PortError::Backend(
                         "a launch thread panicked".to_owned(),
                     )))
@@ -439,12 +619,20 @@ pub fn launch_all(
     })
 }
 
-/// Writes the run folder and the brief, marks the launch started and records it on the epic.
+/// A launch's run folder.
+fn run_dir(context: &LaunchContext, planned: &PlannedLaunch) -> PathBuf {
+    context
+        .state_dir
+        .join(RUNS_DIR)
+        .join(slug(&planned.instance))
+}
+
+/// Writes the brief, marks the launch started and records it on the epic.
 fn start(
     board: &dyn Board,
     context: &LaunchContext,
     planned: &PlannedLaunch,
-) -> Result<(PathBuf, RunRequest), SpawnError> {
+) -> Result<RunRequest, SpawnError> {
     let instance = planned.instance.to_string();
     let (run_dir, brief, request) = request_for(context, planned);
     std::fs::create_dir_all(&run_dir).map_err(|source| SpawnError::Write {
@@ -452,56 +640,84 @@ fn start(
         source,
     })?;
     if brief.starts_with(&run_dir) {
-        std::fs::write(&brief, TEAM_BRIEF).map_err(|source| SpawnError::Write {
+        let text = pack_brief(&planned.instance.role);
+        std::fs::write(&brief, text).map_err(|source| SpawnError::Write {
             path: brief.clone(),
             source,
         })?;
     }
     let now = humantime::format_rfc3339_seconds(SystemTime::now()).to_string();
-    update(&context.state_dir, |state| state.start(&instance, &now))?;
+    runs::mark_started(&run_dir, &now)?;
     board.comment(planned.instance.epic, &launch_marker(&instance))?;
-    Ok((run_dir, request))
+    Ok(request)
 }
 
 /// A launch's run folder, its standing brief and its request, touching nothing.
 ///
-/// The brief is `<state dir>/roles/team.md` when present, else the pack's, which
-/// [`start`] writes into the run folder.
+/// The brief is `<state dir>/roles/<role>.md` when present, else the pack's, which
+/// [`start`] writes into the run folder. The runner records the instance's process in
+/// the run folder's `pid`.
 fn request_for(context: &LaunchContext, planned: &PlannedLaunch) -> (PathBuf, PathBuf, RunRequest) {
-    let run_dir = context
-        .state_dir
-        .join(RUNS_DIR)
-        .join(slug(&planned.instance));
+    let run_dir = run_dir(context, planned);
+    let role = &planned.instance.role;
     let own = context
         .state_dir
         .join(ROLES_DIR)
-        .join(format!("{TEAM_ROLE}.md"));
+        .join(format!("{}.md", role.as_str()));
     let brief = if own.is_file() {
         own
     } else {
         run_dir.join(BRIEF_FILE)
     };
+    let mut env = context.env.clone();
+    env.extend(run_env(&run_dir, role));
     let request = RunRequest {
-        role: RoleName::from(TEAM_ROLE),
+        role: role.clone(),
         profile: context.profile,
         prompt: prompt(planned, &context.project, &brief),
         dir: run_dir.clone(),
-        env: context.env.clone(),
+        env,
+        holder_file: Some(run_dir.join(runs::HOLDER_FILE)),
     };
     (run_dir, brief, request)
 }
 
-/// Plans one tick the way [`prepare`] does, changing nothing: launches whose process is
-/// gone are dropped in memory only (and returned as lost), and nothing is reserved.
+/// The size a launch of `role` carries in [`SIZE_VAR`]: `XS` for a planning or challenger
+/// instance; none for any other role.
+pub fn launch_size(role: &RoleName) -> Option<TaskSize> {
+    match role.as_str() {
+        PLANNING_ROLE | CHALLENGER_ROLE => Some(TaskSize::XS),
+        _ => None,
+    }
+}
+
+/// What marks a launch's process as a zaf instance for the machine read: [`RUN_VAR`], the
+/// absolute path of its run folder, and [`SIZE_VAR`] when its role has a size.
+fn run_env(run_dir: &Path, role: &RoleName) -> BTreeMap<String, String> {
+    let absolute = std::path::absolute(run_dir).unwrap_or_else(|_| run_dir.to_owned());
+    let mut env = BTreeMap::from([(RUN_VAR.to_owned(), absolute.display().to_string())]);
+    if let Some(size) = launch_size(role) {
+        env.insert(SIZE_VAR.to_owned(), size.name().to_owned());
+    }
+    env
+}
+
+/// Plans one tick the way [`prepare`] does, changing nothing: launches that ended with
+/// nobody to record it are returned as lost, not recorded, and nothing is reserved.
 pub fn plan_only(
     board: &dyn Board,
     state_dir: &Path,
     manifest: &Manifest,
-    alive: &dyn Fn(u32) -> bool,
+    alive: &dyn Fn(&Holder) -> bool,
 ) -> Result<Prepared, SpawnError> {
-    let mut state = load(state_dir)?;
-    let lost = state.prune(alive);
-    let snapshot = snapshot(board)?;
+    let (state, found) = state::derive(state_dir, alive)?;
+    let lost = found
+        .iter()
+        .filter(|run| run.lost(alive))
+        .filter_map(Run::instance)
+        .map(|instance| instance.to_string())
+        .collect();
+    let snapshot = snapshot(board, &found)?;
     let level = read_guard(state_dir)?;
     let plan = tick::plan(&snapshot, &state, level, Settings::from(manifest));
     Ok(Prepared {
@@ -522,8 +738,6 @@ pub struct DryLaunch {
     pub instance: String,
     /// Its epic.
     pub epic: u64,
-    /// Its tasks.
-    pub tasks: Vec<u64>,
     /// The profile it would run in.
     pub profile_dir: PathBuf,
     /// The environment its process would get, every layer applied.
@@ -535,11 +749,9 @@ pub struct DryLaunch {
 impl DryLaunch {
     /// The launch as indented lines under a heading.
     pub fn render_text(&self) -> String {
-        let tasks: Vec<String> = self.tasks.iter().map(|task| format!("#{task}")).collect();
         let mut lines = vec![
             format!("would launch {}", self.instance),
             format!("  epic #{}", self.epic),
-            format!("  tasks {}", tasks.join(" ")),
             format!("  profile {}", self.profile_dir.display()),
         ];
         lines.extend(
@@ -557,7 +769,7 @@ impl DryLaunch {
 /// Describes each planned launch with `describe`, launching nothing and writing nothing.
 pub fn dry_run(
     jobs: &[(&PlannedLaunch, LaunchContext)],
-    profile_dir: &Path,
+    profile_dir: &dyn Fn(Profile) -> PathBuf,
     describe: &DescribeFn<'_>,
 ) -> Result<Vec<DryLaunch>, PortError> {
     jobs.iter()
@@ -567,8 +779,7 @@ pub fn dry_run(
             Ok(DryLaunch {
                 instance: planned.instance.to_string(),
                 epic: planned.instance.epic.get(),
-                tasks: planned.tasks.iter().map(|task| task.get()).collect(),
-                profile_dir: profile_dir.to_owned(),
+                profile_dir: profile_dir(context.profile),
                 env,
                 command,
             })
@@ -576,12 +787,12 @@ pub fn dry_run(
         .collect()
 }
 
-/// The team role's profile from the manifest; the pack's `build` when the role is absent.
-pub fn team_profile(manifest: &Manifest) -> Profile {
+/// A role's profile from the manifest; the pack's `build` when the role is absent.
+pub fn role_profile(manifest: &Manifest, role: &RoleName) -> Profile {
     manifest
         .roles
-        .get(&RoleName::from(TEAM_ROLE))
-        .map_or(Profile::Build, |role| role.profile)
+        .get(role)
+        .map_or(Profile::Build, |section| section.profile)
 }
 
 impl Plan {
@@ -600,16 +811,12 @@ impl Plan {
         for (epic, skip) in &self.epics {
             lines.push(format!("{epic} skipped: {}", epic_reason(*skip)));
         }
-        for (task, skip) in &self.tasks {
-            lines.push(format!("{task} skipped: {}", task_reason(skip)));
+        for cycle in &self.cycles {
+            lines.push(format!("blocker cycle: {}", blockers::render_cycle(cycle)));
         }
+        lines.extend(self.dead.iter().map(ToString::to_string));
         for launch in &self.launches {
-            let tasks: Vec<String> = launch.tasks.iter().map(ToString::to_string).collect();
-            lines.push(format!(
-                "launching {}: {}",
-                launch.instance,
-                tasks.join(" ")
-            ));
+            lines.push(format!("launching {}", launch.instance));
         }
         let mut out = lines.join("\n");
         out.push('\n');
@@ -618,8 +825,6 @@ impl Plan {
 
     /// The plan as JSON, with the finished launches and the lost instances.
     pub fn to_json(&self, launched: &[Launched], lost: &[String]) -> serde_json::Value {
-        let numbers =
-            |tasks: &[IssueNumber]| -> Vec<u64> { tasks.iter().map(|task| task.get()).collect() };
         let launched: Vec<serde_json::Value> = launched
             .iter()
             .map(|launch| {
@@ -627,7 +832,6 @@ impl Plan {
                 serde_json::json!({
                     "instance": launch.instance.to_string(),
                     "epic": launch.instance.epic.get(),
-                    "tasks": numbers(&launch.tasks),
                     "exit": launch.exit.status(),
                     "error": error,
                     "report": launch.run_dir.join(REPORT_FILE),
@@ -641,23 +845,17 @@ impl Plan {
                 serde_json::json!({ "epic": epic.get(), "reason": <&'static str>::from(*skip) })
             })
             .collect();
-        let tasks: Vec<serde_json::Value> = self
-            .tasks
-            .iter()
-            .map(|(task, skip)| {
-                let (reason, detail) = match skip {
-                    TaskSkip::Blocked(by) => ("blocked", serde_json::json!(numbers(by))),
-                    TaskSkip::Claimed => ("claimed", serde_json::Value::Null),
-                    TaskSkip::Running(instance) => ("running", serde_json::json!(instance)),
-                    TaskSkip::NoEpic => ("no_epic", serde_json::Value::Null),
-                };
-                serde_json::json!({ "task": task.get(), "reason": reason, "detail": detail })
-            })
-            .collect();
         let branches: Vec<serde_json::Value> = NOT_BUILT
             .iter()
             .map(|branch| serde_json::json!({ "branch": branch, "reason": "not built" }))
             .collect();
+        let cycles: Vec<Vec<u64>> = self
+            .cycles
+            .iter()
+            .map(|cycle| blockers::cycle_numbers(cycle))
+            .collect();
+        let dead: Vec<blockers::DeadLine> =
+            self.dead.iter().map(blockers::DeadLine::from).collect();
         let slots = &self.slots;
         serde_json::json!({
             "slots": {
@@ -669,28 +867,25 @@ impl Plan {
             },
             "launched": launched,
             "lost": lost,
-            "skipped": { "epics": epics, "tasks": tasks, "branches": branches },
+            "skipped": { "epics": epics, "branches": branches },
+            "cycles": cycles,
+            "dead_blockers": dead,
         })
     }
 }
 
 fn epic_reason(skip: EpicSkip) -> &'static str {
     match skip {
-        EpicSkip::NothingLaunchable => "no ready, unblocked, unclaimed task",
+        EpicSkip::Unsigned => "not signed (zaf epic sign is the Engineer's)",
+        EpicSkip::Questioned => "a question is open on it",
+        EpicSkip::PlanningRuns => "a planning instance runs on it",
+        EpicSkip::PlannedNothing => "planning ran since the signature and filed no task",
+        EpicSkip::ChallengerRuns => "the challenger runs on it",
+        EpicSkip::ChallengerEnded => "the challenger ran and left no report",
+        EpicSkip::Done => "every task is finished",
+        EpicSkip::BuiltByPhases => "challenged: its tasks are built by their phases",
         EpicSkip::NoFreeSlot => "no free slot",
         EpicSkip::GuardRed => "guard red",
-    }
-}
-
-fn task_reason(skip: &TaskSkip) -> String {
-    match skip {
-        TaskSkip::Blocked(by) => {
-            let by: Vec<String> = by.iter().map(ToString::to_string).collect();
-            format!("blocked by {}", by.join(" "))
-        }
-        TaskSkip::Claimed => "claimed".to_owned(),
-        TaskSkip::Running(instance) => format!("carried by {instance}"),
-        TaskSkip::NoEpic => "no epic".to_owned(),
     }
 }
 

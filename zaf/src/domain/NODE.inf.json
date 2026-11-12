@@ -2,21 +2,22 @@
   "path": "zaf/src/domain",
   "charted": "2026-11-03",
   "short": "framework objects and their line formats",
-  "is": "The backend-blind types (epics, tasks, asks, answers, findings, instances, profiles, ids, labels) and the text formats they travel in, each with its parser, plus the verbatim quote check.",
+  "is": "The backend-blind types (tickets, epics, tasks, asks, answers, findings, instances, profiles, ids, labels) and the text formats they travel in, each with its parser, plus the verbatim quote check.",
   "type": "code",
   "tags": [
     "category:source",
     "parsers"
   ],
   "conventions": [
-    "Imports no other layer, only the crate's text_newtype macro",
+    "Imports no other layer, only the crate's text_newtype macro; zaf/tests/architecture.rs fails on a break",
     "A format with rules gets its own error type (AskError, AnswerError, IdError, TaskTemplateError)"
   ],
   "entry_points": [
     "../domain.rs",
     "task.rs",
     "ask.rs",
-    "answer.rs"
+    "answer.rs",
+    "ticket.rs"
   ],
   "fs": [
     {
@@ -41,7 +42,12 @@
     },
     {
       "name": "epic.rs",
-      "role": "epic",
+      "role": "the Epic entity and its stage derived on read (unsigned, signed, planned, challenged, done), its tasks, and the BodyHash a signature holds",
+      "node": false
+    },
+    {
+      "name": "epic/",
+      "role": "tests.rs",
       "node": false
     },
     {
@@ -51,7 +57,7 @@
     },
     {
       "name": "ids.rs",
-      "role": "issue numbers and page ids",
+      "role": "ticket ids and page ids",
       "node": false
     },
     {
@@ -71,7 +77,7 @@
     },
     {
       "name": "labels.rs",
-      "role": "task labels and page statuses",
+      "role": "ticket states and page statuses",
       "node": false
     },
     {
@@ -116,6 +122,16 @@
     },
     {
       "name": "text/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "ticket.rs",
+      "role": "the Ticket entity, its title, body and link newtypes, and the TicketSummary every --json prints",
+      "node": false
+    },
+    {
+      "name": "ticket/",
       "role": "tests.rs",
       "node": false
     }

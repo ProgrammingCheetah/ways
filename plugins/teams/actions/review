@@ -1,0 +1,28 @@
+#!/bin/sh
+# zaf description: phase review, a wait with no model (#452): run `zaf check pr` on the task's pull request at its head; the phase ends when that check exits 0, and a must-fix finding fails the wait and starts `fix`
+# zaf 1: refused: the argument is not <task>, or the review found a must-fix
+# zaf 2: a backend failed (a review step failed or is missing, or timed out)
+# zaf mode: 755
+# zaf target: task
+# zaf kind: wait
+# zaf ends: exit
+# zaf on-fail: fix
+
+# The task as a bare number; zaf has already read it as one.
+task=${1#\#}
+# zaf sets ZAF_PR on a `target: task` run, from the task's record.
+if [ "$#" -ne 1 ] || [ -z "$ZAF_ROOT" ] || [ -z "$ZAF_PR" ]; then
+    echo "usage: review <task>, run by zaf with ZAF_ROOT and ZAF_PR set" >&2
+    exit 1
+fi
+
+cd "$ZAF_ROOT" || exit 2
+
+# The check waits for the review steps and prints the findings; it exits 1 on a must-fix and 2
+# when a step failed. Its record, clean for the head, is what `slice-merge` needs.
+zaf check "pr:$ZAF_PR:$task"
+status=$?
+case $status in
+    0 | 1 | 2) exit "$status" ;;
+    *) exit 2 ;;
+esac

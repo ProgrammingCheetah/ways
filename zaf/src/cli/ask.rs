@@ -4,12 +4,12 @@ use std::time::{Duration, SystemTime};
 
 use super::Cli;
 use super::brief::instance;
-use super::exit::{BACKEND, OK, REFUSED, fail, fail_composition};
+use super::exit::{BACKEND, OK, REFUSED, fail, fail_composition, note_design_paths};
 
 use crate::app::actions::Caller;
 use crate::app::ask::{AskFailure, AskOutcome, AskPorts, AskQuery, LadderRung, ask};
 use crate::composition::{Composition, CompositionError};
-use crate::domain::IssueNumber;
+use crate::domain::TicketId;
 use crate::manifest::{ModelName, Rung, RunnerName};
 use crate::ports::Runner;
 
@@ -17,7 +17,7 @@ use crate::ports::Runner;
 const MODEL_RUNNER: &str = "claude";
 
 /// Asks the keeper up to five questions.
-pub fn run(cli: &Cli, task: IssueNumber, questions: &[String]) -> u8 {
+pub fn run(cli: &Cli, task: TicketId, questions: &[String]) -> u8 {
     let path = cli.verb.path();
     let composition = match Composition::discover_here() {
         Ok(composition) => composition,
@@ -70,9 +70,17 @@ pub fn run(cli: &Cli, task: IssueNumber, questions: &[String]) -> u8 {
         Ok(outcome) => {
             let (text, code) = report(&outcome, cli.json, cli.more);
             print!("{text}");
+            if outcome.has_check_failure() {
+                // A cited page that cannot be read is most often a design source misplaced.
+                note_design_paths(&path, &composition);
+            }
             code
         }
-        Err(AskFailure::Board(error) | AskFailure::Design(error)) => fail(&path, &error),
+        Err(AskFailure::Board(error)) => fail(&path, &error),
+        Err(AskFailure::Design(error)) => {
+            note_design_paths(&path, &composition);
+            fail(&path, &error)
+        }
         Err(error @ (AskFailure::State { .. } | AskFailure::Exhausted(_))) => {
             eprintln!("zaf {path}: {error}");
             BACKEND
@@ -167,6 +175,7 @@ command = \"echo local-model\"
             prompt: String::new(),
             dir: dir.to_owned(),
             env: std::collections::BTreeMap::new(),
+            holder_file: None,
         };
         runner.run(&request).expect("run").transcript
     }

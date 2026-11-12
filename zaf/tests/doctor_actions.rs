@@ -125,6 +125,52 @@ fn doctor_fails_on_bad_metadata() {
 }
 
 #[test]
+fn an_unknown_hook_event_is_named() {
+    let project = project();
+    let hooks = project_actions(&project).join("hooks");
+    let machine_hooks = project.home.join("actions/hooks");
+    let meta = ["description: a hook", "1: failed"];
+    put(&hooks, "pre-tick", &meta, true);
+    put(&machine_hooks, "post-phase", &meta, true);
+    put(&hooks, "on-merge", &meta, true);
+
+    let (code, text) = doctor(&project);
+
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        text.contains(&format!(
+            "{}:1: unknown hook event on-merge",
+            hooks.join("on-merge").display()
+        )),
+        "{text}"
+    );
+    assert!(
+        text.contains("action hooks/on-merge (project): invalid"),
+        "{text}"
+    );
+    // A known event is checked as an action is, and passes.
+    assert!(
+        text.contains("action hooks/pre-tick (project): ok, mode 755"),
+        "{text}"
+    );
+    assert!(
+        text.contains("action hooks/post-phase (machine): ok, mode 755"),
+        "{text}"
+    );
+
+    // Its metadata is held to an action's: no description, no hook.
+    fs::remove_file(hooks.join("on-merge")).expect("remove");
+    put(&hooks, "post-tick", &["1: failed"], true);
+    let (code, text) = doctor(&project);
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        text.contains(&format!("{}:", hooks.join("post-tick").display())),
+        "{text}"
+    );
+    assert!(!text.contains("unknown hook event"), "{text}");
+}
+
+#[test]
 fn doctor_fails_on_a_declared_125() {
     let project = project();
     let actions = project_actions(&project);
@@ -463,6 +509,39 @@ fn doctor_fails_on_a_missing_needed_name() {
 }
 
 #[test]
+fn doctor_lists_the_missing_slice_actions() {
+    // No `.zaf/actions` at all: the four slice names are the verbs' needs, and nothing provides them.
+    let project = Project::new(MANIFEST);
+    assert!(!project_actions(&project).exists());
+
+    let (code, text) = doctor(&project);
+
+    assert_eq!(code, 1, "{text}");
+    for name in SLICE {
+        assert!(
+            text.contains(&format!(
+                "needed {name}: no provider, needed by the slice verbs"
+            )),
+            "{name} is listed as missing: {text}"
+        );
+    }
+
+    let output = project.zaf(&["--json", "doctor"]);
+    assert_eq!(output.status.code(), Some(1));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).expect("json");
+    let rows = report["needed"].as_array().expect("needed");
+    let mut names: Vec<&str> = rows.iter().filter_map(|row| row["name"].as_str()).collect();
+    names.sort_unstable();
+    let mut expected = SLICE.to_vec();
+    expected.sort_unstable();
+    assert_eq!(names, expected, "only the four slice names are needed");
+    assert!(
+        rows.iter()
+            .all(|row| row["ok"] == false && row["tier"].is_null())
+    );
+}
+
+#[test]
 fn doctor_finds_names_in_gate_lines() {
     let manifest = format!(
         "{MANIFEST}\n[gate]\nfull = \"zaf do gate-full && zaf do gate-more\"\n\
@@ -634,4 +713,220 @@ fn doctor_lists_machine_dependencies() {
         row("gate-full")["machine_dependents"],
         serde_json::json!([])
     );
+}
+
+#[test]
+fn doctor_names_a_bad_on_fail() {
+    let project = project();
+    let actions = project_actions(&project);
+    let wait = |name: &str, fix: &str| {
+        put(
+            &actions,
+            name,
+            &[
+                "description: wait",
+                "1: failed",
+                "kind: wait",
+                "ends: ci-done",
+                &format!("on-fail: {fix}"),
+            ],
+            true,
+        );
+    };
+    put(
+        &actions,
+        "fix",
+        &[
+            "description: fix it",
+            "1: failed",
+            "kind: model",
+            "ends: exit",
+        ],
+        true,
+    );
+    put(
+        &actions,
+        "ci",
+        &[
+            "description: ci",
+            "1: failed",
+            "kind: wait",
+            "ends: ci-done",
+        ],
+        true,
+    );
+    put(
+        &actions,
+        "plain",
+        &["description: plain", "1: failed"],
+        true,
+    );
+    wait("good", "fix");
+    wait("missing", "nobody");
+    wait("to-wait", "ci");
+    wait("to-plain", "plain");
+    put(
+        &actions,
+        "no-fail",
+        &[
+            "description: no fail",
+            "1: failed",
+            "kind: wait",
+            "ends: merged",
+        ],
+        true,
+    );
+
+    let (code, text) = doctor(&project);
+
+    assert_eq!(code, 1, "{text}");
+    let named = |name: &str| actions.join(name).display().to_string();
+    for (name, reason) in [
+        ("missing", "on-fail `nobody` names no action"),
+        (
+            "to-wait",
+            "on-fail `ci` names an action of kind wait, not model",
+        ),
+        (
+            "to-plain",
+            "on-fail `plain` names an action with no kind, not model",
+        ),
+    ] {
+        assert!(
+            text.contains(&format!("{}: {reason}", named(name))),
+            "{name}: {text}"
+        );
+        assert!(
+            text.contains(&format!("action {name} (project): invalid")),
+            "{name}: {text}"
+        );
+    }
+    for name in ["good", "no-fail", "fix", "ci"] {
+        assert!(
+            text.contains(&format!("action {name} (project): ok")),
+            "{name}: {text}"
+        );
+    }
+}
+
+/// A project whose manifest lists `names` as the phases of task type `Task`, with the four
+/// `slice-*` actions provided.
+fn phased(names: &[&str]) -> Project {
+    let list = names
+        .iter()
+        .map(|name| format!("\"{name}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let project = Project::new(&format!("{MANIFEST}\n[phases]\nTask = [{list}]\n"));
+    project.provide_slice_actions();
+    project
+}
+
+#[test]
+fn doctor_names_a_missing_phase_action() {
+    let project = phased(&["implement", "nobody"]);
+    put(
+        &project_actions(&project),
+        "implement",
+        &[
+            "description: build",
+            "1: failed",
+            "kind: model",
+            "ends: exit",
+        ],
+        true,
+    );
+
+    let (code, text) = doctor(&project);
+
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        text.contains("[phases] Task: action `nobody` is provided by no tier"),
+        "{text}"
+    );
+    assert!(
+        text.contains("phase Task implement (project): ok"),
+        "{text}"
+    );
+    assert!(text.contains("phase Task nobody: no provider"), "{text}");
+}
+
+#[test]
+fn doctor_names_a_phase_action_without_kind() {
+    let project = phased(&["plain"]);
+    put(
+        &project_actions(&project),
+        "plain",
+        &["description: plain", "1: failed"],
+        true,
+    );
+
+    let (code, text) = doctor(&project);
+
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        text.contains("[phases] Task: action `plain` has no `kind`"),
+        "{text}"
+    );
+    assert!(
+        text.contains("phase Task plain (project): invalid"),
+        "{text}"
+    );
+}
+
+#[test]
+fn doctor_names_a_phase_action_without_ends() {
+    let project = phased(&["open-ended"]);
+    put(
+        &project_actions(&project),
+        "open-ended",
+        &["description: open ended", "1: failed", "kind: wait"],
+        true,
+    );
+
+    let (code, text) = doctor(&project);
+
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        text.contains("[phases] Task: action `open-ended` is invalid"),
+        "{text}"
+    );
+    assert!(text.contains("no `ends`"), "{text}");
+}
+
+#[test]
+fn doctor_passes_a_phase_list_of_whole_actions() {
+    let project = phased(&["implement", "ci"]);
+    let actions = project_actions(&project);
+    put(
+        &actions,
+        "implement",
+        &[
+            "description: build",
+            "1: failed",
+            "kind: model",
+            "ends: exit",
+        ],
+        true,
+    );
+    put(
+        &project.home.join("actions"),
+        "ci",
+        &[
+            "description: ci",
+            "1: failed",
+            "kind: wait",
+            "ends: ci-done",
+        ],
+        true,
+    );
+
+    let (code, text) = doctor(&project);
+
+    assert_eq!(code, 0, "{text}");
+    assert!(
+        text.contains("phase Task implement (project): ok"),
+        "{text}"
+    );
+    assert!(text.contains("phase Task ci (machine): ok"), "{text}");
 }

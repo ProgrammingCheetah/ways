@@ -1,6 +1,6 @@
 {
   "path": "zaf/assets",
-  "charted": "2026-11-03",
+  "charted": "2026-11-10",
   "short": "embedded prompts, briefs and profile settings",
   "is": "The prompt texts, review briefs, team spawn brief and per-profile Claude settings that app modules compile into the binary with include_str!.",
   "type": "code",
@@ -39,13 +39,13 @@
     },
     {
       "name": "spawn/",
-      "role": "team-instance launch prompt and standing brief",
+      "role": "launch prompts (team, and epic-prompt.txt for planning and the challenger) and the pack standing briefs of team, planning and challenger",
       "node": false
     }
   ],
   "notes": [
     "Used by: keeper.md in app/ask, interface.md in app/brief, check/ in app/check/step/runner.rs, profiles/ in app/profile, spawn/ in app/spawn",
-    "Every plugins/teams brief opens with interface.md's exact bytes for a shared cache prefix; change it and re-paste it there",
+    "Every plugins/teams brief opens with interface.md's exact bytes for a shared cache prefix; change it and re-paste it there; zaf/tests/pack_briefs.rs fails when one differs",
     "Profile folder names match the profile keys in ZAF.toml [roles] (programmer lean, team build)"
   ]
 }

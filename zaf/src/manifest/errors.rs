@@ -51,6 +51,20 @@ pub enum ManifestError {
         /// What the key allows.
         reason: String,
     },
+    /// A task type's list under `[phases]` with no action in it.
+    #[error("[phases] `{task_type}` is an empty list: name at least one action")]
+    EmptyPhaseList {
+        /// The task type.
+        task_type: String,
+    },
+    /// An action named twice in one task type's list under `[phases]`.
+    #[error("[phases] `{task_type}` lists `{name}` twice")]
+    PhaseListedTwice {
+        /// The task type.
+        task_type: String,
+        /// The action named twice.
+        name: String,
+    },
     /// An `[env]` value uses `{version}` and no version was given to resolve it with.
     #[error("[env] `{name}` uses `{{version}}`, and no version was given")]
     EnvNeedsVersion {
@@ -60,15 +74,29 @@ pub enum ManifestError {
     /// A root `ZAF.toml` beside `.zaf.toml` or `.zaf/config.toml`: the retired name and the
     /// new ones never mix.
     #[error(
-        "{} sits beside {}: ZAF.toml is retired, so move its content into one of them and delete it",
+        "{} sits beside {}: ZAF.toml is retired and the new file is the one to keep, \
+         so move what ZAF.toml adds into it, then delete {}",
         .legacy.display(),
-        paths(.beside)
+        paths(.beside),
+        .legacy.display()
     )]
     LegacyBesideNew {
         /// The retired `ZAF.toml`.
         legacy: PathBuf,
         /// The new manifest files found beside it.
         beside: Vec<PathBuf>,
+    },
+    /// A manifest setting in `.zaf/local.toml` other than the machine facts it may hold.
+    ///
+    /// The file is git-ignored, so it may never loosen what the project commits.
+    ///
+    /// The message reads: `.zaf/local.toml may set only [spawn] slots, [gate] slot and its own tables; it sets <key>`
+    #[error(
+        ".zaf/local.toml may set only [spawn] slots, [gate] slot and its own tables; it sets {key}"
+    )]
+    LocalSetting {
+        /// The setting, as `[table]` or `[table] key`.
+        key: String,
     },
     /// Another error, with the file or files it was found in.
     #[error("{file}: {source}")]

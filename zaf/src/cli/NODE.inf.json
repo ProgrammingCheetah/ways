@@ -45,17 +45,17 @@
       "node": false
     },
     {
+      "name": "epic.rs",
+      "role": "zaf epic list|sign: one line per open epic, or `signed #<n> sha256:<hex>`; exit 1 inside an instance or for no open epic",
+      "node": false
+    },
+    {
       "name": "exit.rs",
       "role": "exit codes, port and composition error mapping",
       "node": false
     },
     {
       "name": "guard/",
-      "role": "tests.rs",
-      "node": false
-    },
-    {
-      "name": "init/",
       "role": "tests.rs",
       "node": false
     },
@@ -71,7 +71,12 @@
     },
     {
       "name": "spawn.rs",
-      "role": "one tick, launches joined in parallel threads; --dry-run",
+      "role": "one tick: the phase steps 3 to 6 first, on the phased tasks, with the machine's budget, then the planning and challenger launches joined in parallel threads; --dry-run; the tick's zaf-kind runner and its wait and model-phase starter (zaf spawn phase, never waiting for the phase)",
+      "node": false
+    },
+    {
+      "name": "spawn_phase.rs",
+      "role": "`spawn phase` (starts a detached launcher, returns at once) and the hidden `spawn phase-run` launcher that runs the action and waits",
       "node": false
     },
     {
@@ -83,11 +88,16 @@
       "name": "tests.rs",
       "role": "parsing and exit-64 tests",
       "node": false
+    },
+    {
+      "name": "update.rs",
+      "role": "zaf update [--check]: GitHub releases of ProgrammingCheetah/ways, one line on a change, exit 1 on a check that finds a newer release",
+      "node": false
     }
   ],
   "notes": [
-    "Verbs: board (ready, claim, report, question, ruling), ask, brief, check, verify, changes, slice (open, pr, merge, drop), spawn, asklog, status, report, guard, init, doctor, setup, profile init",
-    "`init --from-teams` is the one listed path still exiting 64",
+    "Verbs: board (ready, claim, report, question, ruling), ask, brief, check, verify, changes, slice (open, pr, merge, drop), spawn, asklog, status, report, guard, doctor, setup, profile init",
+    "`init` is not a verb: `setup` asks the manifest questions through app/init.rs",
     "check.rs names adapters directly (SystemShell, gate RUNS_DIR), the only non-test place outside composition.rs that does"
   ]
 }

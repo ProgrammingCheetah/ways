@@ -4,18 +4,21 @@ use std::io::Write;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-use super::notes::LeaseNote;
+use super::notes::{
+    LeaseNote, SIGNATURE_TEXT, marked, read_signature, report_marker, signature_marker,
+};
 use super::*;
-use crate::domain::{Instance, InstanceNumber, IssueNumber, Location, RoleName, TaskLabel};
+use crate::domain::{
+    Instance, InstanceNumber, Location, RoleName, Ticket, TicketId, TicketState, TicketType,
+};
 use crate::manifest::RepoName;
 use crate::ports::{
-    Author, BaseName, Board, Check, CheckName, CheckState, ClaimOutcome, ClaimRecord, Forge,
-    NewQuestion, PortError, PrMerge, PrNumber, PrRequest, QUESTION_TITLE_LIMIT, ReviewComment,
-    RuleId, ScanningAlert, SliceName, Ticket,
+    Author, Board, Check, CheckName, CheckState, ClaimOutcome, ClaimRecord, CommitId, Forge,
+    NewQuestion, PortError, PrNumber, QUESTION_TITLE_LIMIT, ReviewComment, RuleId, ScanningAlert,
 };
 
 const REPO: &str = "example/tracker";
-const ISSUE_FIELDS: &str = "number,title,body,labels,parent,state,comments";
+const ISSUE_FIELDS: &str = "number,title,body,labels,parent,state,comments,issueType";
 
 /// A scene for the fake `gh` in `tests/fixtures/`: its rules, responses and recorded calls.
 struct FakeGh {
@@ -112,7 +115,7 @@ fn view(number: &str) -> Vec<String> {
 fn instance(number: u32) -> Instance {
     Instance {
         role: RoleName::from("programmer"),
-        epic: IssueNumber::from(1),
+        epic: TicketId::from(1),
         number: InstanceNumber::from(number),
     }
 }
@@ -129,7 +132,7 @@ fn issue(number: u64, labels: &[&str], comments: &[String], state: &str) -> Stri
 /// A question ticket as `gh issue view --json` prints it, raised on `task`.
 fn question_issue(number: u64, comments: &[String], state: &str, task: u64) -> String {
     let body = NewQuestion {
-        on: IssueNumber::from(task),
+        on: TicketId::from(task),
         text: String::new(),
         door: false,
     }
@@ -216,10 +219,10 @@ fn ready_lists_ready_tasks_in_issue_order() {
     );
     fake.on("issue list *", &listed);
     let tickets = fake.board().ready().expect("ready");
-    let numbers: Vec<IssueNumber> = tickets.iter().map(|ticket| ticket.number).collect();
-    assert_eq!(numbers, [IssueNumber::from(2), IssueNumber::from(4)]);
-    assert_eq!(tickets[0].epic, Some(IssueNumber::from(1)));
-    assert_eq!(tickets[0].label, Some(TaskLabel::Ready));
+    let numbers: Vec<TicketId> = tickets.iter().map(|ticket| ticket.id).collect();
+    assert_eq!(numbers, [TicketId::from(2), TicketId::from(4)]);
+    assert_eq!(tickets[0].epic, Some(TicketId::from(1)));
+    assert_eq!(tickets[0].state, Some(TicketState::Ready));
     let expected_call = argv(&[
         "issue",
         "list",
@@ -232,11 +235,41 @@ fn ready_lists_ready_tasks_in_issue_order() {
         "--limit",
         "1000",
         "--json",
-        "number,title,body,labels,parent",
+        "number,title,body,labels,parent,issueType",
         "--repo",
         REPO,
     ]);
     assert_eq!(fake.calls(), [expected_call]);
+}
+
+#[test]
+fn a_ticket_reads_its_issue_type() {
+    let fake = FakeGh::new();
+    let typed = issue(3, &["task", "ready"], &[], "OPEN").replace(
+        "\"labels\"",
+        "\"issueType\":{\"name\":\"Bug\",\"id\":\"IT_1\"},\"labels\"",
+    );
+    fake.on("issue view 3 *", &typed);
+    let ticket = fake.board().task(TicketId::from(3)).expect("task");
+    assert_eq!(ticket.kind, Some(TicketType::from("Bug")));
+    assert_eq!(
+        ticket.summary().kind.as_ref().map(TicketType::as_str),
+        Some("Bug")
+    );
+}
+
+#[test]
+fn an_untyped_ticket_has_no_type() {
+    let fake = FakeGh::new();
+    let untyped = issue(3, &["task", "ready"], &[], "OPEN")
+        .replace("\"labels\"", "\"issueType\":null,\"labels\"");
+    fake.on("issue view 3 *", &untyped);
+    let ticket = fake.board().task(TicketId::from(3)).expect("task");
+    assert_eq!(ticket.kind, None);
+    let absent = FakeGh::new();
+    absent.on("issue view 3 *", &issue(3, &["task", "ready"], &[], "OPEN"));
+    let ticket = absent.board().task(TicketId::from(3)).expect("task");
+    assert_eq!(ticket.kind, None);
 }
 
 #[test]
@@ -252,26 +285,133 @@ fn task_reads_one_issue_and_a_failure_carries_stderr() {
     )
     .fail_on("issue view 10 *", "HTTP 502: bad gateway");
     let expected_ticket = Ticket {
-        number: IssueNumber::from(3),
-        epic: Some(IssueNumber::from(1)),
-        title: "task 3".to_owned(),
-        body: "Goal: export the list".to_owned(),
-        label: Some(TaskLabel::Blocked),
+        id: TicketId::from(3),
+        epic: Some(TicketId::from(1)),
+        title: "task 3".into(),
+        body: "Goal: export the list".into(),
+        state: Some(TicketState::Blocked),
+        url: format!("https://github.com/{REPO}/issues/3").into(),
+        kind: None,
     };
-    assert_eq!(fake.board().task(IssueNumber::from(3)), Ok(expected_ticket));
+    assert_eq!(fake.board().task(TicketId::from(3)), Ok(expected_ticket));
     let missing_issue_error = PortError::NotFound(
         "gh issue view: GraphQL: Could not resolve to an Issue with the number of 9.".to_owned(),
     );
     assert_eq!(
-        fake.board().task(IssueNumber::from(9)),
+        fake.board().task(TicketId::from(9)),
         Err(missing_issue_error)
     );
     let failed_call_error = PortError::Backend("gh issue view: HTTP 502: bad gateway".to_owned());
     assert_eq!(
-        fake.board().task(IssueNumber::from(10)),
+        fake.board().task(TicketId::from(10)),
         Err(failed_call_error)
     );
     assert_eq!(fake.calls(), [view("3"), view("9"), view("10")]);
+}
+
+/// An issue as `gh issue view --json number,state,labels,url` prints it.
+fn standing(number: u64, labels: &[&str], state: &str, kind: &str) -> String {
+    let labels: Vec<_> = labels
+        .iter()
+        .map(|name| serde_json::json!({ "name": name }))
+        .collect();
+    serde_json::json!({
+        "number": number,
+        "state": state,
+        "stateReason": if state == "CLOSED" { serde_json::json!("COMPLETED") } else { serde_json::Value::Null },
+        "labels": labels,
+        "url": format!("https://github.com/{REPO}/{kind}/{number}"),
+    })
+    .to_string()
+}
+
+/// An issue closed for `reason`, read only for where it stands.
+fn closed_for(number: u64, reason: &str) -> String {
+    serde_json::json!({
+        "number": number,
+        "state": "CLOSED",
+        "stateReason": reason,
+        "labels": [{ "name": "task" }],
+        "url": format!("https://github.com/{REPO}/issues/{number}"),
+    })
+    .to_string()
+}
+
+#[test]
+fn issue_state_tells_open_done_closed_and_missing_apart() {
+    use crate::domain::Standing;
+
+    let fake = FakeGh::new();
+    fake.on(
+        "issue view 3 *",
+        &standing(3, &["task", "blocked"], "OPEN", "issues"),
+    )
+    .on(
+        "issue view 4 *",
+        &standing(4, &["task", "done"], "CLOSED", "issues"),
+    )
+    .on(
+        "issue view 5 *",
+        &standing(5, &["task", "done"], "OPEN", "issues"),
+    )
+    .on("issue view 6 *", &closed_for(6, "NOT_PLANNED"))
+    .on("issue view 8 *", &closed_for(8, "COMPLETED"))
+    .on("issue view 11 *", &closed_for(11, "DUPLICATE"))
+    .on("issue view 7 *", &standing(7, &[], "OPEN", "pull"))
+    .fail_on(
+        "issue view 9 *",
+        "GraphQL: Could not resolve to an Issue with the number of 9.",
+    )
+    .fail_on(
+        "issue view 12 *",
+        "GraphQL: Could not resolve to an issue or pull request with the number of 12. (repository.issue)",
+    )
+    .fail_on("issue view 10 *", "HTTP 502: bad gateway");
+    let board = fake.board();
+    let state = |number: u64| board.standing(TicketId::from(number));
+    assert_eq!(
+        state(12),
+        Ok(Standing::Missing),
+        "gh 2.102 says `an issue or pull request`"
+    );
+
+    assert_eq!(state(3), Ok(Standing::Open));
+    assert_eq!(state(4), Ok(Standing::Done));
+    assert_eq!(state(5), Ok(Standing::Done));
+    assert_eq!(state(6), Ok(Standing::ClosedNotPlanned));
+    assert_eq!(
+        state(8),
+        Ok(Standing::Done),
+        "closed as completed is done without the label"
+    );
+    assert_eq!(state(11), Ok(Standing::ClosedNotPlanned));
+    assert_eq!(
+        state(7),
+        Ok(Standing::Missing),
+        "a pull request is no issue"
+    );
+    assert_eq!(state(9), Ok(Standing::Missing));
+    assert_eq!(
+        state(10),
+        Err(PortError::Backend(
+            "gh issue view: HTTP 502: bad gateway".to_owned()
+        ))
+    );
+    let standing_view = |number: &str| {
+        argv(&[
+            "issue",
+            "view",
+            number,
+            "--json",
+            "number,state,stateReason,labels,url",
+            "--repo",
+            REPO,
+        ])
+    };
+    assert_eq!(
+        fake.calls(),
+        ["12", "3", "4", "5", "6", "8", "11", "7", "9", "10"].map(standing_view)
+    );
 }
 
 #[test]
@@ -280,13 +420,13 @@ fn every_call_on_a_missing_issue_is_not_found() {
     let gone = "GraphQL: Could not resolve to an Issue with the number of 9.";
     fake.fail_on("issue *", gone);
     let board = fake.board();
-    let missing = IssueNumber::from(9);
+    let missing = TicketId::from(9);
     let results = [
         board.task(missing).map(drop),
         board.claim(missing, &instance(1)).map(drop),
         board.heartbeat(missing, &instance(1)),
         board.release(missing, &instance(1)),
-        board.label(missing, TaskLabel::Done),
+        board.set_state(missing, TicketState::Done),
         board.comment(missing, "Blocked."),
         board.report(missing, &instance(1), "working"),
         board.record_ruling(missing, "Title only.").map(drop),
@@ -308,11 +448,11 @@ fn a_new_claim_comments_then_labels() {
         .on("issue edit *", "");
     let board = fake.board();
     assert_eq!(
-        board.claim(IssueNumber::from(2), &instance(1)),
+        board.claim(TicketId::from(2), &instance(1)),
         Ok(ClaimOutcome::Claimed)
     );
     assert!(matches!(
-        board.claim(IssueNumber::from(3), &instance(1)),
+        board.claim(TicketId::from(3), &instance(1)),
         Err(PortError::Rejected(_))
     ));
     let calls = fake.calls();
@@ -346,11 +486,11 @@ fn a_repeated_claim_is_quiet_for_the_holder_and_a_conflict_for_others() {
     );
     let board = fake.board();
     assert_eq!(
-        board.claim(IssueNumber::from(2), &instance(1)),
+        board.claim(TicketId::from(2), &instance(1)),
         Ok(ClaimOutcome::AlreadyHeld)
     );
     assert!(matches!(
-        board.claim(IssueNumber::from(2), &instance(2)),
+        board.claim(TicketId::from(2), &instance(2)),
         Err(PortError::Conflict(_))
     ));
     assert_eq!(fake.calls(), [view("2"), view("2")]);
@@ -373,14 +513,14 @@ fn a_heartbeat_is_a_new_comment_and_claims_read_the_latest() {
     .on("issue comment *", "");
     let board = fake.board();
     board
-        .heartbeat(IssueNumber::from(2), &instance(1))
+        .heartbeat(TicketId::from(2), &instance(1))
         .expect("heartbeat");
     assert!(matches!(
-        board.heartbeat(IssueNumber::from(2), &instance(2)),
+        board.heartbeat(TicketId::from(2), &instance(2)),
         Err(PortError::Conflict(_))
     ));
     let expected_claims = vec![ClaimRecord {
-        task: IssueNumber::from(2),
+        task: TicketId::from(2),
         instance: instance(1),
         heartbeat: at(1_800_000_600),
     }];
@@ -406,7 +546,7 @@ fn release_returns_a_held_task_to_ready_and_comments() {
     .on("issue edit *", "")
     .on("issue comment *", "");
     fake.board()
-        .release(IssueNumber::from(2), &instance(1))
+        .release(TicketId::from(2), &instance(1))
         .expect("release");
     let expected_edit = argv(&[
         "issue",
@@ -447,10 +587,10 @@ fn a_release_keeps_question_and_done_and_adds_no_ready() {
     .on("issue comment *", "");
     let board = fake.board();
     board
-        .release(IssueNumber::from(2), &instance(1))
+        .release(TicketId::from(2), &instance(1))
         .expect("release");
     board
-        .release(IssueNumber::from(3), &instance(1))
+        .release(TicketId::from(3), &instance(1))
         .expect("release");
     let removes_claimed_only = |number: &str| {
         argv(&[
@@ -479,10 +619,10 @@ fn a_release_by_a_non_holder_is_quiet_and_changes_nothing() {
     .on("issue view 4 *", &issue(4, &["task", "ready"], &[], "OPEN"));
     let board = fake.board();
     board
-        .release(IssueNumber::from(2), &instance(2))
+        .release(TicketId::from(2), &instance(2))
         .expect("another instance holds it");
     board
-        .release(IssueNumber::from(4), &instance(1))
+        .release(TicketId::from(4), &instance(1))
         .expect("nobody holds it");
     assert_eq!(fake.calls(), [view("2"), view("4")]);
 }
@@ -498,10 +638,10 @@ fn label_replaces_the_state_label_and_an_existing_one_is_quiet() {
     .on("issue edit *", "");
     let board = fake.board();
     board
-        .label(IssueNumber::from(2), TaskLabel::Done)
+        .set_state(TicketId::from(2), TicketState::Done)
         .expect("label");
     board
-        .label(IssueNumber::from(4), TaskLabel::Done)
+        .set_state(TicketId::from(4), TicketState::Done)
         .expect("the same label again");
     let expected_edit = argv(&[
         "issue",
@@ -522,7 +662,7 @@ fn comment_posts_the_body() {
     let fake = FakeGh::new();
     fake.on("issue comment *", "");
     fake.board()
-        .comment(IssueNumber::from(2), "Blocked on the schema.")
+        .comment(TicketId::from(2), "Blocked on the schema.")
         .expect("comment");
     let expected_call = argv(&[
         "issue",
@@ -558,13 +698,13 @@ fn report_posts_once_then_edits_its_own_comment() {
     .on("api *", "{}");
     let board = fake.board();
     board
-        .report(IssueNumber::from(2), &instance(1), "working")
+        .report(TicketId::from(2), &instance(1), "working")
         .expect("first report");
     board
-        .report(IssueNumber::from(3), &instance(1), "done")
+        .report(TicketId::from(3), &instance(1), "done")
         .expect("second report");
     board
-        .report(IssueNumber::from(4), &instance(1), "done")
+        .report(TicketId::from(4), &instance(1), "done")
         .expect("the same report");
     let first_body = format!("{marker}\nworking");
     let edit_field = format!("body={marker}\ndone");
@@ -601,14 +741,11 @@ fn open_question_creates_a_labelled_issue() {
         &format!("https://github.com/{REPO}/issues/7\n"),
     );
     let question = NewQuestion {
-        on: IssueNumber::from(2),
+        on: TicketId::from(2),
         text: "Which columns does the export carry?".to_owned(),
         door: true,
     };
-    assert_eq!(
-        fake.board().open_question(&question),
-        Ok(IssueNumber::from(7))
-    );
+    assert_eq!(fake.board().open_question(&question), Ok(TicketId::from(7)));
     let expected_call = argv(&[
         "issue",
         "create",
@@ -629,7 +766,7 @@ fn open_question_creates_a_labelled_issue() {
 /// A question of `words` words, `word` repeated, raised on #2.
 fn wordy_question(word: &str, words: usize) -> NewQuestion {
     NewQuestion {
-        on: IssueNumber::from(2),
+        on: TicketId::from(2),
         text: vec![word; words].join(" "),
         door: false,
     }
@@ -656,15 +793,12 @@ fn long_question_is_filed() {
         &format!("https://github.com/{REPO}/issues/7\n"),
     );
     let question = NewQuestion {
-        on: IssueNumber::from(2),
+        on: TicketId::from(2),
         text: "Which columns? ".repeat(70).trim().to_owned(),
         door: false,
     };
     assert!(question.text.chars().count() >= 1000);
-    assert_eq!(
-        fake.board().open_question(&question),
-        Ok(IssueNumber::from(7))
-    );
+    assert_eq!(fake.board().open_question(&question), Ok(TicketId::from(7)));
     let (title, _) = created_title_and_body(&fake);
     assert!(title.chars().count() <= 200, "GitHub refuses a long title");
 }
@@ -697,7 +831,7 @@ fn short_question_title_is_unchanged() {
         &format!("https://github.com/{REPO}/issues/7\n"),
     );
     let exact = NewQuestion {
-        on: IssueNumber::from(2),
+        on: TicketId::from(2),
         text: "a".repeat(QUESTION_TITLE_LIMIT),
         door: false,
     };
@@ -733,7 +867,7 @@ fn long_question_body_holds_the_whole_text() {
     listing.on("issue list *", &listed.to_string());
     let raised = listing
         .board()
-        .questions_on(IssueNumber::from(2))
+        .questions_on(TicketId::from(2))
         .expect("questions on the task");
     assert_eq!(raised.len(), 1, "questions_on still finds it");
     assert_eq!(NewQuestion::text_of(&raised[0].0), question.text);
@@ -751,9 +885,9 @@ fn questions_lists_open_question_issues_and_skips_tasks_waiting_on_one() {
     );
     fake.on("issue list *", &listed);
     let tickets = fake.board().questions().expect("questions");
-    let numbers: Vec<IssueNumber> = tickets.iter().map(|ticket| ticket.number).collect();
-    assert_eq!(numbers, [IssueNumber::from(7), IssueNumber::from(9)]);
-    assert_eq!(tickets[0].label, Some(TaskLabel::Question));
+    let numbers: Vec<TicketId> = tickets.iter().map(|ticket| ticket.id).collect();
+    assert_eq!(numbers, [TicketId::from(7), TicketId::from(9)]);
+    assert_eq!(tickets[0].state, Some(TicketState::Question));
     let expected_call = argv(&[
         "issue",
         "list",
@@ -764,7 +898,7 @@ fn questions_lists_open_question_issues_and_skips_tasks_waiting_on_one() {
         "--limit",
         "1000",
         "--json",
-        "number,title,body,labels,parent",
+        "number,title,body,labels,parent,issueType",
         "--repo",
         REPO,
     ]);
@@ -790,18 +924,18 @@ fn questions_on_lists_ruled_and_open_questions_raised_on_the_task_oldest_first()
 
     let raised = fake
         .board()
-        .questions_on(IssueNumber::from(2))
+        .questions_on(TicketId::from(2))
         .expect("questions on the task");
 
-    let seen: Vec<(IssueNumber, Option<&str>)> = raised
+    let seen: Vec<(TicketId, Option<&str>)> = raised
         .iter()
-        .map(|(ticket, ruling)| (ticket.number, ruling.as_deref()))
+        .map(|(ticket, ruling)| (ticket.id, ruling.as_deref()))
         .collect();
     assert_eq!(
         seen,
         [
-            (IssueNumber::from(7), Some("Title and author.")),
-            (IssueNumber::from(9), None)
+            (TicketId::from(7), Some("Title and author.")),
+            (TicketId::from(9), None)
         ]
     );
     let expected_call = argv(&[
@@ -825,7 +959,7 @@ fn questions_on_lists_ruled_and_open_questions_raised_on_the_task_oldest_first()
 fn a_listed_question_is_the_one_that_opened_it() {
     let fake = FakeGh::new();
     let question = NewQuestion {
-        on: IssueNumber::from(2),
+        on: TicketId::from(2),
         text: "Which columns?".to_owned(),
         door: false,
     };
@@ -839,7 +973,7 @@ fn a_listed_question_is_the_one_that_opened_it() {
     let tickets = fake.board().questions().expect("questions");
     assert!(question.is_asked_by(&tickets[0]));
     let elsewhere = NewQuestion {
-        on: IssueNumber::from(3),
+        on: TicketId::from(3),
         ..question
     };
     assert!(!elsewhere.is_asked_by(&tickets[0]));
@@ -855,13 +989,13 @@ fn record_ruling_comments_and_closes_once() {
         .on("issue close *", "");
     let board = fake.board();
     board
-        .record_ruling(IssueNumber::from(7), "Title and author.")
+        .record_ruling(TicketId::from(7), "Title and author.")
         .expect("ruling");
     board
-        .record_ruling(IssueNumber::from(8), "Title and author.")
+        .record_ruling(TicketId::from(8), "Title and author.")
         .expect("the same ruling is quiet");
     assert!(matches!(
-        board.record_ruling(IssueNumber::from(8), "Title only."),
+        board.record_ruling(TicketId::from(8), "Title only."),
         Err(PortError::Conflict(_))
     ));
     let expected_calls = vec![
@@ -895,8 +1029,8 @@ fn a_ruling_returns_the_waiting_task_to_ready() {
         .on("issue edit *", "");
     let returned = fake
         .board()
-        .record_ruling(IssueNumber::from(7), "Title and author.");
-    assert_eq!(returned, Ok(Some(IssueNumber::from(2))));
+        .record_ruling(TicketId::from(7), "Title and author.");
+    assert_eq!(returned, Ok(Some(TicketId::from(2))));
     let expected_calls = vec![
         view("7"),
         argv(&[
@@ -940,12 +1074,12 @@ fn a_second_identical_ruling_changes_nothing_and_a_done_task_keeps_its_labels() 
         .on("issue close *", "");
     let board = fake.board();
     assert_eq!(
-        board.record_ruling(IssueNumber::from(8), "Title and author."),
+        board.record_ruling(TicketId::from(8), "Title and author."),
         Ok(None),
         "the task already returned"
     );
     assert_eq!(
-        board.record_ruling(IssueNumber::from(9), "Title and author."),
+        board.record_ruling(TicketId::from(9), "Title and author."),
         Ok(None),
         "a done task is left alone"
     );
@@ -975,10 +1109,10 @@ fn a_question_replaces_claimed_or_ready_with_question() {
     .on("issue edit *", "");
     let board = fake.board();
     board
-        .label(IssueNumber::from(2), TaskLabel::Question)
+        .set_state(TicketId::from(2), TicketState::Question)
         .expect("claimed task");
     board
-        .label(IssueNumber::from(4), TaskLabel::Question)
+        .set_state(TicketId::from(4), TicketState::Question)
         .expect("ready task");
     let edit = |number: &str, removed: &str| {
         argv(&[
@@ -1004,10 +1138,10 @@ fn a_question_on_a_task_that_is_neither_claimed_nor_ready_leaves_its_labels_alon
         .on("issue edit *", "");
     let board = fake.board();
     board
-        .label(IssueNumber::from(2), TaskLabel::Question)
+        .set_state(TicketId::from(2), TicketState::Question)
         .expect("unlabelled task");
     board
-        .label(IssueNumber::from(4), TaskLabel::Question)
+        .set_state(TicketId::from(4), TicketState::Question)
         .expect("done task");
     assert_eq!(edits(&fake), Vec::<Vec<String>>::new());
 }
@@ -1020,10 +1154,10 @@ fn a_question_on_an_epic_never_adds_a_state_label() {
         .on("issue edit *", "");
     let board = fake.board();
     board
-        .label(IssueNumber::from(3), TaskLabel::Question)
+        .set_state(TicketId::from(3), TicketState::Question)
         .expect("epic");
     board
-        .label(IssueNumber::from(5), TaskLabel::Question)
+        .set_state(TicketId::from(5), TicketState::Question)
         .expect("epic carrying a state label");
     assert_eq!(edits(&fake), Vec::<Vec<String>>::new());
 }
@@ -1041,7 +1175,7 @@ fn a_ruling_on_a_question_raised_on_an_epic_edits_no_labels() {
         .on("issue edit *", "");
     let returned = fake
         .board()
-        .record_ruling(IssueNumber::from(7), "Title and author.");
+        .record_ruling(TicketId::from(7), "Title and author.");
     assert_eq!(returned, Ok(None), "an epic is never returned to ready");
     assert_eq!(edits(&fake), Vec::<Vec<String>>::new());
 }
@@ -1068,7 +1202,7 @@ fn questions_and_rulings_on_an_epic_and_unsigned_tasks_change_no_label() {
     let board = fake.board();
     for on in [71, 72, 73] {
         let command = NewQuestion {
-            on: IssueNumber::from(on),
+            on: TicketId::from(on),
             text: "Which columns does the export carry?".to_owned(),
             door: false,
         };
@@ -1076,7 +1210,7 @@ fn questions_and_rulings_on_an_epic_and_unsigned_tasks_change_no_label() {
     }
     for question in [78, 79, 80] {
         assert_eq!(
-            board.record_ruling(IssueNumber::from(question), "Title and author."),
+            board.record_ruling(TicketId::from(question), "Title and author."),
             Ok(None),
             "ruling #{question} returns nothing to ready"
         );
@@ -1084,87 +1218,186 @@ fn questions_and_rulings_on_an_epic_and_unsigned_tasks_change_no_label() {
     assert_eq!(edits(&fake), Vec::<Vec<String>>::new());
 }
 
-fn request() -> PrRequest {
-    PrRequest {
-        slice: SliceName::from("feature/v1-export-2"),
-        base: BaseName::from("feature/v1"),
-        title: "Add the CSV writer".to_owned(),
-        body: "Closes #2".to_owned(),
-    }
-}
-
-#[test]
-fn open_pr_creates_one_or_returns_the_open_one() {
-    let fake = FakeGh::new();
-    fake.on("pr list *", "[]").on(
-        "pr create *",
-        &format!("https://github.com/{REPO}/pull/7\n"),
-    );
-    assert_eq!(fake.forge().open_pr(&request()), Ok(PrNumber::from(7)));
-    let list_call = argv(&[
-        "pr",
-        "list",
-        "--head",
-        "feature/v1-export-2",
-        "--state",
-        "open",
-        "--json",
-        "number",
-        "--repo",
-        REPO,
-    ]);
-    let create_call = argv(&[
-        "pr",
-        "create",
-        "--head",
-        "feature/v1-export-2",
-        "--base",
-        "feature/v1",
-        "--title",
-        "Add the CSV writer",
-        "--body",
-        "Closes #2",
-        "--repo",
-        REPO,
-    ]);
-    assert_eq!(fake.calls(), [list_call.clone(), create_call]);
-
-    let existing = FakeGh::new();
-    existing.on("pr list *", r#"[{"number":5}]"#);
-    assert_eq!(existing.forge().open_pr(&request()), Ok(PrNumber::from(5)));
-    assert_eq!(existing.calls(), [list_call]);
-}
-
 #[test]
 fn checks_map_gh_buckets_and_none_reported_is_empty() {
     let fake = FakeGh::new();
     let checks = r#"[
-        {"name":"ci","bucket":"pass"},
-        {"name":"lint","bucket":"fail"},
-        {"name":"scan","bucket":"pending"},
-        {"name":"docs","bucket":"skipping"},
-        {"name":"bench","bucket":"cancel"}
+        {"name":"ci","bucket":"pass","completedAt":"2027-01-15T08:00:00Z"},
+        {"name":"lint","bucket":"fail","completedAt":"2027-01-15T08:01:00Z"},
+        {"name":"scan","bucket":"pending","completedAt":"0001-01-01T00:00:00Z"},
+        {"name":"docs","bucket":"skipping","completedAt":"2027-01-15T08:02:00Z"},
+        {"name":"bench","bucket":"cancel","completedAt":"2027-01-15T08:03:00Z"}
     ]"#;
     fake.on("pr checks 7 *", checks).fail_on(
         "pr checks 8 *",
         "no checks reported on the 'feature/v1-export-2' branch",
     );
-    let check = |name: &str, state: CheckState| Check {
+    let check = |name: &str, state: CheckState, finished_at: Option<&str>| Check {
         name: CheckName::from(name),
         state,
+        finished_at: finished_at.map(time),
     };
     let expected_checks = vec![
-        check("ci", CheckState::Passed),
-        check("lint", CheckState::Failed),
-        check("scan", CheckState::Pending),
-        check("docs", CheckState::Passed),
-        check("bench", CheckState::Failed),
+        check("ci", CheckState::Passed, Some("2027-01-15T08:00:00Z")),
+        check("lint", CheckState::Failed, Some("2027-01-15T08:01:00Z")),
+        check("scan", CheckState::Pending, None),
+        check("docs", CheckState::Passed, Some("2027-01-15T08:02:00Z")),
+        check("bench", CheckState::Failed, Some("2027-01-15T08:03:00Z")),
     ];
     let forge = fake.forge();
     assert_eq!(forge.checks(PrNumber::from(7)), Ok(expected_checks));
     assert_eq!(forge.checks(PrNumber::from(8)), Ok(Vec::new()));
-    let expected_call = argv(&["pr", "checks", "7", "--json", "name,bucket", "--repo", REPO]);
+    let expected_call = argv(&[
+        "pr",
+        "checks",
+        "7",
+        "--json",
+        "name,bucket,completedAt",
+        "--repo",
+        REPO,
+    ]);
     assert_eq!(fake.calls()[0], expected_call);
+}
+
+/// A time as the forge prints it.
+fn time(text: &str) -> SystemTime {
+    humantime::parse_rfc3339(text).expect("a time")
+}
+
+#[test]
+fn a_finished_check_has_its_time() {
+    let fake = FakeGh::new();
+    let checks = r#"[
+        {"name":"ci","bucket":"pass","completedAt":"2027-01-15T08:00:00Z"},
+        {"name":"lint","bucket":"fail","completedAt":"2027-01-15T08:04:30Z"}
+    ]"#;
+    fake.on("pr checks 7 *", checks);
+    let read = fake.forge().checks(PrNumber::from(7)).expect("checks");
+    assert_eq!(read[0].finished_at, Some(time("2027-01-15T08:00:00Z")));
+    assert_eq!(read[1].finished_at, Some(time("2027-01-15T08:04:30Z")));
+}
+
+#[test]
+fn a_running_check_has_none() {
+    let fake = FakeGh::new();
+    let checks = r#"[
+        {"name":"ci","bucket":"pending","completedAt":"0001-01-01T00:00:00Z"},
+        {"name":"scan","bucket":"pending"}
+    ]"#;
+    fake.on("pr checks 7 *", checks);
+    let read = fake.forge().checks(PrNumber::from(7)).expect("checks");
+    assert_eq!(read.len(), 2);
+    assert!(read.iter().all(|check| check.finished_at.is_none()));
+}
+
+#[test]
+fn a_review_comment_has_its_time_and_head() {
+    let fake = FakeGh::new();
+    let lines = r#"[[
+        {"user":{"login":"reviewer"},"body":"Name this.","path":"src/a.rs","line":3,"created_at":"2027-01-15T08:10:00Z","commit_id":"abc123"}
+    ]]"#;
+    let reviews = r#"[[
+        {"user":{"login":"reviewer"},"body":"Two nits.","submitted_at":"2027-01-15T08:05:00Z","commit_id":"def456"}
+    ]]"#;
+    fake.on(&format!("api repos/{REPO}/pulls/7/comments *"), lines)
+        .on(&format!("api repos/{REPO}/pulls/7/reviews *"), reviews);
+    let read = fake
+        .forge()
+        .review_comments(PrNumber::from(7))
+        .expect("comments");
+    assert_eq!(read.len(), 2);
+    assert_eq!(read[0].posted_at, time("2027-01-15T08:05:00Z"));
+    assert_eq!(read[0].head, Some(CommitId::from("def456")));
+    assert_eq!(read[1].posted_at, time("2027-01-15T08:10:00Z"));
+    assert_eq!(read[1].head, Some(CommitId::from("abc123")));
+}
+
+#[test]
+fn a_pr_has_its_open_and_merge_times() {
+    let fake = FakeGh::new();
+    fake.on(
+        "pr view 7 *",
+        r#"{"state":"MERGED","createdAt":"2027-01-15T08:00:00Z","mergedAt":"2027-01-15T09:30:00Z"}"#,
+    )
+    .on(
+        "pr view 8 *",
+        r#"{"state":"OPEN","createdAt":"2027-01-16T08:00:00Z","mergedAt":null}"#,
+    )
+    .on(
+        "pr view 9 *",
+        r#"{"state":"CLOSED","createdAt":"2027-01-17T08:00:00Z","mergedAt":null}"#,
+    );
+    let forge = fake.forge();
+    let merged = forge.pull_request(PrNumber::from(7)).expect("merged");
+    assert_eq!(merged.opened_at, time("2027-01-15T08:00:00Z"));
+    assert_eq!(merged.merged_at, Some(time("2027-01-15T09:30:00Z")));
+    let open = forge.pull_request(PrNumber::from(8)).expect("open");
+    assert_eq!(open.opened_at, time("2027-01-16T08:00:00Z"));
+    assert_eq!(open.merged_at, None);
+    let closed = forge.pull_request(PrNumber::from(9)).expect("closed");
+    assert_eq!(closed.merged_at, None);
+    let expected_call = argv(&[
+        "pr",
+        "view",
+        "7",
+        "--json",
+        "state,createdAt,mergedAt",
+        "--repo",
+        REPO,
+    ]);
+    assert_eq!(fake.calls()[0], expected_call);
+}
+
+#[test]
+fn a_missing_time_is_an_error() {
+    let fake = FakeGh::new();
+    fake.on(
+        "pr checks 7 *",
+        r#"[{"name":"ci","bucket":"pass","completedAt":"0001-01-01T00:00:00Z"}]"#,
+    )
+    .on("pr checks 8 *", r#"[{"name":"ci","bucket":"fail"}]"#)
+    .on(
+        &format!("api repos/{REPO}/pulls/9/comments *"),
+        r#"[[{"user":null,"body":"Late.","path":"src/a.rs","line":1}]]"#,
+    )
+    .on(&format!("api repos/{REPO}/pulls/9/reviews *"), "[[]]")
+    .on("pr view 10 *", r#"{"state":"OPEN","createdAt":null}"#)
+    .on(
+        "pr view 11 *",
+        r#"{"state":"MERGED","createdAt":"2027-01-15T08:00:00Z","mergedAt":null}"#,
+    );
+    let forge = fake.forge();
+    let errors = [
+        (7, forge.checks(PrNumber::from(7)).expect_err("zero time")),
+        (8, forge.checks(PrNumber::from(8)).expect_err("no time")),
+        (
+            9,
+            forge
+                .review_comments(PrNumber::from(9))
+                .expect_err("no post time"),
+        ),
+        (
+            10,
+            forge
+                .pull_request(PrNumber::from(10))
+                .expect_err("no opening"),
+        ),
+        (
+            11,
+            forge
+                .pull_request(PrNumber::from(11))
+                .expect_err("no merge time"),
+        ),
+    ];
+    for (number, error) in errors {
+        let PortError::Backend(message) = &error else {
+            panic!("pull request #{number}: {error:?} is not a backend error");
+        };
+        assert!(
+            message.contains(&format!("pull request #{number}")),
+            "{message}"
+        );
+    }
 }
 
 #[test]
@@ -1191,12 +1424,14 @@ fn review_comments_merge_reviews_and_line_comments_oldest_first() {
                 line: None,
             }),
             head: None,
+            posted_at: time("2027-01-15T08:00:00Z"),
         },
         ReviewComment {
             author: Author::from("reviewer"),
             body: "Close; two nits.".to_owned(),
             location: None,
-            head: Some("def456".to_owned()),
+            head: Some(CommitId::from("def456")),
+            posted_at: time("2027-01-15T08:05:00Z"),
         },
         ReviewComment {
             author: Author::from("reviewer"),
@@ -1205,7 +1440,8 @@ fn review_comments_merge_reviews_and_line_comments_oldest_first() {
                 path: "src/export.rs".to_owned(),
                 line: Some(12),
             }),
-            head: Some("abc123".to_owned()),
+            head: Some(CommitId::from("abc123")),
+            posted_at: time("2027-01-15T08:10:00Z"),
         },
     ];
     assert_eq!(
@@ -1314,23 +1550,6 @@ fn last_changed_file_reads_the_diff() {
 }
 
 #[test]
-fn merge_merges_once_and_a_merged_pr_is_quiet() {
-    let fake = FakeGh::new();
-    fake.on("pr view 7 *", r#"{"state":"OPEN"}"#)
-        .on("pr view 8 *", r#"{"state":"MERGED"}"#)
-        .on("pr merge *", "");
-    let forge = fake.forge();
-    assert_eq!(forge.merge(PrNumber::from(7)), Ok(PrMerge::Merged));
-    assert_eq!(forge.merge(PrNumber::from(8)), Ok(PrMerge::AlreadyMerged));
-    let expected_calls = vec![
-        argv(&["pr", "view", "7", "--json", "state", "--repo", REPO]),
-        argv(&["pr", "merge", "7", "--merge", "--repo", REPO]),
-        argv(&["pr", "view", "8", "--json", "state", "--repo", REPO]),
-    ];
-    assert_eq!(fake.calls(), expected_calls);
-}
-
-#[test]
 fn merged_is_true_only_for_a_merged_pr_and_changes_nothing() {
     let fake = FakeGh::new();
     fake.on("pr view 7 *", r#"{"state":"OPEN"}"#)
@@ -1373,18 +1592,287 @@ fn head_reads_the_pull_requests_head_commit() {
     assert_eq!(fake.calls()[0], expected_call);
 }
 
+const HANDOFF: &str = "<!-- zaf:handoff -->";
+
+/// The pages `gh api --paginate --slurp` prints for a pull request's conversation: one page,
+/// its comments numbered 50, 51, ….
+fn conversation(bodies: &[&str]) -> String {
+    let comments: Vec<serde_json::Value> = bodies
+        .iter()
+        .enumerate()
+        .map(|(index, body)| serde_json::json!({ "id": 50 + index, "body": body }))
+        .collect();
+    serde_json::json!([comments]).to_string()
+}
+
+fn conversation_call() -> Vec<String> {
+    let endpoint = format!("repos/{REPO}/issues/7/comments");
+    argv(&["api", &endpoint, "--paginate", "--slurp"])
+}
+
+#[test]
+fn a_second_handoff_replaces_the_first() {
+    let pr = PrNumber::from(7);
+    // The first hand-off finds no comment of its own and posts one.
+    let first = FakeGh::new();
+    first
+        .on("api *", &conversation(&["LGTM"]))
+        .on("pr comment *", "");
+    first
+        .forge()
+        .set_handoff(pr, "Ran the tests.")
+        .expect("first");
+    let posted = format!("{HANDOFF}\nRan the tests.");
+    let post = argv(&["pr", "comment", "7", "--body", &posted, "--repo", REPO]);
+    assert_eq!(first.calls(), [conversation_call(), post]);
+
+    // The second finds it and edits it in place: no second comment.
+    let second = FakeGh::new();
+    second
+        .on(
+            "api *issues/7/comments --paginate*",
+            &conversation(&["LGTM", &posted]),
+        )
+        .on("api *issues/comments/51 *", "{}");
+    second
+        .forge()
+        .set_handoff(pr, "Fixed the CI.")
+        .expect("second");
+    let field = format!("body={HANDOFF}\nFixed the CI.");
+    let endpoint = format!("repos/{REPO}/issues/comments/51");
+    let edit = argv(&["api", &endpoint, "--method", "PATCH", "-f", &field]);
+    assert_eq!(second.calls(), [conversation_call(), edit]);
+
+    // The same text again changes nothing.
+    let third = FakeGh::new();
+    third.on(
+        "api *",
+        &conversation(&[&format!("{HANDOFF}\nFixed the CI.")]),
+    );
+    third
+        .forge()
+        .set_handoff(pr, "Fixed the CI.")
+        .expect("third");
+    assert_eq!(third.calls(), [conversation_call()]);
+}
+
+#[test]
+fn the_github_handoff_reads_the_latest_marked_comment_and_none_without() {
+    let fake = FakeGh::new();
+    fake.on(
+        "api *issues/7/comments*",
+        &conversation(&[
+            "LGTM",
+            &format!("{HANDOFF}\nold"),
+            "thanks",
+            &format!("{HANDOFF}\nnew\nover two lines"),
+        ]),
+    )
+    .on(
+        "api *issues/8/comments*",
+        &conversation(&["LGTM", "mentions <!-- zaf:handoff --> inline"]),
+    )
+    .on("api *issues/9/comments*", "[]");
+    let forge = fake.forge();
+    assert_eq!(
+        forge.handoff(PrNumber::from(7)),
+        Ok(Some("new\nover two lines".to_owned()))
+    );
+    assert_eq!(forge.handoff(PrNumber::from(8)), Ok(None));
+    assert_eq!(forge.handoff(PrNumber::from(9)), Ok(None));
+    assert_eq!(fake.calls().len(), 3, "reads only: nothing was written");
+
+    let broken = FakeGh::new();
+    broken.fail_on("api *", "HTTP 502");
+    assert!(matches!(
+        broken.forge().handoff(PrNumber::from(7)),
+        Err(PortError::Backend(_))
+    ));
+    assert!(matches!(
+        broken.forge().set_handoff(PrNumber::from(7), "x"),
+        Err(PortError::Backend(_))
+    ));
+}
+
 #[test]
 fn a_missing_gh_is_unavailable_and_bad_json_a_backend_error() {
     let empty = tempfile::tempdir().expect("empty directory");
     let missing = GhCommand::from(RepoName::from(REPO)).env("PATH", empty.path());
     assert!(matches!(
-        GithubBoard::from(missing).task(IssueNumber::from(2)),
+        GithubBoard::from(missing).task(TicketId::from(2)),
         Err(PortError::Unavailable(_))
     ));
     let fake = FakeGh::new();
     fake.on("issue view *", "not json");
     assert!(matches!(
-        fake.board().task(IssueNumber::from(2)),
+        fake.board().task(TicketId::from(2)),
         Err(PortError::Backend(_))
     ));
 }
+
+#[test]
+fn releases_list_stable_tags_and_download_by_pattern() {
+    use crate::ports::Releases;
+
+    let fake = FakeGh::new();
+    fake.on(
+        "release list *",
+        r#"[{"tagName":"zaf-v0.2.1","isDraft":false,"isPrerelease":false},
+            {"tagName":"zaf-v0.3.0","isDraft":true,"isPrerelease":false},
+            {"tagName":"zaf-v0.3.0-rc.1","isDraft":false,"isPrerelease":true},
+            {"tagName":"zaf-v0.2.0","isDraft":false,"isPrerelease":false}]"#,
+    )
+    .on("release download *", "");
+    let releases = super::GithubReleases::from(fake.gh());
+
+    assert_eq!(
+        releases.tags().expect("lists"),
+        ["zaf-v0.2.1", "zaf-v0.2.0"]
+    );
+    let dir = Path::new("/tmp/zaf-update");
+    releases
+        .download(
+            "zaf-v0.2.1",
+            &["a.tar.gz".to_owned(), "a.tar.gz.sha256".to_owned()],
+            dir,
+        )
+        .expect("downloads");
+    assert_eq!(
+        fake.calls()[1],
+        argv(&[
+            "release",
+            "download",
+            "zaf-v0.2.1",
+            "--dir",
+            "/tmp/zaf-update",
+            "--clobber",
+            "--pattern",
+            "a.tar.gz",
+            "--pattern",
+            "a.tar.gz.sha256",
+            "--repo",
+            REPO,
+        ])
+    );
+}
+
+#[test]
+fn epics_read_the_latest_signature_and_a_challengers_report() {
+    use crate::domain::{BodyHash, EpicStage, Signature, Standing};
+
+    let body = "Goal: one ticket shape.";
+    let old = Signature::of(&"Goal: an older body.".into(), at(1_000));
+    let current = Signature::of(&body.into(), at(2_000));
+    let challenger = Instance {
+        role: RoleName::from("challenger"),
+        epic: TicketId::from(1),
+        number: InstanceNumber::from(9),
+    };
+    let comments = [
+        marked(&signature_marker(&old), SIGNATURE_TEXT),
+        marked(&report_marker(&instance(4)), "a programmer's report"),
+        marked(&signature_marker(&current), SIGNATURE_TEXT),
+        marked(&report_marker(&challenger), "every task is exact"),
+    ];
+    let epics = serde_json::json!([{
+        "number": 1,
+        "title": "tickets",
+        "body": body,
+        "labels": [{"name": "epic"}],
+        "comments": comments.iter().map(|text| serde_json::json!({"body": text})).collect::<Vec<_>>(),
+    }]);
+    let tasks = serde_json::json!([
+        {"number": 2, "title": "t", "labels": [{"name": "task"}, {"name": "ready"}],
+         "parent": {"number": 1}, "state": "OPEN"},
+        {"number": 3, "title": "t", "labels": [{"name": "task"}],
+         "parent": {"number": 1}, "state": "CLOSED", "stateReason": "NOT_PLANNED"},
+        {"number": 4, "title": "t", "labels": [{"name": "task"}],
+         "parent": {"number": 1}, "state": "CLOSED", "stateReason": "COMPLETED"},
+    ]);
+    let fake = FakeGh::new();
+    fake.on("issue list --label epic *", &epics.to_string())
+        .on("issue list --label task *", &tasks.to_string());
+
+    let read = fake.board().epics().expect("epics read");
+    assert_eq!(read.len(), 1);
+    let epic = &read[0];
+    assert_eq!(
+        epic.signature.as_ref().map(|signature| &signature.hash),
+        Some(&BodyHash::of(&body.into()))
+    );
+    assert!(epic.challenged);
+    let standings: Vec<Standing> = epic.tasks.iter().map(|task| task.standing).collect();
+    assert_eq!(
+        standings,
+        [Standing::Open, Standing::ClosedNotPlanned, Standing::Done]
+    );
+    assert_eq!(epic.stage(), EpicStage::Challenged);
+    let task_list = &fake.calls()[1];
+    assert!(
+        task_list.iter().any(|word| word.contains("stateReason")),
+        "the task list reads how each task closed: {task_list:?}"
+    );
+}
+
+#[test]
+fn an_epic_is_planned_when_the_latest_planning_exit_was_posted() {
+    let planning = |number: u32| Instance {
+        role: RoleName::from("planning"),
+        epic: TicketId::from(1),
+        number: InstanceNumber::from(number),
+    };
+    let comment =
+        |text: String, created: &str| serde_json::json!({"body": text, "createdAt": created});
+    let epics = serde_json::json!([{
+        "number": 1,
+        "title": "tickets",
+        "body": "Goal: one.",
+        "labels": [{"name": "epic"}],
+        "comments": [
+            comment(format!("<!-- zaf:exit {} done -->\nfirst", planning(1)), "2026-11-01T10:00:00Z"),
+            comment(format!("<!-- zaf:exit {} done -->\nlast", planning(2)), "2026-11-02T11:30:00Z"),
+            // Not a planning exit: another role's exit and a plain comment.
+            comment(format!("<!-- zaf:exit {} done -->", instance(4)), "2026-11-03T00:00:00Z"),
+            comment("planning exit, said in words".to_owned(), "2026-11-04T00:00:00Z"),
+        ],
+    }]);
+    let fake = FakeGh::new();
+    fake.on("issue list --label epic *", &epics.to_string())
+        .on("issue list --label task *", "[]");
+
+    let read = fake.board().epics().expect("epics read");
+    assert_eq!(
+        read[0].planned_at,
+        Some(humantime::parse_rfc3339("2026-11-02T11:30:00Z").expect("a time"))
+    );
+}
+
+#[test]
+fn a_signature_is_one_marked_comment_on_the_epic() {
+    use crate::domain::Signature;
+
+    let fake = FakeGh::new();
+    fake.on(
+        "issue comment *",
+        "https://github.com/example/tracker/issues/1#issuecomment-1",
+    );
+    let signature = Signature::of(&"Goal: g".into(), at(1_000));
+    fake.board()
+        .sign(TicketId::from(1), &signature)
+        .expect("signs");
+    let calls = fake.calls();
+    assert_eq!(calls.len(), 1);
+    let comment = calls[0]
+        .iter()
+        .find(|word| word.starts_with("<!-- zaf:signature "))
+        .expect("the comment body");
+    assert_eq!(
+        read_signature(comment),
+        Some(Signature {
+            hash: signature.hash.clone(),
+            at: at(1_000),
+        })
+    );
+}
+
+mod projects;

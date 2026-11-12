@@ -144,3 +144,96 @@ fn question_ruling_and_report_go_through() {
             .any(|call| call.starts_with(&marker))
     );
 }
+
+/// A task body in the template, as a planning instance files it.
+const TASK_BODY: &str = "\
+Goal: Members can export their reading list as a CSV file.
+Owned paths: src/export/**
+Interfaces: ExportSink (defined here)
+Design pages: 1001
+Architecture: export, ExportSink
+Acceptance:
+  - an empty list exports a header row only
+Tests: export_empty_list_writes_header
+Security trigger: no
+Model: sonnet
+Size: S
+Blocked by: none
+";
+
+/// The project with epic #1 open and the issue types `Task` and `Bug` defined.
+fn filing_project() -> Project {
+    let mut project = project();
+    project
+        .on(
+            "issue list --label epic *",
+            r#"[{"number":1,"title":"Exports","body":"","labels":[{"name":"epic"}],"comments":[]}]"#,
+        )
+        .on("issue list --label task --state all *", "[]")
+        .on(
+            "api graphql *issueTypes*",
+            r#"{"data":{"repository":{"issueTypes":{"nodes":[{"name":"Task"},{"name":"Bug"}]}}}}"#,
+        )
+        .on("api repos/*", "4242\n");
+    project
+}
+
+/// The `issue create` call a filing made, if it made one.
+fn created(project: &Project) -> Option<String> {
+    project
+        .gh_calls()
+        .into_iter()
+        .find(|call| call.starts_with("issue create"))
+}
+
+#[test]
+fn a_filed_task_is_a_task_by_default() {
+    let project = filing_project();
+    let (code, stdout, stderr) =
+        outcome(&project.zaf(&["board", "file", "1", "export as CSV", "--body", TASK_BODY]));
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "#9 filed under #1\n");
+    let call = created(&project).expect("an issue is opened");
+    assert!(call.contains("--type Task"), "{call}");
+}
+
+#[test]
+fn a_filed_task_takes_the_named_type() {
+    let project = filing_project();
+    let (code, _, stderr) = outcome(&project.zaf(&[
+        "board",
+        "file",
+        "1",
+        "export crash",
+        "--body",
+        TASK_BODY,
+        "--type",
+        "Bug",
+    ]));
+    assert_eq!(code, 0, "{stderr}");
+    let call = created(&project).expect("an issue is opened");
+    assert!(call.contains("--type Bug"), "{call}");
+}
+
+#[test]
+fn an_unknown_type_is_refused_before_filing() {
+    let project = filing_project();
+    let (code, stdout, stderr) = outcome(&project.zaf(&[
+        "board",
+        "file",
+        "1",
+        "export as CSV",
+        "--body",
+        TASK_BODY,
+        "--type",
+        "Nope",
+    ]));
+    assert_eq!(code, 1, "{stderr}");
+    assert_eq!(stdout, "");
+    assert!(
+        stderr.lines().any(|line| line
+            == "zaf board file: example/tracker has no issue type Nope; it has Task, Bug"),
+        "{stderr}"
+    );
+    assert_eq!(created(&project), None, "no issue is opened");
+}

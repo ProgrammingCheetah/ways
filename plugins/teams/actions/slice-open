@@ -1,0 +1,26 @@
+#!/bin/sh
+# zaf description: open a task's slice with `workspace-open`, a jj workspace and a same-named bookmark at the base, handing back the workspace path
+# zaf 1: refused: the arguments are not <task>, or `workspace-open` refused (the slice is open on another base, or the base is unknown)
+# zaf 2: a backend failed (jj is missing or refused)
+# zaf mode: 750
+# zaf group: team, release, implement, fix
+# zaf target: task
+# zaf phases: claim
+
+# zaf sets ZAF_SLICE and ZAF_BASE on a `target: task` run; a hand-written call has neither.
+if [ "$#" -ne 1 ] || [ -z "$ZAF_SLICE" ] || [ -z "$ZAF_BASE" ]; then
+    echo "usage: slice-open <task>, run by zaf with ZAF_SLICE and ZAF_BASE set" >&2
+    exit 1
+fi
+
+# A successful `zaf do` prints nothing, so `--more` brings the step's whole log back; its code
+# passes through, and its last non-empty line is the workspace path.
+log=$(zaf do --more workspace-open "$ZAF_SLICE" "$ZAF_BASE") || exit $?
+workspace=$(printf '%s\n' "$log" | awk 'NF { line = $0 } END { print line }')
+if [ -z "$workspace" ]; then
+    echo "workspace-open handed back no workspace path" >&2
+    exit 2
+fi
+
+# The hand-back: zaf keeps this line as the task's workspace record.
+echo "$workspace"

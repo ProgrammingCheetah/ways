@@ -12,20 +12,21 @@ use std::time::Duration;
 
 use crate::adapters::design::DirDesign;
 use crate::adapters::gate::ShellGate;
-use crate::adapters::github::{GhCommand, GithubBoard, GithubForge};
+use crate::adapters::github::{GhCommand, GithubBoard, GithubForge, ProjectRef};
 use crate::adapters::jj::JjVcs;
 use crate::adapters::runner::{ProcessRunner, single_quote};
 use crate::adapters::shell::SystemShell;
+use crate::adapters::slot::{self, Slot};
 use crate::app::profile::{self, CONFIG_DIR_VAR};
 use crate::domain::{Profile, RoleName};
 use crate::manifest::{
-    BoardKind, CommandLine, DesignKind, Effort, FOLDER_FILE, ForgeKind, LEGACY_FILE, Manifest,
-    ManifestError, ModelName, ProjectFiles, ROOT_FILE, RunnerName, VcsKind,
+    BoardKind, CommandLine, DEFAULT_STATE_FIELD, DesignKind, Effort, FOLDER_FILE, ForgeKind,
+    LEGACY_FILE, Manifest, ManifestError, ModelName, ProjectFiles, ROOT_FILE, RunnerName, VcsKind,
     workspaces_path_lenient,
 };
 use crate::ports::{Board, Design, Forge, Gate, RunRequest, Runner, Shell, SliceName, Vcs};
 
-/// The retired manifest file name at the project root; `zaf init` still writes it.
+/// The retired manifest file name at the project root; `zaf setup` still writes it.
 pub const MANIFEST_FILE: &str = LEGACY_FILE;
 
 /// The variable naming the zaf home, where the machine's `config.toml` lives.
@@ -241,6 +242,32 @@ impl Composition {
                 })?;
                 Ok(Box::new(GithubBoard::from(GhCommand::from(repo))))
             }
+            BoardKind::GithubProjects => {
+                let missing = |key: &'static str| CompositionError::MissingKey {
+                    section: "board",
+                    key,
+                    kind: section.kind.to_string(),
+                };
+                let repo = section.repo.clone().ok_or_else(|| missing("repo"))?;
+                let number = section.project.ok_or_else(|| missing("project"))?;
+                let owner = section.owner.clone().unwrap_or_else(|| {
+                    repo.as_ref()
+                        .split_once('/')
+                        .map_or_else(|| repo.to_string(), |(owner, _)| owner.to_owned())
+                });
+                let project = ProjectRef {
+                    owner,
+                    number,
+                    field: section
+                        .state_field
+                        .clone()
+                        .unwrap_or_else(|| DEFAULT_STATE_FIELD.to_owned()),
+                };
+                Ok(Box::new(GithubBoard::on_project(
+                    GhCommand::from(repo),
+                    project,
+                )))
+            }
         }
     }
 
@@ -251,7 +278,7 @@ impl Composition {
             section: "vcs",
         })?;
         match section.kind {
-            VcsKind::Jj => Ok(Box::new(JjVcs::new(&self.root, &self.manifest.workspaces))),
+            VcsKind::Jj => Ok(Box::new(JjVcs)),
         }
     }
 
@@ -293,11 +320,23 @@ impl Composition {
                 key,
                 kind: kind.to_string(),
             })?;
-        let design = DirDesign::new(dir);
-        Ok(Some(Box::new(match &section.index {
-            Some(index) => design.with_index(index.clone()),
-            None => design,
-        })))
+        let index = section
+            .index_path(&self.root)
+            .unwrap_or_else(|| dir.clone());
+        Ok(Some(Box::new(DirDesign::at(dir, index))))
+    }
+
+    /// The absolute design folder and index the design source reads, as one line for a
+    /// failure message; `None` for a project without a design source.
+    pub fn design_paths_tried(&self) -> Option<String> {
+        let section = &self.manifest.design;
+        let dir = section.dir(&self.root)?;
+        let index = section.index_path(&self.root)?;
+        Some(format!(
+            "design dir {}, design index {}",
+            dir.display(),
+            index.display()
+        ))
     }
 
     /// The gate the manifest names, run at the project root.
@@ -310,7 +349,9 @@ impl Composition {
                 port: "Gate",
                 section: "gate",
             })?;
-        Ok(Box::new(ShellGate::new(&self.root, section)))
+        Ok(Box::new(
+            ShellGate::new(&self.root, section).with_slot(self.slot()),
+        ))
     }
 
     /// The directory of a slice's workspace, open or not: the project root, the
@@ -331,7 +372,9 @@ impl Composition {
                 port: "Gate",
                 section: "gate",
             })?;
-        Ok(Box::new(ShellGate::new(dir, section)))
+        Ok(Box::new(
+            ShellGate::new(dir, section).with_slot(self.slot()),
+        ))
     }
 
     /// [`gate_in`](Self::gate_in) with `env` set on every run, on top of the inherited
@@ -349,7 +392,38 @@ impl Composition {
                 port: "Gate",
                 section: "gate",
             })?;
-        Ok(Box::new(ShellGate::new(dir, section).with_env(env.clone())))
+        Ok(Box::new(
+            ShellGate::new(dir, section)
+                .with_env(env.clone())
+                .with_slot(self.slot()),
+        ))
+    }
+
+    /// The build slot `[gate] slot` names, or none: when the manifest names none, or when
+    /// this process already runs inside a held slot (`ZAF_SLOT_HELD` is set), so a nested
+    /// run takes no second one.
+    pub fn slot(&self) -> Option<Slot> {
+        self.slot_unless(slot::held_here(), &slot::holder_here())
+    }
+
+    /// [`slot`](Self::slot) with whether a slot is already held and who the holder is given.
+    pub fn slot_unless(&self, held: bool, holder: &str) -> Option<Slot> {
+        let prefix = self.manifest.gate.as_ref()?.slot.as_ref()?;
+        (!held).then(|| Slot::new(prefix.as_ref(), &self.state_dir(), holder))
+    }
+
+    /// The shell that runs a task's named tests in `dir` with `env` set: the `[gate] tests`
+    /// level, so inside the build slot when `[gate] slot` names one.
+    pub fn tests_shell_in_with_env(
+        &self,
+        dir: &Path,
+        env: &BTreeMap<String, String>,
+    ) -> Box<dyn Shell> {
+        Box::new(
+            SystemShell::new(dir, SHELL_TIMEOUT)
+                .with_env(env.clone())
+                .with_slot(self.slot(), "tests"),
+        )
     }
 
     /// The manifest's `[env]` table with `{root}` the absolute project root and `{version}`

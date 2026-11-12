@@ -1,0 +1,96 @@
+#!/bin/sh
+# zaf description: find a task's pull request, handing back its number: the slice's record, else an open one, else the latest merged, else the latest closed, each listed with its state and branch
+# zaf 1: refused: the arguments are not <task>, or no pull request belongs to the task
+# zaf 2: a backend failed (gh is missing or refused)
+# zaf mode: 755
+if [ -z "$ZAF_ROOT" ] || [ "$#" -ne 1 ]; then
+    echo "usage: task-pr <task>, with ZAF_ROOT set" >&2
+    exit 1
+fi
+
+# A task is an issue number, with the `#` it is often written with.
+task=${1#\#}
+case $task in
+    "" | *[!0-9]*)
+        echo "task $1 is not an issue number" >&2
+        exit 1
+        ;;
+esac
+
+# The slice's own record, written by zaf when `slice-pr` handed the number back.
+record=$ZAF_ROOT/.zaf/slices/$task.pr
+if [ -f "$record" ]; then
+    number=$(awk 'NF { print $1; exit }' "$record")
+    case $number in
+        "" | *[!0-9]*) ;;
+        *)
+            echo "#$number from the slice record"
+            echo "$number"
+            exit 0
+            ;;
+    esac
+fi
+
+# The forge repository the manifest names, the first manifest that names one, in the order zaf
+# reads them. With none, gh works the repository out from the root's remotes, as it does by hand.
+forge_repo() {
+    for manifest in "$ZAF_ROOT/.zaf.toml" "$ZAF_ROOT/.zaf/config.toml" "$ZAF_ROOT/ZAF.toml"; do
+        [ -f "$manifest" ] || continue
+        found=$(awk '
+            /^[ \t]*\[/ { in_forge = ($0 ~ /^[ \t]*\[forge\][ \t]*(#.*)?$/); next }
+            in_forge && /^[ \t]*repo[ \t]*=/ {
+                line = $0
+                sub(/^[^=]*=[ \t]*"/, "", line)
+                sub(/".*$/, "", line)
+                print line
+                exit
+            }
+        ' "$manifest")
+        if [ -n "$found" ]; then
+            echo "$found"
+            return
+        fi
+    done
+}
+
+cd "$ZAF_ROOT" || exit 2
+
+repo=$(forge_repo)
+if [ -n "$repo" ]; then
+    set -- --repo "$repo"
+else
+    set --
+fi
+
+# A task's pull request is titled `<title> (#<task>)` (slice-pr) or comes from a branch ending in
+# `-<task>` (the task branch pattern). The search narrows by the number in a title or a body
+# (`Refs #<task>.`, slice-pr's), since a search never reads branch names; the filter decides.
+# Newest first, as gh lists them.
+listed=$(gh pr list --state all --search "$task" --limit 50 \
+    --json number,state,headRefName,title \
+    --jq '.[] | [.number, .state, .headRefName, .title] | @tsv' "$@") || exit 2
+
+found=$(printf '%s\n' "$listed" | awk -F '\t' -v task="$task" '
+    NF >= 3 {
+        title_end = "(#" task ")"
+        branch_end = "-" task
+        if (substr($4, length($4) - length(title_end) + 1) == title_end ||
+            substr($3, length($3) - length(branch_end) + 1) == branch_end)
+            print $1 "\t" $2 "\t" $3
+    }
+')
+if [ -z "$found" ]; then
+    echo "no pull request belongs to task #$task"
+    exit 1
+fi
+
+printf '%s\n' "$found" | awk -F '\t' '{ print "#" $1 " " $2 " " $3 }'
+for state in OPEN MERGED CLOSED; do
+    number=$(printf '%s\n' "$found" | awk -F '\t' -v state="$state" '$2 == state { print $1; exit }')
+    if [ -n "$number" ]; then
+        echo "$number"
+        exit 0
+    fi
+done
+# A state gh has no name for here: the newest is the answer.
+printf '%s\n' "$found" | awk -F '\t' 'NR == 1 { print $1 }'

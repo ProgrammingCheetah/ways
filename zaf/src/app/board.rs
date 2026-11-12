@@ -1,8 +1,12 @@
-//! `zaf board ready|claim|report|question|ruling|done`: reading and writing the board.
+//! `zaf board ready|claim|report|handoff|question|ruling|done|file|lint`: reading and writing
+//! the board, and the hand-off on a task's pull request.
 
 use crate::app::actions::{Phase, PhaseUnreadable, SliceRecords, derive_phase, gather_phase_facts};
-use crate::domain::{Instance, IssueNumber, TaskLabel};
-use crate::ports::{Board, ClaimOutcome, Forge, NewQuestion, PortError, Ticket, Vcs};
+use crate::domain::{
+    Instance, NewTask, TaskProblem, TaskTemplate, TaskTemplateError, Ticket, TicketId, TicketState,
+    TicketType,
+};
+use crate::ports::{Board, ClaimOutcome, Forge, NewQuestion, PortError, PrNumber, Vcs};
 
 /// Why a board verb stopped.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -15,25 +19,53 @@ pub enum BoardError {
         /// The batch size the manifest gives its role.
         batch: u32,
         /// The tasks it holds.
-        held: Vec<IssueNumber>,
+        held: Vec<TicketId>,
     },
     /// `board done` found the task outside `land` with no merged pull request to show for it.
     #[error("{task} is in {phase}, not land")]
     NotInLand {
         /// The task.
-        task: IssueNumber,
+        task: TicketId,
         /// The phase it is in.
         phase: Phase,
     },
     /// The task's phase could not be read, so nothing was changed.
     #[error(transparent)]
     Unreadable(#[from] PhaseUnreadable),
+    /// `board handoff` found no pull request recorded for the task; nothing was written.
+    #[error("{0} has no recorded pull request")]
+    NoPullRequest(TicketId),
+    /// `board file` was given a body outside the task template; nothing was filed.
+    #[error("the body is not a task: {0}")]
+    NotATask(#[from] TaskTemplateError),
+    /// `board file` was given a state a task does not open in.
+    #[error("a task opens ready or blocked, not {0}")]
+    NotAnOpeningState(TicketState),
+    /// `board file` was given a type the repository does not define; nothing was filed. It
+    /// prints as `zaf board file: <repo> has no issue type <name>; it has <types>`.
+    #[error("{repo} has no issue type {name}; it has {}", type_list(types))]
+    NoSuchType {
+        /// The repository, as the board names it.
+        repo: String,
+        /// The type asked for.
+        name: TicketType,
+        /// The types the repository does define.
+        types: Vec<TicketType>,
+    },
     /// The board refused or failed.
     #[error(transparent)]
     Port(#[from] PortError),
 }
 
-fn list(numbers: &[IssueNumber]) -> String {
+fn type_list(types: &[TicketType]) -> String {
+    if types.is_empty() {
+        return "none".to_owned();
+    }
+    let names: Vec<&str> = types.iter().map(TicketType::as_str).collect();
+    names.join(", ")
+}
+
+fn list(numbers: &[TicketId]) -> String {
     let numbers: Vec<String> = numbers.iter().map(ToString::to_string).collect();
     numbers.join(", ")
 }
@@ -43,11 +75,18 @@ pub fn ready(board: &dyn Board) -> Result<Vec<Ticket>, BoardError> {
     Ok(board.ready()?)
 }
 
+/// `zaf board lint`: every problem the body of a task has against the template; none when it
+/// parses. A task the board cannot read is an error, not a clean body.
+pub fn lint(board: &dyn Board, issue: TicketId) -> Result<Vec<TaskProblem>, BoardError> {
+    let ticket = board.task(issue)?;
+    Ok(TaskTemplate::problems(ticket.body.as_str()))
+}
+
 /// The command `zaf board claim` runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaimCommand {
     /// The task.
-    pub task: IssueNumber,
+    pub task: TicketId,
     /// Who claims it.
     pub instance: Instance,
     /// How many claims the instance may hold at once: its role's batch size.
@@ -59,7 +98,7 @@ pub struct ClaimCommand {
 /// Claiming one's own claim again succeeds with [`ClaimOutcome::AlreadyHeld`]
 /// and never counts against the batch; a task held by another instance is a conflict.
 pub fn claim(board: &dyn Board, command: &ClaimCommand) -> Result<ClaimOutcome, BoardError> {
-    let held: Vec<IssueNumber> = board
+    let held: Vec<TicketId> = board
         .claims()?
         .into_iter()
         .filter(|claim| claim.instance == command.instance)
@@ -82,7 +121,7 @@ pub fn claim(board: &dyn Board, command: &ClaimCommand) -> Result<ClaimOutcome, 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReportCommand {
     /// The task or epic reported on.
-    pub task: IssueNumber,
+    pub task: TicketId,
     /// Who reports.
     pub instance: Instance,
     /// The status.
@@ -110,21 +149,36 @@ pub fn report(board: &dyn Board, command: &ReportCommand) -> Result<ReportOutcom
     Ok(ReportOutcome { heartbeat })
 }
 
+/// `zaf board handoff`: writes the one hand-off comment on the task's recorded pull request,
+/// replacing the one it has, and returns that pull request.
+///
+/// A task with no recorded pull request is [`BoardError::NoPullRequest`] and nothing is written.
+pub fn handoff(
+    forge: &dyn Forge,
+    records: &SliceRecords,
+    task: TicketId,
+    text: &str,
+) -> Result<PrNumber, BoardError> {
+    let pr = records.pr(task).ok_or(BoardError::NoPullRequest(task))?;
+    forge.set_handoff(pr, text)?;
+    Ok(pr)
+}
+
 /// `zaf board question`: opens a question ticket for the Engineer and labels
 /// the issue it is raised on `question`, so that issue waits.
 ///
 /// Asking the same text on the same issue again reuses the question still open
 /// instead of opening a second one, and returns its number.
-pub fn question(board: &dyn Board, command: &NewQuestion) -> Result<IssueNumber, BoardError> {
+pub fn question(board: &dyn Board, command: &NewQuestion) -> Result<TicketId, BoardError> {
     let open = board
         .questions()?
         .into_iter()
         .find(|ticket| command.is_asked_by(ticket));
     let number = match open {
-        Some(ticket) => ticket.number,
+        Some(ticket) => ticket.id,
         None => board.open_question(command)?,
     };
-    board.label(command.on, TaskLabel::Question)?;
+    board.set_state(command.on, TicketState::Question)?;
     Ok(number)
 }
 
@@ -132,7 +186,7 @@ pub fn question(board: &dyn Board, command: &NewQuestion) -> Result<IssueNumber,
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RulingCommand {
     /// The question ruled on.
-    pub question: IssueNumber,
+    pub question: TicketId,
     /// The Engineer's ruling.
     pub ruling: String,
 }
@@ -140,10 +194,7 @@ pub struct RulingCommand {
 /// `zaf board ruling`: records the ruling, closes the question and returns the task
 /// it was raised on to `ready`; that task is the one returned, if there was one.
 /// The same ruling again succeeds quietly; a different one is a conflict.
-pub fn ruling(
-    board: &dyn Board,
-    command: &RulingCommand,
-) -> Result<Option<IssueNumber>, BoardError> {
+pub fn ruling(board: &dyn Board, command: &RulingCommand) -> Result<Option<TicketId>, BoardError> {
     Ok(board.record_ruling(command.question, &command.ruling)?)
 }
 
@@ -169,7 +220,7 @@ pub fn done(
     forge: &dyn Forge,
     vcs: &dyn Vcs,
     records: &SliceRecords,
-    task: IssueNumber,
+    task: TicketId,
 ) -> Result<DoneOutcome, BoardError> {
     let facts = gather_phase_facts(board, forge, vcs, records, task)?;
     let phase = derive_phase(&facts);
@@ -186,9 +237,57 @@ pub fn done(
             }
         }
     }
-    board.label(task, TaskLabel::Done)?;
+    board.set_state(task, TicketState::Done)?;
     Ok(DoneOutcome::Marked)
 }
 
 #[cfg(test)]
 mod tests;
+
+/// What `zaf board file` did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileOutcome {
+    /// The task was opened under its epic.
+    Filed(TicketId),
+    /// The epic already has an open or done task with that title; nothing was opened.
+    AlreadyFiled(TicketId),
+}
+
+impl FileOutcome {
+    /// The task, filed now or before.
+    pub fn task(self) -> TicketId {
+        match self {
+            Self::Filed(task) | Self::AlreadyFiled(task) => task,
+        }
+    }
+}
+
+/// `zaf board file`: opens a task under an open epic, in the task template, ready or blocked.
+///
+/// A body outside the template, or a type the repository does not define
+/// ([`BoardError::NoSuchType`], naming the types it does), is refused before anything is
+/// written. Filing a title the epic already counts (open or done) returns that task, so a
+/// planning instance run again files nothing twice.
+pub fn file(board: &dyn Board, task: &NewTask) -> Result<FileOutcome, BoardError> {
+    if !matches!(task.state, TicketState::Ready | TicketState::Blocked) {
+        return Err(BoardError::NotAnOpeningState(task.state));
+    }
+    task.body.as_str().parse::<crate::domain::TaskTemplate>()?;
+    let types = board.issue_types()?;
+    if !types.defines(&task.kind) {
+        return Err(BoardError::NoSuchType {
+            repo: types.repo,
+            name: task.kind.clone(),
+            types: types.names,
+        });
+    }
+    let epic = board.epic(task.epic)?;
+    if let Some(filed) = epic
+        .tasks
+        .iter()
+        .find(|filed| filed.counts() && filed.title == task.title)
+    {
+        return Ok(FileOutcome::AlreadyFiled(filed.number));
+    }
+    Ok(FileOutcome::Filed(board.file_task(task)?))
+}

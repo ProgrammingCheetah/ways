@@ -3,7 +3,7 @@
 use std::fmt;
 use std::str::FromStr;
 
-use crate::domain::IssueNumber;
+use crate::domain::TicketId;
 use crate::ports::PrNumber;
 
 /// A check target as typed: `26` or `#26` for a task; `pr:12` or `pr:12:26` for
@@ -11,13 +11,13 @@ use crate::ports::PrNumber;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Target {
     /// A task: its acceptance checks.
-    Task(IssueNumber),
+    Task(TicketId),
     /// A pull request, and the task it carries when given.
     Pr {
         /// The pull request.
         pr: PrNumber,
         /// The task, whose security trigger decides the `?flagged` steps.
-        task: Option<IssueNumber>,
+        task: Option<TicketId>,
     },
 }
 
@@ -44,7 +44,7 @@ impl FromStr for Target {
         let trimmed = text.trim();
         let Some(rest) = trimmed.strip_prefix("pr:") else {
             return trimmed
-                .parse::<IssueNumber>()
+                .parse::<TicketId>()
                 .map(Self::Task)
                 .map_err(|_| target_error());
         };
@@ -53,11 +53,11 @@ impl FromStr for Target {
             None => (rest, None),
         };
         let pr = pr_text
-            .parse::<IssueNumber>()
+            .parse::<TicketId>()
             .map(|number| PrNumber::from(number.get()))
             .map_err(|_| target_error())?;
         let task = task_text
-            .map(str::parse::<IssueNumber>)
+            .map(str::parse::<TicketId>)
             .transpose()
             .map_err(|_| target_error())?;
         Ok(Self::Pr { pr, task })

@@ -30,6 +30,11 @@
       "node": false
     },
     {
+      "name": "actions/",
+      "role": "the 17 standard actions a project copies into its `.zaf/actions/`, taken from ways' own",
+      "node": false
+    },
+    {
       "name": "agents/",
       "role": "one brief per role, run as `teams:<role>`",
       "node": true

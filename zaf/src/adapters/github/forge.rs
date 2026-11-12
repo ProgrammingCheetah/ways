@@ -5,14 +5,14 @@ use std::time::SystemTime;
 use serde::Deserialize;
 
 use super::GhCommand;
-use super::command::number_from_url;
+use super::notes::{HANDOFF_MARKER, marked, unmarked};
 use super::rows::{
-    CheckBucket, CheckRow, FileRow, LineCommentRow, NumberRow, PrHeadRow, PrStateRow, ReviewRow,
-    UserRow,
+    CheckBucket, CheckRow, ConversationCommentRow, FileRow, LineCommentRow, PrHeadRow, PrStateRow,
+    PrTimesRow, ReviewRow, UserRow,
 };
 use crate::domain::Location;
 use crate::ports::{
-    Author, Check, CheckName, CheckState, Forge, PortError, PrMerge, PrNumber, PrRequest,
+    Author, Check, CheckName, CheckState, CommitId, Forge, PortError, PrNumber, PullRequest,
     ReviewComment, RuleId, ScanningAlert,
 };
 
@@ -46,9 +46,23 @@ fn author(user: Option<UserRow>) -> Author {
     user.map_or_else(|| Author::from(GHOST), |user| Author::from(user.login))
 }
 
-fn parse_time(text: &str) -> Result<SystemTime, PortError> {
-    humantime::parse_rfc3339(text)
-        .map_err(|error| PortError::Backend(format!("gh printed a bad time `{text}`: {error}")))
+/// The zero time gh prints for a run that has not finished.
+const ZERO_TIME: &str = "0001-01-01T00:00:00Z";
+
+/// The time gh gave for `what` on a pull request; a time gh left out, or printed as the zero
+/// time or in a form that does not parse, is an error naming the pull request.
+fn time_of(pr: PrNumber, what: &str, text: Option<&str>) -> Result<SystemTime, PortError> {
+    let text = text.filter(|text| !text.is_empty() && *text != ZERO_TIME);
+    let Some(text) = text else {
+        return Err(PortError::Backend(format!(
+            "pull request {pr}: gh gave no time for {what}"
+        )));
+    };
+    humantime::parse_rfc3339(text).map_err(|error| {
+        PortError::Backend(format!(
+            "pull request {pr}: gh printed a bad time `{text}` for {what}: {error}"
+        ))
+    })
 }
 
 /// An alert as `repos/{repo}/code-scanning/alerts` prints it.
@@ -98,60 +112,58 @@ impl From<AlertRow> for ScanningAlert {
 }
 
 impl Forge for GithubForge {
-    fn open_pr(&self, request: &PrRequest) -> Result<PrNumber, PortError> {
-        let open: Vec<NumberRow> = self.gh.json(&[
-            "pr",
-            "list",
-            "--head",
-            request.slice.as_ref(),
-            "--state",
-            "open",
-            "--json",
-            "number",
-        ])?;
-        if let Some(existing) = open.first() {
-            return Ok(PrNumber::from(existing.number));
-        }
-        let stdout = self.gh.text(&[
-            "pr",
-            "create",
-            "--head",
-            request.slice.as_ref(),
-            "--base",
-            request.base.as_ref(),
-            "--title",
-            &request.title,
-            "--body",
-            &request.body,
-        ])?;
-        number_from_url(&stdout).map(PrNumber::from)
-    }
-
     fn checks(&self, pr: PrNumber) -> Result<Vec<Check>, PortError> {
         let number = bare(pr);
         let rows: Vec<CheckRow> =
             match self
                 .gh
-                .json(&["pr", "checks", &number, "--json", "name,bucket"])
+                .json(&["pr", "checks", &number, "--json", "name,bucket,completedAt"])
             {
                 Err(PortError::Backend(stderr)) if stderr.contains(NO_CHECKS) => Vec::new(),
                 other => other?,
             };
-        let checks = rows
-            .into_iter()
-            .map(|row| Check {
-                name: CheckName::from(row.name),
-                state: CheckState::from(row.bucket),
+        rows.into_iter()
+            .map(|row| {
+                let state = CheckState::from(row.bucket);
+                // A running check has no finish time, whatever gh prints in its place.
+                let finished_at = match state {
+                    CheckState::Pending => None,
+                    CheckState::Passed | CheckState::Failed => {
+                        let what = format!("the finish of check `{}`", row.name);
+                        Some(time_of(pr, &what, row.completed_at.as_deref())?)
+                    }
+                };
+                Ok(Check {
+                    name: CheckName::from(row.name),
+                    state,
+                    finished_at,
+                })
             })
-            .collect();
-        Ok(checks)
+            .collect()
+    }
+
+    fn pull_request(&self, pr: PrNumber) -> Result<PullRequest, PortError> {
+        let number = bare(pr);
+        let row: PrTimesRow =
+            self.gh
+                .json(&["pr", "view", &number, "--json", "state,createdAt,mergedAt"])?;
+        let opened_at = time_of(pr, "its opening", row.created_at.as_deref())?;
+        let merged_at = if row.state == "MERGED" {
+            Some(time_of(pr, "its merge", row.merged_at.as_deref())?)
+        } else {
+            None
+        };
+        Ok(PullRequest {
+            opened_at,
+            merged_at,
+        })
     }
 
     fn review_comments(&self, pr: PrNumber) -> Result<Vec<ReviewComment>, PortError> {
         let number = bare(pr);
         let lines: Vec<LineCommentRow> = self.gh.api_list(&format!("pulls/{number}/comments"))?;
         let reviews: Vec<ReviewRow> = self.gh.api_list(&format!("pulls/{number}/reviews"))?;
-        let mut dated: Vec<(SystemTime, ReviewComment)> = Vec::new();
+        let mut comments: Vec<ReviewComment> = Vec::new();
         for review in reviews {
             let (Some(submitted_at), Some(body)) = (review.submitted_at, review.body) else {
                 continue;
@@ -163,9 +175,10 @@ impl Forge for GithubForge {
                 author: author(review.user),
                 body,
                 location: None,
-                head: review.commit_id,
+                head: review.commit_id.map(CommitId::from),
+                posted_at: time_of(pr, "a review's posting", Some(&submitted_at))?,
             };
-            dated.push((parse_time(&submitted_at)?, comment));
+            comments.push(comment);
         }
         for line in lines {
             let location = Location {
@@ -176,12 +189,13 @@ impl Forge for GithubForge {
                 author: author(line.user),
                 body: line.body,
                 location: Some(location),
-                head: line.commit_id,
+                head: line.commit_id.map(CommitId::from),
+                posted_at: time_of(pr, "a comment's posting", line.created_at.as_deref())?,
             };
-            dated.push((parse_time(&line.created_at)?, comment));
+            comments.push(comment);
         }
-        dated.sort_by_key(|(at, _)| *at);
-        Ok(dated.into_iter().map(|(_, comment)| comment).collect())
+        comments.sort_by_key(|comment| comment.posted_at);
+        Ok(comments)
     }
 
     fn head(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
@@ -211,16 +225,42 @@ impl Forge for GithubForge {
         Ok(rows.into_iter().map(ScanningAlert::from).collect())
     }
 
-    fn merge(&self, pr: PrNumber) -> Result<PrMerge, PortError> {
-        let number = bare(pr);
-        let pull: PrStateRow = self.gh.json(&["pr", "view", &number, "--json", "state"])?;
-        match pull.state.as_str() {
-            "MERGED" => Ok(PrMerge::AlreadyMerged),
-            "CLOSED" => Err(PortError::Rejected(format!("{pr} is closed unmerged"))),
-            _ => {
-                self.gh.text(&["pr", "merge", &number, "--merge"])?;
-                Ok(PrMerge::Merged)
+    fn handoff(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
+        let comments = self.conversation(pr)?;
+        let latest = comments
+            .iter()
+            .rev()
+            .find_map(|comment| unmarked(HANDOFF_MARKER, &comment.body));
+        Ok(latest.map(str::to_owned))
+    }
+
+    fn set_handoff(&self, pr: PrNumber, text: &str) -> Result<(), PortError> {
+        let handoff = marked(HANDOFF_MARKER, text);
+        let comments = self.conversation(pr)?;
+        let existing = comments
+            .iter()
+            .rev()
+            .find(|comment| unmarked(HANDOFF_MARKER, &comment.body).is_some());
+        match existing {
+            Some(comment) if comment.body == handoff => Ok(()),
+            Some(comment) => {
+                let endpoint = format!("issues/comments/{}", comment.id);
+                let field = format!("body={handoff}");
+                self.gh
+                    .api_text(&endpoint, &["--method", "PATCH", "-f", &field])
+                    .map(drop)
             }
+            None => self
+                .gh
+                .text(&["pr", "comment", &bare(pr), "--body", &handoff])
+                .map(drop),
         }
+    }
+}
+
+impl GithubForge {
+    /// The pull request's conversation comments, oldest first.
+    fn conversation(&self, pr: PrNumber) -> Result<Vec<ConversationCommentRow>, PortError> {
+        self.gh.api_list(&format!("issues/{}/comments", bare(pr)))
     }
 }

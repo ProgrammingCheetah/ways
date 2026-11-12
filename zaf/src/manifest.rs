@@ -16,14 +16,15 @@ mod sections;
 pub use document::Manifest;
 pub use errors::ManifestError;
 pub use layers::{
-    FOLDER_FILE, HOME_FILE, LEGACY_FILE, ProjectFiles, ROOT_FILE, workspaces_path_lenient,
+    FOLDER_FILE, HOME_FILE, LEGACY_FILE, LOCAL_FILE, ProjectFiles, ROOT_FILE, files_read,
+    workspaces_path_lenient,
 };
 pub use requirement::{Requirement, RequirementError};
 pub use sections::{
-    ActionsSection, AskSection, BoardKind, BoardSection, BranchPattern, BranchesSection,
-    CheckSection, CheckTarget, ChecksSection, CommandLine, DesignKind, DesignSection, Effort,
-    EnvSection, ForbiddenSection, ForgeKind, ForgeSection, GateSection, IsolationKind,
-    IsolationSection, ModelName, PackSection, ProjectName, ProjectSection, RepoName, RoleSection,
-    Rung, RunnerName, RunnerSection, SpawnSection, StyleSection, ToolName, VcsKind, VcsSection,
-    WorkspacesSection,
+    ActionName, ActionsSection, AskSection, BoardKind, BoardSection, BranchPattern,
+    BranchesSection, CheckSection, CheckTarget, ChecksSection, CommandLine, DEFAULT_DESIGN_INDEX,
+    DEFAULT_STATE_FIELD, DesignKind, DesignSection, Effort, EnvSection, ForbiddenSection,
+    ForgeKind, ForgeSection, GateSection, IsolationKind, IsolationSection, ModelName, PackSection,
+    ProjectName, ProjectSection, RepoName, RoleSection, Rung, RunnerName, RunnerSection,
+    SizesSection, SpawnSection, StyleSection, ToolName, VcsKind, VcsSection, WorkspacesSection,
 };
