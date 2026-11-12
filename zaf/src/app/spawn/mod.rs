@@ -45,6 +45,7 @@
 //! `.zaf/phases/` rather than `.zaf/runs/`.
 
 pub mod blockers;
+pub mod failures;
 pub mod inline;
 pub mod outcome;
 pub mod phase;

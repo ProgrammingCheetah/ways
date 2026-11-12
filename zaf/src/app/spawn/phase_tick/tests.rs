@@ -7,7 +7,9 @@ use super::*;
 use crate::app::spawn::outcome::{Launched, Ran, Started};
 use crate::domain::{TicketState, Units};
 use crate::fakes::{FakeBoard, FakeForge, PrRequest};
-use crate::ports::{BaseName, Check, CheckName, CheckState, Holder, PrNumber, SliceName};
+use crate::ports::{
+    BaseName, Check, CheckName, CheckState, Holder, NewQuestion, PrNumber, SliceName,
+};
 
 const MANIFEST: &str = r#"
 [project]
@@ -402,4 +404,196 @@ fn the_tick_stores_no_standing() {
     assert_eq!(files(&scene.home), home_before);
     // Read again, the same standing comes back: it is derived, not kept.
     assert_eq!(scene.gather(), gathered);
+}
+
+impl Scene {
+    /// One finished run of `action` on `task`: started at `started`, its process exited `exit`
+    /// and printed `output`. A run with no exit is a dead process that recorded no code.
+    fn phase_run(&self, task: u64, action: &str, started: u64, exit: Option<i32>, output: &str) {
+        let dir = self
+            .state_dir
+            .join(format!("phases/{action}-{started}-task-{task}"));
+        write(&dir.join("action"), action);
+        write(&dir.join("head"), "");
+        write(&dir.join("output"), output);
+        if let Some(code) = exit {
+            write(&dir.join("exit"), &code.to_string());
+        }
+        // Last: its time is when the run started.
+        let file = dir.join("task");
+        write(&file, &task.to_string());
+        fs::File::options()
+            .write(true)
+            .open(&file)
+            .expect("opens")
+            .set_modified(time(started))
+            .expect("sets the start");
+    }
+
+    /// The questions on the board as (task, text).
+    fn asked(&self) -> Vec<(Option<TicketId>, String)> {
+        self.board
+            .questions()
+            .expect("lists")
+            .iter()
+            .map(|ticket| {
+                (
+                    NewQuestion::raised_on(ticket.body.as_str()),
+                    NewQuestion::text_of(ticket).to_owned(),
+                )
+            })
+            .collect()
+    }
+}
+
+/// Three runs of implement on #3 that each ended non-zero.
+fn failed_three_times(scene: &Scene) {
+    scene.phase_run(
+        3,
+        "implement",
+        10,
+        Some(1),
+        "FAIL implement: exit 1\nfirst\n",
+    );
+    scene.phase_run(
+        3,
+        "implement",
+        20,
+        Some(2),
+        "FAIL implement: exit 2\nsecond\n",
+    );
+    scene.phase_run(
+        3,
+        "implement",
+        30,
+        Some(3),
+        "FAIL implement: exit 3, failed\nstep one\nno such file: spec.md\n\n",
+    );
+}
+
+#[test]
+fn phase_failed_three_times_is_not_started() {
+    let scene = Scene::new();
+    scene.task(3, "S");
+    failed_three_times(&scene);
+    let gathered = scene.gather();
+    assert!(gathered.unreadable.is_empty(), "{gathered:?}");
+    let (tick, calls) = run(&scene.board, &gathered.tasks, Ok(()));
+    assert!(calls.start.is_empty(), "no fourth run starts: {calls:?}");
+    assert!(tick.outcome.started.is_none(), "{tick:?}");
+    assert!(tick.failed.is_empty(), "{tick:?}");
+}
+
+#[test]
+fn a_phase_failed_twice_still_starts() {
+    let scene = Scene::new();
+    scene.task(3, "S");
+    scene.phase_run(3, "implement", 10, Some(1), "");
+    scene.phase_run(3, "implement", 20, Some(1), "");
+    let (tick, calls) = run(&scene.board, &scene.gather().tasks, Ok(()));
+    assert_eq!(calls.start.len(), 1, "{calls:?}");
+    assert!(tick.outcome.questions.is_empty());
+    assert!(scene.asked().is_empty());
+}
+
+#[test]
+fn a_success_between_failures_starts_the_count_again() {
+    let scene = Scene::new();
+    scene.task(3, "S");
+    // Two failures, a run that went well, then two more: the streak is two, not four.
+    scene.phase_run(3, "implement", 10, Some(1), "");
+    scene.phase_run(3, "implement", 20, Some(1), "");
+    scene.phase_run(3, "implement", 30, Some(0), "");
+    scene.phase_run(3, "implement", 40, Some(1), "");
+    scene.phase_run(3, "implement", 50, Some(1), "");
+    let (tick, calls) = run(&scene.board, &scene.gather().tasks, Ok(()));
+    assert_eq!(calls.start.len(), 1, "{calls:?}");
+    assert!(tick.outcome.questions.is_empty());
+    assert!(scene.asked().is_empty());
+}
+
+#[test]
+fn phase_failed_three_times_raises_one_question() {
+    let scene = Scene::new();
+    scene.task(3, "S");
+    failed_three_times(&scene);
+    let gathered = scene.gather();
+    let (tick, _) = run(&scene.board, &gathered.tasks, Ok(()));
+    assert_eq!(tick.outcome.questions, [id(3)]);
+    let asked = scene.asked();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert_eq!(asked[0].0, Some(id(3)));
+    let text = &asked[0].1;
+    assert!(
+        text.starts_with("implement failed 3 times in a row"),
+        "{text}"
+    );
+    assert!(text.contains("exit codes 1, 2, 3"), "{text}");
+    assert!(
+        text.contains("\"no such file: spec.md\""),
+        "the last line of the last run: {text}"
+    );
+    assert_eq!(
+        scene.board.task(id(3)).expect("task").state,
+        Some(TicketState::Question),
+        "the question makes the task wait"
+    );
+
+    // A second tick, on the same facts and on the board as it is now, raises no second one.
+    let (again, calls) = run(&scene.board, &gathered.tasks, Ok(()));
+    assert!(again.outcome.questions.is_empty(), "{again:?}");
+    assert!(calls.start.is_empty(), "{calls:?}");
+    let (later, calls) = run(&scene.board, &scene.gather().tasks, Ok(()));
+    assert!(later.outcome.questions.is_empty(), "{later:?}");
+    assert!(calls.start.is_empty(), "{calls:?}");
+    assert_eq!(scene.asked().len(), 1);
+}
+
+#[test]
+fn a_ruled_question_lets_the_phase_start_again() {
+    let scene = Scene::new();
+    scene.task(3, "S");
+    failed_three_times(&scene);
+    run(&scene.board, &scene.gather().tasks, Ok(()));
+    let question = scene.board.questions().expect("lists")[0].id;
+    scene
+        .board
+        .record_ruling(question, "Fix the spec path, then go on.")
+        .expect("rules");
+
+    let (tick, calls) = run(&scene.board, &scene.gather().tasks, Ok(()));
+    assert_eq!(calls.start.len(), 1, "the ruling lets it start: {calls:?}");
+    assert!(tick.outcome.questions.is_empty());
+
+    // It fails once more: that is one failure since the ruling, not three.
+    scene.phase_run(3, "implement", 40, Some(1), "boom\n");
+    let (tick, calls) = run(&scene.board, &scene.gather().tasks, Ok(()));
+    assert_eq!(calls.start.len(), 1, "{calls:?}");
+    assert!(tick.outcome.questions.is_empty());
+
+    // Three since the ruling hold it again, with a question of its own.
+    scene.phase_run(3, "implement", 50, Some(1), "boom\n");
+    scene.phase_run(3, "implement", 60, Some(4), "boom again\n");
+    let (tick, calls) = run(&scene.board, &scene.gather().tasks, Ok(()));
+    assert!(calls.start.is_empty(), "{calls:?}");
+    assert_eq!(tick.outcome.questions, [id(3)]);
+    assert!(
+        scene.asked()[0].1.contains("exit codes 1, 1, 4"),
+        "{:?}",
+        scene.asked()
+    );
+}
+
+#[test]
+fn a_failing_phase_does_not_hold_another_task() {
+    let scene = Scene::new();
+    scene.task(3, "S");
+    scene.task(5, "S");
+    failed_three_times(&scene);
+    let (tick, calls) = run(&scene.board, &scene.gather().tasks, Ok(()));
+    assert_eq!(
+        tick.outcome.started.map(|started| started.task),
+        Some(id(5)),
+        "{calls:?}"
+    );
 }

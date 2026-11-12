@@ -242,6 +242,13 @@ fn read_run(
         },
         None => None,
     };
+    let last_line = read_text(&dir.join("output"))?.and_then(|text| {
+        text.lines()
+            .rev()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .map(str::to_owned)
+    });
     let ended = exit_file.exists();
     let holder = read_text(&dir.join("pid"))?.and_then(|text| Holder::parse(&text));
     let alive = !ended && holder.as_ref().is_some_and(alive);
@@ -251,6 +258,7 @@ fn read_run(
         started_at,
         alive,
         exit,
+        last_line,
     }))
 }
 

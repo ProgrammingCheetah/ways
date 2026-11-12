@@ -10,6 +10,7 @@ use crate::ports::{GateRun, GateVerdict, PortError};
 /// plugin at `version` in the profile's `plugins/installed_plugins.json`, as Claude does.
 struct RecordingShell {
     version: &'static str,
+    install_path: Option<PathBuf>,
     lines: Mutex<Vec<String>>,
 }
 
@@ -21,7 +22,16 @@ impl RecordingShell {
     fn installing(version: &'static str) -> Self {
         Self {
             version,
+            install_path: None,
             lines: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// An install that records the pack at `path`, as Claude records its `installPath`.
+    fn installing_at(path: &Path) -> Self {
+        Self {
+            install_path: Some(path.to_owned()),
+            ..Self::new()
         }
     }
 
@@ -39,7 +49,10 @@ impl Shell for RecordingShell {
             if let (Some(home), Some(id)) = (quoted.nth(1), quoted.nth(1)) {
                 let home = Path::new(home);
                 fs::create_dir_all(home.join("plugins")).expect("plugins dir");
-                let entry = serde_json::json!({ "scope": "user", "version": self.version });
+                let mut entry = serde_json::json!({ "scope": "user", "version": self.version });
+                if let Some(path) = &self.install_path {
+                    entry["installPath"] = path.display().to_string().into();
+                }
                 let record = serde_json::json!({ "version": 2, "plugins": { id: [entry] } });
                 fs::write(
                     home.join(profile::INSTALLED_PLUGINS_FILE),
@@ -593,6 +606,196 @@ fn setup_pack_refusal_is_a_step() {
         lines[0].contains("pack teams is 2.0.3, manifest asks teams-v2.1.0"),
         "the step names what it said: {lines:?}"
     );
+}
+
+const PACK_ACTIONS: usize = 17;
+
+/// A pack folder with `PACK_ACTIONS` action files (`action-00` and so on, the first `750`), a
+/// link and a folder that must not be copied.
+fn pack_with_actions(dir: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let pack = dir.join("pack");
+    let actions = pack.join("actions");
+    fs::create_dir_all(actions.join("hooks")).expect("pack folders");
+    for number in 0..PACK_ACTIONS {
+        let file = actions.join(format!("action-{number:02}"));
+        fs::write(
+            &file,
+            format!("#!/bin/sh\n# zaf description: pack action {number}\n# zaf 1: failed\ntrue\n"),
+        )
+        .expect("action");
+        let mode = if number == 0 { 0o750 } else { 0o755 };
+        fs::set_permissions(&file, fs::Permissions::from_mode(mode)).expect("mode");
+    }
+    std::os::unix::fs::symlink("/etc/passwd", actions.join("linked")).expect("link");
+    fs::write(actions.join("hooks/pre-tick"), "#!/bin/sh\n").expect("hook");
+    pack
+}
+
+fn mode_of(path: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    fs::metadata(path).expect("a file").permissions().mode() & 0o777
+}
+
+#[test]
+fn setup_installs_pack_actions() {
+    let (dir, root, home) = places();
+    let pack = pack_with_actions(dir.path());
+    let shell = RecordingShell::installing_at(&pack);
+
+    let report = super::setup_with(
+        &root,
+        Some(&home),
+        &manifest(TAGGED),
+        &FakeCommands::new(),
+        &shell,
+        None,
+    )
+    .expect("sets up");
+
+    let installed = home.join("actions");
+    let mut names: Vec<String> = fs::read_dir(&installed)
+        .expect("the machine tier")
+        .map(|entry| {
+            entry
+                .expect("entry")
+                .file_name()
+                .into_string()
+                .expect("utf-8")
+        })
+        .collect();
+    names.sort();
+    let expected: Vec<String> = (0..PACK_ACTIONS)
+        .map(|n| format!("action-{n:02}"))
+        .collect();
+    assert_eq!(
+        names, expected,
+        "the 17 and nothing else, no temporary file"
+    );
+    assert_eq!(report.actions.installed, expected);
+    assert!(report.actions.kept.is_empty());
+    for name in &expected {
+        let want = if name == "action-00" { 0o750 } else { 0o755 };
+        assert_eq!(
+            mode_of(&installed.join(name)),
+            want,
+            "{name} keeps its mode"
+        );
+        assert_eq!(
+            read(&installed.join(name)),
+            read(&pack.join("actions").join(name))
+        );
+    }
+    let lines = report.actions.lines();
+    assert_eq!(lines.len(), 1, "one line: {lines:?}");
+    assert!(
+        lines[0].starts_with("installed 17 pack actions"),
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn setup_keeps_edited_machine_action() {
+    let (dir, root, home) = places();
+    let pack = pack_with_actions(dir.path());
+    let shell = RecordingShell::installing_at(&pack);
+    let manifest = manifest(TAGGED);
+    let commands = FakeCommands::new();
+    super::setup_with(&root, Some(&home), &manifest, &commands, &shell, None).expect("first");
+    let edited = home.join("actions/action-03");
+    fs::write(&edited, "#!/bin/sh\n# the Engineer's own\n").expect("edit");
+    fs::remove_file(home.join("actions/action-04")).expect("remove one");
+    let before = snapshot(&home.join("actions"));
+
+    let second =
+        super::setup_with(&root, Some(&home), &manifest, &commands, &shell, None).expect("again");
+
+    assert_eq!(read(&edited), "#!/bin/sh\n# the Engineer's own\n");
+    let after = snapshot(&home.join("actions"));
+    assert_eq!(
+        after.len(),
+        PACK_ACTIONS,
+        "the removed one is back, nothing else is"
+    );
+    for (name, bytes) in &before {
+        assert_eq!(&after[name], bytes, "{name:?} is as it was");
+    }
+    assert_eq!(second.actions.installed, ["action-04"]);
+    assert_eq!(second.actions.kept.len(), PACK_ACTIONS - 1);
+    assert!(second.actions.kept.contains(&"action-03".to_owned()));
+    assert_eq!(
+        second.actions.lines().len(),
+        2,
+        "one line each, installed and kept"
+    );
+}
+
+#[test]
+fn setup_installs_nothing_without_a_pack_or_its_actions() {
+    let (dir, root, home) = places();
+    let commands = FakeCommands::new();
+    let none = super::setup_with(
+        &root,
+        Some(&home),
+        &manifest(""),
+        &commands,
+        &RecordingShell::new(),
+        None,
+    )
+    .expect("no pack");
+    assert_eq!(none.actions, PackActions::default());
+    assert!(none.actions.lines().is_empty());
+
+    let bare = dir.path().join("bare-pack");
+    fs::create_dir(&bare).expect("a pack with no actions");
+    let shell = RecordingShell::installing_at(&bare);
+    let report = super::setup_with(
+        &root,
+        Some(&home),
+        &manifest(TAGGED),
+        &commands,
+        &shell,
+        None,
+    )
+    .expect("no actions folder");
+    assert_eq!(report.actions, PackActions::default());
+    assert!(
+        fs::read_dir(home.join("actions"))
+            .expect("tier")
+            .next()
+            .is_none()
+    );
+}
+
+#[test]
+fn project_action_shadows_installed() {
+    let (dir, root, home) = places();
+    let pack = pack_with_actions(dir.path());
+    let shell = RecordingShell::installing_at(&pack);
+    super::setup_with(
+        &root,
+        Some(&home),
+        &manifest(TAGGED),
+        &FakeCommands::new(),
+        &shell,
+        None,
+    )
+    .expect("sets up");
+
+    let found = crate::app::actions::resolve(&root, &home, "action-05")
+        .expect("resolves")
+        .expect("found");
+    assert_eq!(found.tier, crate::app::actions::Tier::Machine);
+    assert_eq!(found.path, home.join("actions/action-05"));
+
+    fs::create_dir_all(root.join(".zaf/actions")).expect("project actions");
+    fs::write(root.join(".zaf/actions/action-05"), "#!/bin/sh\n").expect("own action");
+    let found = crate::app::actions::resolve(&root, &home, "action-05")
+        .expect("resolves")
+        .expect("found");
+    assert_eq!(found.tier, crate::app::actions::Tier::Project);
+    assert_eq!(found.shadows, Some(crate::app::actions::Tier::Machine));
 }
 
 /// A shell whose every command fails.

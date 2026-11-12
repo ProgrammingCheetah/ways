@@ -58,7 +58,7 @@ impl TaskStanding {
 
     /// The model action the task may start and how long it has waited: its `Ready` action when
     /// that is model-kind, or the `on-fail` of its failed wait.
-    fn model_item(&self) -> Option<(ActionName, SystemTime)> {
+    pub(super) fn model_item(&self) -> Option<(ActionName, SystemTime)> {
         match &self.standing {
             Standing::Ready { action, since } => self
                 .list

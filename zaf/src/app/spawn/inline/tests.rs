@@ -60,6 +60,7 @@ fn at_merge(task: u64) -> TickTask {
                     code: 0,
                     at: time(9),
                 }),
+                last_line: None,
             }],
         },
     }
