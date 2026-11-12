@@ -20,7 +20,7 @@ mod standing;
 pub use standing::{
     CheckResult, ListedPhase, MODEL_FAILURE_LIMIT, PHASES_DIR, PhaseRun, PullFacts, ReviewFact,
     RunExit, Standing, StandingFacts, StandingUnreadable, WaitFailure, derive_standing,
-    gather_standing_facts, running_tasks, wait_failure,
+    ended_instances, gather_standing_facts, running_tasks, wait_failure,
 };
 
 /// Where a task stands. The seven of §3 and `Unclaimed`, in lifecycle order.

@@ -300,7 +300,8 @@ pub fn status(
     }
     let claims = board.claims()?;
     let held = spawn::held(state_dir, alive).map_err(spawn_error)?;
-    let orphaned_claims = spawn::orphaned(&claims, &runs, alive, &held);
+    let ended = spawn::ended_phases(state_dir, alive).map_err(spawn_error)?;
+    let orphaned_claims = spawn::orphaned(&claims, &runs, &ended, alive, &held);
     let claim_line = |claim: &ClaimRecord| ClaimLine {
         task: claim.task.get(),
         instance: claim.instance.to_string(),

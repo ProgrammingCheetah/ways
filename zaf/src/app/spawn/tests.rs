@@ -1312,3 +1312,78 @@ fn a_bare_orphan_is_still_released() {
     );
     assert!(board.claims().expect("claims").is_empty());
 }
+
+/// A task claimed by the phase instance `implement instance 130 on #2`, whose phase run folder
+/// is written as `start` writes it (#549): the folder, the board, the task and the instance.
+fn claimed_by_a_phase_instance(
+    state_dir: &Path,
+    pid: u32,
+) -> (PathBuf, FakeBoard, TicketId, Instance) {
+    let board = board();
+    let task = TicketId::from(3);
+    let claimant = Instance {
+        role: RoleName::from("implement"),
+        epic: TicketId::from(2),
+        number: InstanceNumber::from(130),
+    };
+    board.claim(task, &claimant).expect("claims #3");
+    let run = state_dir
+        .join("phases")
+        .join("implement-instance-130-on-2-task-3");
+    std::fs::create_dir_all(&run).expect("run folder");
+    std::fs::write(run.join("action"), "implement").expect("action");
+    std::fs::write(run.join("instance"), claimant.to_string()).expect("instance");
+    std::fs::write(run.join("pid"), format!("{}\n", holder(pid))).expect("pid");
+    std::fs::write(run.join("task"), task.get().to_string()).expect("task");
+    (run, board, task, claimant)
+}
+
+#[test]
+fn dead_phase_claim_is_released() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let (run, board, task, claimant) = claimed_by_a_phase_instance(&state_dir, 777);
+    std::fs::write(run.join("exit"), "1\n").expect("exit");
+
+    // The process is still in the table, but the run recorded its exit: it no longer runs.
+    let table = |_: &Holder| true;
+    let screen = status::status(&board, &state_dir, 2, &table).expect("status");
+    assert_eq!(screen.orphaned.len(), 1);
+
+    let tick = prepare(&board, &state_dir, &manifest(), &table, &tick()).expect("tick");
+    assert_eq!(
+        tick.released,
+        [Released {
+            task,
+            instance: claimant,
+        }]
+    );
+    assert!(board.claims().expect("claims").is_empty());
+}
+
+#[test]
+fn dead_phase_claim_with_no_process_and_no_exit_is_released() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let (_, board, task, _) = claimed_by_a_phase_instance(&state_dir, 778);
+
+    let table = |held: &Holder| held.pid != 778;
+    let tick = prepare(&board, &state_dir, &manifest(), &table, &tick()).expect("tick");
+    assert_eq!(tick.released.len(), 1, "{:?}", tick.released);
+    assert_eq!(tick.released[0].task, task);
+}
+
+#[test]
+fn running_phase_claim_is_kept() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let (_, board, _, _) = claimed_by_a_phase_instance(&state_dir, 777);
+
+    let table = |_: &Holder| true;
+    let screen = status::status(&board, &state_dir, 2, &table).expect("status");
+    assert!(screen.orphaned.is_empty(), "{:?}", screen.orphaned);
+
+    let tick = prepare(&board, &state_dir, &manifest(), &table, &tick()).expect("tick");
+    assert!(tick.released.is_empty(), "{:?}", tick.released);
+    assert_eq!(board.claims().expect("claims").len(), 1);
+}
