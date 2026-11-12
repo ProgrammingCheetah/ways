@@ -220,7 +220,7 @@ pub fn init(
 }
 
 /// [`init`] against a given Claude home; `None`, when there is none, links nothing.
-fn init_with(
+pub(super) fn init_with(
     root: &Path,
     state_dir: &Path,
     manifest: &Manifest,
@@ -511,6 +511,23 @@ fn register(
         format!("{installed}\n").as_bytes(),
         report,
     )
+}
+
+/// The tag of the marketplace's current pack, learned in a scratch profile at `scratch`: adds
+/// the marketplace there, installs the pack and reads the version Claude recorded, so no tag
+/// is compiled into zaf. The scratch profile is the caller's to remove.
+pub fn current_pack_tag(shell: &dyn Shell, scratch: &Path) -> Result<String, ProfileError> {
+    add_marketplace(shell, scratch, PACK_MARKETPLACE, MARKETPLACE_SOURCE)?;
+    let id = format!("{PACK_PLUGIN}@{PACK_MARKETPLACE}");
+    let line = install_line(scratch, &id);
+    run(shell, &line)?;
+    match installed_version(scratch, &id) {
+        Some(version) if version != UNKNOWN_VERSION => Ok(format!("{PACK_PLUGIN}-v{version}")),
+        _ => Err(ProfileError::Install {
+            line,
+            output: format!("{id} has no version in {INSTALLED_PLUGINS_FILE} after the install"),
+        }),
+    }
 }
 
 /// The version a `[pack] tag` names: the tag without a leading `teams-v` or `v`.
