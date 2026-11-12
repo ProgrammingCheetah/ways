@@ -558,6 +558,7 @@ fn a_starved_phase_lets_zaf_actions_run() {
                     code: 0,
                     at: time(9),
                 }),
+                last_line: None,
             }],
         },
     };
