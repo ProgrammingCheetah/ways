@@ -14,7 +14,12 @@
 //! Every action name the project needs is reported with the tier that provides it; a needed name
 //! with no provider fails the report (see [`NeededCheck`]). Every action a `[phases]` list names is
 //! reported too; one with no provider, no `kind` or no `ends` fails the report (see
-//! [`PhaseCheck`]).
+//! [`PhaseCheck`]). A board or a forge reached over an API rather than a required tool (a
+//! Forgejo board or forge) is asked whether its instance answers and its token reads and writes
+//! the repository; a failed answer fails the report (see [`BackendCheck`]). A forge beside a
+//! board on the same instance, repository and token asks only what the board's checks did not.
+//! `gh` is GitHub's tool: when neither the board nor the forge is on GitHub, a `gh` the manifest
+//! requires but the machine lacks is reported as not needed, and does not fail the report.
 
 use std::fmt;
 use std::fs;
@@ -25,7 +30,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::app::actions::ACTIONS_DIR;
 use crate::app::profile::{self, CONFIG_DIR_VAR, CREDENTIALS_FILE};
 use crate::composition::STATE_DIR;
-use crate::manifest::{DesignSection, Manifest, Requirement, ToolName, files_read};
+use crate::manifest::{
+    BoardKind, DesignSection, ForgeKind, Manifest, Requirement, ToolName, files_read,
+};
+use crate::ports::{AccessCheck, Board, Forge};
 
 mod actions;
 pub mod fake;
@@ -42,6 +50,8 @@ const EXPIRES_AT: &str = "/claudeAiOauth/expiresAt";
 const PLUGIN_FILE: &str = ".claude-plugin/plugin.json";
 /// What an installed pack that records no version is reported as.
 const UNKNOWN_VERSION: &str = profile::UNKNOWN_VERSION;
+/// GitHub's command-line tool, which only a board or a forge on GitHub needs.
+const GITHUB_TOOL: &str = "gh";
 
 /// What a finished command wrote.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,12 +88,18 @@ pub enum ToolStatus {
     },
     /// Installed, but its `--version` output holds no semantic version.
     Unknown,
+    /// Not as the requirement asks, but not needed: `gh` when neither the board nor the forge is
+    /// on GitHub. It passes.
+    NotNeeded {
+        /// What was found instead, as its status prints: `missing`, `too old …`.
+        found: String,
+    },
 }
 
 impl ToolStatus {
-    /// Whether the tool counts as present and right.
+    /// Whether the tool counts as present and right, or as not needed.
     pub fn is_ok(&self) -> bool {
-        matches!(self, Self::Ok { .. })
+        matches!(self, Self::Ok { .. } | Self::NotNeeded { .. })
     }
 }
 
@@ -94,6 +110,10 @@ impl fmt::Display for ToolStatus {
             Self::Missing => write!(formatter, "missing"),
             Self::TooOld { found, wanted } => write!(formatter, "too old {found} < {wanted}"),
             Self::Unknown => write!(formatter, "unknown (no version in the output)"),
+            Self::NotNeeded { found } => write!(
+                formatter,
+                "{found}, not needed: neither the board nor the forge is on GitHub"
+            ),
         }
     }
 }
@@ -148,6 +168,52 @@ impl Credentials {
             Self::Stale => Some("copy, stale"),
         }
     }
+}
+
+/// One thing the board's or the forge's backend was asked, and what it answered (see
+/// [`crate::ports::Board::access`] and [`crate::ports::Forge::access`]).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct BackendCheck {
+    /// What was asked: `instance`, `token`.
+    pub what: String,
+    /// Whether it passed.
+    pub ok: bool,
+    /// What the backend said: `Forgejo 15.0.11 at <url>`, or why it failed.
+    pub detail: String,
+}
+
+impl BackendCheck {
+    /// `<port> <what>: ok (<detail>)`, or `<port> <what> failed: <detail>`, `port` being
+    /// `board` or `forge`.
+    pub fn line(&self, port: &str) -> String {
+        if self.ok {
+            format!("{port} {}: ok ({})", self.what, self.detail)
+        } else {
+            format!("{port} {} failed: {}", self.what, self.detail)
+        }
+    }
+}
+
+impl From<AccessCheck> for BackendCheck {
+    fn from(check: AccessCheck) -> Self {
+        Self {
+            what: check.what,
+            ok: check.ok,
+            detail: check.detail,
+        }
+    }
+}
+
+/// Asks the board whether its backend answers and its credential reads and writes the
+/// repository; a board reached through a required tool answers nothing.
+pub fn board_checks(board: &dyn Board) -> Vec<BackendCheck> {
+    board.access().into_iter().map(BackendCheck::from).collect()
+}
+
+/// Asks the forge whether its backend answers and its credential reads the repository and
+/// writes its pull requests; a forge reached through a required tool answers nothing.
+pub fn forge_checks(forge: &dyn Forge) -> Vec<BackendCheck> {
+    forge.access().into_iter().map(BackendCheck::from).collect()
 }
 
 /// Whether a profile carries a login, as `claude auth status` inside it says.
@@ -286,6 +352,15 @@ pub struct Report {
     /// The other `.toml` files directly inside the project's `.zaf/` folder, which nothing
     /// reads; a warning, it never fails the report.
     pub unread: Vec<PathBuf>,
+    /// What the board's backend answered, when `zaf doctor` asked it (see [`board_checks`]);
+    /// empty for a board reached through a required tool. A failed one fails the report.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub board: Vec<BackendCheck>,
+    /// What the forge's backend answered, when `zaf doctor` asked it (see [`forge_checks`]);
+    /// empty for a forge reached through a required tool, or none. A failed one fails the
+    /// report.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub forge: Vec<BackendCheck>,
 }
 
 impl Report {
@@ -302,6 +377,8 @@ impl Report {
             && self.design_index.as_ref().is_none_or(|check| check.ok)
             && self.workspaces.ok
             && self.actions_dir.ok
+            && self.board.iter().all(|check| check.ok)
+            && self.forge.iter().all(|check| check.ok)
     }
 
     /// The tools that are missing, too old or unknown.
@@ -318,6 +395,8 @@ impl Report {
             .collect();
         lines.extend(self.design.iter().map(PathCheck::line));
         lines.extend(self.design_index.iter().map(PathCheck::line));
+        lines.extend(self.board.iter().map(|check| check.line("board")));
+        lines.extend(self.forge.iter().map(|check| check.line("forge")));
         lines.push(self.actions_dir.line());
         lines.extend(self.logins.iter().map(LoginCheck::line));
         lines.extend(self.packs.iter().map(PackCheck::line));
@@ -589,10 +668,19 @@ pub fn doctor_with(
     claude_home: Option<&Path>,
     now: SystemTime,
 ) -> Report {
+    let on_github = on_github(manifest);
     let tools = manifest
         .requires
         .iter()
-        .map(|(tool, requirement)| check_tool(commands, tool, requirement))
+        .map(|(tool, requirement)| {
+            let mut check = check_tool(commands, tool, requirement);
+            if tool.as_ref() == GITHUB_TOOL && !on_github && !check.status.is_ok() {
+                check.status = ToolStatus::NotNeeded {
+                    found: check.status.to_string(),
+                };
+            }
+            check
+        })
         .collect();
     // Both paths come from the manifest's own functions, as for `ask`, `brief` and `setup`.
     let design_index = manifest.design.index_path(root).map(|path| PathCheck {
@@ -635,7 +723,22 @@ pub fn doctor_with(
         phases,
         manifest: files_read(root, zaf_home),
         unread: unread_tomls(root),
+        board: Vec::new(),
+        forge: Vec::new(),
     }
+}
+
+/// Whether the board or the forge is on GitHub, reached through [`GITHUB_TOOL`].
+fn on_github(manifest: &Manifest) -> bool {
+    let board = matches!(
+        manifest.board.kind,
+        BoardKind::GithubIssues | BoardKind::GithubProjects
+    );
+    let forge = manifest
+        .forge
+        .as_ref()
+        .is_some_and(|forge| forge.kind == ForgeKind::Github);
+    board || forge
 }
 
 #[cfg(test)]

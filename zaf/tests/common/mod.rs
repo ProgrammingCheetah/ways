@@ -215,3 +215,91 @@ pub fn write(dir: &Path, path: &str, content: &str) {
     fs::create_dir_all(file.parent().expect("parent")).expect("mkdir");
     fs::write(file, content).expect("write");
 }
+
+/// The folder of the fake `gh` and the other fixtures.
+pub fn fixtures() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
+}
+
+/// A `PATH` of `dirs` in order, then the built `zaf`'s folder, then the one inherited: an action
+/// that says `zaf …` runs the binary under test, never one installed on the machine.
+pub fn path_with_zaf(dirs: &[&Path]) -> String {
+    let zaf = Path::new(env!("CARGO_BIN_EXE_zaf"))
+        .parent()
+        .expect("the binary's folder")
+        .to_owned();
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    let all = dirs
+        .iter()
+        .map(|dir| dir.to_path_buf())
+        .chain(std::iter::once(zaf))
+        .chain(std::env::split_paths(&inherited));
+    std::env::join_paths(all)
+        .expect("search path")
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// A scene for the fake `curl` in `tests/fixtures/forgejo/`.
+pub struct Curl {
+    /// The scene's folder: `FAKE_CURL_DIR`.
+    pub dir: PathBuf,
+    count: usize,
+}
+
+impl Curl {
+    /// A scene under `temp` whose instance pages 50 items at a time.
+    pub fn new(temp: &Path) -> Self {
+        let dir = temp.join("curl-scene");
+        fs::create_dir_all(&dir).expect("scene");
+        fs::write(dir.join("rules"), "").expect("rules");
+        let mut curl = Self { dir, count: 0 };
+        curl.on(
+            "GET */api/v1/settings/api",
+            200,
+            r#"{"max_response_items":50}"#,
+        );
+        curl
+    }
+
+    /// Answers calls whose `METHOD URL` matches the glob `pattern` with `status` and `body`.
+    pub fn on(&mut self, pattern: &str, status: u16, body: &str) -> &mut Self {
+        let response = format!("response-{}", self.count);
+        self.count += 1;
+        fs::write(self.dir.join(&response), body).expect("response");
+        let mut rules = OpenOptions::new()
+            .append(true)
+            .open(self.dir.join("rules"))
+            .expect("rules");
+        writeln!(rules, "{pattern}\t{status}\t{response}").expect("rule");
+        self
+    }
+
+    /// Every call's `METHOD URL` but the page-size read, in order.
+    pub fn asked(&self) -> Vec<String> {
+        let Ok(entries) = fs::read_dir(self.dir.join("calls")) else {
+            return Vec::new();
+        };
+        let mut files: Vec<PathBuf> = entries
+            .map(|entry| entry.expect("call").path())
+            .filter(|path| path.extension().is_none())
+            .collect();
+        files.sort();
+        files
+            .iter()
+            .map(|file| {
+                let argv: Vec<String> = fs::read_to_string(file)
+                    .expect("call")
+                    .split_terminator('\0')
+                    .map(str::to_owned)
+                    .collect();
+                let method = argv
+                    .iter()
+                    .position(|arg| arg == "--request")
+                    .map_or("GET", |at| argv[at + 1].as_str());
+                format!("{method} {}", argv.last().expect("a URL"))
+            })
+            .filter(|asked| !asked.ends_with("/settings/api"))
+            .collect()
+    }
+}

@@ -7,9 +7,9 @@ use std::str::FromStr;
 use super::sections::{
     ActionName, ActionsSection, AskSection, BoardKind, BoardSection, BranchesSection,
     ChecksSection, DesignKind, DesignSection, EnvSection, ForbiddenSection, ForgeKind,
-    ForgeSection, GateSection, IsolationKind, IsolationSection, PackSection, ProjectSection,
-    RoleSection, RunnerName, RunnerSection, SpawnSection, StyleSection, ToolName, VcsSection,
-    WorkspacesSection,
+    ForgeSection, ForgeUrl, GateSection, IsolationKind, IsolationSection, PackSection,
+    ProjectSection, RoleSection, RunnerName, RunnerSection, SpawnSection, StyleSection, ToolName,
+    VcsSection, WorkspacesSection,
 };
 use super::{ManifestError, Requirement, layers};
 use crate::domain::{MAX_QUESTIONS, RoleName};
@@ -153,11 +153,21 @@ impl Manifest {
                     self.board.project.is_some(),
                 )?;
             }
+            BoardKind::ForgejoIssues => {
+                require_key("board", "repo", self.board.kind, self.board.repo.is_some())?;
+                require_key("board", "url", self.board.kind, self.board.url.is_some())?;
+                require_web_url("board", self.board.url.as_ref())?;
+            }
         }
         if let Some(forge) = &self.forge {
             match forge.kind {
                 ForgeKind::Github => {
                     require_key("forge", "repo", forge.kind, forge.repo.is_some())?
+                }
+                ForgeKind::Forgejo => {
+                    require_key("forge", "repo", forge.kind, forge.repo.is_some())?;
+                    require_key("forge", "url", forge.kind, forge.url.is_some())?;
+                    require_web_url("forge", forge.url.as_ref())?;
                 }
             }
         }
@@ -302,6 +312,22 @@ fn require_key(
         kind: kind.to_string(),
     };
     Err(missing_key_error)
+}
+
+/// Refuses a `url` that is not `http://` or `https://`.
+fn require_web_url(section: &'static str, url: Option<&ForgeUrl>) -> Result<(), ManifestError> {
+    match url {
+        Some(url)
+            if !url.as_str().starts_with("http://") && !url.as_str().starts_with("https://") =>
+        {
+            Err(invalid(
+                section,
+                "url",
+                &format!("must start with `http://` or `https://`, got `{url}`"),
+            ))
+        }
+        _ => Ok(()),
+    }
 }
 
 fn require_relative(

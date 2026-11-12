@@ -802,3 +802,241 @@ fn doctor_warns_about_an_unread_toml() {
     assert_eq!(warnings, ["unread: .zaf/extra.toml"]);
     assert!(report.passed(), "a warning does not fail the report");
 }
+
+/// A board whose backend answers the checks it was given.
+struct AnsweringBoard(Vec<crate::ports::AccessCheck>);
+
+impl Board for AnsweringBoard {
+    fn access(&self) -> Vec<crate::ports::AccessCheck> {
+        self.0.clone()
+    }
+
+    fn ready(&self) -> Result<Vec<crate::domain::Ticket>, crate::ports::PortError> {
+        Ok(Vec::new())
+    }
+
+    fn task(
+        &self,
+        number: crate::domain::TicketId,
+    ) -> Result<crate::domain::Ticket, crate::ports::PortError> {
+        Err(crate::ports::PortError::NotFound(number.to_string()))
+    }
+
+    fn claim(
+        &self,
+        _: crate::domain::TicketId,
+        _: &crate::domain::Instance,
+    ) -> Result<crate::ports::ClaimOutcome, crate::ports::PortError> {
+        unreachable!("doctor claims nothing")
+    }
+
+    fn heartbeat(
+        &self,
+        _: crate::domain::TicketId,
+        _: &crate::domain::Instance,
+    ) -> Result<(), crate::ports::PortError> {
+        unreachable!("doctor touches no claim")
+    }
+
+    fn claims(&self) -> Result<Vec<crate::ports::ClaimRecord>, crate::ports::PortError> {
+        Ok(Vec::new())
+    }
+
+    fn release(
+        &self,
+        _: crate::domain::TicketId,
+        _: &crate::domain::Instance,
+    ) -> Result<(), crate::ports::PortError> {
+        unreachable!("doctor releases nothing")
+    }
+
+    fn set_state(
+        &self,
+        _: crate::domain::TicketId,
+        _: crate::domain::TicketState,
+    ) -> Result<(), crate::ports::PortError> {
+        unreachable!("doctor sets no state")
+    }
+
+    fn comment(&self, _: crate::domain::TicketId, _: &str) -> Result<(), crate::ports::PortError> {
+        unreachable!("doctor comments nowhere")
+    }
+
+    fn report(
+        &self,
+        _: crate::domain::TicketId,
+        _: &crate::domain::Instance,
+        _: &str,
+    ) -> Result<(), crate::ports::PortError> {
+        unreachable!("doctor reports nowhere")
+    }
+
+    fn questions(&self) -> Result<Vec<crate::domain::Ticket>, crate::ports::PortError> {
+        Ok(Vec::new())
+    }
+
+    fn open_question(
+        &self,
+        _: &crate::ports::NewQuestion,
+    ) -> Result<crate::domain::TicketId, crate::ports::PortError> {
+        unreachable!("doctor asks nothing")
+    }
+
+    fn record_ruling(
+        &self,
+        _: crate::domain::TicketId,
+        _: &str,
+    ) -> Result<Option<crate::domain::TicketId>, crate::ports::PortError> {
+        unreachable!("doctor rules nothing")
+    }
+}
+
+fn access(what: &str, ok: bool, detail: &str) -> crate::ports::AccessCheck {
+    crate::ports::AccessCheck {
+        what: what.to_owned(),
+        ok,
+        detail: detail.to_owned(),
+    }
+}
+
+#[test]
+fn a_board_reached_through_a_tool_adds_no_check_and_no_json_key() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut report = doctor(dir.path(), &manifest(""), &FakeCommands::new());
+    report.board = board_checks(&crate::fakes::FakeBoard::default());
+    assert!(report.board.is_empty());
+    assert!(report.lines().iter().all(|line| !line.starts_with("board")));
+    let json = serde_json::to_value(&report).expect("serializes");
+    assert!(json.get("board").is_none(), "{json}");
+}
+
+#[test]
+fn the_boards_answers_are_lines_and_a_failed_one_fails_the_report() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut report = doctor(dir.path(), &manifest(""), &FakeCommands::new());
+    assert!(report.passed(), "{:?}", report.lines());
+    report.board = board_checks(&AnsweringBoard(vec![
+        access("instance", true, "Forgejo 15.0.11 at http://forgejo.test"),
+        access(
+            "token",
+            false,
+            "`FORGEJO_TOKEN` is not set: export a Forgejo access token in it, with read and write on the repository's issues and pull requests",
+        ),
+    ]));
+    let lines = report.lines();
+    assert!(
+        lines.contains(&"board instance: ok (Forgejo 15.0.11 at http://forgejo.test)".to_owned()),
+        "{lines:?}"
+    );
+    assert!(
+        lines.contains(
+            &"board token failed: `FORGEJO_TOKEN` is not set: export a Forgejo access token in it, with read and write on the repository's issues and pull requests"
+                .to_owned()
+        ),
+        "{lines:?}"
+    );
+    assert!(!report.passed());
+    let json = serde_json::to_value(&report).expect("serializes");
+    assert_eq!(json["board"][0]["what"], "instance");
+    assert_eq!(json["board"][1]["ok"], false);
+}
+
+#[test]
+fn the_forges_answers_are_lines_after_the_boards_and_a_failed_one_fails_the_report() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut report = doctor(dir.path(), &manifest(""), &FakeCommands::new());
+    report.forge = forge_checks(&crate::fakes::FakeForge::default());
+    assert!(
+        report.forge.is_empty(),
+        "a forge reached through gh answers nothing"
+    );
+    let json = serde_json::to_value(&report).expect("serializes");
+    assert!(json.get("forge").is_none(), "{json}");
+
+    report.board = board_checks(&AnsweringBoard(vec![
+        access("instance", true, "Forgejo 15.0.11 at http://forgejo.test"),
+        access("token", true, "`FORGEJO_TOKEN` reads and writes o/r"),
+    ]));
+    report.forge = vec![BackendCheck::from(access(
+        "token",
+        false,
+        "`FORGEJO_TOKEN` cannot write o/r's pull requests: Forgejo answered 403 forbidden",
+    ))];
+    let lines = report.lines();
+    let board = lines
+        .iter()
+        .position(|line| line == "board token: ok (`FORGEJO_TOKEN` reads and writes o/r)")
+        .expect("the board's token line");
+    let forge = lines
+        .iter()
+        .position(|line| {
+            line == "forge token failed: `FORGEJO_TOKEN` cannot write o/r's pull requests: \
+                     Forgejo answered 403 forbidden"
+        })
+        .expect("the forge's token line");
+    assert!(board < forge, "{lines:?}");
+    assert!(!report.passed());
+    let json = serde_json::to_value(&report).expect("serializes");
+    assert_eq!(json["forge"][0]["what"], "token");
+    assert_eq!(json["forge"][0]["ok"], false);
+
+    report.forge[0].ok = true;
+    assert!(report.passed(), "{:?}", report.lines());
+}
+
+#[test]
+fn gh_is_not_needed_when_neither_the_board_nor_the_forge_is_on_github() {
+    let forgejo = "[project]\nname = \"bookshelf\"\n\
+                   [board]\nkind = \"forgejo-issues\"\nrepo = \"o/r\"\nurl = \"http://forgejo.test\"\n\
+                   [forge]\nkind = \"forgejo\"\nrepo = \"o/r\"\nurl = \"http://forgejo.test\"\n\
+                   [requires]\ngh = \">=2\"\n";
+    let manifest: Manifest = forgejo.parse().expect("a valid manifest");
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    let report = doctor(dir.path(), &manifest, &FakeCommands::new());
+    assert_eq!(
+        status_of(&report, "gh"),
+        ToolStatus::NotNeeded {
+            found: "missing".to_owned()
+        }
+    );
+    assert!(report.passed(), "{:?}", report.lines());
+    assert!(
+        report.lines().contains(
+            &"gh: missing, not needed: neither the board nor the forge is on GitHub".to_owned()
+        ),
+        "{:?}",
+        report.lines()
+    );
+
+    // A gh that is there is reported as it is.
+    let report = doctor(
+        dir.path(),
+        &manifest,
+        &FakeCommands::new().with("gh", "gh version 2.40.1 (2024-01-01)"),
+    );
+    assert_eq!(
+        status_of(&report, "gh"),
+        ToolStatus::Ok {
+            found: "2.40.1".to_owned()
+        }
+    );
+
+    // A forge on GitHub needs it, whatever the board.
+    let github_forge = forgejo.replace(
+        "[forge]\nkind = \"forgejo\"\nrepo = \"o/r\"\nurl = \"http://forgejo.test\"\n",
+        "[forge]\nkind = \"github\"\nrepo = \"o/r\"\n",
+    );
+    let manifest: Manifest = github_forge.parse().expect("a valid manifest");
+    let report = doctor(dir.path(), &manifest, &FakeCommands::new());
+    assert_eq!(status_of(&report, "gh"), ToolStatus::Missing);
+    assert!(!report.passed());
+
+    // And so does a board on GitHub, with no forge at all.
+    let report = doctor(
+        dir.path(),
+        &self::manifest("[requires]\ngh = \"*\"\n"),
+        &FakeCommands::new(),
+    );
+    assert_eq!(status_of(&report, "gh"), ToolStatus::Missing);
+}

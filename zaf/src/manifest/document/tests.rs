@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use super::*;
 use crate::domain::Profile;
 use crate::manifest::{
-    BranchPattern, CheckTarget, CommandLine, Effort, ModelName, ProjectName, RepoName, Rung,
-    RunnerName,
+    BranchPattern, CheckTarget, CommandLine, Effort, ForgeUrl, ModelName, ProjectName, RepoName,
+    Rung, RunnerName,
 };
 
 const MINIMAL: &str = r#"
@@ -1023,4 +1023,74 @@ fn no_local_toml_loads_as_before() {
     let empty = load_layers(&[(".zaf.toml", &project), (".zaf/local.toml", "")], None)
         .expect("an empty local file loads");
     assert_eq!(empty, manifest);
+}
+
+#[test]
+fn a_forgejo_board_needs_its_url_and_repo_and_reads_its_token_variable() {
+    let head = "[project]\nname = \"b\"\n[board]\nkind = \"forgejo-issues\"\n";
+    let without_url = format!("{head}repo = \"example/b\"\n");
+    assert!(matches!(
+        load(&without_url),
+        Err(ManifestError::MissingKey {
+            section: "board",
+            key: "url",
+            ..
+        })
+    ));
+    let without_repo = format!("{head}url = \"http://forgejo.test:3000\"\n");
+    assert!(matches!(
+        load(&without_repo),
+        Err(ManifestError::MissingKey {
+            section: "board",
+            key: "repo",
+            ..
+        })
+    ));
+    let not_web = format!("{head}repo = \"example/b\"\nurl = \"forgejo.test\"\n");
+    let error = load(&not_web).expect_err("not a web URL");
+    assert!(error.to_string().contains("http://"), "{error}");
+
+    let defaulted = format!("{head}repo = \"example/b\"\nurl = \"http://forgejo.test:3000\"\n");
+    let manifest = load(&defaulted).expect("a Forgejo board loads");
+    assert_eq!(manifest.board.kind, BoardKind::ForgejoIssues);
+    assert_eq!(
+        manifest.board.url.as_ref().map(ForgeUrl::as_str),
+        Some("http://forgejo.test:3000")
+    );
+    assert_eq!(manifest.board.token_env().as_str(), "FORGEJO_TOKEN");
+    let named = format!("{defaulted}token_env = \"MY_FORGEJO\"\n");
+    let manifest = load(&named).expect("a named token variable loads");
+    assert_eq!(manifest.board.token_env().as_str(), "MY_FORGEJO");
+}
+
+#[test]
+fn a_forgejo_forge_parses_with_the_same_keys() {
+    let forge = with(
+        "[forge]\nkind = \"forgejo\"\nrepo = \"example/b\"\nurl = \"https://forgejo.test\"\ntoken_env = \"FJ\"\n",
+    );
+    let manifest = load(&forge).expect("a Forgejo forge loads");
+    let section = manifest.forge.expect("a forge");
+    assert_eq!(section.kind, ForgeKind::Forgejo);
+    assert_eq!(section.token_env().as_str(), "FJ");
+    let without_url = with("[forge]\nkind = \"forgejo\"\nrepo = \"example/b\"\n");
+    assert!(matches!(
+        load(&without_url),
+        Err(ManifestError::MissingKey {
+            section: "forge",
+            key: "url",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn a_github_manifest_reads_no_forgejo_keys() {
+    let manifest =
+        load(&with("[forge]\nkind = \"github\"\nrepo = \"example/b\"\n")).expect("loads");
+    assert_eq!(manifest.board.kind, BoardKind::GithubIssues);
+    assert_eq!(manifest.board.url, None);
+    assert_eq!(manifest.board.token_env, None);
+    let forge = manifest.forge.expect("a forge");
+    assert_eq!(forge.kind, ForgeKind::Github);
+    assert_eq!(forge.url, None);
 }

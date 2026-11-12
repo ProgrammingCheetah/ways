@@ -1,5 +1,6 @@
-//! The comments the board adapter writes and reads back: claims, heartbeats,
-//! status reports, rulings and signatures.
+//! The comments both issue boards (GitHub's and Forgejo's) write and read back: claims,
+//! heartbeats, status reports, rulings and signatures, and what an epic's or a task's
+//! comments say when read together.
 //!
 //! Claims and heartbeats are plain lines a person can read:
 //! `claimed by <instance> at <rfc3339>` and `heartbeat <instance> <rfc3339>`.
@@ -10,7 +11,8 @@ use std::fmt;
 use std::str::FromStr;
 use std::time::SystemTime;
 
-use crate::domain::{Instance, Signature};
+use crate::domain::{CHALLENGER_ROLE, Instance, PLANNING_ROLE, Signature, TicketId};
+use crate::ports::{ClaimRecord, PortError};
 
 /// A comment that is not a claim or a heartbeat.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -163,4 +165,101 @@ pub(super) fn marked(marker: &str, body: &str) -> String {
 pub(super) fn unmarked<'a>(marker: &str, comment: &'a str) -> Option<&'a str> {
     let (first_line, rest) = comment.split_once('\n').unwrap_or((comment, ""));
     (first_line.trim_end() == marker).then_some(rest)
+}
+
+/// The text of the ruling among a question's comments, when one was recorded.
+pub(super) fn recorded_ruling<'a>(comments: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+    comments
+        .into_iter()
+        .find_map(|comment| unmarked(RULING_MARKER, comment))
+}
+
+/// The live claim on `task`, read from its comments oldest first, while it is `claimed`: the
+/// latest claim line, touched by the holder's later heartbeats. `None` while the task is not
+/// claimed, or when no claim line reads.
+pub(super) fn live_claim<'a>(
+    task: TicketId,
+    claimed: bool,
+    comments: impl IntoIterator<Item = &'a str>,
+) -> Option<ClaimRecord> {
+    if !claimed {
+        return None;
+    }
+    let notes: Vec<LeaseNote> = comments
+        .into_iter()
+        .filter_map(|comment| comment.parse::<LeaseNote>().ok())
+        .collect();
+    let claim_index = notes
+        .iter()
+        .rposition(|note| matches!(note, LeaseNote::Claim { .. }))?;
+    let LeaseNote::Claim { instance, at } = &notes[claim_index] else {
+        return None;
+    };
+    let heartbeat = notes[claim_index..]
+        .iter()
+        .filter_map(|note| match note {
+            LeaseNote::Heartbeat { instance: by, at } if by == instance => Some(*at),
+            _ => None,
+        })
+        .fold(*at, SystemTime::max);
+    let record = ClaimRecord {
+        task,
+        instance: instance.clone(),
+        heartbeat,
+    };
+    Some(record)
+}
+
+/// The claim on `task` (see [`live_claim`]), which must belong to `instance`: no claim, or one
+/// held by another instance, is a [`PortError::Conflict`].
+pub(super) fn held_by(
+    task: TicketId,
+    claim: Option<ClaimRecord>,
+    instance: &Instance,
+) -> Result<ClaimRecord, PortError> {
+    let claim = claim.ok_or_else(|| PortError::Conflict(format!("{task} has no claim")))?;
+    if claim.instance != *instance {
+        let held_by_other_error =
+            PortError::Conflict(format!("{task} is held by {}", claim.instance));
+        return Err(held_by_other_error);
+    }
+    Ok(claim)
+}
+
+/// What an epic's comments say about it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct EpicNotes {
+    /// The latest signature comment's signature.
+    pub signature: Option<Signature>,
+    /// When the latest planning instance's exit marker was posted.
+    pub planned_at: Option<SystemTime>,
+    /// Whether a challenger instance's status report is on it.
+    pub challenged: bool,
+}
+
+impl EpicNotes {
+    /// Reads an epic's comments, oldest first, each with when it was posted when the board
+    /// tells.
+    pub(super) fn read<'a>(
+        comments: impl IntoIterator<Item = (&'a str, Option<SystemTime>)>,
+    ) -> Self {
+        let mut notes = Self {
+            signature: None,
+            planned_at: None,
+            challenged: false,
+        };
+        for (body, posted) in comments {
+            if let Some(signature) = read_signature(body) {
+                notes.signature = Some(signature);
+            }
+            let planned =
+                exit_author(body).is_some_and(|author| author.role.as_str() == PLANNING_ROLE);
+            if planned && let Some(posted) = posted {
+                notes.planned_at = Some(posted);
+            }
+            notes.challenged |=
+                report_author(body).is_some_and(|author| author.role.as_str() == CHALLENGER_ROLE);
+        }
+        notes
+    }
 }

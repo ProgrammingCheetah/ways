@@ -19,9 +19,15 @@ fn every_verb_is_listed() {
         [
             "board", "ask", "brief", "check", "changes", "verify", "slice", "spawn", "asklog",
             "status", "report", "guard", "doctor", "setup", "profile", "do", "hub", "progress",
-            "update", "epic",
+            "update", "epic", "forge",
         ]
     );
+    let forge = command.find_subcommand("forge").expect("forge");
+    let forge_actions: Vec<&str> = forge
+        .get_subcommands()
+        .map(clap::Command::get_name)
+        .collect();
+    assert_eq!(forge_actions, ["open", "merge", "checks", "head", "log"]);
     let board = command.find_subcommand("board").expect("board");
     let board_actions: Vec<&str> = board
         .get_subcommands()

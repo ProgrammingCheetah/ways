@@ -51,3 +51,19 @@ fn a_summary_without_epic_or_state_prints_nulls() {
     assert_eq!(printed["epic"], serde_json::Value::Null);
     assert_eq!(printed["state"], serde_json::Value::Null);
 }
+
+#[test]
+fn an_issue_stands_by_done_then_open_then_how_it_closed() {
+    assert_eq!(Standing::of_issue(true, false, false), Standing::Open);
+    assert_eq!(Standing::of_issue(true, false, true), Standing::Done);
+    assert_eq!(Standing::of_issue(false, false, false), Standing::Done);
+    assert_eq!(
+        Standing::of_issue(false, true, false),
+        Standing::ClosedNotPlanned
+    );
+    assert_eq!(
+        Standing::of_issue(false, true, true),
+        Standing::Done,
+        "done wins over a drop"
+    );
+}

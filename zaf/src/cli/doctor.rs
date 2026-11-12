@@ -5,8 +5,10 @@ use std::io;
 use super::Cli;
 use super::exit::{self, OK, REFUSED};
 
-use crate::app::doctor::{CommandOutput, Commands, doctor};
-use crate::composition::{Composition, zaf_home};
+use crate::app::doctor::{
+    BackendCheck, CommandOutput, Commands, Report, board_checks, doctor, forge_checks,
+};
+use crate::composition::{Composition, CompositionError, zaf_home};
 use crate::manifest::CommandLine;
 use crate::ports::{GateVerdict, Shell};
 
@@ -62,13 +64,39 @@ impl Commands for ShellCommands {
     }
 }
 
+/// The failed `backend` check of a port that could not be built.
+fn unbuilt(error: &CompositionError) -> BackendCheck {
+    BackendCheck {
+        what: "backend".to_owned(),
+        ok: false,
+        detail: error.to_string(),
+    }
+}
+
 /// Wraps text in single quotes for a POSIX shell.
 fn quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }
 
-/// Loads the manifest (an error is printed and exits 1), checks the tools and folders,
-/// prints one line per check, or the table with `--json`; exits 1 when anything fails.
+/// Fills `report`'s board and forge checks by asking the project's backends; shared by
+/// `zaf doctor` and the doctor run `zaf setup` ends with. A manifest with no `[forge]` asks no
+/// forge.
+pub(super) fn add_backend_checks(report: &mut Report, composition: &Composition) {
+    report.board = match composition.board() {
+        Ok(board) => board_checks(board.as_ref()),
+        Err(error) => vec![unbuilt(&error)],
+    };
+    report.forge = match composition.forge() {
+        Ok(forge) => forge_checks(forge.as_ref()),
+        Err(CompositionError::Absent { .. }) => Vec::new(),
+        Err(error) => vec![unbuilt(&error)],
+    };
+}
+
+/// Loads the manifest (an error is printed and exits 1), checks the tools and folders and
+/// asks the board's and the forge's backends (see [`board_checks`] and [`forge_checks`]), prints
+/// one line per check, or the table with `--json`; exits 1 when anything fails. A manifest with
+/// no `[forge]` asks no forge.
 pub fn run(cli: &Cli) -> u8 {
     let path = cli.verb.path();
     let composition = match Composition::discover_here() {
@@ -79,12 +107,13 @@ pub fn run(cli: &Cli) -> u8 {
         }
     };
     let commands = ShellCommands::new(composition.shell());
-    let report = doctor(
+    let mut report = doctor(
         composition.root(),
         zaf_home().as_deref(),
         composition.manifest(),
         &commands,
     );
+    add_backend_checks(&mut report, &composition);
     if cli.json {
         match serde_json::to_string_pretty(&report) {
             Ok(json) => println!("{json}"),

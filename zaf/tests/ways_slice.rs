@@ -104,7 +104,7 @@ fn project_with(ticket: &str) -> Project {
             "pr create *",
             &format!("https://github.com/{REPO}/pull/7\n"),
         )
-        .on("pr view 7 *", r#"{"headRefOid":"abc"}"#)
+        .on("pr view 7 *", "abc\n")
         .env("ZAF_VERSION", "v1");
 
     // The built `zaf` first on PATH, then the fake gh, so a body can say `zaf do`.
@@ -218,10 +218,7 @@ fn forge_at(project: &mut Project, head: &str) {
     project
         .on_first("pr view 7 --json state *", r#"{"state":"MERGED"}"#)
         .on_first("pr view 7 --json state --jq *", "OPEN\n")
-        .on_first(
-            "pr view 7 --json headRefOid*",
-            &format!(r#"{{"headRefOid":"{head}"}}"#),
-        )
+        .on_first("pr view 7 --json headRefOid*", &format!("{head}\n"))
         .on_first("pr merge *", "")
         .on_first("issue edit *", "");
 }

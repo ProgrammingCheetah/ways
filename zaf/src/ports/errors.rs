@@ -27,3 +27,18 @@ pub enum PortError {
     #[error("backend failed: {0}")]
     Backend(String),
 }
+
+impl PortError {
+    /// The error for a call whose every failure leaves the caller nothing to change but the
+    /// backend: a refusal or a missing thing becomes [`PortError::Backend`] with its words kept;
+    /// an unavailable backend and a timed-out run stay as they are.
+    pub fn into_backend(self) -> Self {
+        match self {
+            Self::NotFound(message)
+            | Self::Conflict(message)
+            | Self::Rejected(message)
+            | Self::Backend(message) => Self::Backend(message),
+            other @ (Self::Unavailable(_) | Self::TimedOut { .. }) => other,
+        }
+    }
+}

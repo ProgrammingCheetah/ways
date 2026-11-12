@@ -1,25 +1,37 @@
 //! The forge on GitHub: forge kind `github`.
+//!
+//! Every call is gh's, through [`GhCommand`]. The writes `zaf forge` hands over (opening a pull
+//! request, merging one, listing its checks and a failed job's log) are the gh calls the standard
+//! actions made themselves before they moved behind the port, argument for argument.
 
 use std::time::SystemTime;
 
 use serde::Deserialize;
 
 use super::GhCommand;
-use super::notes::{HANDOFF_MARKER, marked, unmarked};
 use super::rows::{
-    CheckBucket, CheckRow, ConversationCommentRow, FileRow, LineCommentRow, PrHeadRow, PrStateRow,
-    PrTimesRow, ReviewRow, UserRow,
+    CheckRow, ConversationCommentRow, FileRow, LineCommentRow, PrStateRow, PrTimesRow, ReviewRow,
+    UserRow,
 };
+use crate::adapters::notes::{HANDOFF_MARKER, marked, unmarked};
 use crate::domain::Location;
 use crate::ports::{
-    Author, Check, CheckName, CheckState, CommitId, Forge, PortError, PrNumber, PullRequest,
-    ReviewComment, RuleId, ScanningAlert,
+    Author, Check, CheckBucket, CheckLink, CheckLog, CheckName, CheckRun, CheckState, CommitId,
+    Forge, JobId, MergeOutcome, MergeStrategy, NewPullRequest, Opened, PortError, PrNumber,
+    PullRequest, ReviewComment, RuleId, ScanningAlert,
 };
 
 /// The author shown for a comment whose account was deleted, as GitHub shows it.
 const GHOST: &str = "ghost";
 /// What gh prints when a pull request has no check runs at all.
 const NO_CHECKS: &str = "no checks reported";
+/// What gh's refusal says, in any case, when the merge may go through if tried again: another
+/// merge moved the base, or GitHub is still working out whether it merges.
+const NOT_YET: &[&str] = &["base branch was modified", "not mergeable"];
+/// What separates an Actions job's id from the rest of a check's link.
+const JOB_SEGMENT: &str = "/job/";
+/// The jq program that prints one tab-separated line per check: bucket, name and link.
+const CHECKS_JQ: &str = ".[] | [.bucket, .name, .link] | @tsv";
 
 /// The pull requests of one GitHub repository.
 #[derive(Debug, Clone, PartialEq, Eq, derive_more::From)]
@@ -30,16 +42,6 @@ pub struct GithubForge {
 /// The bare number gh takes, without the `#` a [`PrNumber`] displays with.
 fn bare(pr: PrNumber) -> String {
     pr.get().to_string()
-}
-
-impl From<CheckBucket> for CheckState {
-    fn from(bucket: CheckBucket) -> Self {
-        match bucket {
-            CheckBucket::Pass | CheckBucket::Skipping => Self::Passed,
-            CheckBucket::Fail | CheckBucket::Cancel => Self::Failed,
-            CheckBucket::Pending => Self::Pending,
-        }
-    }
 }
 
 fn author(user: Option<UserRow>) -> Author {
@@ -124,7 +126,7 @@ impl Forge for GithubForge {
             };
         rows.into_iter()
             .map(|row| {
-                let state = CheckState::from(row.bucket);
+                let state = row.bucket.state();
                 // A running check has no finish time, whatever gh prints in its place.
                 let finished_at = match state {
                     CheckState::Pending => None,
@@ -198,12 +200,20 @@ impl Forge for GithubForge {
         Ok(comments)
     }
 
+    /// The head as `ci-wait` read it: `pr view --json headRefOid --jq .headRefOid`, one line.
     fn head(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
         let number = bare(pr);
-        let pull: PrHeadRow = self
-            .gh
-            .json(&["pr", "view", &number, "--json", "headRefOid"])?;
-        Ok(pull.head_ref_oid.filter(|head| !head.is_empty()))
+        let stdout = self.gh.text(&[
+            "pr",
+            "view",
+            &number,
+            "--json",
+            "headRefOid",
+            "--jq",
+            ".headRefOid",
+        ])?;
+        let head = stdout.trim();
+        Ok((!head.is_empty() && head != "null").then(|| head.to_owned()))
     }
 
     fn merged(&self, pr: PrNumber) -> Result<bool, PortError> {
@@ -256,6 +266,193 @@ impl Forge for GithubForge {
                 .map(drop),
         }
     }
+
+    /// `pr list --head <head> --state open`, then `pr create` when it lists none: the number is
+    /// the last part of the URL gh prints last.
+    fn open_pull_request(&self, request: &NewPullRequest) -> Result<Opened, PortError> {
+        let head = request.head.as_str();
+        let listed = self
+            .gh
+            .text(&[
+                "pr",
+                "list",
+                "--head",
+                head,
+                "--state",
+                "open",
+                "--json",
+                "number",
+                "--jq",
+                ".[].number",
+            ])
+            .map_err(PortError::into_backend)?;
+        if let Some(first) = listed.split_whitespace().next() {
+            let number = first.parse::<u64>().map_err(|_| {
+                PortError::Backend(format!("gh listed {first}, not a pull request number"))
+            })?;
+            return Ok(Opened::AlreadyOpen(PrNumber::from(number)));
+        }
+        let created = self
+            .gh
+            .text(&[
+                "pr",
+                "create",
+                "--head",
+                head,
+                "--base",
+                request.base.as_str(),
+                "--title",
+                request.title.as_str(),
+                "--body",
+                request.body.as_str(),
+            ])
+            .map_err(PortError::into_backend)?;
+        let url = created
+            .lines()
+            .rfind(|line| !line.trim().is_empty())
+            .unwrap_or_default()
+            .trim();
+        let number = url
+            .rsplit('/')
+            .next()
+            .and_then(|last| last.parse::<u64>().ok())
+            .ok_or_else(|| {
+                PortError::Backend(format!(
+                    "gh printed no pull request number: {}",
+                    created.trim()
+                ))
+            })?;
+        Ok(Opened::New(PrNumber::from(number)))
+    }
+
+    /// `pr view --json state --jq .state`, then `pr merge <n> --merge|--squash
+    /// [--match-head-commit <sha>]`; gh's words decide a refusal: a moved base or a pull request
+    /// not mergeable is one for now.
+    fn merge_pull_request(
+        &self,
+        pr: PrNumber,
+        strategy: MergeStrategy,
+        head: Option<&CommitId>,
+    ) -> Result<MergeOutcome, PortError> {
+        let number = bare(pr);
+        let state = self
+            .gh
+            .text(&["pr", "view", &number, "--json", "state", "--jq", ".state"])
+            .map_err(PortError::into_backend)?;
+        match state.trim() {
+            "MERGED" => return Ok(MergeOutcome::AlreadyMerged),
+            "CLOSED" => {
+                return Err(PortError::Rejected(format!(
+                    "pull request {pr} is closed unmerged"
+                )));
+            }
+            "" => {
+                return Err(PortError::Backend(format!(
+                    "gh printed no state for pull request {pr}"
+                )));
+            }
+            _ => {}
+        }
+        let strategy_flag = format!("--{strategy}");
+        let mut argv = vec!["pr", "merge", number.as_str(), strategy_flag.as_str()];
+        if let Some(head) = head {
+            argv.extend(["--match-head-commit", head.as_str()]);
+        }
+        let run = self.gh.run(&argv)?;
+        if run.success {
+            return Ok(MergeOutcome::Merged);
+        }
+        let said = [run.stdout.trim(), run.stderr.as_str()]
+            .into_iter()
+            .filter(|text| !text.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let lower = said.to_lowercase();
+        if NOT_YET.iter().any(|words| lower.contains(words)) {
+            return Err(PortError::Conflict(format!(
+                "pull request {pr} is not mergeable yet: gh pr merge: {said}"
+            )));
+        }
+        Err(PortError::Rejected(format!(
+            "pull request {pr}: gh pr merge refused: {said}"
+        )))
+    }
+
+    /// `pr checks --json bucket,name,link` through jq, one tab-separated line per check. gh exits
+    /// non-zero while a check is pending or failed, so its words decide, not its code: the lines
+    /// it printed are the checks, and `no checks reported` is none.
+    fn check_runs(&self, pr: PrNumber) -> Result<Vec<CheckRun>, PortError> {
+        let number = bare(pr);
+        let run = self.gh.run(&[
+            "pr",
+            "checks",
+            &number,
+            "--json",
+            "bucket,name,link",
+            "--jq",
+            CHECKS_JQ,
+        ])?;
+        let lines = if run.success {
+            run.stdout
+        } else if run.stderr.contains(NO_CHECKS) {
+            String::new()
+        } else if run.stdout.trim().is_empty() {
+            return Err(PortError::Backend(format!("gh pr checks: {}", run.stderr)));
+        } else {
+            run.stdout
+        };
+        lines
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(check_run)
+            .collect()
+    }
+
+    /// An Actions job's link (`…/job/<id>`) is read with `run view --job <id> --log-failed`; any
+    /// other link names no job gh can read.
+    fn check_log(&self, link: &CheckLink) -> Result<CheckLog, PortError> {
+        let Some(job) = job_of(link) else {
+            return Ok(CheckLog::NoJob);
+        };
+        let run = self
+            .gh
+            .run(&["run", "view", "--job", job.as_str(), "--log-failed"])?;
+        if !run.success {
+            return Err(PortError::Backend(format!(
+                "gh run view --job {job}: {}",
+                run.stderr
+            )));
+        }
+        let mut lines = run.stdout;
+        if !run.stderr.is_empty() {
+            lines.push_str(&run.stderr);
+            lines.push('\n');
+        }
+        Ok(CheckLog::Failed { job, lines })
+    }
+}
+
+/// One line of `pr checks` through [`CHECKS_JQ`]: bucket, name and link, tab-separated.
+fn check_run(line: &str) -> Result<CheckRun, PortError> {
+    let mut fields = line.splitn(3, '\t');
+    let word = fields.next().unwrap_or_default().trim();
+    let bucket = word
+        .parse::<CheckBucket>()
+        .map_err(|_| PortError::Backend(format!("gh printed an unknown check bucket `{word}`")))?;
+    let name = fields.next().unwrap_or_default();
+    let link = fields.next().map(str::trim).filter(|link| !link.is_empty());
+    Ok(CheckRun {
+        bucket,
+        name: CheckName::from(name),
+        link: link.map(CheckLink::from),
+    })
+}
+
+/// The Actions job a check's link names: the digits after its `/job/`.
+fn job_of(link: &CheckLink) -> Option<JobId> {
+    let (_, after) = link.as_str().split_once(JOB_SEGMENT)?;
+    let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
+    (!digits.is_empty()).then(|| JobId::from(digits))
 }
 
 impl GithubForge {

@@ -1,8 +1,8 @@
 {
   "path": "zaf/tests",
   "charted": "2026-11-03",
-  "short": "binary-level integration tests with a fake gh",
-  "is": "Integration tests that run the built zaf binary in a temp project against a scripted fake gh and, for slices, a throwaway jj repository with a bare remote. Two crates read no binary: architecture.rs holds the layers to their imports, and board_contract.rs checks every Board backend the same way.",
+  "short": "binary-level integration tests with a fake gh and a fake curl",
+  "is": "Integration tests that run the built zaf binary in a temp project against a scripted fake gh and, for slices, a throwaway jj repository with a bare remote. Three crates read no binary: architecture.rs holds the layers to their imports, board_contract.rs checks every Board backend the same way, and forge_contract.rs takes one pull request through the Forgejo forge on a real instance.",
   "type": "code",
   "tags": [
     "category:tests",
@@ -22,12 +22,17 @@
     },
     {
       "name": "board_contract.rs",
-      "role": "the Board contract over an Arrange trait: always on FakeBoard, on GitHub issues when ZAF_CONTRACT_REPO names a scratch repo",
+      "role": "the Board contract over an Arrange trait: always on FakeBoard, on GitHub issues when ZAF_CONTRACT_REPO names a scratch repo (and a Project with ZAF_CONTRACT_PROJECT), on Forgejo when ZAF_CONTRACT_FORGEJO_URL, _REPO and _TOKEN_ENV name an instance, a scratch repo and the variable holding its token",
       "node": false
     },
     {
       "name": "cli_board.rs",
       "role": "board verbs: terse and JSON forms, exits 0, 1, 2",
+      "node": false
+    },
+    {
+      "name": "cli_forge.rs",
+      "role": "zaf forge verbs on a GitHub forge (fake gh) and a Forgejo one (fake curl): what each prints, exits 0, 1, 2",
       "node": false
     },
     {
@@ -37,12 +42,17 @@
     },
     {
       "name": "common/",
-      "role": "shared Project harness and jj helper",
+      "role": "shared Project harness, jj helper, the fake curl scene (Curl) and path_with_zaf, which puts the built zaf on PATH for actions that call zaf",
       "node": false
     },
     {
       "name": "fixtures/",
-      "role": "gh: fake gh shell script",
+      "role": "gh: fake gh shell script; forgejo/curl: fake curl for the Forgejo adapter",
+      "node": false
+    },
+    {
+      "name": "forge_contract.rs",
+      "role": "the Forgejo forge on a real instance when ZAF_CONTRACT_FORGEJO_URL, _REPO and _TOKEN_ENV are set: a new branch, a pull request opened, a pending then a passing status, the hand-off, the merge; the branch deleted after",
       "node": false
     },
     {
@@ -59,6 +69,8 @@
   "notes": [
     "fixtures/gh reads a FAKE_GH_DIR scene: a rules file of glob, exit code and response file; calls/ records each argv; an unmatched call exits 97",
     "src/adapters/github/tests.rs also uses fixtures/gh, so it is shared with unit tests",
+    "fixtures/forgejo/curl reads a FAKE_CURL_DIR scene: a rules file of a glob over METHOD URL, an HTTP status (or curl:<code>; a trailing ! answers once) and response file; calls/ records each argv and the config curl read on stdin; src/adapters/forgejo/tests.rs, cli_forge.rs and ways_ci_wait.rs use it",
+    "board_contract.rs and forge_contract.rs reach the network only when their variables are set: gh for GitHub, the Forgejo instance for Forgejo",
     "cli_slice needs a real jj on PATH"
   ]
 }

@@ -58,7 +58,7 @@
     },
     {
       "name": "doctor.rs",
-      "role": "`zaf doctor`: tool versions, folders, design index, profile logins and pack",
+      "role": "`zaf doctor`: tool versions (gh not needed when neither the board nor the forge is on GitHub), folders, design index, profile logins and pack, and what the board's and the forge's backends answer (a Forgejo instance and token)",
       "node": false
     },
     {
@@ -77,6 +77,16 @@
       "node": false
     },
     {
+      "name": "forge.rs",
+      "role": "`zaf forge` open, merge, checks, head, log: input checked, one Forge port call each; the failed log cut to its last 80 lines",
+      "node": false
+    },
+    {
+      "name": "forge/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
       "name": "guard.rs",
       "role": "`zaf guard`: weekly budget level to .zaf/guard.json",
       "node": false
@@ -88,7 +98,7 @@
     },
     {
       "name": "init.rs",
-      "role": "the manifest questions `zaf setup` asks: minimal manifest from four questions",
+      "role": "the manifest questions `zaf setup` asks: minimal manifest from four questions (a fifth, forge url, for a non-GitHub origin, which writes Forgejo kinds)",
       "node": false
     },
     {

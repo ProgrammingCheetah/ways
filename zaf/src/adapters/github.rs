@@ -8,13 +8,12 @@
 mod board;
 mod command;
 mod forge;
-mod notes;
 mod releases;
 mod rows;
 mod state;
 
 pub use board::{GithubBoard, GithubProjectBoard};
-pub use command::GhCommand;
+pub use command::{GhCommand, GhRun};
 pub use forge::GithubForge;
 pub use releases::GithubReleases;
 pub use state::ProjectRef;

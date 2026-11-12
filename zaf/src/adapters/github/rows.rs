@@ -2,6 +2,8 @@
 
 use serde::Deserialize;
 
+use crate::ports::CheckBucket;
+
 /// The fields every issue read asks `gh issue view` and `gh issue list` for.
 pub(super) const ISSUE_FIELDS: &str = "number,title,body,labels,parent,state,comments,issueType";
 
@@ -105,21 +107,11 @@ pub(super) struct PrTimesRow {
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct CheckRow {
     pub name: String,
+    /// gh's grouping of the run's state and conclusion, the port's own words.
     pub bucket: CheckBucket,
     /// gh prints the zero time for a run that has not finished.
     #[serde(rename = "completedAt", default)]
     pub completed_at: Option<String>,
-}
-
-/// gh's grouping of a check run's state and conclusion.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub(super) enum CheckBucket {
-    Pass,
-    Fail,
-    Pending,
-    Skipping,
-    Cancel,
 }
 
 /// A user as the REST API prints it; absent for a deleted account.
@@ -156,11 +148,4 @@ pub(super) struct ReviewRow {
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct FileRow {
     pub filename: String,
-}
-
-/// A pull request read only by its head commit.
-#[derive(Debug, Clone, Deserialize)]
-pub(super) struct PrHeadRow {
-    #[serde(rename = "headRefOid", default)]
-    pub head_ref_oid: Option<String>,
 }

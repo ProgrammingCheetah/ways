@@ -9,8 +9,9 @@
 //! - [`app`]: one use case per verb, seeing only ports.
 //! - [`adapters`]: the live implementations: a directory design source
 //!   ([`adapters::design`]), a shell gate ([`adapters::gate`]), the board and the
-//!   forge on GitHub through `gh` ([`adapters::github`]), a VCS on `jj`
-//!   ([`adapters::jj`]) and a process runner ([`adapters::runner`]).
+//!   forge on GitHub through `gh` ([`adapters::github`]), the board on Forgejo over its
+//!   REST API through `curl` ([`adapters::forgejo`]), a VCS on `jj` ([`adapters::jj`])
+//!   and a process runner ([`adapters::runner`]).
 //! - [`fakes`]: one in-memory implementation per port, the ports' first consumer
 //!   and the ground for verb tests.
 //! - [`manifest`]: `ZAF.toml`, everything zaf knows about a project.

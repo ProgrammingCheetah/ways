@@ -11,6 +11,7 @@ use crate::app::setup::ensure_homes;
 use crate::composition::Composition;
 use crate::domain::{DEFAULT_TASK_TYPE, TicketId};
 use crate::manifest::ProjectFiles;
+use crate::ports::PrNumber;
 
 pub mod ask;
 pub mod asklog;
@@ -22,6 +23,7 @@ pub mod do_action;
 pub mod doctor;
 pub mod epic;
 pub mod exit;
+pub mod forge;
 pub mod guard;
 pub mod hub;
 pub mod profile;
@@ -182,6 +184,63 @@ pub enum Verb {
         /// What to do with the epics.
         #[command(subcommand)]
         action: EpicAction,
+    },
+    /// The forge `[forge]` names: open and merge pull requests, read their checks and head.
+    Forge {
+        /// What to do on the forge.
+        #[command(subcommand)]
+        action: ForgeAction,
+    },
+}
+
+/// `zaf forge …`.
+#[derive(Debug, clap::Subcommand, strum::IntoStaticStr)]
+#[strum(serialize_all = "kebab-case")]
+pub enum ForgeAction {
+    /// Open a pull request for a branch into a base and print its number; one already open for
+    /// the branch is handed back instead, and nothing is opened.
+    Open {
+        /// The branch the pull request carries.
+        head: String,
+        /// The branch it merges into.
+        base: String,
+        /// Its title.
+        #[arg(allow_hyphen_values = true)]
+        title: String,
+        /// Its body; may be empty.
+        #[arg(allow_hyphen_values = true)]
+        body: String,
+    },
+    /// Merge a pull request with a merge commit, or squashed; one already merged is quiet. A
+    /// merge the forge cannot make yet exits 1 saying `not mergeable yet`.
+    Merge {
+        /// The pull request, `7` or `#7`.
+        pr: PrNumber,
+        /// Squash its commits into one.
+        #[arg(long)]
+        squash: bool,
+        /// Merge only while the pull request's head is this commit.
+        #[arg(long, value_name = "SHA")]
+        match_head_commit: Option<String>,
+    },
+    /// The checks on a pull request's head, one line each: bucket, name and link, tab-separated.
+    Checks {
+        /// The pull request, `7` or `#7`.
+        pr: PrNumber,
+    },
+    /// The commit a pull request's head is at; nothing when the forge reports none.
+    Head {
+        /// The pull request, `7` or `#7`.
+        pr: PrNumber,
+    },
+    /// What a person reads of a failed check's log: the job's failed lines, or the check's link
+    /// on a forge with no log API; nothing when the link names no job.
+    Log {
+        /// The check's name, as `checks` prints it.
+        #[arg(allow_hyphen_values = true)]
+        name: String,
+        /// The check's link, as `checks` prints it.
+        link: String,
     },
 }
 
@@ -385,6 +444,7 @@ impl Verb {
             Self::Spawn { action, .. } => action.as_ref().map(Into::into),
             Self::Progress { action } => Some(action.into()),
             Self::Epic { action } => Some(action.into()),
+            Self::Forge { action } => Some(action.into()),
             _ => None,
         };
         action.map_or_else(|| verb.to_owned(), |action| format!("{verb} {action}"))
@@ -512,6 +572,7 @@ fn run_verb(cli: &Cli) -> u8 {
         Verb::Progress { action } => progress::run(cli, action),
         Verb::Update { check } => update::run(cli, *check),
         Verb::Epic { action } => epic::run(cli, action),
+        Verb::Forge { action } => forge::run(cli, action),
     }
 }
 

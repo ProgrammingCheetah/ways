@@ -11,8 +11,9 @@ use zaf::manifest::{CommandLine, Manifest};
 use zaf::ports::{GateRun, PortError, Shell};
 
 /// The merge paths no instance may take.
-const MERGE_PATHS: [&str; 7] = [
+const MERGE_PATHS: [&str; 8] = [
     "gh pr merge",
+    "zaf forge merge",
     "zaf do pr-merge",
     "zaf do land",
     "zaf do ship",

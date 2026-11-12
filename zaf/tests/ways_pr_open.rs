@@ -1,6 +1,7 @@
 //! The ways repository's `pr-open` action (docs/zaf-actions.md §3, §4, §7): run through `zaf do`
 //! against the fake `gh`, it opens a slice's pull request and hands the number back as the last
-//! line of its log, and a slice with an open one hands that number back and opens nothing.
+//! line of its log, and a slice with an open one hands that number back and opens nothing. The
+//! action asks `zaf forge open`, so the built zaf runs first on `PATH`.
 
 mod common;
 
@@ -8,7 +9,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
-use common::{Project, REPO, outcome, write};
+use common::{Project, REPO, fixtures, outcome, path_with_zaf, write};
 
 const SLICE: &str = "feature/v1-1-2";
 const BASE: &str = "feature/v1";
@@ -38,7 +39,8 @@ fn action_text() -> String {
 
 /// A project with the `pr-open` action in its actions folder, its gh scene empty.
 fn project() -> Project {
-    let project = Project::new(MANIFEST);
+    let mut project = Project::new(MANIFEST);
+    project.env("PATH", &path_with_zaf(&[&fixtures()]));
     // Any verb makes the missing homes and says so; do it now so the notice stays out of a run.
     let (code, stdout, stderr) = outcome(&project.zaf(&["do"]));
     assert_eq!(code, 0, "{stdout}{stderr}");
@@ -131,7 +133,7 @@ fn pr_open_keeps_a_title_and_body_with_spaces_and_newlines_whole() {
 }
 
 #[test]
-fn pr_open_without_a_manifest_repo_leaves_the_repository_to_gh() {
+fn pr_open_without_a_forge_fails_with_2_and_asks_no_forge() {
     let mut project = project();
     fs::write(
         project.root.join(".zaf.toml"),
@@ -142,14 +144,9 @@ fn pr_open_without_a_manifest_repo_leaves_the_repository_to_gh() {
 
     let (code, text) = open_slice(&project);
 
-    assert_eq!(code, 0, "{text}");
-    assert_eq!(handed_back(&text), "9", "{text}");
-    assert_eq!(
-        project.gh_calls(),
-        [format!(
-            "pr list --head {SLICE} --state open --json number --jq .[].number"
-        )]
-    );
+    assert_eq!(code, 2, "{text}");
+    assert!(text.contains("no [forge] section"), "{text}");
+    assert_eq!(project.gh_calls(), Vec::<String>::new());
 }
 
 #[test]

@@ -24,9 +24,13 @@ pub fn code_for(error: &PortError) -> u8 {
     }
 }
 
-/// The exit code a composition error maps to: every one is the environment, not the domain.
-pub fn code_for_composition(_error: &CompositionError) -> u8 {
-    BACKEND
+/// The exit code a composition error maps to: a kind with no adapter yet is listed but not
+/// built; every other one is the environment, not the domain.
+pub fn code_for_composition(error: &CompositionError) -> u8 {
+    match error {
+        CompositionError::NotBuilt { .. } => NOT_IMPLEMENTED,
+        _ => BACKEND,
+    }
 }
 
 /// Says the verb is not built and returns its code.
@@ -53,4 +57,24 @@ pub fn note_design_paths(path: &str, composition: &Composition) {
 pub fn fail_composition(path: &str, error: &CompositionError) -> u8 {
     eprintln!("zaf {path}: {error}");
     code_for_composition(error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_kind_not_built_is_listed_but_not_built_and_the_rest_a_backend_failure() {
+        let not_built = CompositionError::NotBuilt {
+            port: "Forge",
+            section: "forge",
+            kind: "forgejo".to_owned(),
+        };
+        assert_eq!(code_for_composition(&not_built), NOT_IMPLEMENTED);
+        let absent = CompositionError::Absent {
+            port: "Forge",
+            section: "forge",
+        };
+        assert_eq!(code_for_composition(&absent), BACKEND);
+    }
 }

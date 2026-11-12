@@ -78,6 +78,33 @@ impl Forge for ScriptedForge {
     fn set_handoff(&self, pr: PrNumber, text: &str) -> Result<(), PortError> {
         self.inner.set_handoff(pr, text)
     }
+
+    fn open_pull_request(
+        &self,
+        request: &crate::ports::NewPullRequest,
+    ) -> Result<crate::ports::Opened, PortError> {
+        self.inner.open_pull_request(request)
+    }
+
+    fn merge_pull_request(
+        &self,
+        pr: PrNumber,
+        strategy: crate::ports::MergeStrategy,
+        head: Option<&crate::ports::CommitId>,
+    ) -> Result<crate::ports::MergeOutcome, PortError> {
+        self.inner.merge_pull_request(pr, strategy, head)
+    }
+
+    fn check_runs(&self, pr: PrNumber) -> Result<Vec<crate::ports::CheckRun>, PortError> {
+        self.inner.check_runs(pr)
+    }
+
+    fn check_log(
+        &self,
+        link: &crate::ports::CheckLink,
+    ) -> Result<crate::ports::CheckLog, PortError> {
+        self.inner.check_log(link)
+    }
 }
 
 struct ScriptedPorts {

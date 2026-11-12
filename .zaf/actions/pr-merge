@@ -1,7 +1,7 @@
 #!/bin/sh
 # zaf description: merge a pull request with a merge commit, or squashed with --squash, only at the head commit named with --match-head-commit <sha> when one is given; one already merged is quiet; a merge refused for a moved base is retried up to three times, 15 seconds apart
 # zaf 1: refused: the arguments are not <pr> [--squash] [--match-head-commit <sha>], the pull request is closed unmerged, or the forge refuses the merge (a head other than the named one is refused)
-# zaf 2: a backend failed (gh is missing or refused to read the pull request, or printed no state)
+# zaf 2: a backend failed (the manifest names no forge, or the forge is unreachable or could not read the pull request)
 # zaf mode: 750
 # zaf group: team, release, merge
 pr=$1
@@ -24,7 +24,7 @@ shift
 
 # The strategy, and the head commit the merge is pinned to. With one, the forge refuses the merge
 # when the pull request's head is any other commit, so a push after CI is never merged unchecked.
-strategy=--merge
+strategy=
 pin=
 while [ "$#" -gt 0 ]; do
     case $1 in
@@ -53,80 +53,36 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
+set -- "$pr"
+if [ -n "$strategy" ]; then
+    set -- "$@" "$strategy"
+fi
+if [ -n "$pin" ]; then
+    set -- "$@" --match-head-commit "$pin"
+fi
+
 # Up to three retries, the seconds between them the forge's own settling time.
 retries=3
 delay=15
 
-# The forge repository the manifest names, the first manifest that names one, in the order zaf
-# reads them. With none, gh works the repository out from the root's remotes, as it does by hand.
-forge_repo() {
-    for manifest in "$ZAF_ROOT/.zaf.toml" "$ZAF_ROOT/.zaf/config.toml" "$ZAF_ROOT/ZAF.toml"; do
-        [ -f "$manifest" ] || continue
-        found=$(awk '
-            /^[ \t]*\[/ { in_forge = ($0 ~ /^[ \t]*\[forge\][ \t]*(#.*)?$/); next }
-            in_forge && /^[ \t]*repo[ \t]*=/ {
-                line = $0
-                sub(/^[^=]*=[ \t]*"/, "", line)
-                sub(/".*$/, "", line)
-                print line
-                exit
-            }
-        ' "$manifest")
-        if [ -n "$found" ]; then
-            echo "$found"
-            return
-        fi
-    done
-}
-
-# A slice's workspace is a jj workspace gh cannot read a repository from, so gh runs at the
-# project root, the repository itself.
+# zaf reads the forge from the manifest at the project root; a slice's workspace has none.
 cd "$ZAF_ROOT" || exit 2
 
-repo=$(forge_repo)
-if [ -n "$repo" ]; then
-    set -- --repo "$repo"
-else
-    set --
-fi
-
-state=$(gh pr view "$pr" --json state --jq .state "$@") || exit 2
-case $state in
-    MERGED)
-        # Merged already: nothing to do, and nothing to say.
-        exit 0
-        ;;
-    CLOSED)
-        echo "pull request #$pr is closed unmerged" >&2
-        exit 1
-        ;;
-    "")
-        echo "gh printed no state for pull request #$pr" >&2
-        exit 2
-        ;;
-esac
-
-if [ -n "$pin" ]; then
-    set -- --match-head-commit "$pin" "$@"
-fi
-
-# Parallel merges move the base under each other and leave the forge briefly unable to merge.
-# Only those two refusals are worth waiting for; any other is final.
+# Parallel merges move the base under each other and leave the forge briefly unable to merge:
+# zaf says `not mergeable yet` for those, and only those are worth waiting for; any other
+# refusal is final. A pull request merged already is quiet.
 tries=0
 while :; do
-    if output=$(gh pr merge "$pr" "$strategy" "$@" 2>&1); then
+    if output=$(zaf forge merge "$@" 2>&1); then
         exit 0
     else
         status=$?
     fi
-    case $status in
-        126 | 127)
-            echo "gh cannot run: $output" >&2
-            exit 2
-            ;;
-    esac
     printf '%s\n' "$output" >&2
-    if ! printf '%s\n' "$output" | grep -qiE 'Base branch was modified|not mergeable'; then
+    if [ "$status" -ne 1 ]; then
+        exit 2
+    fi
+    if ! printf '%s\n' "$output" | grep -q 'not mergeable yet'; then
         exit 1
     fi
     if [ "$tries" -ge "$retries" ]; then

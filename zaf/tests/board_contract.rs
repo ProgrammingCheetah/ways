@@ -10,6 +10,12 @@
 //! well when `ZAF_CONTRACT_PROJECT` also names a Project (`owner/number`) linked to that
 //! repository: states then live in its `zaf state` field, created on the first write.
 //!
+//! They run on the Forgejo board when `ZAF_CONTRACT_FORGEJO_URL` names an instance,
+//! `ZAF_CONTRACT_FORGEJO_REPO` a scratch repository on it and `ZAF_CONTRACT_FORGEJO_TOKEN_ENV`
+//! the variable holding a token that can write there (the token itself is never in a test's
+//! variables); without all three the Forgejo checks pass without running. Each check opens
+//! its own issues there and closes them, labelled `not planned`, when it ends.
+//!
 //! A backend's lists may lag behind its writes: GitHub lists a new issue, label or comment a
 //! few seconds after the write. A check that reads a list after a write reads it again until
 //! it shows the write, for as long as the backend's [`Arrange::patience`], and then asserts
@@ -20,6 +26,12 @@ use std::fmt::Debug;
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime};
 
+use std::sync::{Mutex, OnceLock};
+
+use serde_json::json;
+use zaf::adapters::forgejo::{
+    ForgejoApi, ForgejoBoard, Method, NOT_PLANNED_LABEL, state_label, type_label,
+};
 use zaf::adapters::github::{GhCommand, GithubBoard, GithubProjectBoard, ProjectRef};
 
 use zaf::domain::{
@@ -27,7 +39,7 @@ use zaf::domain::{
     TicketState, TicketType,
 };
 use zaf::fakes::FakeBoard;
-use zaf::manifest::{DEFAULT_STATE_FIELD, RepoName};
+use zaf::manifest::{DEFAULT_STATE_FIELD, EnvVarName, ForgeUrl, RepoName};
 use zaf::ports::{Board, ClaimOutcome, NewQuestion, PortError};
 
 /// The environment variable naming the scratch repository the GitHub checks write to.
@@ -36,6 +48,15 @@ const REPO_VAR: &str = "ZAF_CONTRACT_REPO";
 /// The environment variable naming the scratch Project (`owner/number`) the Projects checks
 /// keep states in.
 const PROJECT_VAR: &str = "ZAF_CONTRACT_PROJECT";
+
+/// The environment variable naming the Forgejo instance the Forgejo checks write to.
+const FORGEJO_URL_VAR: &str = "ZAF_CONTRACT_FORGEJO_URL";
+
+/// The environment variable naming the scratch repository (`owner/name`) on that instance.
+const FORGEJO_REPO_VAR: &str = "ZAF_CONTRACT_FORGEJO_REPO";
+
+/// The environment variable naming the variable that holds the Forgejo token.
+const FORGEJO_TOKEN_ENV_VAR: &str = "ZAF_CONTRACT_FORGEJO_TOKEN_ENV";
 
 /// A backend's way to arrange its board for one check.
 trait Arrange {
@@ -704,8 +725,211 @@ fn gh(args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
+/// A Forgejo board on the scratch repository, closing what it opened when dropped.
+struct ForgejoArrange {
+    api: ForgejoApi,
+    board: ForgejoBoard,
+    opened: RefCell<Vec<TicketId>>,
+}
+
+/// A label on the scratch repository, by name and id.
+#[derive(Debug, serde::Deserialize)]
+struct LabelRow {
+    id: u64,
+    name: String,
+}
+
+/// An issue on the scratch repository, read only for its number.
+#[derive(Debug, serde::Deserialize)]
+struct NumberRow {
+    number: u64,
+}
+
+/// The labels the arranger itself puts on issues, made once per test run before any check
+/// arranges: the kinds and the states, so no two checks create one at the same moment.
+static FORGEJO_LABELS: OnceLock<()> = OnceLock::new();
+
+/// Held while the arranger looks a label up or creates one.
+static FORGEJO_LABEL_LOCK: Mutex<()> = Mutex::new(());
+
+impl ForgejoArrange {
+    /// The board on the repository `ZAF_CONTRACT_FORGEJO_REPO` names, on the instance
+    /// `ZAF_CONTRACT_FORGEJO_URL` names, with the token in the variable
+    /// `ZAF_CONTRACT_FORGEJO_TOKEN_ENV` names; none unless all three are set.
+    fn from_env() -> Option<Self> {
+        let var = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
+        let url = var(FORGEJO_URL_VAR)?;
+        let repo = var(FORGEJO_REPO_VAR)?;
+        let token_env = var(FORGEJO_TOKEN_ENV_VAR)?;
+        let api = ForgejoApi::from_env(
+            ForgeUrl::from(url.as_str()),
+            RepoName::from(repo.as_str()),
+            EnvVarName::from(token_env.as_str()),
+        );
+        assert!(
+            api.has_token(),
+            "{FORGEJO_TOKEN_ENV_VAR} names `{token_env}`, which holds no token"
+        );
+        let arrange = Self {
+            board: ForgejoBoard::from(api.clone()),
+            api,
+            opened: RefCell::new(Vec::new()),
+        };
+        FORGEJO_LABELS.get_or_init(|| {
+            let mut names = vec!["task", "epic", "question", "door", NOT_PLANNED_LABEL];
+            let states: Vec<String> = [
+                TicketState::Ready,
+                TicketState::Claimed,
+                TicketState::Blocked,
+                TicketState::Question,
+                TicketState::Done,
+            ]
+            .into_iter()
+            .map(state_label)
+            .collect();
+            names.extend(states.iter().map(String::as_str));
+            for name in names {
+                arrange.label(name);
+            }
+        });
+        Some(arrange)
+    }
+
+    /// The id of the label `name`, created when the repository lacks it: exclusive when it
+    /// is scoped (`scope/name`), as the board makes its own.
+    fn label(&self, name: &str) -> u64 {
+        let _held = FORGEJO_LABEL_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let listed: Vec<LabelRow> = self.api.list("labels").expect("the labels read");
+        if let Some(id) = listed
+            .iter()
+            .filter(|label| label.name == name)
+            .map(|label| label.id)
+            .min()
+        {
+            return id;
+        }
+        let body = json!({ "name": name, "color": "ededed", "exclusive": name.contains('/') });
+        let created: LabelRow = self
+            .api
+            .send(Method::Post, "labels", Some(&body))
+            .expect("the label is created");
+        created.id
+    }
+
+    fn open(&self, title: &str, body: &str, labels: &[&str]) -> TicketId {
+        let ids: Vec<u64> = labels.iter().map(|name| self.label(name)).collect();
+        let issue = json!({ "title": title, "body": body, "labels": ids });
+        let opened: NumberRow = self
+            .api
+            .send(Method::Post, "issues", Some(&issue))
+            .expect("the issue opens");
+        let id = TicketId::from(opened.number);
+        self.opened.borrow_mut().push(id);
+        id
+    }
+
+    fn add_label(&self, id: TicketId, name: &str) {
+        let label = self.label(name);
+        self.api
+            .send::<serde_json::Value>(
+                Method::Post,
+                &format!("issues/{}/labels", id.get()),
+                Some(&json!({ "labels": [label] })),
+            )
+            .expect("the label goes on");
+    }
+
+    fn close_issue(&self, id: TicketId) -> Result<(), zaf::ports::PortError> {
+        self.api
+            .send::<serde_json::Value>(
+                Method::Patch,
+                &format!("issues/{}", id.get()),
+                Some(&json!({ "state": "closed" })),
+            )
+            .map(drop)
+    }
+}
+
+impl Arrange for ForgejoArrange {
+    fn board(&self) -> &dyn Board {
+        &self.board
+    }
+
+    fn epic(&self, title: &str) -> TicketId {
+        self.open(title, "An epic of the contract checks.", &["epic"])
+    }
+
+    /// Opens the task labelled `task` and its state, and makes the epic depend on it.
+    fn task(&self, epic: TicketId, title: &str, body: &str, state: TicketState) -> TicketId {
+        let task = self.open(title, body, &["task", &state_label(state)]);
+        let (owner, name) = self.api.owner_and_name().expect("owner/name");
+        let dependency = json!({ "owner": owner, "repo": name, "index": task.get() });
+        self.api
+            .send::<serde_json::Value>(
+                Method::Post,
+                &format!("issues/{}/dependencies", epic.get()),
+                Some(&dependency),
+            )
+            .expect("the epic depends on its task");
+        task
+    }
+
+    /// Closes the issue; one closed as not planned is labelled so first.
+    fn close(&self, id: TicketId, completed: bool) {
+        if !completed {
+            self.add_label(id, NOT_PLANNED_LABEL);
+        }
+        self.close_issue(id).expect("the issue closes");
+    }
+
+    fn set_type(&self, id: TicketId, kind: &str) {
+        self.add_label(id, &type_label(&TicketType::from(kind)));
+    }
+
+    fn edit_body(&self, id: TicketId, body: &str) {
+        self.api
+            .send::<serde_json::Value>(
+                Method::Patch,
+                &format!("issues/{}", id.get()),
+                Some(&json!({ "body": body })),
+            )
+            .expect("the body is edited");
+    }
+
+    fn adopt(&self, id: TicketId) {
+        self.opened.borrow_mut().push(id);
+    }
+
+    fn missing(&self) -> TicketId {
+        TicketId::from(999_999_999)
+    }
+
+    fn patience(&self) -> Duration {
+        Duration::from_secs(10)
+    }
+}
+
+impl Drop for ForgejoArrange {
+    /// Closes what the check opened, newest first: an epic cannot close while a task it
+    /// depends on is open.
+    fn drop(&mut self) {
+        for id in self.opened.borrow().iter().rev() {
+            // By name: the label was made before any check ran, and a drop must not panic.
+            let _ = self.api.send::<serde_json::Value>(
+                Method::Post,
+                &format!("issues/{}/labels", id.get()),
+                Some(&json!({ "labels": [NOT_PLANNED_LABEL] })),
+            );
+            let _ = self.close_issue(*id);
+        }
+    }
+}
+
 /// One test per check and backend: `fake::<check>` always, `github::<check>` when
-/// `ZAF_CONTRACT_REPO` is set, `projects::<check>` when `ZAF_CONTRACT_PROJECT` is set too.
+/// `ZAF_CONTRACT_REPO` is set, `projects::<check>` when `ZAF_CONTRACT_PROJECT` is set too,
+/// `forgejo::<check>` when the three `ZAF_CONTRACT_FORGEJO_*` variables are set.
 macro_rules! contract {
     ($($check:ident),* $(,)?) => {
         mod fake {
@@ -734,6 +958,18 @@ macro_rules! contract {
                 #[test]
                 fn $check() {
                     let Some(arrange) = super::GithubArrange::projects_from_env() else {
+                        return;
+                    };
+                    super::$check(&arrange);
+                }
+            )*
+        }
+
+        mod forgejo {
+            $(
+                #[test]
+                fn $check() {
+                    let Some(arrange) = super::ForgejoArrange::from_env() else {
                         return;
                     };
                     super::$check(&arrange);

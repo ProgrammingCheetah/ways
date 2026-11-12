@@ -130,5 +130,22 @@ pub enum Standing {
     Missing,
 }
 
+impl Standing {
+    /// Where an issue that exists stands: done when it is in the `done` state; else open while
+    /// it is open; else closed as not planned when it was `dropped` (closed as not planned or
+    /// as a duplicate); else closed as completed, so done.
+    pub fn of_issue(open: bool, dropped: bool, done: bool) -> Self {
+        if done {
+            Self::Done
+        } else if open {
+            Self::Open
+        } else if dropped {
+            Self::ClosedNotPlanned
+        } else {
+            Self::Done
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;

@@ -76,6 +76,21 @@ impl GhCommand {
         self.output(&argv)
     }
 
+    /// Runs a repository subcommand with `--repo` appended and hands back how it ended, whatever
+    /// its exit code: for a call whose words decide rather than its code (`pr checks` exits
+    /// non-zero while a check is pending, `pr merge` says why it refused). Only a gh that cannot
+    /// be started is an error, [`PortError::Unavailable`].
+    pub fn run(&self, args: &[&str]) -> Result<GhRun, PortError> {
+        let mut argv: Vec<&str> = args.to_vec();
+        argv.extend(["--repo", self.repo.as_ref()]);
+        let output = self.command(&argv).output().map_err(cannot_run)?;
+        Ok(GhRun {
+            success: output.status.success(),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        })
+    }
+
     /// Runs a repository subcommand and parses its stdout as JSON.
     pub fn json<T: DeserializeOwned>(&self, args: &[&str]) -> Result<T, PortError> {
         parse_json(&self.text(args)?)
@@ -133,15 +148,18 @@ impl GhCommand {
         Ok(pages.into_iter().flatten().collect())
     }
 
-    fn output(&self, argv: &[&str]) -> Result<String, PortError> {
+    /// `gh` with `argv` and the environment every call gets, not yet run.
+    fn command(&self, argv: &[&str]) -> Command {
         let mut command = Command::new(PROGRAM);
         command.args(argv);
         for (key, value) in &self.env {
             command.env(key, value);
         }
-        let output = command
-            .output()
-            .map_err(|error| PortError::Unavailable(format!("cannot run {PROGRAM}: {error}")))?;
+        command
+    }
+
+    fn output(&self, argv: &[&str]) -> Result<String, PortError> {
+        let output = self.command(argv).output().map_err(cannot_run)?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
             let subcommand = argv.iter().take(2).copied().collect::<Vec<_>>().join(" ");
@@ -156,6 +174,22 @@ impl GhCommand {
         String::from_utf8(output.stdout)
             .map_err(|_| PortError::Backend(format!("{PROGRAM} wrote output that is not UTF-8")))
     }
+}
+
+/// How one gh call ended, whatever its exit code (see [`GhCommand::run`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GhRun {
+    /// Whether it exited 0.
+    pub success: bool,
+    /// What it printed on stdout.
+    pub stdout: String,
+    /// What it printed on stderr, trimmed.
+    pub stderr: String,
+}
+
+/// A gh that could not be started.
+fn cannot_run(error: std::io::Error) -> PortError {
+    PortError::Unavailable(format!("cannot run {PROGRAM}: {error}"))
 }
 
 /// Whether a failed call's message is one GitHub says to send again.

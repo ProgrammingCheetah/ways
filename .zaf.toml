@@ -130,6 +130,7 @@ kind = "process"
 [forbidden]
 commands = [
   "gh pr merge",
+  "zaf forge merge",
   "zaf do pr-merge",
   "zaf do land",
   "zaf do ship",

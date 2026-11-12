@@ -6,15 +6,17 @@ use std::io::{self, ErrorKind};
 use std::time::Duration;
 
 use super::brief::INSTANCE_VAR;
-use super::doctor::ShellCommands;
+use super::doctor::{ShellCommands, add_backend_checks};
 use super::exit::{self, BACKEND, OK, REFUSED};
 use super::{Cli, first_run};
 
+use crate::adapters::forgejo::ForgejoApi;
 use crate::adapters::shell::SystemShell;
 use crate::app::init::{InitError, init_with_home};
 use crate::app::profile::{ProfileError, current_pack_tag};
 use crate::app::setup::{move_legacy_manifest, setup};
 use crate::composition::{Composition, CompositionError, zaf_home};
+use crate::manifest::{EnvVarName, ForgeUrl, RepoName};
 
 /// Whether this run is an instance's: `ZAF_INSTANCE` set and not blank.
 fn as_instance() -> bool {
@@ -33,6 +35,23 @@ fn learn_pack_tag() -> Result<String, ProfileError> {
         .and_then(|()| current_pack_tag(&shell, &scratch));
     let _ = fs::remove_dir_all(&scratch);
     tag
+}
+
+/// Seconds a probe waits to connect to one candidate, and to hear from it in all.
+const PROBE_CONNECT_SECONDS: u32 = 2;
+const PROBE_TOTAL_SECONDS: u32 = 4;
+
+/// Whether `url` answers `GET /api/v1/version` as a Forgejo or Gitea instance; needs no token.
+fn probe_forgejo(url: &ForgeUrl) -> bool {
+    ForgejoApi::new(
+        url.clone(),
+        RepoName::from("probe/probe"),
+        EnvVarName::from("FORGEJO_TOKEN"),
+        None,
+    )
+    .time_limits(PROBE_CONNECT_SECONDS, PROBE_TOTAL_SECONDS)
+    .version()
+    .is_ok()
 }
 
 /// The exit code for an asking failure: 2 for a backend failure (the pack's tag, reading or
@@ -55,6 +74,7 @@ fn ask_for_manifest(
         dir,
         zaf_home,
         &mut learn_pack_tag,
+        &mut probe_forgejo,
         &mut io::stdin().lock(),
         &mut io::stdout(),
     )
@@ -73,7 +93,8 @@ fn ask_for_manifest(
 /// Renames a root `ZAF.toml` to `.zaf.toml` (the Engineer's run only, said in one line),
 /// makes the project's `.zaf/` and the zaf home, replaces an old `.zaf/.gitignore` that holds
 /// only `*`, clones a missing design repo, generates the profiles as `zaf profile init` does,
-/// runs doctor and prints the worksheet; exits 1 while anything is left for the Engineer (a
+/// runs doctor (with the board's and the forge's backends asked, as `zaf doctor` does, so a Forgejo
+/// project's missing token is reported) and prints the worksheet; exits 1 while anything is left for the Engineer (a
 /// pack refusal included) and 2 when a profile cannot be generated. A `ZAF.toml` beside a new manifest file exits 1 and
 /// moves nothing. It installs no tool; the one thing it copies is the installed pack's actions into
 /// the zaf home's `actions/`, never over a file there, in one line.
@@ -113,7 +134,7 @@ pub fn run(cli: &Cli) -> u8 {
             };
         }
     }
-    let report = match setup(
+    let mut report = match setup(
         composition.root(),
         zaf_home.as_deref(),
         composition.manifest(),
@@ -126,6 +147,7 @@ pub fn run(cli: &Cli) -> u8 {
             return exit::BACKEND;
         }
     };
+    add_backend_checks(&mut report.doctor, &composition);
     if let Some(profiles) = report
         .profiles
         .as_ref()

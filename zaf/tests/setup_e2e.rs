@@ -14,6 +14,9 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
+mod common;
+use common::Curl;
+
 /// The stand-in `claude`: logged in; a marketplace added is listed; an install records the pack
 /// (`FAKE_PACK_VERSION` at `FAKE_PACK_PATH`) in the profile's `plugins/installed_plugins.json`.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
@@ -42,6 +45,11 @@ struct Scene {
     temp: tempfile::TempDir,
     root: PathBuf,
     home: PathBuf,
+    /// Whether the search path is only the stand-in folder (a Forgejo scene), not that and the
+    /// machine's own.
+    sealed: bool,
+    /// Environment set on every run.
+    env: Vec<(String, String)>,
 }
 
 /// The ways repository's root, one folder above the crate.
@@ -52,6 +60,18 @@ fn ways_root() -> PathBuf {
         .to_owned()
 }
 
+/// The version in the pack's own `plugin.json`, which the fake marketplace serves, so a pack
+/// release needs no edit here.
+fn pack_version() -> String {
+    let text = fs::read_to_string(ways_root().join("plugins/teams/.claude-plugin/plugin.json"))
+        .expect("the pack's plugin.json");
+    let json: serde_json::Value = serde_json::from_str(&text).expect("plugin.json is JSON");
+    json["version"]
+        .as_str()
+        .expect("plugin.json has a version")
+        .to_owned()
+}
+
 fn executable(path: &Path, text: &str) {
     fs::write(path, text).expect("write tool");
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).expect("chmod");
@@ -59,6 +79,62 @@ fn executable(path: &Path, text: &str) {
 
 impl Scene {
     fn new() -> Self {
+        Self::with_origin("git@github.com:example/tracker.git")
+    }
+
+    /// An empty folder whose `origin` is `ssh://git@yagdrassyl.local:2222/zuri/ways.git` and
+    /// whose PATH holds no `gh`: the machine's tools but that one, the stand-in `claude` and
+    /// `jj`, and the fake `curl` answering as a Forgejo instance at `http://yagdrassyl.local:3000`.
+    fn forgejo() -> Self {
+        let mut scene = Self::with_origin("ssh://git@yagdrassyl.local:2222/zuri/ways.git");
+        let bin = scene.temp.path().join("bin");
+        fs::remove_file(bin.join("gh")).expect("no gh");
+        executable(
+            &bin.join("curl"),
+            &fs::read_to_string(common::fixtures().join("forgejo/curl")).expect("fake curl"),
+        );
+        // Every tool the machine's PATH offers but `gh`, so nothing but the stand-ins differ.
+        let inherited = std::env::var_os("PATH").unwrap_or_default();
+        for dir in std::env::split_paths(&inherited) {
+            let Ok(entries) = fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                if name != "gh" {
+                    let _ = std::os::unix::fs::symlink(entry.path(), bin.join(&name));
+                }
+            }
+        }
+        let mut curl = Curl::new(scene.temp.path());
+        curl.on(
+            "GET http://yagdrassyl.local:3000/api/v1/version",
+            200,
+            r#"{"version":"15.0.11+gitea-1.22.0"}"#,
+        )
+        .on(
+            "GET http://yagdrassyl.local:3000/api/v1/repos/zuri/ways",
+            200,
+            r#"{"permissions":{"pull":true,"push":true}}"#,
+        )
+        .on(
+            "POST http://yagdrassyl.local:3000/api/v1/repos/zuri/ways/*",
+            422,
+            r#"{"message":"invalid"}"#,
+        )
+        .on(
+            "GET http://yagdrassyl.local:3000/api/v1/repos/zuri/ways/*",
+            200,
+            "[]",
+        );
+        scene.sealed = true;
+        scene
+            .env
+            .push(("FAKE_CURL_DIR".to_owned(), curl.dir.display().to_string()));
+        scene
+    }
+
+    fn with_origin(origin: &str) -> Self {
         let temp = tempfile::tempdir().expect("temp dir");
         let (root, home) = (temp.path().join("tracker"), temp.path().join("zaf-home"));
         let bin = temp.path().join("bin");
@@ -70,12 +146,7 @@ impl Scene {
         executable(&bin.join("jj"), FAKE_TOOL);
         for args in [
             &["init", "--quiet"][..],
-            &[
-                "remote",
-                "add",
-                "origin",
-                "git@github.com:example/tracker.git",
-            ],
+            &["remote", "add", "origin", origin],
         ] {
             let status = Command::new("git")
                 .args(args)
@@ -84,12 +155,23 @@ impl Scene {
                 .expect("git");
             assert!(status.success(), "git {args:?}");
         }
-        Self { temp, root, home }
+        Self {
+            temp,
+            root,
+            home,
+            sealed: false,
+            env: Vec::new(),
+        }
     }
 
     /// Runs `zaf <args>` in the folder with `stdin` on its input (none: closed input).
     fn zaf(&self, args: &[&str], stdin: Option<&str>) -> Output {
         let inherited = std::env::var_os("PATH").unwrap_or_default();
+        let inherited = if self.sealed {
+            Default::default()
+        } else {
+            inherited
+        };
         let search = std::env::join_paths(
             std::iter::once(self.temp.path().join("bin")).chain(std::env::split_paths(&inherited)),
         )
@@ -101,10 +183,11 @@ impl Scene {
             .env("PATH", search)
             .env("ZAF_HOME", &self.home)
             .env("HOME", self.temp.path().join("user-home"))
-            .env("FAKE_PACK_VERSION", "2.1.1")
+            .env("FAKE_PACK_VERSION", pack_version())
             .env("FAKE_PACK_PATH", ways_root().join("plugins/teams"))
             .env_remove("ZAF_INSTANCE")
             .env_remove("ZAF_VERSION")
+            .envs(self.env.iter().map(|(key, value)| (key, value)))
             .stdin(if stdin.is_some() {
                 Stdio::piped()
             } else {
@@ -192,6 +275,53 @@ fn setup_empty_folder_doctor_passes() {
 
     let (code, stdout, stderr) = outcome(&scene.zaf(&["doctor"], None));
     assert_eq!(code, 0, "doctor after setup:\n{stdout}{stderr}");
+}
+
+/// In an empty folder whose `origin` is not a GitHub remote, `zaf setup` with every default taken
+/// finds the instance by probing the remote's host, and writes a Forgejo manifest with the URL
+/// it found; while the token variable is unset setup exits 1 and says what to export.
+#[test]
+fn setup_writes_a_forgejo_manifest_from_origin() {
+    let mut scene = Scene::forgejo();
+    scene.env.push(("FORGEJO_TOKEN".to_owned(), String::new()));
+    let (code, stdout, stderr) = outcome(&scene.zaf(&["setup"], Some("\n\n\n\n\n")));
+    assert!(
+        stdout.contains("forge url [http://yagdrassyl.local:3000]: "),
+        "{stdout}{stderr}"
+    );
+    let manifest = fs::read_to_string(scene.root.join(".zaf.toml")).expect("manifest");
+    for line in [
+        "kind = \"forgejo-issues\"",
+        "kind = \"forgejo\"",
+        "url = \"http://yagdrassyl.local:3000\"",
+        "repo = \"zuri/ways\"",
+        "token_env = \"FORGEJO_TOKEN\"",
+    ] {
+        assert!(manifest.contains(line), "{line}:\n{manifest}");
+    }
+    assert!(!manifest.contains("gh = ") && !manifest.contains("gh pr"));
+    assert_eq!(code, 1, "no token, so doctor fails:\n{stdout}{stderr}");
+    assert!(
+        stdout.contains("`FORGEJO_TOKEN` is not set")
+            && stdout.contains("read and write on the repository's issues and pull requests"),
+        "{stdout}{stderr}"
+    );
+}
+
+/// The same project with the token variable set and the instance answering: setup exits 0 and
+/// `zaf doctor` exits 0, with no `gh` on the search path at all.
+#[test]
+fn setup_forgejo_project_doctor_passes_without_gh() {
+    let mut scene = Scene::forgejo();
+    scene
+        .env
+        .push(("FORGEJO_TOKEN".to_owned(), "secret".to_owned()));
+    let bin = scene.temp.path().join("bin");
+    assert!(!bin.join("gh").exists());
+    let (code, stdout, stderr) = outcome(&scene.zaf(&["setup"], Some("\n\n\n\n\n")));
+    assert_eq!(code, 0, "setup:\n{stdout}{stderr}");
+    let (code, stdout, stderr) = outcome(&scene.zaf(&["doctor"], None));
+    assert_eq!(code, 0, "doctor:\n{stdout}{stderr}");
 }
 
 /// After one setup, a second `zaf setup` reads nothing from stdin (it is closed) and leaves every

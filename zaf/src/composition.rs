@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::adapters::design::DirDesign;
+use crate::adapters::forgejo::{ForgejoApi, ForgejoBoard, ForgejoForge};
 use crate::adapters::gate::ShellGate;
 use crate::adapters::github::{GhCommand, GithubBoard, GithubForge, ProjectRef};
 use crate::adapters::jj::JjVcs;
@@ -76,6 +77,16 @@ pub enum CompositionError {
         /// The key.
         key: &'static str,
         /// The kind that needs it.
+        kind: String,
+    },
+    /// The manifest names a kind the port has no adapter for yet.
+    #[error("[{section}] kind `{kind}` is not built yet: the {port} port has no adapter for it")]
+    NotBuilt {
+        /// The port.
+        port: &'static str,
+        /// The manifest section naming the kind.
+        section: &'static str,
+        /// The kind.
         kind: String,
     },
     /// The manifest names no runner by that name.
@@ -268,6 +279,17 @@ impl Composition {
                     project,
                 )))
             }
+            BoardKind::ForgejoIssues => {
+                let missing = |key: &'static str| CompositionError::MissingKey {
+                    section: "board",
+                    key,
+                    kind: section.kind.to_string(),
+                };
+                let repo = section.repo.clone().ok_or_else(|| missing("repo"))?;
+                let url = section.url.clone().ok_or_else(|| missing("url"))?;
+                let api = ForgejoApi::from_env(url, repo, section.token_env());
+                Ok(Box::new(ForgejoBoard::from(api)))
+            }
         }
     }
 
@@ -301,6 +323,34 @@ impl Composition {
                 })?;
                 Ok(Box::new(GithubForge::from(GhCommand::from(repo))))
             }
+            ForgeKind::Forgejo => {
+                let missing = |key: &'static str| CompositionError::MissingKey {
+                    section: "forge",
+                    key,
+                    kind: section.kind.to_string(),
+                };
+                let repo = section.repo.clone().ok_or_else(|| missing("repo"))?;
+                let url = section.url.clone().ok_or_else(|| missing("url"))?;
+                let api = ForgejoApi::from_env(url, repo, section.token_env());
+                if self.board_api().is_some_and(|board| shares(&board, &api)) {
+                    return Ok(Box::new(ForgejoForge::beside_board(api)));
+                }
+                Ok(Box::new(ForgejoForge::from(api)))
+            }
+        }
+    }
+
+    /// The door to the board's Forgejo instance, when the board is on one.
+    fn board_api(&self) -> Option<ForgejoApi> {
+        let section = &self.manifest.board;
+        match section.kind {
+            BoardKind::ForgejoIssues => Some(ForgejoApi::new(
+                section.url.clone()?,
+                section.repo.clone()?,
+                section.token_env(),
+                None,
+            )),
+            BoardKind::GithubIssues | BoardKind::GithubProjects => None,
         }
     }
 
@@ -530,6 +580,16 @@ impl Composition {
     pub fn shell_in_with_env(&self, dir: &Path, env: &BTreeMap<String, String>) -> Box<dyn Shell> {
         Box::new(SystemShell::new(dir, SHELL_TIMEOUT).with_env(env.clone()))
     }
+}
+
+/// Whether two doors reach the same repository on the same instance with the same token
+/// variable, so what one's doctor checks asked holds for the other.
+fn shares(one: &ForgejoApi, other: &ForgejoApi) -> bool {
+    one.url()
+        .as_str()
+        .eq_ignore_ascii_case(other.url().as_str())
+        && one.repo() == other.repo()
+        && one.token_env() == other.token_env()
 }
 
 /// The path with `.` and `..` folded away lexically, so `a/../b` compares as `b`.

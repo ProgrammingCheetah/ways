@@ -1,0 +1,97 @@
+# Forgejo's copy of the release build. Forgejo reads `.forgejo/workflows` and then ignores
+# `.github/workflows`; GitHub never reads this folder. It differs from GitHub's in three ways:
+# the instance has no macOS runner, so only the Linux musl binary is built; nothing goes through
+# upload-artifact (v4 refuses to run off github.com), so one job builds and publishes; and the
+# release is made through Forgejo's API, since there is no `gh` here.
+name: zaf-release
+
+on:
+  push:
+    tags:
+      - "zaf-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The zaf-v* tag to build and publish"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zaf-release-${{ inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: release (x86_64-unknown-linux-musl)
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      TARGET: x86_64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - name: Check Cargo.toml version matches the tag
+        shell: bash
+        run: |
+          want="${TAG#zaf-v}"
+          have="$(grep -m1 '^version' zaf/Cargo.toml | cut -d'"' -f2)"
+          if [ "$have" != "$want" ]; then
+            echo "zaf/Cargo.toml version '$have' does not match tag '$TAG' (expected '$want')" >&2
+            exit 1
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: zaf
+          key: x86_64-unknown-linux-musl
+      - name: Install musl-tools (the bundled SQLite is C)
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Build
+        working-directory: zaf
+        run: cargo build --release --locked --target "$TARGET"
+      - name: Package archive and checksum
+        shell: bash
+        run: |
+          name="$TAG-$TARGET"
+          stage="$RUNNER_TEMP/$name"
+          mkdir -p "$stage" dist
+          cp "zaf/target/$TARGET/release/zaf" "$stage/"
+          for lic in LICENSE zaf/LICENSE; do
+            if [ -f "$lic" ]; then cp "$lic" "$stage/LICENSE"; break; fi
+          done
+          tar -czf "dist/$name.tar.gz" -C "$RUNNER_TEMP" "$name"
+          (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+          cat "dist/$name.tar.gz.sha256"
+      - name: Create the release if absent, then upload the archive and its sum
+        shell: bash
+        env:
+          API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
+          FORGEJO_TOKEN: ${{ github.token }}
+        run: |
+          # The token goes to curl in a config read from stdin, never on a command line.
+          call() { printf 'header = "Authorization: token %s"\n' "$FORGEJO_TOKEN" | curl --config - -sS "$@"; }
+          first_id() { grep -o '"id":[0-9]*' | head -n 1 | cut -d: -f2; }
+          id=$(call "$API/releases/tags/$TAG" | first_id || true)
+          if [ -z "$id" ]; then
+            id=$(call -f -X POST -H 'Content-Type: application/json' \
+              -d "{\"tag_name\":\"$TAG\",\"name\":\"$TAG\"}" "$API/releases" | first_id)
+          fi
+          if [ -z "$id" ]; then
+            echo "no release for $TAG and none could be made" >&2
+            exit 1
+          fi
+          for file in dist/*; do
+            name=$(basename "$file")
+            # An asset of this name from an earlier run is replaced.
+            old=$(call "$API/releases/$id/assets" | grep -o "\"id\":[0-9]*,\"name\":\"$name\"" | head -n 1 | cut -d: -f2 | cut -d, -f1 || true)
+            if [ -n "$old" ]; then
+              call -f -X DELETE "$API/releases/$id/assets/$old"
+            fi
+            call -f -X POST -F "attachment=@$file" "$API/releases/$id/assets?name=$name" >/dev/null
+            echo "uploaded $name"
+          done

@@ -13,6 +13,7 @@ pub mod changes;
 pub mod check;
 pub mod doctor;
 pub mod epic;
+pub mod forge;
 pub mod guard;
 pub mod hub;
 pub mod init;

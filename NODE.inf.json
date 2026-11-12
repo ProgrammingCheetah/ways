@@ -28,18 +28,13 @@
       "node": false
     },
     {
+      "name": ".forgejo/",
+      "role": "workflows Forgejo runs in place of .github's: zaf.yml (the gate on Linux alone) and zaf-release.yml (the musl binary on zaf-v* tags, published through Forgejo's API)",
+      "node": false
+    },
+    {
       "name": ".github/",
       "role": "workflows: zaf.yml (gate on zaf/ changes) and zaf-release.yml (binaries on zaf-v* tags)",
-      "node": false
-    },
-    {
-      "name": "NODE.toml",
-      "role": "nodes pack settings",
-      "node": false
-    },
-    {
-      "name": "README.md",
-      "role": "the marketplace manual: packs, install, updating, layout",
       "node": false
     },
     {
@@ -53,8 +48,18 @@
       "node": false
     },
     {
+      "name": "NODE.toml",
+      "role": "nodes pack settings",
+      "node": false
+    },
+    {
+      "name": "README.md",
+      "role": "the marketplace manual: packs, install, updating, layout",
+      "node": false
+    },
+    {
       "name": "docs/",
-      "role": "zuri-ai-framework.md (the design draft), zaf-actions.md (the actions design, rulings of 2026-11-03) and baseline-2026-10-27.md (teams 1.x measurements)",
+      "role": "zuri-ai-framework.md (the design draft), zaf-actions.md (the actions design, rulings of 2026-11-03, and what Claude assumed, the Forgejo board among it) and baseline-2026-10-27.md (teams 1.x measurements)",
       "node": false
     },
     {

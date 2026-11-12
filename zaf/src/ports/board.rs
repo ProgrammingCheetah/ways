@@ -1,5 +1,5 @@
-//! The board: zaf's tickets over whichever backend holds them (GitHub issues today), with
-//! claims, states, comments, questions and rulings.
+//! The board: zaf's tickets over whichever backend holds them (GitHub issues, a GitHub
+//! Project, Forgejo issues), with claims, states, comments, questions and rulings.
 //!
 //! Every method speaks the domain's [`Ticket`]; how a backend saves one (labels, fields,
 //! comments) is the backend's choice and never crosses this port.
@@ -56,6 +56,19 @@ impl IssueTypes {
     pub fn defines(&self, kind: &TicketType) -> bool {
         self.names.contains(kind)
     }
+}
+
+/// One thing a board's or a forge's backend was asked for `zaf doctor` (see [`Board::access`]
+/// and [`super::Forge::access`]), and what it answered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccessCheck {
+    /// What was asked: `instance` (whether the backend answers), `token` (whether its
+    /// credential reads and writes the repository).
+    pub what: String,
+    /// Whether it passed.
+    pub ok: bool,
+    /// What the backend said, for a person: `Forgejo 15.0.11 at <url>`, or why it failed.
+    pub detail: String,
 }
 
 /// The most characters a question's title holds; GitHub refuses a title over 256.
@@ -191,6 +204,16 @@ pub trait Board {
             "this board cannot file a task under {}",
             task.epic
         )))
+    }
+
+    /// Whether the backend answers and the board's credential can read and write its
+    /// repository, for `zaf doctor`: one check per question, each passed or failed with what the
+    /// backend said; a call that fails is a failed check, never an error.
+    ///
+    /// A board reached through a tool `[requires]` already names (gh, with its own login)
+    /// answers no checks unless it overrides this.
+    fn access(&self) -> Vec<AccessCheck> {
+        Vec::new()
     }
 
     /// Tasks labelled `ready`, in issue order.

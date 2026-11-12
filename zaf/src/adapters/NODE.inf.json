@@ -1,8 +1,8 @@
 {
   "path": "zaf/src/adapters",
   "charted": "2026-11-10",
-  "short": "live adapters over external CLIs",
-  "is": "The live port implementations: a directory design source, a shell gate, the GitHub board and forge through gh, a jj VCS, a process runner and the system shell.",
+  "short": "live adapters over external CLIs and APIs",
+  "is": "The live port implementations: a directory design source, a shell gate, the GitHub board and forge through gh, the Forgejo board and forge over its REST API through curl, a jj VCS, a process runner and the system shell; what both issue boards share (kind labels, state rules, comment notes) lives once beside them.",
   "type": "code",
   "tags": [
     "category:source",
@@ -10,8 +10,9 @@
     "hexagonal"
   ],
   "conventions": [
-    "Backends are reached by shelling out (gh, jj, sh -c), never through a client library",
-    "Each CLI has one door: every gh call goes through GhCommand (github/command.rs), every jj call through jj/command.rs; a failed call becomes PortError::Backend carrying stderr",
+    "Backends are reached by shelling out (gh, jj, curl, sh -c), never through a client library",
+    "Each CLI has one door: every gh call goes through GhCommand (github/command.rs), every jj call through jj/command.rs, every Forgejo call through ForgejoApi (forgejo/api.rs); a failed call becomes a PortError (Backend carrying stderr or Forgejo's message, NotFound for a 404 or a missing issue, Unavailable for a missing program or an instance that does not answer)",
+    "A token never reaches argv, a manifest or a log: ForgejoApi hands it to curl in a config on stdin, and ForgejoToken's Debug hides it",
     "Values substituted into a shell template are single-quoted"
   ],
   "entry_points": [
@@ -31,6 +32,16 @@
       "node": false
     },
     {
+      "name": "forgejo.rs",
+      "role": "Forgejo module root",
+      "node": false
+    },
+    {
+      "name": "forgejo/",
+      "role": "ForgejoBoard on a repository's issues (an epic depends on its tasks; state/<state> and type/<Type> exclusive scoped labels, forgejo/labels.rs), ForgejoForge on its pull requests (a check is the latest commit status of a context at the head, forgejo/forge.rs), the doctor access checks both ask (forgejo/access.rs), ForgejoApi the curl door to /api/v1 with the token on stdin (its version read and shorter time limits serve setup's probe), Forgejo JSON rows and RFC 3339 times with an offset",
+      "node": false
+    },
+    {
       "name": "gate.rs",
       "role": "ShellGate: [gate] lines by sh -c, output logged under .zaf/runs/",
       "node": false
@@ -47,7 +58,12 @@
     },
     {
       "name": "github/",
-      "role": "board on issues or a Project (state in labels or a Project field, github/state.rs), forge on PRs, GhCommand with gh api graphql, comment notes, gh JSON rows",
+      "role": "board on issues or a Project (state in labels or a Project field, github/state.rs), forge on PRs and their writes (pr list/create, pr view/merge, pr checks, run view --log-failed, through GhCommand::run where the exit code alone does not decide), GhCommand with gh api graphql, gh JSON rows",
+      "node": false
+    },
+    {
+      "name": "issues.rs",
+      "role": "the kind labels (task, epic, question, door, group:<name>) and the state rules (can wait, waits on a ruling, keeps its state on release) both issue boards share",
       "node": false
     },
     {
@@ -58,6 +74,11 @@
     {
       "name": "jj/",
       "role": "the jj command door",
+      "node": false
+    },
+    {
+      "name": "notes.rs",
+      "role": "the comments both issue boards write and read back: lease lines and the live claim, reports, rulings, signatures, an epic's notes",
       "node": false
     },
     {
@@ -87,10 +108,11 @@
     }
   ],
   "notes": [
-    "Claims and heartbeats are plain issue comments; reports and rulings open with a hidden HTML marker (github/notes.rs)",
-    "github/tests.rs puts zaf/tests/fixtures/gh first on PATH; jj/tests.rs drives a real jj",
-    "One adapter per kind today: board github-issues or github-projects, forge github, vcs jj, design repo-dir or git-sibling; a git Vcs adapter is a named later use case",
+    "Claims and heartbeats are plain issue comments; reports and rulings open with a hidden HTML marker (notes.rs, shared by both issue boards)",
+    "github/tests.rs puts zaf/tests/fixtures/gh first on PATH, forgejo/tests.rs puts zaf/tests/fixtures/forgejo (a fake curl) first; jj/tests.rs drives a real jj",
+    "One adapter per kind today: board github-issues, github-projects or forgejo-issues, forge github or forgejo, vcs jj, design repo-dir or git-sibling; a git Vcs adapter is a named later use case",
     "The gate's run folder carries a .gitignore of `*`, so gate logs never show as uncommitted work",
-    "A GraphQL call GitHub calls transient (two writes to one Project at once) is tried three more times; unit tests zero the pauses"
+    "A GraphQL call GitHub calls transient (two writes to one Project at once) is tried three more times; unit tests zero the pauses",
+    "Forgejo lets two labels share a name and its label filter then matches neither: the board creates a label only when the list lacks it, and deletes its own when an older one of the name turned up"
   ]
 }

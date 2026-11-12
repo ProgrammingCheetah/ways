@@ -1,5 +1,5 @@
 use super::*;
-use crate::fakes::{FakeForge, PrMerge, PrRequest};
+use crate::fakes::{FakeForge, PrRequest};
 use crate::ports::{BaseName, CommitId, SliceName};
 use std::time::{Duration, SystemTime};
 
@@ -170,8 +170,8 @@ fn merge_is_idempotent() {
     let pr = forge
         .open_pr(&request("feature/v1-export-2"))
         .expect("open");
-    assert_eq!(forge.merge(pr), Ok(PrMerge::Merged));
-    assert_eq!(forge.merge(pr), Ok(PrMerge::AlreadyMerged));
+    assert_eq!(forge.merge(pr), Ok(MergeOutcome::Merged));
+    assert_eq!(forge.merge(pr), Ok(MergeOutcome::AlreadyMerged));
     let reopened = forge
         .open_pr(&request("feature/v1-export-2"))
         .expect("a merged slice opens anew");

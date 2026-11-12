@@ -4,10 +4,10 @@ use std::io::Write;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-use super::notes::{
+use super::*;
+use crate::adapters::notes::{
     LeaseNote, SIGNATURE_TEXT, marked, read_signature, report_marker, signature_marker,
 };
-use super::*;
 use crate::domain::{
     Instance, InstanceNumber, Location, RoleName, Ticket, TicketId, TicketState, TicketType,
 };
@@ -1576,10 +1576,11 @@ fn merged_is_true_only_for_a_merged_pr_and_changes_nothing() {
 
 #[test]
 fn head_reads_the_pull_requests_head_commit() {
+    // gh prints the id itself through `--jq`: an empty line, or jq's `null`, is no head.
     let fake = FakeGh::new();
-    fake.on("pr view 7 *", r#"{"headRefOid":"abc123"}"#)
-        .on("pr view 8 *", r#"{"headRefOid":""}"#)
-        .on("pr view 9 *", "{}");
+    fake.on("pr view 7 *", "abc123\n")
+        .on("pr view 8 *", "\n")
+        .on("pr view 9 *", "null\n");
     let forge = fake.forge();
     assert_eq!(forge.head(PrNumber::from(7)), Ok(Some("abc123".to_owned())));
     assert_eq!(
@@ -1588,7 +1589,17 @@ fn head_reads_the_pull_requests_head_commit() {
         "an empty id is none"
     );
     assert_eq!(forge.head(PrNumber::from(9)), Ok(None));
-    let expected_call = argv(&["pr", "view", "7", "--json", "headRefOid", "--repo", REPO]);
+    let expected_call = argv(&[
+        "pr",
+        "view",
+        "7",
+        "--json",
+        "headRefOid",
+        "--jq",
+        ".headRefOid",
+        "--repo",
+        REPO,
+    ]);
     assert_eq!(fake.calls()[0], expected_call);
 }
 
@@ -1875,4 +1886,5 @@ fn a_signature_is_one_marked_comment_on_the_epic() {
     );
 }
 
+mod forge_writes;
 mod projects;

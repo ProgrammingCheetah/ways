@@ -41,7 +41,7 @@
     },
     {
       "name": "doctor.rs",
-      "role": "ShellCommands backing doctor's Commands",
+      "role": "ShellCommands backing doctor's Commands; asks the composed board and forge their access checks (no [forge], no forge checks), for setup's doctor run too",
       "node": false
     },
     {
@@ -52,6 +52,11 @@
     {
       "name": "exit.rs",
       "role": "exit codes, port and composition error mapping",
+      "node": false
+    },
+    {
+      "name": "forge.rs",
+      "role": "zaf forge open|merge|checks|head|log: the number, nothing, `<bucket>\\t<name>\\t<link>` lines, the head, the log block; exit 1 refused, 2 backend or no [forge]",
       "node": false
     },
     {
@@ -96,7 +101,7 @@
     }
   ],
   "notes": [
-    "Verbs: board (ready, claim, report, question, ruling), ask, brief, check, verify, changes, slice (open, pr, merge, drop), spawn, asklog, status, report, guard, doctor, setup, profile init",
+    "Verbs: board (ready, claim, report, question, ruling), ask, brief, check, verify, changes, slice (open, pr, merge, drop), spawn, asklog, status, report, guard, doctor, setup, profile init, epic (list, show, sign), forge (open, merge, checks, head, log)",
     "`init` is not a verb: `setup` asks the manifest questions through app/init.rs",
     "check.rs names adapters directly (SystemShell, gate RUNS_DIR), the only non-test place outside composition.rs that does"
   ]

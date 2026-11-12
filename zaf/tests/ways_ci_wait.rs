@@ -2,7 +2,8 @@
 //! against a fake `gh`, it waits for a pull request's checks to settle at its head and hands the
 //! head commit back; a failed or cancelled check is named last with its job's failed log above,
 //! exit 1; checks still running at the deadline are named, exit 3; a pull request with no checks
-//! after the grace passes; and a gh that fails is exit 2.
+//! after the grace passes; and a gh that fails is exit 2. The action asks `zaf forge head`,
+//! `checks` and `log`, so the built zaf runs first on `PATH`.
 
 mod common;
 
@@ -10,7 +11,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use common::{Project, REPO, outcome, write};
+use common::{Curl, Project, REPO, fixtures, outcome, path_with_zaf, write};
 
 const MANIFEST: &str = r#"[project]
 name = "example"
@@ -51,6 +52,7 @@ fn project() -> Project {
     write(&actions, "ci-wait", &action_text());
     fs::set_permissions(actions.join("ci-wait"), fs::Permissions::from_mode(0o755)).expect("mode");
     project
+        .env("PATH", &path_with_zaf(&[&fixtures()]))
         .env("CI_WAIT_INTERVAL", "0")
         .env("CI_WAIT_MINUTES", "20")
         .env("CI_WAIT_GRACE", "90");
@@ -424,16 +426,13 @@ fn recorded(dir: &Path) -> Vec<String> {
         .collect()
 }
 
-/// A project whose `PATH` starts with the changing gh's directory, which it returns.
+/// A project whose `PATH` starts with the changing gh's directory, which it returns, then the
+/// built zaf.
 fn project_with_bin(heads: &[&str], checks: &[Answer<'_>]) -> (Project, PathBuf) {
     let mut project = project();
     let dir = project.temp.path().join("bin");
     bin(&dir, heads, checks);
-    let inherited = std::env::var_os("PATH").unwrap_or_default();
-    let search_path =
-        std::env::join_paths(std::iter::once(dir.clone()).chain(std::env::split_paths(&inherited)))
-            .expect("search path");
-    project.env("PATH", &search_path.to_string_lossy());
+    project.env("PATH", &path_with_zaf(&[&dir]));
     (project, dir)
 }
 
@@ -532,4 +531,75 @@ fn ci_wait_waits_within_the_grace_for_checks_to_register() {
             view_call("7"),
         ]
     );
+}
+
+#[test]
+fn ci_wait_on_a_forgejo_forge_names_a_failed_check_with_its_link() {
+    let forgejo = MANIFEST.replace(
+        "[forge]\nkind = \"github\"\nrepo = \"example/tracker\"\n",
+        "[forge]\nkind = \"forgejo\"\nrepo = \"example/tracker\"\nurl = \"http://forgejo.test\"\n\
+         token_env = \"ZAF_TEST_FORGE_TOKEN\"\n",
+    );
+    let mut project = project();
+    fs::write(project.root.join(".zaf.toml"), forgejo).expect("manifest");
+    let api = "http://forgejo.test/api/v1/repos/example/tracker";
+    let mut curl = Curl::new(project.temp.path());
+    curl.on(
+        &format!("GET {api}/pulls/7"),
+        200,
+        &serde_json::json!({
+            "number": 7,
+            "state": "open",
+            "merged": false,
+            "head": { "ref": "feature/v1-1-2", "sha": HEAD, "repo_id": 9 },
+        })
+        .to_string(),
+    )
+    .on(
+        &format!("GET {api}/commits/{HEAD}/statuses*"),
+        200,
+        &serde_json::json!([
+            { "id": 1, "status": "success", "context": "ci / fmt (pull_request)",
+              "target_url": "/example/tracker/actions/runs/4/jobs/0",
+              "created_at": "2026-11-12T10:00:00Z" },
+            { "id": 2, "status": "failure", "context": "ci / test (pull_request)",
+              "target_url": "/example/tracker/actions/runs/4/jobs/1",
+              "created_at": "2026-11-12T10:05:00Z" },
+        ])
+        .to_string(),
+    );
+    project
+        .env(
+            "PATH",
+            &path_with_zaf(&[&fixtures().join("forgejo"), &fixtures()]),
+        )
+        .env("FAKE_CURL_DIR", &curl.dir.to_string_lossy())
+        .env("ZAF_TEST_FORGE_TOKEN", "test-token");
+
+    let (code, log, said) = wait(&project, &["7"]);
+
+    assert_eq!(code, 1, "{log}{said}");
+    let link = "http://forgejo.test/example/tracker/actions/runs/4/jobs/1";
+    assert_eq!(
+        handed_back(&log),
+        format!("failed: ci / test (pull_request) (fail) {link}"),
+        "{log}"
+    );
+    assert!(
+        log.contains(&format!(
+            "--- ci / test (pull_request): the forge has no API for a job's log; read it at {link}"
+        )),
+        "{log}"
+    );
+    // The head, the checks, the head again; no gh at all.
+    assert_eq!(
+        curl.asked(),
+        [
+            format!("GET {api}/pulls/7"),
+            format!("GET {api}/pulls/7"),
+            format!("GET {api}/commits/{HEAD}/statuses?page=1&limit=50"),
+            format!("GET {api}/pulls/7"),
+        ]
+    );
+    assert_eq!(project.gh_calls(), Vec::<String>::new());
 }

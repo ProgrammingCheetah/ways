@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::domain::{Profile, RoleName};
-use crate::manifest::{ModelName, RunnerName};
+use crate::manifest::{EnvVarName, ForgeUrl, ModelName, RepoName, RunnerName};
 use crate::ports::{GateVerdict, RunRequest};
 
 use super::*;
@@ -579,4 +579,59 @@ fn a_legacy_manifest_has_a_notice_that_says_to_run_setup_and_a_new_one_has_none(
     write_at(&current, ".zaf.toml", FULL);
     let composition = Composition::load_with_home(&current, None).expect("loads");
     assert_eq!(composition.legacy_notice(), None);
+}
+
+#[test]
+fn a_forgejo_board_and_forge_are_built_and_the_forge_beside_the_board_asks_doctor_less() {
+    let root = scratch_dir("forgejo");
+    // A token variable no machine sets, so the checks below fail before any call is made.
+    write_manifest(
+        &root,
+        "[project]\nname = \"bookshelf\"\n\
+         [board]\nkind = \"forgejo-issues\"\nrepo = \"example/b\"\nurl = \"http://forgejo.test\"\n\
+         token_env = \"ZAF_TEST_UNSET_TOKEN\"\n\
+         [forge]\nkind = \"forgejo\"\nrepo = \"example/b\"\nurl = \"http://forgejo.test/\"\n\
+         token_env = \"ZAF_TEST_UNSET_TOKEN\"\n",
+    );
+    let composition = Composition::load_with_home(&root, None).expect("loads");
+    assert!(composition.board().is_ok());
+    let forge = composition.forge().expect("the Forgejo forge is built");
+    // Beside the board, the forge's doctor check is the one the board's lack: pull requests.
+    let checks = forge.access();
+    assert_eq!(checks.len(), 1, "{checks:?}");
+    assert_eq!(checks[0].what, "token");
+    assert_eq!(
+        checks[0].detail,
+        "`ZAF_TEST_UNSET_TOKEN` is not set: export a Forgejo access token in it, with read and write on the repository's issues and pull requests"
+    );
+    fs::remove_dir_all(&root).expect("clean up");
+}
+
+#[test]
+fn two_doors_share_a_repository_only_on_the_same_instance_repository_and_token_variable() {
+    let door = |url: &str, repo: &str, var: &str| {
+        ForgejoApi::new(
+            ForgeUrl::from(url),
+            RepoName::from(repo),
+            EnvVarName::from(var),
+            None,
+        )
+    };
+    let board = door("http://forgejo.test", "example/b", "FORGEJO_TOKEN");
+    assert!(shares(
+        &board,
+        &door("HTTP://Forgejo.test/", "example/b", "FORGEJO_TOKEN")
+    ));
+    assert!(!shares(
+        &board,
+        &door("http://other.test", "example/b", "FORGEJO_TOKEN")
+    ));
+    assert!(!shares(
+        &board,
+        &door("http://forgejo.test", "example/c", "FORGEJO_TOKEN")
+    ));
+    assert!(!shares(
+        &board,
+        &door("http://forgejo.test", "example/b", "FORGE_TOKEN")
+    ));
 }

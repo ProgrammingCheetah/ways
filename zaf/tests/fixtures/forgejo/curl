@@ -1,0 +1,60 @@
+#!/bin/sh
+# A stand-in for `curl` in the Forgejo adapter's unit tests; a test puts this directory first
+# on PATH.
+#
+# $FAKE_CURL_DIR holds the scene:
+#   rules        one rule per line: <glob over "METHOD URL"> TAB <answer> TAB <response file>
+#                the answer is an HTTP status (the response is the body, then a line with the
+#                status, as `--write-out` prints it) or `curl:<code>` (the response goes to
+#                stderr and curl exits with that code, as when the instance does not answer);
+#                an answer ending in `!` answers one call only, and the next rule the later ones
+#   used         the rules that answered once, by line number
+#   calls/       every call: <n> holds its argv, NUL-separated; <n>.config what it read on stdin
+# An unmatched call prints a 599 status.
+set -eu
+scene=${FAKE_CURL_DIR:?FAKE_CURL_DIR is not set}
+mkdir -p "$scene/calls"
+count=$(find "$scene/calls" -type f ! -name '*.config' | wc -l)
+call="$scene/calls/$(printf '%05d' "$count")"
+printf '%s\0' "$@" > "$call"
+cat > "$call.config"
+method=GET
+url=
+previous=
+for arg in "$@"; do
+    if [ "$previous" = "--request" ]; then
+        method=$arg
+    fi
+    previous=$arg
+    url=$arg
+done
+asked="$method $url"
+tab=$(printf '\t')
+line=0
+while IFS="$tab" read -r pattern answer response; do
+    line=$((line + 1))
+    # shellcheck disable=SC2254 # the pattern is a glob on purpose
+    case "$asked" in
+        $pattern)
+            case "$answer" in
+                *!)
+                    if grep -qx "$line" "$scene/used" 2>/dev/null; then
+                        continue
+                    fi
+                    echo "$line" >> "$scene/used"
+                    answer=${answer%!}
+                    ;;
+            esac
+            case "$answer" in
+                curl:*)
+                    cat "$scene/$response" >&2
+                    exit "${answer#curl:}"
+                    ;;
+            esac
+            cat "$scene/$response"
+            printf '\n%s' "$answer"
+            exit 0
+            ;;
+    esac
+done < "$scene/rules"
+printf 'fake curl: no rule matches: %s\n599' "$asked"

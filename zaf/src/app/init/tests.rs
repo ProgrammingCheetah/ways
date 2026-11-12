@@ -90,6 +90,7 @@ fn init_writes_standard_manifest() {
         denied,
         [
             "gh pr merge",
+            "zaf forge merge",
             "zaf do pr-merge",
             "zaf do --tier machine pr-merge"
         ]
@@ -355,4 +356,200 @@ fn github_urls_read_as_owner_name() {
     ] {
         assert_eq!(github_repo(url), None, "{url}");
     }
+}
+
+fn other(url: &str) -> Remote {
+    match parse_origin(url) {
+        Origin::Other(remote) => remote,
+        found => panic!("{url}: {found:?}"),
+    }
+}
+
+#[test]
+fn github_remotes_stay_github() {
+    for url in [
+        "git@github.com:o/n.git",
+        "ssh://git@github.com/o/n",
+        "https://github.com/o/n.git",
+    ] {
+        assert_eq!(parse_origin(url), Origin::Github("o/n".to_owned()), "{url}");
+    }
+    assert_eq!(parse_origin("https://github.com/o"), Origin::None);
+}
+
+#[test]
+fn other_remotes_read_as_host_and_owner_name() {
+    for (url, host, repo) in [
+        (
+            "ssh://git@yagdrassyl.local:2222/zuri/ways.git",
+            "yagdrassyl.local",
+            "zuri/ways",
+        ),
+        (
+            "git@host.example:owner/name.git",
+            "host.example",
+            "owner/name",
+        ),
+        ("git@host.example:owner/name", "host.example", "owner/name"),
+        (
+            "https://host.example/owner/name.git",
+            "host.example",
+            "owner/name",
+        ),
+        (
+            "https://host.example/owner/name",
+            "host.example",
+            "owner/name",
+        ),
+        (
+            "http://u:tok@host.example:3000/owner/name.git\n",
+            "host.example",
+            "owner/name",
+        ),
+    ] {
+        let remote = other(url);
+        assert_eq!(remote.host(), host, "{url}");
+        assert_eq!(remote.repo().as_str(), repo, "{url}");
+    }
+    for url in [
+        "/srv/repo.git",
+        "",
+        "ssh://host/onlyone",
+        "git@host.example:a/b/c.git",
+        "file:///srv/a/b",
+    ] {
+        assert_eq!(parse_origin(url), Origin::None, "{url}");
+    }
+}
+
+#[test]
+fn candidates_start_with_the_remotes_own_address() {
+    let urls = |url: &str| -> Vec<String> {
+        other(url)
+            .candidates()
+            .iter()
+            .map(|candidate| candidate.as_str().to_owned())
+            .collect()
+    };
+    assert_eq!(
+        urls("ssh://git@h.local:2222/o/n.git"),
+        ["https://h.local", "http://h.local:3000", "http://h.local"]
+    );
+    assert_eq!(
+        urls("http://h.local:8080/o/n.git"),
+        [
+            "http://h.local:8080",
+            "https://h.local",
+            "http://h.local:3000",
+            "http://h.local"
+        ]
+    );
+    assert_eq!(
+        urls("https://h.local/o/n"),
+        ["https://h.local", "http://h.local:3000", "http://h.local"]
+    );
+}
+
+const FORGEJO_ORIGIN: &str = "ssh://git@yagdrassyl.local:2222/zuri/ways.git";
+
+fn run_with_probe(
+    dir: &Path,
+    answers: &str,
+    found: &str,
+) -> (Result<PathBuf, InitError>, String, Vec<String>) {
+    let mut output = Vec::new();
+    let mut learn = || Ok(TAG.to_owned());
+    let mut asked = Vec::new();
+    let mut probe = |url: &ForgeUrl| {
+        asked.push(url.as_str().to_owned());
+        url.as_str() == found
+    };
+    let result = init_with_home(
+        dir,
+        None,
+        &mut learn,
+        &mut probe,
+        &mut Cursor::new(answers.to_owned()),
+        &mut output,
+    );
+    (result, String::from_utf8(output).expect("utf-8"), asked)
+}
+
+#[test]
+fn a_forgejo_origin_asks_the_url_and_writes_forgejo_kinds() {
+    use crate::manifest::{BoardKind, ForgeKind};
+    let (_root, dir) = repo_folder(Some(FORGEJO_ORIGIN));
+    let (result, prompts, asked) =
+        run_with_probe(&dir, "\n\n\n\n\n", "http://yagdrassyl.local:3000");
+    let path = result.expect("written");
+    assert_eq!(
+        asked,
+        ["https://yagdrassyl.local", "http://yagdrassyl.local:3000"],
+        "probing stops at the first answer"
+    );
+    assert!(
+        prompts.contains("forge url [http://yagdrassyl.local:3000]: "),
+        "{prompts}"
+    );
+    let manifest = Manifest::load(&path).expect("loads");
+    assert_eq!(manifest.board.kind, BoardKind::ForgejoIssues);
+    assert_eq!(
+        manifest.board.repo.as_ref().map(AsRef::as_ref),
+        Some("zuri/ways")
+    );
+    let forge = manifest.forge.expect("a forge section");
+    assert_eq!(forge.kind, ForgeKind::Forgejo);
+    assert_eq!(
+        forge.url.as_ref().map(AsRef::as_ref),
+        Some("http://yagdrassyl.local:3000")
+    );
+    assert_eq!(forge.repo.as_ref().map(AsRef::as_ref), Some("zuri/ways"));
+    assert_eq!(forge.token_env().as_str(), "FORGEJO_TOKEN");
+    assert_eq!(manifest.board.token_env().as_str(), "FORGEJO_TOKEN");
+    let required: Vec<&str> = manifest.requires.keys().map(AsRef::as_ref).collect();
+    assert_eq!(required, ["jj"]);
+    let denied: Vec<&str> = manifest
+        .forbidden
+        .commands
+        .iter()
+        .map(AsRef::as_ref)
+        .collect();
+    assert_eq!(
+        denied,
+        [
+            "zaf forge merge",
+            "zaf do pr-merge",
+            "zaf do --tier machine pr-merge"
+        ]
+    );
+    let text = fs::read_to_string(&path).expect("text");
+    assert!(!text.contains("gh = ") && !text.contains("gh pr"), "{text}");
+}
+
+#[test]
+fn a_forgejo_origin_with_no_answering_instance_needs_the_url_typed() {
+    let (_root, dir) = repo_folder(Some(FORGEJO_ORIGIN));
+    let (result, prompts, _) = run_with_probe(&dir, "\n\n\n\n\n", "");
+    assert!(
+        matches!(result, Err(InitError::Blank("forge url"))),
+        "{prompts}"
+    );
+    assert!(!dir.join(MANIFEST_FILE).exists());
+
+    let (result, _, _) = run_with_probe(&dir, "\n\n\nhttp://forge.test:3000/\n\n", "");
+    let manifest = Manifest::load(&result.expect("written")).expect("loads");
+    let url = manifest.forge.expect("forge").url;
+    assert_eq!(
+        url.as_ref().map(AsRef::as_ref),
+        Some("http://forge.test:3000")
+    );
+}
+
+#[test]
+fn no_origin_asks_no_url() {
+    let (_root, dir) = repo_folder(None);
+    let (result, prompts, asked) = run_with_probe(&dir, "\nx/y\n\n\n", "");
+    result.expect("written");
+    assert!(asked.is_empty());
+    assert!(!prompts.contains("forge url"), "{prompts}");
 }

@@ -483,7 +483,8 @@ fn worksheet(
             ToolStatus::TooOld { found, .. } => {
                 format!("Upgrade `{tool}` from {found} to a version satisfying `{wanted}`.")
             }
-            ToolStatus::Unknown | ToolStatus::Ok { .. } => {
+            // `failing_tools` holds neither a tool that is right nor one not needed.
+            ToolStatus::Unknown | ToolStatus::Ok { .. } | ToolStatus::NotNeeded { .. } => {
                 format!("Make `{tool} --version` print a semantic version satisfying `{wanted}`.")
             }
         };

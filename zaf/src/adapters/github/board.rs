@@ -9,31 +9,27 @@ use std::time::SystemTime;
 
 use super::GhCommand;
 use super::command::{GraphqlValue, number_from_url};
-use super::notes::{
-    LeaseNote, RULING_MARKER, SIGNATURE_TEXT, exit_author, marked, read_signature, release_line,
-    report_author, report_marker, signature_marker, unmarked,
-};
 use super::rows::{
     ISSUE_FIELDS, IssueRow, NameRow, STANDING_FIELDS, StandingRow, TICKET_LIST_FIELDS,
 };
 use super::state::{LabelState, ProjectRef, ProjectState, StateStore};
+use crate::adapters::issues::{
+    DOOR_LABEL, EPIC_LABEL, GROUP_COLOR, GROUP_PREFIX, QUESTION_LABEL, TASK_LABEL, can_wait, group,
+    keeps_state_on_release, waits_on_ruling,
+};
+use crate::adapters::notes::{
+    EpicNotes, LeaseNote, RULING_MARKER, SIGNATURE_TEXT, held_by, live_claim, marked,
+    recorded_ruling, release_line, report_marker, signature_marker, unmarked,
+};
 use crate::domain::{
-    CHALLENGER_ROLE, Epic, EpicTask, Instance, NewTask, PLANNING_ROLE, Signature, Standing, Ticket,
-    TicketId, TicketState, TicketType,
+    Epic, EpicTask, Instance, NewTask, Signature, Standing, Ticket, TicketId, TicketState,
+    TicketType,
 };
 use crate::manifest::RepoName;
 use crate::ports::{Board, ClaimOutcome, ClaimRecord, IssueTypes, NewQuestion, PortError};
 
-/// The label every task carries.
-const TASK_LABEL: &str = "task";
-/// The label every epic carries.
-const EPIC_LABEL: &str = "epic";
-/// The label a question raised as a one-way decision carries beside `question`.
-const DOOR_LABEL: &str = "door";
 /// The most issues one list call reads.
 const LIST_LIMIT: &str = "1000";
-/// The label every question ticket carries, beside the state it holds.
-const QUESTION_LABEL: &str = "question";
 /// The state gh prints for an open issue.
 const OPEN: &str = "OPEN";
 /// What a pull request's URL holds and an issue's does not.
@@ -44,10 +40,6 @@ const NOT_PLANNED: &str = "NOT_PLANNED";
 
 /// The close reason of an issue closed as a duplicate.
 const DUPLICATE: &str = "DUPLICATE";
-/// The prefix of the label that puts a task in a group.
-const GROUP_PREFIX: &str = "group:";
-/// The colour a group label is created in.
-const GROUP_COLOR: &str = "ededed";
 
 /// The issue types a repository defines.
 const ISSUE_TYPES: &str = "query($owner: String!, $name: String!) { \
@@ -163,10 +155,7 @@ impl<S: StateStore> GithubBoard<S> {
         };
         let row = self.issue(task)?;
         let states = self.states(&row)?;
-        if row.has_label(EPIC_LABEL)
-            || states.contains(&TicketState::Done)
-            || !states.contains(&TicketState::Question)
-        {
+        if !waits_on_ruling(row.has_label(EPIC_LABEL), &states) {
             return Ok(None);
         }
         self.change(&row, Some(TicketState::Ready), &[TicketState::Question])?;
@@ -200,19 +189,10 @@ impl<S: StateStore> GithubBoard<S> {
 }
 
 /// Where an issue stands from its state, close reason and whether it is in the `done`
-/// state: done so; else open; else closed as not planned or as a duplicate; else closed as
-/// completed, so done.
+/// state (see [`Standing::of_issue`]): closed as not planned or as a duplicate is dropped.
 fn standing_of(state: &str, reason: Option<&str>, done: bool) -> Standing {
-    let never_done = matches!(reason, Some(NOT_PLANNED | DUPLICATE));
-    if done {
-        Standing::Done
-    } else if state == OPEN {
-        Standing::Open
-    } else if never_done {
-        Standing::ClosedNotPlanned
-    } else {
-        Standing::Done
-    }
+    let dropped = matches!(reason, Some(NOT_PLANNED | DUPLICATE));
+    Standing::of_issue(state == OPEN, dropped, done)
 }
 
 impl IssueRow {
@@ -220,22 +200,9 @@ impl IssueRow {
         self.labels.iter().any(|label| label.name == name)
     }
 
-    /// Whether a question raised on this issue, in `states`, makes it wait: a task that is
-    /// `claimed` or `ready`. An epic and a task that was never ready carry no state a ruling
-    /// could restore.
-    fn can_wait(&self, states: &[TicketState]) -> bool {
-        !self.has_label(EPIC_LABEL)
-            && [TicketState::Claimed, TicketState::Ready]
-                .iter()
-                .any(|state| states.contains(state))
-    }
-
     /// The name in the first `group:<name>` label.
     fn group(&self) -> Option<String> {
-        self.labels
-            .iter()
-            .find_map(|label| label.name.strip_prefix(GROUP_PREFIX))
-            .map(str::to_owned)
+        group(self.labels.iter().map(|label| label.name.as_str()))
     }
 
     /// The ticket in `state`, its link the issue's page on `repo`.
@@ -261,47 +228,13 @@ impl IssueRow {
     /// The live claim, while the issue is `claimed`: the latest claim comment, touched by
     /// the holder's later heartbeats.
     fn claim(&self, claimed: bool) -> Option<ClaimRecord> {
-        if !claimed {
-            return None;
-        }
-        let notes: Vec<LeaseNote> = self
-            .comments
-            .iter()
-            .filter_map(|comment| comment.body.parse::<LeaseNote>().ok())
-            .collect();
-        let claim_index = notes
-            .iter()
-            .rposition(|note| matches!(note, LeaseNote::Claim { .. }))?;
-        let LeaseNote::Claim { instance, at } = &notes[claim_index] else {
-            return None;
-        };
-        let heartbeat = notes[claim_index..]
-            .iter()
-            .filter_map(|note| match note {
-                LeaseNote::Heartbeat { instance: by, at } if by == instance => Some(*at),
-                _ => None,
-            })
-            .fold(*at, SystemTime::max);
-        let record = ClaimRecord {
-            task: TicketId::from(self.number),
-            instance: instance.clone(),
-            heartbeat,
-        };
-        Some(record)
+        let comments = self.comments.iter().map(|comment| comment.body.as_str());
+        live_claim(TicketId::from(self.number), claimed, comments)
     }
 
     /// The claim, while the issue is `claimed`, which must belong to `instance`.
     fn claim_by(&self, claimed: bool, instance: &Instance) -> Result<ClaimRecord, PortError> {
-        let task = TicketId::from(self.number);
-        let claim = self
-            .claim(claimed)
-            .ok_or_else(|| PortError::Conflict(format!("{task} has no claim")))?;
-        if claim.instance != *instance {
-            let held_by_other_error =
-                PortError::Conflict(format!("{task} is held by {}", claim.instance));
-            return Err(held_by_other_error);
-        }
-        Ok(claim)
+        held_by(TicketId::from(self.number), self.claim(claimed), instance)
     }
 }
 
@@ -339,52 +272,44 @@ impl<S: StateStore> Board for GithubBoard<S> {
         let states = self.states_of(&tasks)?;
         let epics = epics
             .iter()
-            .map(|epic| Epic {
-                id: TicketId::from(epic.number),
-                title: epic.title.clone().into(),
-                body: epic.body.clone().into(),
-                tasks: tasks
-                    .iter()
-                    .filter(|task| {
-                        task.parent
-                            .is_some_and(|parent| parent.number == epic.number)
-                    })
-                    .map(|task| {
-                        let state = states.get(&task.number).copied();
-                        EpicTask {
-                            number: TicketId::from(task.number),
-                            title: task.title.clone().into(),
-                            state,
-                            standing: standing_of(
-                                &task.state,
-                                task.state_reason.as_deref(),
-                                state == Some(TicketState::Done),
-                            ),
-                            group: task.group().map(Into::into),
-                            kind: task.kind(),
-                        }
-                    })
-                    .collect(),
-                signature: epic
-                    .comments
-                    .iter()
-                    .filter_map(|comment| read_signature(&comment.body))
-                    .next_back(),
-                planned_at: epic
-                    .comments
-                    .iter()
-                    .filter(|comment| {
-                        exit_author(&comment.body)
-                            .is_some_and(|author| author.role.as_str() == PLANNING_ROLE)
-                    })
-                    .filter_map(|comment| {
-                        humantime::parse_rfc3339(comment.created_at.as_deref()?).ok()
-                    })
-                    .next_back(),
-                challenged: epic.comments.iter().any(|comment| {
-                    report_author(&comment.body)
-                        .is_some_and(|author| author.role.as_str() == CHALLENGER_ROLE)
-                }),
+            .map(|epic| {
+                let notes = EpicNotes::read(epic.comments.iter().map(|comment| {
+                    let posted = comment
+                        .created_at
+                        .as_deref()
+                        .and_then(|at| humantime::parse_rfc3339(at).ok());
+                    (comment.body.as_str(), posted)
+                }));
+                Epic {
+                    id: TicketId::from(epic.number),
+                    title: epic.title.clone().into(),
+                    body: epic.body.clone().into(),
+                    tasks: tasks
+                        .iter()
+                        .filter(|task| {
+                            task.parent
+                                .is_some_and(|parent| parent.number == epic.number)
+                        })
+                        .map(|task| {
+                            let state = states.get(&task.number).copied();
+                            EpicTask {
+                                number: TicketId::from(task.number),
+                                title: task.title.clone().into(),
+                                state,
+                                standing: standing_of(
+                                    &task.state,
+                                    task.state_reason.as_deref(),
+                                    state == Some(TicketState::Done),
+                                ),
+                                group: task.group().map(Into::into),
+                                kind: task.kind(),
+                            }
+                        })
+                        .collect(),
+                    signature: notes.signature,
+                    planned_at: notes.planned_at,
+                    challenged: notes.challenged,
+                }
             })
             .collect();
         Ok(epics)
@@ -562,10 +487,7 @@ impl<S: StateStore> Board for GithubBoard<S> {
         if holder.as_ref() != Some(instance) {
             return Ok(());
         }
-        let keeps_state = [TicketState::Question, TicketState::Done]
-            .iter()
-            .any(|state| states.contains(state));
-        let add = (!keeps_state).then_some(TicketState::Ready);
+        let add = (!keeps_state_on_release(&states)).then_some(TicketState::Ready);
         self.change(&row, add, &[TicketState::Claimed])?;
         self.post_comment(task, &release_line(instance, SystemTime::now()))
     }
@@ -573,7 +495,7 @@ impl<S: StateStore> Board for GithubBoard<S> {
     fn set_state(&self, task: TicketId, label: TicketState) -> Result<(), PortError> {
         let row = self.issue(task)?;
         let states = self.states(&row)?;
-        if label == TicketState::Question && !row.can_wait(&states) {
+        if label == TicketState::Question && !can_wait(row.has_label(EPIC_LABEL), &states) {
             return Ok(());
         }
         let others: Vec<TicketState> = states
@@ -644,11 +566,9 @@ impl<S: StateStore> Board for GithubBoard<S> {
             .iter()
             .zip(tickets)
             .map(|(row, ticket)| {
-                let ruling = row
-                    .comments
-                    .iter()
-                    .find_map(|comment| unmarked(RULING_MARKER, &comment.body))
-                    .map(|text| text.trim().to_owned());
+                let ruling =
+                    recorded_ruling(row.comments.iter().map(|comment| comment.body.as_str()))
+                        .map(|text| text.trim().to_owned());
                 (ticket, ruling)
             })
             .collect();
@@ -688,10 +608,7 @@ impl<S: StateStore> Board for GithubBoard<S> {
         ruling: &str,
     ) -> Result<Option<TicketId>, PortError> {
         let row = self.issue(question)?;
-        let recorded = row
-            .comments
-            .iter()
-            .find_map(|comment| unmarked(RULING_MARKER, &comment.body));
+        let recorded = recorded_ruling(row.comments.iter().map(|comment| comment.body.as_str()));
         match recorded {
             Some(existing) if existing.trim() != ruling.trim() => {
                 let different_ruling_error =

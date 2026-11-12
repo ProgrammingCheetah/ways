@@ -18,6 +18,18 @@ text_newtype! {
 }
 
 text_newtype! {
+    /// A forge instance's base URL, as `http(s)://host[:port]`: the address a person opens, not
+    /// its API's (`[board] url`, `[forge] url`).
+    ForgeUrl
+}
+
+text_newtype! {
+    /// The name of an environment variable, such as the one holding a forge's token
+    /// (`[board] token_env`); never its value.
+    EnvVarName
+}
+
+text_newtype! {
     /// A tool named under `[requires]`.
     ToolName
 }
@@ -71,7 +83,13 @@ pub enum BoardKind {
     /// Issues of a forge repository on a GitHub Project, each task's state in a field of the
     /// Project instead of a label.
     GithubProjects,
+    /// Issues of a repository on a Forgejo instance, read and written over its REST API: an
+    /// epic depends on its tasks, and a ticket's type and state are scoped labels.
+    ForgejoIssues,
 }
+
+/// The variable a Forgejo board or forge reads its token from, unless `token_env` names another.
+pub const DEFAULT_TOKEN_ENV: &str = "FORGEJO_TOKEN";
 
 /// The single-select field a `github-projects` board keeps each task's state in, unless
 /// `[board] state_field` names another.
@@ -97,6 +115,22 @@ pub struct BoardSection {
     /// [`DEFAULT_STATE_FIELD`] when absent.
     #[serde(default)]
     pub state_field: Option<String>,
+    /// `forgejo-issues`: the instance's base URL.
+    #[serde(default)]
+    pub url: Option<ForgeUrl>,
+    /// `forgejo-issues`: the variable holding the instance's token; [`DEFAULT_TOKEN_ENV`]
+    /// when absent. The token itself is never in a manifest.
+    #[serde(default)]
+    pub token_env: Option<EnvVarName>,
+}
+
+impl BoardSection {
+    /// The variable the board's token is read from: `token_env`, else [`DEFAULT_TOKEN_ENV`].
+    pub fn token_env(&self) -> EnvVarName {
+        self.token_env
+            .clone()
+            .unwrap_or_else(|| EnvVarName::from(DEFAULT_TOKEN_ENV))
+    }
 }
 
 /// The VCS backends zaf knows.
@@ -123,6 +157,9 @@ pub struct VcsSection {
 pub enum ForgeKind {
     /// A GitHub repository.
     Github,
+    /// A repository on a Forgejo instance, read and written over its REST API: checks are the
+    /// commit statuses of a pull request's head.
+    Forgejo,
 }
 
 /// `[forge]`: absent means no forge port and no PR checks.
@@ -134,6 +171,22 @@ pub struct ForgeSection {
     /// The code repository.
     #[serde(default)]
     pub repo: Option<RepoName>,
+    /// `forgejo`: the instance's base URL.
+    #[serde(default)]
+    pub url: Option<ForgeUrl>,
+    /// `forgejo`: the variable holding the instance's token; [`DEFAULT_TOKEN_ENV`] when
+    /// absent.
+    #[serde(default)]
+    pub token_env: Option<EnvVarName>,
+}
+
+impl ForgeSection {
+    /// The variable the forge's token is read from: `token_env`, else [`DEFAULT_TOKEN_ENV`].
+    pub fn token_env(&self) -> EnvVarName {
+        self.token_env
+            .clone()
+            .unwrap_or_else(|| EnvVarName::from(DEFAULT_TOKEN_ENV))
+    }
 }
 
 /// The design sources zaf knows.

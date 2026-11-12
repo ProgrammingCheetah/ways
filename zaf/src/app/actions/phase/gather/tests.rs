@@ -564,6 +564,33 @@ impl Forge for BrokenForge<'_> {
     fn set_handoff(&self, pr: PrNumber, text: &str) -> Result<(), PortError> {
         self.0.set_handoff(pr, text)
     }
+
+    fn open_pull_request(
+        &self,
+        request: &crate::ports::NewPullRequest,
+    ) -> Result<crate::ports::Opened, PortError> {
+        self.0.open_pull_request(request)
+    }
+
+    fn merge_pull_request(
+        &self,
+        pr: PrNumber,
+        strategy: crate::ports::MergeStrategy,
+        head: Option<&crate::ports::CommitId>,
+    ) -> Result<crate::ports::MergeOutcome, PortError> {
+        self.0.merge_pull_request(pr, strategy, head)
+    }
+
+    fn check_runs(&self, pr: PrNumber) -> Result<Vec<crate::ports::CheckRun>, PortError> {
+        self.0.check_runs(pr)
+    }
+
+    fn check_log(
+        &self,
+        link: &crate::ports::CheckLink,
+    ) -> Result<crate::ports::CheckLog, PortError> {
+        self.0.check_log(link)
+    }
 }
 
 /// A scene that would be `land`, so that a failed read has a phase to fall back from.

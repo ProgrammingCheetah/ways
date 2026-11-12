@@ -14,7 +14,7 @@ mod vcs;
 
 pub use board::{FakeBoard, link as board_link};
 pub use design::FakeDesign;
-pub use forge::{FakeForge, PrMerge, PrRequest};
+pub use forge::{FakeForge, PrRequest};
 pub use gate::FakeGate;
 pub use releases::FakeReleases;
 pub use runner::FakeRunner;

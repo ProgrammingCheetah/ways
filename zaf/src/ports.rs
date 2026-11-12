@@ -15,12 +15,15 @@ mod runner;
 mod shell;
 mod vcs;
 
-pub use board::{Board, ClaimOutcome, ClaimRecord, IssueTypes, NewQuestion, QUESTION_TITLE_LIMIT};
+pub use board::{
+    AccessCheck, Board, ClaimOutcome, ClaimRecord, IssueTypes, NewQuestion, QUESTION_TITLE_LIMIT,
+};
 pub use design::{Design, Page};
 pub use errors::PortError;
 pub use forge::{
-    Author, Check, CheckName, CheckState, Forge, PrNumber, PullRequest, ReviewComment, RuleId,
-    ScanningAlert,
+    Author, BranchName, Check, CheckBucket, CheckLink, CheckLog, CheckName, CheckRun, CheckState,
+    Forge, JobId, MergeOutcome, MergeStrategy, NewPullRequest, Opened, PrBody, PrNumber, PrTitle,
+    PullRequest, ReviewComment, RuleId, ScanningAlert,
 };
 pub use gate::{Gate, GateLevel, GateRun, GateVerdict};
 pub use releases::Releases;

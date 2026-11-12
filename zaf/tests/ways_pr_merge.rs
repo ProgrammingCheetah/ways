@@ -1,6 +1,7 @@
 //! The ways repository's `pr-merge` action (docs/zaf-actions.md §4, §5, §7): run through `zaf do`
 //! against a fake `gh`, it merges a pull request with a merge commit or squashed, one already
-//! merged is quiet, and a refused merge exits 1 after retrying a moved base.
+//! merged is quiet, and a refused merge exits 1 after retrying a moved base. The action asks
+//! `zaf forge merge`, so the built zaf runs first on `PATH`.
 
 mod common;
 
@@ -8,7 +9,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use common::{Project, REPO, outcome, write};
+use common::{Project, REPO, fixtures, outcome, path_with_zaf, write};
 
 const MANIFEST: &str = r#"[project]
 name = "example"
@@ -33,7 +34,8 @@ fn action_text() -> String {
 
 /// A project with the `pr-merge` action in its actions folder, its gh scene empty.
 fn project() -> Project {
-    let project = Project::new(MANIFEST);
+    let mut project = Project::new(MANIFEST);
+    project.env("PATH", &path_with_zaf(&[&fixtures()]));
     // Any verb makes the missing homes and says so; do it now so the notice stays out of a run.
     let (code, stdout, stderr) = outcome(&project.zaf(&["do"]));
     assert_eq!(code, 0, "{stdout}{stderr}");
@@ -244,16 +246,12 @@ fn recorded(dir: &Path, file: &str) -> Vec<String> {
         .collect()
 }
 
-/// A project whose `PATH` starts with a bin directory, which it returns.
+/// A project whose `PATH` starts with a bin directory, which it returns, then the built zaf.
 fn project_with_bin(refusals: u32, message: &str) -> (Project, PathBuf) {
     let mut project = project();
     let dir = project.temp.path().join("bin");
     bin(&dir, refusals, message);
-    let inherited = std::env::var_os("PATH").unwrap_or_default();
-    let search_path =
-        std::env::join_paths(std::iter::once(dir.clone()).chain(std::env::split_paths(&inherited)))
-            .expect("search path");
-    project.env("PATH", &search_path.to_string_lossy());
+    project.env("PATH", &path_with_zaf(&[&dir]));
     (project, dir)
 }
 

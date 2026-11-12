@@ -127,7 +127,7 @@
     },
     {
       "name": "ticket.rs",
-      "role": "the Ticket entity, its title, body and link newtypes, and the TicketSummary every --json prints",
+      "role": "the Ticket entity, its title, body and link newtypes, the TicketSummary every --json prints, and Standing with how an issue stands from open, dropped and done",
       "node": false
     },
     {

@@ -5,8 +5,9 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::SystemTime;
 
 use crate::ports::{
-    BaseName, Check, Forge, PortError, PrNumber, PullRequest, ReviewComment, ScanningAlert,
-    SliceName,
+    BaseName, Check, CheckBucket, CheckLink, CheckLog, CheckRun, CommitId, Forge, MergeOutcome,
+    MergeStrategy, NewPullRequest, Opened, PortError, PrNumber, PullRequest, ReviewComment,
+    ScanningAlert, SliceName,
 };
 
 /// What a pull request is opened from and into.
@@ -22,15 +23,6 @@ pub struct PrRequest {
     pub body: String,
 }
 
-/// What merging a pull request did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PrMerge {
-    /// It merged now.
-    Merged,
-    /// It had merged before; nothing changed.
-    AlreadyMerged,
-}
-
 #[derive(Debug, Clone)]
 struct OpenPull {
     request: PrRequest,
@@ -40,6 +32,9 @@ struct OpenPull {
     head: Option<String>,
     files: Vec<String>,
     merged: bool,
+    closed: bool,
+    merged_with: Option<MergeStrategy>,
+    runs: Option<Vec<CheckRun>>,
     handoff: Option<String>,
     opened_at: SystemTime,
     merged_at: Option<SystemTime>,
@@ -51,6 +46,8 @@ struct State {
     next_number: u64,
     merged_fails: bool,
     handoff_fails: bool,
+    merge_refusal: Option<PortError>,
+    logs: BTreeMap<CheckLink, CheckLog>,
 }
 
 /// A forge held in memory. Arrange reviews with [`FakeForge::set_checks`]
@@ -134,6 +131,40 @@ impl FakeForge {
         self.state().pulls.get(&pr).map(|pull| pull.request.clone())
     }
 
+    /// Closes a pull request unmerged.
+    pub fn close(&self, pr: PrNumber) -> Result<(), PortError> {
+        let mut state = self.state();
+        state.pull_mut(pr)?.closed = true;
+        Ok(())
+    }
+
+    /// The strategy [`Forge::merge_pull_request`] merged a pull request with; none when the port
+    /// did not merge it.
+    pub fn merged_with(&self, pr: PrNumber) -> Option<MergeStrategy> {
+        self.state()
+            .pulls
+            .get(&pr)
+            .and_then(|pull| pull.merged_with)
+    }
+
+    /// Replaces the checks [`Forge::check_runs`] lists for a pull request; until then it lists
+    /// the checks [`FakeForge::set_checks`] arranged, with no link.
+    pub fn set_check_runs(&self, pr: PrNumber, runs: Vec<CheckRun>) -> Result<(), PortError> {
+        let mut state = self.state();
+        state.pull_mut(pr)?.runs = Some(runs);
+        Ok(())
+    }
+
+    /// Sets what [`Forge::check_log`] answers for `link`; a link with none arranged names no job.
+    pub fn set_check_log(&self, link: CheckLink, log: CheckLog) {
+        self.state().logs.insert(link, log);
+    }
+
+    /// Makes every [`Forge::merge_pull_request`] of an open pull request fail with `error`.
+    pub fn refuse_merges(&self, error: PortError) {
+        self.state().merge_refusal = Some(error);
+    }
+
     fn state(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -148,17 +179,22 @@ impl State {
 }
 
 impl FakeForge {
-    /// Opens a pull request for a slice; a slice with an open one gets that one back. Opening
-    /// is an action's work in zaf, so the port has no such call; this arranges the scene.
+    /// Opens a pull request for a slice; a slice with an open one gets that one back. It
+    /// arranges a scene the way [`Forge::open_pull_request`] opens one.
     pub fn open_pr(&self, request: &PrRequest) -> Result<PrNumber, PortError> {
+        Ok(self.open(request).number())
+    }
+
+    /// Opens a pull request for a slice, or finds the one open for it.
+    fn open(&self, request: &PrRequest) -> Opened {
         let mut state = self.state();
         let existing = state
             .pulls
             .iter()
-            .find(|(_, pull)| !pull.merged && pull.request.slice == request.slice)
+            .find(|(_, pull)| !pull.merged && !pull.closed && pull.request.slice == request.slice)
             .map(|(number, _)| *number);
         if let Some(number) = existing {
-            return Ok(number);
+            return Opened::AlreadyOpen(number);
         }
         state.next_number += 1;
         let number = PrNumber::from(state.next_number);
@@ -170,24 +206,42 @@ impl FakeForge {
             head: None,
             files: Vec::new(),
             merged: false,
+            closed: false,
+            merged_with: None,
+            runs: None,
             handoff: None,
             opened_at: SystemTime::UNIX_EPOCH,
             merged_at: None,
         };
         state.pulls.insert(number, pull);
-        Ok(number)
+        Opened::New(number)
     }
 
-    /// Merges the pull request; one already merged is [`PrMerge::AlreadyMerged`].
-    pub fn merge(&self, pr: PrNumber) -> Result<PrMerge, PortError> {
+    /// Merges the pull request; one already merged is [`MergeOutcome::AlreadyMerged`]. It
+    /// arranges a scene: [`Forge::merge_pull_request`] is the port's merge, with its refusals.
+    pub fn merge(&self, pr: PrNumber) -> Result<MergeOutcome, PortError> {
         let mut state = self.state();
         let pull = state.pull_mut(pr)?;
         if pull.merged {
-            return Ok(PrMerge::AlreadyMerged);
+            return Ok(MergeOutcome::AlreadyMerged);
         }
         pull.merged = true;
         pull.merged_at.get_or_insert(SystemTime::UNIX_EPOCH);
-        Ok(PrMerge::Merged)
+        Ok(MergeOutcome::Merged)
+    }
+}
+
+/// A check as `zaf forge checks` lists it, from its state alone.
+fn run_of(check: &Check) -> CheckRun {
+    let bucket = match check.state {
+        crate::ports::CheckState::Pending => CheckBucket::Pending,
+        crate::ports::CheckState::Passed => CheckBucket::Pass,
+        crate::ports::CheckState::Failed => CheckBucket::Fail,
+    };
+    CheckRun {
+        bucket,
+        name: check.name.clone(),
+        link: None,
     }
 }
 
@@ -249,5 +303,68 @@ impl Forge for FakeForge {
         }
         state.pull_mut(pr)?.handoff = Some(text.to_owned());
         Ok(())
+    }
+
+    /// The head becomes the slice and the base its line, as [`PrRequest`] holds them.
+    fn open_pull_request(&self, request: &NewPullRequest) -> Result<Opened, PortError> {
+        let request = PrRequest {
+            slice: SliceName::from(request.head.as_str()),
+            base: BaseName::from(request.base.as_str()),
+            title: request.title.to_string(),
+            body: request.body.to_string(),
+        };
+        Ok(self.open(&request))
+    }
+
+    fn merge_pull_request(
+        &self,
+        pr: PrNumber,
+        strategy: MergeStrategy,
+        head: Option<&CommitId>,
+    ) -> Result<MergeOutcome, PortError> {
+        let mut state = self.state();
+        let refusal = state.merge_refusal.clone();
+        let pull = state.pull_mut(pr)?;
+        if pull.merged {
+            return Ok(MergeOutcome::AlreadyMerged);
+        }
+        if pull.closed {
+            return Err(PortError::Rejected(format!(
+                "pull request {pr} is closed unmerged"
+            )));
+        }
+        if let Some(pin) = head
+            && pull.head.as_deref() != Some(pin.as_str())
+        {
+            let at = pull.head.as_deref().unwrap_or("no commit");
+            return Err(PortError::Rejected(format!(
+                "pull request {pr}'s head is {at}, not {pin}"
+            )));
+        }
+        if let Some(error) = refusal {
+            return Err(error);
+        }
+        pull.merged = true;
+        pull.merged_with = Some(strategy);
+        pull.merged_at.get_or_insert(SystemTime::UNIX_EPOCH);
+        Ok(MergeOutcome::Merged)
+    }
+
+    fn check_runs(&self, pr: PrNumber) -> Result<Vec<CheckRun>, PortError> {
+        let mut state = self.state();
+        let pull = state.pull_mut(pr)?;
+        Ok(pull
+            .runs
+            .clone()
+            .unwrap_or_else(|| pull.checks.iter().map(run_of).collect()))
+    }
+
+    fn check_log(&self, link: &CheckLink) -> Result<CheckLog, PortError> {
+        Ok(self
+            .state()
+            .logs
+            .get(link)
+            .cloned()
+            .unwrap_or(CheckLog::NoJob))
     }
 }

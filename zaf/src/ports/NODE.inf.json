@@ -22,7 +22,7 @@
   "fs": [
     {
       "name": "board.rs",
-      "role": "tickets, leased claims, labels, comments, questions, rulings",
+      "role": "tickets, leased claims, labels, comments, questions, rulings, and the access checks doctor asks a board",
       "node": false
     },
     {
@@ -47,7 +47,7 @@
     },
     {
       "name": "forge.rs",
-      "role": "PRs, checks, review comments, scanning alerts, merge",
+      "role": "PRs, checks, review comments, scanning alerts, the hand-off; the writes the actions call (open, merge with a strategy and a pinned head, check runs with links, a check's log) and the access checks doctor asks a forge",
       "node": false
     },
     {
