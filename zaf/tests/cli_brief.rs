@@ -123,13 +123,34 @@ fn phased_project() -> Project {
 }
 
 #[test]
-fn an_unlisted_phase_is_refused() {
+fn brief_refuses_an_unlisted_phase() {
     let project = phased_project();
-    let (code, stdout, stderr) = outcome(&project.zaf(&["brief", "4", "--phase", "review"]));
-    assert_eq!(code, 1, "{stdout}{stderr}");
-    assert!(stderr.contains("`review` is not a phase of"), "{stderr}");
-    assert!(stderr.contains("build, check"), "{stderr}");
-    assert_eq!(stdout, "");
+    for phase in ["review", "nonsense"] {
+        let (code, stdout, stderr) = outcome(&project.zaf(&["brief", "4", "--phase", phase]));
+        assert_eq!(code, 1, "{stdout}{stderr}");
+        assert!(
+            stderr.contains(&format!("`{phase}` is not a phase of")),
+            "{stderr}"
+        );
+        assert!(stderr.contains("build, check"), "{stderr}");
+        assert_eq!(stdout, "");
+    }
+}
+
+#[test]
+fn brief_accepts_an_on_fail_phase() {
+    let project = phased_project();
+    write(
+        &project.root,
+        ".zaf/actions/check",
+        "#!/bin/sh\n# zaf description: wait on CI\n# zaf 1: failed\n# zaf kind: wait\n# zaf ends: ci-done\n# zaf on-fail: fix\ntrue\n",
+    );
+    let (code, stdout, stderr) = outcome(&project.zaf(&["brief", "4", "--phase", "fix"]));
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert!(pack(&stdout).contains("## Ticket"));
+    // An action no listed phase names as its on-fail is still refused.
+    let (code, _, stderr) = outcome(&project.zaf(&["brief", "4", "--phase", "nonsense"]));
+    assert_eq!(code, 1, "{stderr}");
 }
 
 #[test]
