@@ -1,0 +1,139 @@
+#!/bin/sh
+# zaf description: merge a pull request with a merge commit, or squashed with --squash, only at the head commit named with --match-head-commit <sha> when one is given; one already merged is quiet; a merge refused for a moved base is retried up to three times, 15 seconds apart
+# zaf 1: refused: the arguments are not <pr> [--squash] [--match-head-commit <sha>], the pull request is closed unmerged, or the forge refuses the merge (a head other than the named one is refused)
+# zaf 2: a backend failed (gh is missing or refused to read the pull request, or printed no state)
+# zaf mode: 750
+# zaf group: team, release, merge
+pr=$1
+
+if [ -z "$ZAF_ROOT" ] || [ "$#" -lt 1 ]; then
+    echo "usage: pr-merge <pr> [--squash] [--match-head-commit <sha>], with ZAF_ROOT set" >&2
+    exit 1
+fi
+
+# A pull request number is plain digits, with the `#` it is often written with.
+pr=${pr#\#}
+case $pr in
+    "" | *[!0-9]*)
+        echo "pull request $1 is not a number" >&2
+        exit 1
+        ;;
+esac
+
+shift
+
+# The strategy, and the head commit the merge is pinned to. With one, the forge refuses the merge
+# when the pull request's head is any other commit, so a push after CI is never merged unchecked.
+strategy=--merge
+pin=
+while [ "$#" -gt 0 ]; do
+    case $1 in
+        --squash)
+            strategy=--squash
+            shift
+            ;;
+        --match-head-commit)
+            if [ "$#" -lt 2 ]; then
+                echo "--match-head-commit needs a commit" >&2
+                exit 1
+            fi
+            case $2 in
+                "" | *[!0-9a-f]*)
+                    echo "$2 is not a commit id" >&2
+                    exit 1
+                    ;;
+            esac
+            pin=$2
+            shift 2
+            ;;
+        *)
+            echo "unknown option $1; the only ones are --squash and --match-head-commit <sha>" >&2
+            exit 1
+            ;;
+    esac
+done
+
+# Up to three retries, the seconds between them the forge's own settling time.
+retries=3
+delay=15
+
+# The forge repository the manifest names, the first manifest that names one, in the order zaf
+# reads them. With none, gh works the repository out from the root's remotes, as it does by hand.
+forge_repo() {
+    for manifest in "$ZAF_ROOT/.zaf.toml" "$ZAF_ROOT/.zaf/config.toml" "$ZAF_ROOT/ZAF.toml"; do
+        [ -f "$manifest" ] || continue
+        found=$(awk '
+            /^[ \t]*\[/ { in_forge = ($0 ~ /^[ \t]*\[forge\][ \t]*(#.*)?$/); next }
+            in_forge && /^[ \t]*repo[ \t]*=/ {
+                line = $0
+                sub(/^[^=]*=[ \t]*"/, "", line)
+                sub(/".*$/, "", line)
+                print line
+                exit
+            }
+        ' "$manifest")
+        if [ -n "$found" ]; then
+            echo "$found"
+            return
+        fi
+    done
+}
+
+# A slice's workspace is a jj workspace gh cannot read a repository from, so gh runs at the
+# project root, the repository itself.
+cd "$ZAF_ROOT" || exit 2
+
+repo=$(forge_repo)
+if [ -n "$repo" ]; then
+    set -- --repo "$repo"
+else
+    set --
+fi
+
+state=$(gh pr view "$pr" --json state --jq .state "$@") || exit 2
+case $state in
+    MERGED)
+        # Merged already: nothing to do, and nothing to say.
+        exit 0
+        ;;
+    CLOSED)
+        echo "pull request #$pr is closed unmerged" >&2
+        exit 1
+        ;;
+    "")
+        echo "gh printed no state for pull request #$pr" >&2
+        exit 2
+        ;;
+esac
+
+if [ -n "$pin" ]; then
+    set -- --match-head-commit "$pin" "$@"
+fi
+
+# Parallel merges move the base under each other and leave the forge briefly unable to merge.
+# Only those two refusals are worth waiting for; any other is final.
+tries=0
+while :; do
+    if output=$(gh pr merge "$pr" "$strategy" "$@" 2>&1); then
+        exit 0
+    else
+        status=$?
+    fi
+    case $status in
+        126 | 127)
+            echo "gh cannot run: $output" >&2
+            exit 2
+            ;;
+    esac
+    printf '%s\n' "$output" >&2
+    if ! printf '%s\n' "$output" | grep -qiE 'Base branch was modified|not mergeable'; then
+        exit 1
+    fi
+    if [ "$tries" -ge "$retries" ]; then
+        echo "pull request #$pr still cannot be merged after $retries retries" >&2
+        exit 1
+    fi
+    tries=$((tries + 1))
+    echo "pull request #$pr could not be merged yet; retry $tries of $retries in $delay seconds" >&2
+    sleep "$delay"
+done
