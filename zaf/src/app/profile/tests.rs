@@ -106,6 +106,33 @@ fn installed(state: &Path, id: &str, version: Option<&str>) {
     write_installed(&state.join("profiles/build"), id, version);
 }
 
+#[test]
+fn the_current_pack_tag_is_read_from_a_scratch_profile() {
+    let scratch = tempfile::tempdir().expect("temp dir");
+    let shell = RecordingShell::answering(GateVerdict::Passed).recording("2.1.0");
+    let tag = current_pack_tag(&shell, scratch.path()).expect("learned");
+    assert_eq!(tag, "teams-v2.1.0");
+    let lines = shell.lines();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("marketplace add 'ProgrammingCheetah/ways'"))
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.contains("install 'teams@ways'"))
+    );
+
+    let unversioned = tempfile::tempdir().expect("temp dir");
+    write_installed(unversioned.path(), "teams@ways", None);
+    let shell = RecordingShell::answering(GateVerdict::Passed);
+    assert!(matches!(
+        current_pack_tag(&shell, unversioned.path()),
+        Err(ProfileError::Install { .. })
+    ));
+}
+
 /// `init` for a project rooted at the state folder's parent, with a shell that must stay unused.
 fn init_here(state: &Path, manifest: &Manifest) -> Result<Report, ProfileError> {
     let shell = RecordingShell::answering(GateVerdict::Failed);
