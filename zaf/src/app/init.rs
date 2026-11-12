@@ -1,11 +1,13 @@
 //! `zaf init`: write a minimal manifest by asking.
 //!
-//! Four questions on a line each: project name, board repo, forge repo (default:
-//! the board repo) and the gate's full command (blank for no gate). The rest of
-//! the manifest is left to the pack's defaults.
+//! Four questions on a line each: project name, board repo, forge repo and the gate's
+//! full command. Each offers the value init can work out as the default a blank answer
+//! takes: the folder's name, the `owner/name` of the git remote `origin` (a GitHub one),
+//! and no gate. The rest of the manifest is left to the pack's defaults.
 
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use crate::manifest::{Manifest, ManifestError, ProjectFiles, ROOT_FILE};
 
@@ -36,8 +38,9 @@ fn ask(
     input: &mut dyn BufRead,
     output: &mut dyn Write,
     question: &'static str,
+    shown: &str,
 ) -> Result<String, InitError> {
-    write!(output, "{question}: ")?;
+    write!(output, "{shown}: ")?;
     output.flush()?;
     let mut line = String::new();
     if input.read_line(&mut line)? == 0 {
@@ -46,16 +49,68 @@ fn ask(
     Ok(line.trim().to_owned())
 }
 
+/// Asks `question`, showing `default`; a blank answer takes it, and with none it is
+/// refused naming the question.
 fn required(
     input: &mut dyn BufRead,
     output: &mut dyn Write,
     question: &'static str,
+    default: Option<&str>,
 ) -> Result<String, InitError> {
-    let answer = ask(input, output, question)?;
-    if answer.is_empty() {
-        return Err(InitError::Blank(question));
+    let shown = match default {
+        Some(default) => format!("{question} [{default}]"),
+        None => question.to_owned(),
+    };
+    let answer = ask(input, output, question, &shown)?;
+    match (answer.is_empty(), default) {
+        (false, _) => Ok(answer),
+        (true, Some(default)) => Ok(default.to_owned()),
+        (true, None) => Err(InitError::Blank(question)),
     }
-    Ok(answer)
+}
+
+/// The `owner/name` of a GitHub remote URL, ssh or https; none for any other.
+fn github_repo(url: &str) -> Option<String> {
+    let url = url.trim();
+    let path = [
+        "git@github.com:",
+        "ssh://git@github.com/",
+        "git://github.com/",
+    ]
+    .iter()
+    .find_map(|prefix| url.strip_prefix(prefix))
+    .or_else(|| {
+        let rest = url
+            .strip_prefix("https://")
+            .or_else(|| url.strip_prefix("http://"))?;
+        let rest = rest.split_once('@').map_or(rest, |(_, host)| host);
+        rest.strip_prefix("github.com/")
+    })?;
+    let path = path.trim_end_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let (owner, name) = path.split_once('/')?;
+    let valid =
+        |part: &str| !part.is_empty() && !part.contains('/') && !part.contains(char::is_whitespace);
+    (valid(owner) && valid(name)).then(|| format!("{owner}/{name}"))
+}
+
+/// The GitHub repo the git remote `origin` of `dir` names; none without git, a remote or
+/// a GitHub one.
+fn origin_repo(dir: &Path) -> Option<String> {
+    let out = Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    github_repo(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// The folder's name, when it has one that is text.
+fn folder_name(dir: &Path) -> Option<String> {
+    dir.file_name()?.to_str().map(str::to_owned)
 }
 
 fn quoted(text: &str) -> String {
@@ -86,15 +141,21 @@ pub fn init_with_home(
     if let Some(existing) = found.root.or(found.folder).or(found.legacy) {
         return Err(InitError::Exists(existing));
     }
-    let name = required(input, output, "project name")?;
-    let board = required(input, output, "board repo (owner/name)")?;
-    let forge = ask(input, output, "forge repo (blank: the board repo)")?;
-    let forge = if forge.is_empty() {
-        board.clone()
-    } else {
-        forge
-    };
-    let gate = ask(input, output, "gate full command (blank: none)")?;
+    let remote = origin_repo(dir);
+    let name = required(input, output, "project name", folder_name(dir).as_deref())?;
+    let board = required(input, output, "board repo (owner/name)", remote.as_deref())?;
+    let forge = required(
+        input,
+        output,
+        "forge repo (owner/name)",
+        Some(remote.as_deref().unwrap_or(&board)),
+    )?;
+    let gate = ask(
+        input,
+        output,
+        "gate full command",
+        "gate full command [blank: none]",
+    )?;
 
     let mut text = format!(
         "[project]\nname = {}\n\n[board]\nkind = \"github-issues\"\nrepo = {}\n\n\
