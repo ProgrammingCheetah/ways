@@ -8,7 +8,7 @@ use super::Cli;
 use super::exit::{BACKEND, OK, REFUSED, fail, fail_composition, note_design_paths};
 use super::slice::{VERSION_VAR, fail_slice};
 
-use crate::app::actions::{ActionName, Caller, SliceRecords};
+use crate::app::actions::{ActionName, Caller, SliceRecords, parse, resolve};
 use crate::app::brief::{
     ActionsView, BriefActionsError, BriefError, BriefPorts, BriefQuery, NodesChain, PhaseView,
     brief_for_phase,
@@ -64,6 +64,9 @@ fn check_phase(
     if list.is_some_and(|list| list.iter().any(|name| name.as_str() == phase)) {
         return Ok(());
     }
+    if list.is_some_and(|list| is_on_fail_of(composition, list, phase)) {
+        return Ok(());
+    }
     let reason = match (kind, list) {
         (None, _) => format!("{} has no type, so no phase list", ticket.id),
         (Some(kind), None) => format!("[phases] has no list for {kind}"),
@@ -77,6 +80,29 @@ fn check_phase(
         ticket.id
     );
     Err(REFUSED)
+}
+
+/// Whether a listed phase's action declares `on-fail: <phase>`: the model action the tick starts
+/// when that wait fails is a phase of the task though the list does not name it. A listed action
+/// that cannot be found or read names no on-fail.
+fn is_on_fail_of(composition: &Composition, list: &[ActionName], phase: &str) -> bool {
+    let home = match zaf_home().map(std::path::absolute) {
+        Some(Ok(home)) => home,
+        // With no home there is no machine tier, so the project's actions alone are looked at.
+        _ => composition.state_dir(),
+    };
+    list.iter().any(|name| {
+        let Ok(Some(found)) = resolve(composition.root(), &home, name.as_str()) else {
+            return false;
+        };
+        let Ok(text) = std::fs::read_to_string(&found.path) else {
+            return false;
+        };
+        parse(&found.path, &text)
+            .ok()
+            .and_then(|parsed| parsed.metadata.on_fail)
+            .is_some_and(|on_fail| on_fail.as_str() == phase)
+    })
 }
 
 /// The recorded pull request of the task and what reads its change; none when the task has no
