@@ -307,11 +307,44 @@ fn verb_creates_a_missing_home_first() {
     assert!(!outside.join(".zaf").exists());
 }
 
+/// The pack tag the fake `claude` installs.
+const FAKE_PACK_TAG: &str = "teams-v9.9.9";
+
+/// A fake `claude` in a folder of its own: it lists no marketplace, accepts an add and, on
+/// an install, records version 9.9.9 for the plugin under `$CLAUDE_CONFIG_DIR`, so `zaf init`
+/// learns its pack tag without the real tool.
+fn fake_claude() -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = tempfile::tempdir().expect("fake bin");
+    let script = r#"#!/bin/sh
+case "$*" in
+  "plugin marketplace list") echo "No marketplaces configured" ;;
+  "plugin marketplace add "*) ;;
+  "plugin install "*)
+    mkdir -p "$CLAUDE_CONFIG_DIR/plugins"
+    printf '{"plugins":{"teams@ways":[{"version":"9.9.9"}]}}' \
+      > "$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json" ;;
+  *) echo "fake claude: $*" >&2; exit 1 ;;
+esac
+"#;
+    let path = bin.path().join("claude");
+    fs::write(&path, script).expect("fake claude");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod");
+    bin
+}
+
 /// Runs `zaf init` in `dir` with `answers` on stdin and the zaf home at `home`.
 fn init_in(dir: &Path, home: &Path, answers: &str) -> Output {
+    let bin = fake_claude();
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    let search_path = std::env::join_paths(
+        std::iter::once(bin.path().to_owned()).chain(std::env::split_paths(&inherited)),
+    )
+    .expect("search path");
     let mut child = Command::new(env!("CARGO_BIN_EXE_zaf"))
         .arg("init")
         .current_dir(dir)
+        .env("PATH", search_path)
         .env("ZAF_HOME", home)
         .env_remove("ZAF_INSTANCE")
         .env_remove("ZAF_VERSION")
@@ -342,6 +375,10 @@ fn init_writes_dot_zaf_toml() {
     assert!(stdout.ends_with("wrote .zaf.toml\n"), "{stdout}");
     let text = fs::read_to_string(dir.join(".zaf.toml")).expect(".zaf.toml");
     assert!(text.contains("name = \"bookshelf\""), "{text}");
+    assert!(
+        text.contains(&format!("tag = \"{FAKE_PACK_TAG}\"")),
+        "{text}"
+    );
     assert!(!dir.join("ZAF.toml").exists());
     assert!(
         !dir.join(".zaf").exists(),
