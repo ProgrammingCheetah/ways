@@ -7,7 +7,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
-use zaf::app::actions::parse;
+use zaf::app::actions::{PhaseEnd, parse};
 
 const NAMES: [&str; 17] = [
     "ci",
@@ -61,4 +61,34 @@ fn pack_actions_parse() {
             "{name}: phases"
         );
     }
+}
+
+/// Under a CI-only gate no review is ever posted on the forge, so the `review` phase ends when its
+/// check exits 0 (docs/zaf-actions.md §5.1), in ways' copy and in the pack's alike.
+#[test]
+fn review_phase_ends_when_its_check_exits() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+    let ways_file = root.join(".zaf/actions/review");
+    let pack_file = root.join("plugins/teams/actions/review");
+    if !pack_file.is_file() {
+        return;
+    }
+    let read = |file: &PathBuf| {
+        let text = fs::read_to_string(file).unwrap_or_else(|error| panic!("{file:?}: {error}"));
+        parse(file, &text).unwrap_or_else(|error| panic!("{error}"))
+    };
+    let (ways, pack) = (read(&ways_file), read(&pack_file));
+
+    assert_eq!(ways.metadata.ends, Some(PhaseEnd::Exit), "ways' review");
+    assert_eq!(
+        pack.metadata.ends,
+        Some(PhaseEnd::Exit),
+        "the pack's review"
+    );
+    assert_eq!(pack.metadata.kind, ways.metadata.kind, "kind");
+    assert_eq!(pack.metadata.on_fail, ways.metadata.on_fail, "on-fail");
+    assert_eq!(
+        pack.metadata.description, ways.metadata.description,
+        "description"
+    );
 }
