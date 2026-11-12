@@ -1,0 +1,51 @@
+#!/bin/sh
+# zaf description: commit a slice's work in its jj workspace, move the slice's bookmark onto the commit and hand back the commit id
+# zaf 1: refused: nothing to commit, the slice is not an open slice workspace, or the slice name leaves the workspaces directory
+# zaf 2: a backend failed (jj is missing or refused)
+# zaf mode: 750
+# zaf group: team, release, implement, fix
+slice=$1
+message=$2
+
+if [ -z "$ZAF_ROOT" ] || [ "$#" -ne 2 ]; then
+    echo "usage: commit <slice> <message>, with ZAF_ROOT set" >&2
+    exit 1
+fi
+
+# A slice name is a relative path of plain parts, below the workspaces directory.
+case "/$slice/" in
+    *//* | */./* | */../*)
+        echo "slice name $slice is not a relative path inside the workspaces directory" >&2
+        exit 1
+        ;;
+esac
+case $slice in
+    "" | /* | -*)
+        echo "slice name $slice is not a relative path inside the workspaces directory" >&2
+        exit 1
+        ;;
+esac
+
+dir=$ZAF_ROOT/.zaf/workspaces/$slice
+
+# Only a workspace that `workspace-open` made records the base it was opened on.
+if [ ! -d "$dir/.jj" ] || ! (cd "$dir" && jj --no-pager --color=never config get zaf.slice-base >/dev/null 2>&1); then
+    echo "slice $slice is not open" >&2
+    exit 1
+fi
+
+cd "$dir" || exit 2
+
+# jj snapshots the working copy first, so a file just written counts as work.
+empty=$(jj --no-pager --color=never log --no-graph -r @ -T empty) || exit 2
+if [ "$empty" = "true" ]; then
+    echo "nothing to commit for $message" >&2
+    exit 1
+fi
+
+jj --no-pager --color=never commit -m "$message" || exit 2
+# The work is the commit under the new empty working copy; the bookmark follows it.
+jj --no-pager --color=never bookmark set "$slice" -r @- || exit 2
+
+jj --no-pager --color=never log --no-graph -r @- -T 'commit_id ++ "\n"' || exit 2
+exit 0
