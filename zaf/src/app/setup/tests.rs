@@ -1,7 +1,99 @@
 use std::fs;
+use std::sync::Mutex;
 
 use super::*;
 use crate::app::doctor::fake::FakeCommands;
+use crate::manifest::CommandLine;
+use crate::ports::{GateRun, GateVerdict, PortError};
+
+/// A shell that records each `claude plugin` line and answers it; an install records the
+/// plugin at `version` in the profile's `plugins/installed_plugins.json`, as Claude does.
+struct RecordingShell {
+    version: &'static str,
+    lines: Mutex<Vec<String>>,
+}
+
+impl RecordingShell {
+    fn new() -> Self {
+        Self::installing("2.1.0")
+    }
+
+    fn installing(version: &'static str) -> Self {
+        Self {
+            version,
+            lines: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn lines(&self) -> Vec<String> {
+        self.lines.lock().expect("lock").clone()
+    }
+}
+
+impl Shell for RecordingShell {
+    fn run(&self, line: &CommandLine) -> Result<GateRun, PortError> {
+        self.lines.lock().expect("lock").push(line.to_string());
+        let text = line.as_ref();
+        if text.contains(" claude plugin install ") {
+            let mut quoted = text.split('\'');
+            if let (Some(home), Some(id)) = (quoted.nth(1), quoted.nth(1)) {
+                let home = Path::new(home);
+                fs::create_dir_all(home.join("plugins")).expect("plugins dir");
+                let entry = serde_json::json!({ "scope": "user", "version": self.version });
+                let record = serde_json::json!({ "version": 2, "plugins": { id: [entry] } });
+                fs::write(
+                    home.join(profile::INSTALLED_PLUGINS_FILE),
+                    record.to_string(),
+                )
+                .expect("records the install");
+            }
+        }
+        let output = if text.ends_with("claude plugin marketplace list") {
+            "No marketplaces configured\n"
+        } else if text.ends_with("claude plugin list") {
+            "No plugins installed\n"
+        } else {
+            ""
+        };
+        Ok(GateRun {
+            verdict: GateVerdict::Passed,
+            output: output.to_owned(),
+        })
+    }
+}
+
+/// Whether a doctor call is the login check of a generated profile.
+fn is_login_check(call: &[String]) -> bool {
+    call.len() == 5 && call[0] == "env" && call[2..] == ["claude", "auth", "status"]
+}
+
+/// [`super::setup`] with no Claude home and a fresh shell: nothing is linked.
+fn setup(
+    root: &Path,
+    home: Option<&Path>,
+    manifest: &Manifest,
+    commands: &dyn Commands,
+) -> Result<SetupReport, SetupError> {
+    super::setup_with(root, home, manifest, commands, &RecordingShell::new(), None)
+}
+
+/// [`super::setup_with`] through a fresh shell.
+fn setup_with(
+    root: &Path,
+    home: Option<&Path>,
+    manifest: &Manifest,
+    commands: &dyn Commands,
+    claude_home: Option<&Path>,
+) -> Result<SetupReport, SetupError> {
+    super::setup_with(
+        root,
+        home,
+        manifest,
+        commands,
+        &RecordingShell::new(),
+        claude_home,
+    )
+}
 
 const HEAD: &str =
     "[project]\nname = \"bookshelf\"\n[board]\nkind = \"github-issues\"\nrepo = \"example/b\"\n";
@@ -193,8 +285,8 @@ fn the_worksheet_names_each_missing_tool() {
         commands
             .calls()
             .iter()
-            .all(|call| call[1..] == ["--version"]),
-        "setup only asks for versions, it installs nothing: {:?}",
+            .all(|call| call[1..] == ["--version"] || is_login_check(call)),
+        "setup only asks for versions and logins, it installs nothing: {:?}",
         commands.calls()
     );
 }
@@ -255,7 +347,11 @@ fn other_design_kinds_clone_nothing() {
     let commands = FakeCommands::new();
     let report = setup(&root, Some(&home), &manifest, &commands).expect("sets up");
     assert_eq!(report.clone, None);
-    assert!(commands.calls().is_empty());
+    assert!(
+        commands.calls().iter().all(|call| is_login_check(call)),
+        "no clone: {:?}",
+        commands.calls()
+    );
 }
 
 #[test]
@@ -283,9 +379,14 @@ fn setup_links_the_home_credentials_into_a_profile_already_there() {
         "doctor runs after the link: {:?}",
         first.doctor.lines()
     );
-    assert!(
-        !root.join(".zaf/profiles/lean").exists(),
-        "a profile not generated stays for `zaf profile init`"
+    assert_eq!(
+        fs::read_link(
+            root.join(".zaf/profiles/lean")
+                .join(profile::CREDENTIALS_FILE)
+        )
+        .expect("a symlink"),
+        source,
+        "a profile setup generates is linked too"
     );
     setup_with(&root, Some(&home), &manifest, &commands, Some(&claude_home)).expect("again");
     assert_eq!(fs::read_link(&link).expect("a symlink"), source);
@@ -388,4 +489,135 @@ fn ensure_homes_leaves_a_legacy_manifest_where_it_is() {
     ensure_homes(Some(&root), Some(&home)).expect("makes the homes");
     assert_eq!(read(&root.join("ZAF.toml")), HEAD);
     assert!(!root.join(".zaf.toml").exists());
+}
+
+const TAGGED: &str = "[pack]\ntag = \"teams-v2.1.0\"\n";
+
+type Files = std::collections::BTreeMap<PathBuf, Vec<u8>>;
+
+/// Every file under `dir`, by relative path, with its bytes; a symlink counts as its target path.
+fn snapshot(dir: &Path) -> Files {
+    fn walk(base: &Path, dir: &Path, into: &mut Files) {
+        for entry in fs::read_dir(dir).expect("a folder") {
+            let path = entry.expect("an entry").path();
+            let relative = path.strip_prefix(base).expect("under base").to_owned();
+            if fs::symlink_metadata(&path).expect("there").is_symlink() {
+                let target = fs::read_link(&path).expect("a link");
+                into.insert(relative, target.display().to_string().into_bytes());
+            } else if path.is_dir() {
+                walk(base, &path, into);
+            } else {
+                into.insert(relative, fs::read(&path).expect("a file"));
+            }
+        }
+    }
+    let mut files = Files::new();
+    walk(dir, dir, &mut files);
+    files
+}
+
+#[test]
+fn setup_generates_profiles() {
+    let (_dir, root, home) = places();
+    let manifest = manifest(TAGGED);
+    let commands = FakeCommands::new();
+    let shell = RecordingShell::new();
+
+    let report =
+        super::setup_with(&root, Some(&home), &manifest, &commands, &shell, None).expect("sets up");
+
+    for name in ["build", "lean"] {
+        let profile = root.join(".zaf/profiles").join(name);
+        for file in ["settings.json", "CLAUDE.md", profile::STAMP_FILE] {
+            assert!(profile.join(file).is_file(), "{name} has {file}");
+        }
+    }
+    let written = report.profiles.expect("the generation ran");
+    assert!(!written.unchanged());
+    let mut generated = written.profiles.clone();
+    generated.sort();
+    assert_eq!(generated, ["build", "lean"]);
+    assert!(
+        shell
+            .lines()
+            .iter()
+            .any(|line| line.contains(" install 'teams@ways'")),
+        "the pack is installed: {:?}",
+        shell.lines()
+    );
+}
+
+#[test]
+fn setup_rerun_issues_no_plugin_command() {
+    let (_dir, root, home) = places();
+    let manifest = manifest(TAGGED);
+    let commands = FakeCommands::new();
+    let shell = RecordingShell::new();
+    super::setup_with(&root, Some(&home), &manifest, &commands, &shell, None).expect("first");
+    let issued = shell.lines().len();
+    assert!(issued > 0, "the first run installed the pack");
+    let before = snapshot(&root.join(".zaf/profiles"));
+
+    let second =
+        super::setup_with(&root, Some(&home), &manifest, &commands, &shell, None).expect("again");
+
+    assert_eq!(
+        shell.lines().len(),
+        issued,
+        "no plugin command: {:?}",
+        shell.lines()
+    );
+    assert_eq!(
+        snapshot(&root.join(".zaf/profiles")),
+        before,
+        "no profile file changed"
+    );
+    assert!(second.profiles.expect("ran").unchanged());
+}
+
+#[test]
+fn setup_pack_refusal_is_a_step() {
+    let (_dir, root, home) = places();
+    let manifest = manifest(TAGGED);
+    let commands = FakeCommands::new();
+    let shell = RecordingShell::installing("2.0.3");
+
+    let report = super::setup_with(&root, Some(&home), &manifest, &commands, &shell, None)
+        .expect("a refusal is a step, not an error");
+
+    assert!(report.profiles.is_none());
+    assert!(!report.is_ready(), "setup exits 1");
+    let lines = report.worksheet_lines();
+    assert!(lines[0].starts_with("1. "), "{lines:?}");
+    assert!(
+        lines[0].contains("pack teams is 2.0.3, manifest asks teams-v2.1.0"),
+        "the step names what it said: {lines:?}"
+    );
+}
+
+/// A shell whose every command fails.
+struct Failing;
+
+impl Shell for Failing {
+    fn run(&self, _line: &CommandLine) -> Result<GateRun, PortError> {
+        Ok(GateRun {
+            verdict: GateVerdict::Failed,
+            output: "no network".to_owned(),
+        })
+    }
+}
+
+#[test]
+fn setup_fails_when_a_plugin_command_fails() {
+    let (_dir, root, home) = places();
+    let error = super::setup_with(
+        &root,
+        Some(&home),
+        &manifest(TAGGED),
+        &FakeCommands::new(),
+        &Failing,
+        None,
+    )
+    .expect_err("a failed backend");
+    assert!(matches!(error, SetupError::Profile(_)), "{error}");
 }
