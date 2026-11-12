@@ -1,0 +1,138 @@
+#!/bin/sh
+# zaf description: fetch and merge the base as it stands on the remote into a slice, moving a lagging local base up and never back; up to date is quiet
+# zaf 1: conflicted: the merge stops on conflicts, the paths are in the log and the slice is unchanged
+# zaf 2: a backend failed or the call was refused (the arguments are not <slice> <base>, the slice is not open on that base, it has uncommitted work, jj is missing or the fetch failed); the slice is unchanged
+# zaf mode: 750
+# zaf group: team, release, merge
+slice=$1
+base=$2
+
+# Exit 1 means conflicted here (docs/zaf-actions.md §3), so every refusal is exit 2.
+if [ -z "$ZAF_ROOT" ] || [ "$#" -ne 2 ]; then
+    echo "usage: merge-base <slice> <base>, with ZAF_ROOT set" >&2
+    exit 2
+fi
+
+# A slice name is a relative path of plain parts, below the workspaces directory, and fit to
+# sit inside a revset string.
+case "/$slice/" in
+    *//* | */./* | */../*)
+        echo "slice name $slice is not a relative path inside the workspaces directory" >&2
+        exit 2
+        ;;
+esac
+case $slice in
+    "" | /* | -* | *\"* | *\\*)
+        echo "slice name $slice is not a relative path inside the workspaces directory" >&2
+        exit 2
+        ;;
+esac
+case $base in
+    "" | -* | *\"* | *\\*)
+        echo "base $base is not a usable bookmark name" >&2
+        exit 2
+        ;;
+esac
+
+dir=$ZAF_ROOT/.zaf/workspaces/$slice
+
+# Run jj in the slice's workspace, which snapshots its working copy first, as jj does.
+jj_run() {
+    jj --no-pager --color=never "$@"
+}
+
+# Only a workspace that `workspace-open` made records the base it was opened on.
+if [ ! -d "$dir/.jj" ]; then
+    echo "slice $slice is not open" >&2
+    exit 2
+fi
+cd "$dir" || exit 2
+if ! recorded=$(jj_run config get zaf.slice-base 2>/dev/null); then
+    echo "slice $slice is not open" >&2
+    exit 2
+fi
+if [ "$recorded" != "$base" ]; then
+    echo "slice $slice is open on $recorded, not $base" >&2
+    exit 2
+fi
+
+# Whether a revset names no commit. A jj that fails ends the run: the answer would be a guess.
+none() {
+    if ! ids=$(jj_run log --no-graph -r "$1" -T 'commit_id ++ "\n"'); then
+        exit 2
+    fi
+    [ -z "$ids" ]
+}
+
+# The merge moves the working copy, so uncommitted work stays out of its way: commit it first.
+if ! empty=$(jj_run log --no-graph -r @ -T empty); then
+    exit 2
+fi
+if [ "$empty" != "true" ]; then
+    echo "slice $slice has uncommitted work; commit it first" >&2
+    exit 2
+fi
+
+# The remote the base bookmark tracks; origin when it tracks none.
+remote=origin
+if ! tracked=$(jj_run bookmark list --tracked -T 'remote ++ "\n"' "exact:\"$base\""); then
+    exit 2
+fi
+for name in $tracked; do
+    if [ "$name" != "git" ]; then
+        remote=$name
+        break
+    fi
+done
+
+jj_run git fetch --remote "$remote" || exit 2
+
+local_base="bookmarks(exact:\"$base\")"
+remote_base="remote_bookmarks(exact:\"$base\", exact:\"$remote\")"
+
+# A base never pushed has no remote revision: merge the local one as it is.
+if none "$remote_base"; then
+    base_revset=$local_base
+else
+    # The remote revision is what the forge merges against. Bring the local bookmark up to it
+    # when it is behind; never move it backwards or sideways.
+    if ! none "$local_base" && none "$local_base ~ ::$remote_base"; then
+        jj_run bookmark set "$base" -r "$remote_base" || exit 2
+    fi
+    base_revset=$remote_base
+fi
+
+slice_revset="bookmarks(exact:\"$slice\")"
+
+# The base has nothing the slice lacks.
+if none "$base_revset ~ ::$slice_revset"; then
+    exit 0
+fi
+
+# The slice has nothing of its own: the base's tip becomes the slice's.
+if none "$slice_revset ~ ::$base_revset"; then
+    jj_run bookmark set "$slice" -r "$base_revset" || exit 2
+    jj_run new "$slice_revset" || exit 2
+    exit 0
+fi
+
+jj_run new "$slice_revset" "$base_revset" -m "Merge $base into $slice" || exit 2
+if ! conflicted=$(jj_run log --no-graph -r @ -T conflict); then
+    exit 2
+fi
+if [ "$conflicted" = "true" ]; then
+    # The paths first, then the slice back as it was: the merge commit is thrown away.
+    echo "the merge of $base into $slice conflicts in:" >&2
+    jj_run resolve --list >&2 || exit 2
+    if ! merge_commit=$(jj_run log --no-graph -r @ -T 'commit_id'); then
+        exit 2
+    fi
+    jj_run new "$slice_revset" || exit 2
+    jj_run abandon "$merge_commit" || exit 2
+    exit 1
+fi
+
+# The merge stands: a fresh working copy on it, and the bookmark follows.
+jj_run new || exit 2
+jj_run bookmark set "$slice" -r @- || exit 2
+exit 0
