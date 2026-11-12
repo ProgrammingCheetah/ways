@@ -79,7 +79,7 @@ pub use tick::{
 };
 pub use waits::{launch_outcome, launch_waits};
 
-use super::actions::{PHASES_DIR, SliceRecords, running_tasks};
+use super::actions::{PHASES_DIR, SliceRecords, ended_instances, running_tasks};
 use super::guard::{GUARD_FILE, Level};
 use crate::domain::{CHALLENGER_ROLE, Instance, Profile, RoleName, TaskSize, TicketId};
 use crate::manifest::{Manifest, ManifestError};
@@ -290,16 +290,30 @@ pub fn held(
     Ok(held)
 }
 
-/// `orphaned(claims, runs, alive, held)`: the claims held by an instance this machine launched
-/// that no longer runs: its run folder
-/// is there and its holder is dead. A claim by an instance with no run folder here (one
-/// started by hand, or on another machine) is not this machine's to judge, so it stays.
-/// A task in `held` (see [`held`]) is not orphaned: a task with a recorded pull request is held
-/// by its forge facts and one with a running phase by that phase, so its claim stays until the
-/// task is done (the ruling on #426).
+/// The instances of the phase run folders (`.zaf/phases/`) that no longer run: an `exit` recorded,
+/// or a holder that is gone. A phase run folder that cannot be read is an error, never a guess.
+pub fn ended_phases(
+    state_dir: &Path,
+    alive: &dyn Fn(&Holder) -> bool,
+) -> Result<BTreeSet<String>, SpawnError> {
+    let phases = state_dir.join(PHASES_DIR);
+    ended_instances(&phases, alive).map_err(|reason| SpawnError::Read {
+        path: phases,
+        reason,
+    })
+}
+
+/// `orphaned(claims, runs, ended, alive, held)`: the claims held by an instance this machine
+/// started that no longer runs: its launch run folder is there and its holder is dead, or its
+/// phase run folder is in `ended` (see [`ended_phases`]). A claim by an instance with no run
+/// folder here (one started by hand, or on another machine) is not this machine's to judge, so
+/// it stays. A task in `held` (see [`held`]) is not orphaned: a task with a recorded pull request
+/// is held by its forge facts and one with a running phase by that phase, so its claim stays
+/// until the task is done (the ruling on #426).
 pub fn orphaned<'a>(
     claims: &'a [ClaimRecord],
     runs: &[Run],
+    ended: &BTreeSet<String>,
     alive: &dyn Fn(&Holder) -> bool,
     held: &BTreeSet<TicketId>,
 ) -> Vec<&'a ClaimRecord> {
@@ -310,7 +324,10 @@ pub fn orphaned<'a>(
         .collect();
     claims
         .iter()
-        .filter(|claim| gone.contains(slug(&claim.instance).as_str()))
+        .filter(|claim| {
+            gone.contains(slug(&claim.instance).as_str())
+                || ended.contains(&claim.instance.to_string())
+        })
         .filter(|claim| !held.contains(&claim.task))
         .collect()
 }
@@ -343,7 +360,8 @@ pub fn prepare(
     let claims = board.claims()?;
     let mut released = Vec::new();
     let held = held(state_dir, alive)?;
-    for claim in orphaned(&claims, &found, alive, &held) {
+    let ended = ended_phases(state_dir, alive)?;
+    for claim in orphaned(&claims, &found, &ended, alive, &held) {
         board.release(claim.task, &claim.instance)?;
         released.push(Released {
             task: claim.task,
