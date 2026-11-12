@@ -21,7 +21,9 @@ fn as_instance() -> bool {
 /// only `*`, clones a missing design repo, generates the profiles as `zaf profile init` does,
 /// runs doctor and prints the worksheet; exits 1 while anything is left for the Engineer (a
 /// pack refusal included) and 2 when a profile cannot be generated. A `ZAF.toml` beside a new manifest file exits 1 and
-/// moves nothing. Installs nothing. Outside a project it makes the zaf home and refuses.
+/// moves nothing. It installs no tool; the one thing it copies is the installed pack's actions into
+/// the zaf home's `actions/`, never over a file there, in one line. Outside a project it makes the
+/// zaf home and refuses.
 pub fn run(cli: &Cli) -> u8 {
     let path = cli.verb.path();
     // The one verb that does not warn about the retired name: it is the one that moves it.
@@ -70,6 +72,9 @@ pub fn run(cli: &Cli) -> u8 {
         for line in profiles.lines() {
             println!("{line}");
         }
+    }
+    for line in report.actions.lines() {
+        println!("{line}");
     }
     for line in report.doctor.lines() {
         println!("{line}");
