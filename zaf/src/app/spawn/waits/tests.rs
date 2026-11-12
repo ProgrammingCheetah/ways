@@ -44,6 +44,7 @@ fn implemented() -> PhaseRun {
             code: 0,
             at: time(9),
         }),
+        last_line: None,
     }
 }
 
@@ -88,6 +89,7 @@ fn review_run(head: &str, alive: bool, exit: Option<i32>) -> PhaseRun {
         started_at: time(11),
         alive,
         exit: exit.map(|code| RunExit { code, at: time(15) }),
+        last_line: None,
     }
 }
 

@@ -227,6 +227,14 @@ fn ask_for_tick(path: &str, exe: &Path) {
     }
 }
 
+/// The run folder's `output` file, opened twice for the child's stdout and stderr; none when it
+/// cannot be made, and the output is then dropped.
+fn open_output(run_dir: &Path) -> Option<(Stdio, Stdio)> {
+    let file = std::fs::File::create(run_dir.join(phase::OUTPUT_FILE)).ok()?;
+    let twin = file.try_clone().ok()?;
+    Some((Stdio::from(file), Stdio::from(twin)))
+}
+
 /// The launcher: runs the action of the phase run folder `run_dir` and waits for it.
 pub fn launcher(cli: &Cli, run_dir: &Path) -> u8 {
     let path = cli.verb.path();
@@ -257,12 +265,16 @@ pub fn launcher(cli: &Cli, run_dir: &Path) -> u8 {
         .arg(launch.action.as_str())
         .arg(launch.task.get().to_string())
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
         .env(RUN_VAR, &run_dir)
         .env(SIZE_VAR, &launch.size)
         .env(INSTANCE_VAR, &launch.instance);
     clear_action_state(&mut command);
+    // What `zaf do` prints, a failure's headline and the tail of its log, goes to the run folder's
+    // `output`, so the tick can quote the last line when the phase keeps failing (#550).
+    match open_output(&run_dir) {
+        Some((out, err)) => command.stdout(out).stderr(err),
+        None => command.stdout(Stdio::null()).stderr(Stdio::null()),
+    };
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {

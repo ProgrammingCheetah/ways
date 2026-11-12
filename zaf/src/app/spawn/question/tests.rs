@@ -46,6 +46,7 @@ fn implemented() -> PhaseRun {
             code: 0,
             at: time(9),
         }),
+        last_line: None,
     }
 }
 
@@ -93,6 +94,7 @@ fn ci_exited(task: u64) -> TickTask {
             code: 3,
             at: time(15),
         }),
+        last_line: None,
     });
     ran
 }

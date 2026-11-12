@@ -29,6 +29,16 @@
       "node": false
     },
     {
+      "name": "failures.rs",
+      "role": "tick steps 5 and 6: a model phase whose last three runs on a task all ended non-zero is not started, and one question is raised on the task; derived from the phase run folders each tick, never stored; a ruling lets it start again",
+      "node": false
+    },
+    {
+      "name": "failures/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
       "name": "inline.rs",
       "role": "tick step 3: run each task's ready zaf-kind action with zaf do, one after another, at no budget cost; a failure never stops the rest",
       "node": false
