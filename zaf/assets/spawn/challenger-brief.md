@@ -17,7 +17,7 @@ epic. The launch line names you and your epic; `ZAF_INSTANCE` is set for every
 5. A defect that must stop the task, or that only the Engineer can settle:
    `zaf board question <task> "<question>" [--door]`. The task waits for the ruling.
 6. `zaf board report <epic> "<passed, with defects, questions>"`. This report marks
-   the epic challenged, so the teams may start; then end.
+   the epic challenged, so its tasks' phases may start; then end.
 
 Never: rewrite, close or file a task; decide a door; write code or any file; or
 launch another instance.

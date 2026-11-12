@@ -2,9 +2,9 @@
 //! on every claimed or ready task whose type has a `[phases]` list.
 //!
 //! [`gather`] reads each such task's phase list, its size and its standing facts (the forge's word
-//! on its pull request and its phase run folders). A task whose type has no list is the team's and
-//! is left out here; [`phased`] says which is which, so the team plan leaves the phased ones out in
-//! turn. A task that cannot be read is named in [`Gathered::unreadable`] and skipped, and the others
+//! on its pull request and its phase run folders). A task whose type has no list is left out
+//! here; [`phased`] says which is which. No task is built by a launched instance: the tick's
+//! plan launches planning and the challenger only. A task that cannot be read is named in [`Gathered::unreadable`] and skipped, and the others
 //! still go.
 //!
 //! [`run_steps`] then runs the steps in the order of §5.1 and merges what each did into one
@@ -39,8 +39,7 @@ fn task_type(ticket: &Ticket) -> &str {
         .map_or(DEFAULT_TASK_TYPE, |kind| kind.as_str())
 }
 
-/// Whether `ticket`'s type has a `[phases]` list: a phased task runs through the phase steps and
-/// never goes to a team.
+/// Whether `ticket`'s type has a `[phases]` list: a phased task runs through the phase steps.
 pub fn phased(manifest: &Manifest, ticket: &Ticket) -> bool {
     manifest.phase_list(task_type(ticket)).is_some()
 }

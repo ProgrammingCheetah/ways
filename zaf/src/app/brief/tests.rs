@@ -264,10 +264,6 @@ fn the_rulings_come_after_the_ticket_and_before_the_design_pages() {
 fn the_instance_prompts_say_to_read_the_rulings_before_asking() {
     let prompts = [
         (
-            "team brief",
-            include_str!("../../../assets/spawn/team-brief.md"),
-        ),
-        (
             "team agent",
             include_str!("../../../../plugins/teams/agents/team.md"),
         ),

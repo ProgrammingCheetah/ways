@@ -76,7 +76,7 @@
     },
     {
       "name": "spawn.rs",
-      "role": "one tick: the phase steps 3 to 6 first, on the phased tasks, with the machine's budget, then the team launches joined in parallel threads; --dry-run; the tick's zaf-kind runner and its wait and model-phase starter (zaf spawn phase, never waiting for the phase)",
+      "role": "one tick: the phase steps 3 to 6 first, on the phased tasks, with the machine's budget, then the planning and challenger launches joined in parallel threads; --dry-run; the tick's zaf-kind runner and its wait and model-phase starter (zaf spawn phase, never waiting for the phase)",
       "node": false
     },
     {

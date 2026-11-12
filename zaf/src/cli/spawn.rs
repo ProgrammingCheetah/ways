@@ -6,9 +6,10 @@
 //! that runs it each `[spawn] tick_minutes`. It prints the plan, then runs each
 //! planned launch to its exit, all in parallel (one thread each, joined before
 //! the tick returns), and exits `2` when a launch
-//! could not be recorded or its runner could not run. Each launch runs the
-//! `team` role through [`Composition::runner_for_role`], inside its profile.
-//! When the manifest has `[phases]`, the phase steps run first, before any team launch: every
+//! could not be recorded or its runner could not run. Each launch (planning or the challenger)
+//! runs its role through [`Composition::runner_for_role`], inside its profile; no launch builds
+//! a task, the phase steps do.
+//! When the manifest has `[phases]`, the phase steps run first, before any launch: every
 //! claimed or ready task whose type has a list has its standing derived from the forge and its
 //! phase run folders, and steps 3 to 6 of docs/zaf-actions.md §5.1 run on them, the waits and the
 //! one model phase started with `zaf spawn phase`; what they did prints after the plan (under
@@ -18,7 +19,7 @@
 //! A generated profile older than the manifest or zaf, or with no stamp, refuses the tick (and
 //! the dry run) before it plans anything: it exits `1` and names the profile.
 //! With `--dry-run` it prints the plan and, per launch, the instance, the epic,
-//! the tasks, the profile, the environment and the command line, and stops there.
+//! the profile, the environment and the command line, and stops there.
 
 use std::collections::BTreeMap;
 use std::process::{Command, Stdio};
@@ -36,7 +37,7 @@ use crate::app::profile;
 use crate::app::spawn::phase::Ports;
 use crate::app::spawn::{
     self, DryLaunch, InUse, LaunchContext, LaunchPorts, Launched, PhaseTask, PhaseTick,
-    PlannedModel, Prepared, SpawnError, Steps, TEAM_ROLE, TickOutcome,
+    PlannedModel, Prepared, SpawnError, Steps, TickOutcome,
 };
 use crate::composition::{Composition, STATE_DIR, zaf_home};
 use crate::domain::{Budget, CHALLENGER_ROLE, Instance, RoleName, TicketId};
@@ -131,7 +132,7 @@ fn tick(
         Err(error) => return exit::fail_composition(&path, &error),
     };
     // Each launch thread builds its own runner; a missing one stops the tick here, before planning.
-    for role in [TEAM_ROLE, spawn::PLANNING_ROLE, CHALLENGER_ROLE] {
+    for role in [spawn::PLANNING_ROLE, CHALLENGER_ROLE] {
         if let Err(error) = composition.runner_for_role(&RoleName::from(role)) {
             return exit::fail_composition(&path, &error);
         }
@@ -183,7 +184,7 @@ fn tick(
         print!("{}", prepared.plan.render_text());
     }
     let mut code = OK;
-    // Steps 3 to 6 run before the team launches, which run to their exit.
+    // Steps 3 to 6 run before the launches, which run to their exit.
     let phases = if manifest.phases.is_empty() {
         None
     } else {
@@ -303,7 +304,7 @@ fn this_zaf() -> Result<Command, String> {
 /// start, `0` otherwise, idle or not. A task that cannot be read is named on stderr and skipped.
 ///
 /// The budget is the machine's: its live use and E across every project, and this project's
-/// running instances, with the team launches this tick reserved, against `[spawn] slots`.
+/// running instances, with the launches this tick reserved, against `[spawn] slots`.
 fn phase_tick(
     path: &str,
     composition: &Composition,
