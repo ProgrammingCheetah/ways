@@ -286,10 +286,12 @@ pub fn launch_of(run_dir: &Path) -> Result<Launch, String> {
 }
 
 /// Records a process in the run folder as its `pid`, as a holder. The file is replaced whole, so a
-/// reader sees the old record or the new one, never half of either.
+/// reader sees the old record or the new one, never half of either. The staging name carries the
+/// writer's process id: the verb and the holder both record, and a shared name would let one
+/// rename the other's file away.
 pub fn record_pid(run_dir: &Path, holder: &Holder) -> Result<(), String> {
     let path = run_dir.join(PID_FILE);
-    let staging = run_dir.join(format!("{PID_FILE}.new"));
+    let staging = run_dir.join(format!("{PID_FILE}.{}.new", std::process::id()));
     std::fs::write(&staging, holder.to_string())
         .and_then(|()| std::fs::rename(&staging, &path))
         .map_err(|source| format!("cannot write {}: {source}", path.display()))

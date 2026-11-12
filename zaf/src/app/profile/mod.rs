@@ -220,7 +220,7 @@ pub fn init(
 }
 
 /// [`init`] against a given Claude home; `None`, when there is none, links nothing.
-fn init_with(
+pub(super) fn init_with(
     root: &Path,
     state_dir: &Path,
     manifest: &Manifest,
