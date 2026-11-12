@@ -25,8 +25,12 @@ const ALLOW_LIST: &str =
 
 /// A project that provides the four `slice-*` actions, so setup has nothing missing to report.
 fn project() -> Project {
-    let project = Project::new(MANIFEST);
+    let mut project = Project::new(MANIFEST);
     project.provide_slice_actions();
+    // `zaf setup` generates profiles and links the host's login into them: the machine's own
+    // Claude home must never reach a test.
+    let user_home = project.temp.path().join("user-home");
+    project.env("HOME", &user_home.to_string_lossy());
     project
 }
 
