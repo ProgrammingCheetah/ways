@@ -1,5 +1,5 @@
-//! `zaf setup`: move a root `ZAF.toml`, make the two homes, then hand the Engineer what it
-//! cannot do.
+//! `zaf setup`: move a root `ZAF.toml`, make the two homes, generate the profiles, then hand
+//! the Engineer what it cannot do.
 
 use std::io::ErrorKind;
 
@@ -18,8 +18,9 @@ fn as_instance() -> bool {
 
 /// Renames a root `ZAF.toml` to `.zaf.toml` (the Engineer's run only, said in one line),
 /// makes the project's `.zaf/` and the zaf home, replaces an old `.zaf/.gitignore` that holds
-/// only `*`, clones a missing design repo, runs doctor and prints the worksheet; exits 1 while
-/// anything is left for the Engineer. A `ZAF.toml` beside a new manifest file exits 1 and
+/// only `*`, clones a missing design repo, generates the profiles as `zaf profile init` does,
+/// runs doctor and prints the worksheet; exits 1 while anything is left for the Engineer (a
+/// pack refusal included) and 2 when a profile cannot be generated. A `ZAF.toml` beside a new manifest file exits 1 and
 /// moves nothing. Installs nothing. Outside a project it makes the zaf home and refuses.
 pub fn run(cli: &Cli) -> u8 {
     let path = cli.verb.path();
@@ -53,6 +54,7 @@ pub fn run(cli: &Cli) -> u8 {
         zaf_home.as_deref(),
         composition.manifest(),
         &ShellCommands::new(composition.shell()),
+        composition.shell().as_ref(),
     ) {
         Ok(report) => report,
         Err(error) => {
@@ -60,6 +62,15 @@ pub fn run(cli: &Cli) -> u8 {
             return exit::BACKEND;
         }
     };
+    if let Some(profiles) = report
+        .profiles
+        .as_ref()
+        .filter(|profiles| !profiles.unchanged())
+    {
+        for line in profiles.lines() {
+            println!("{line}");
+        }
+    }
     for line in report.doctor.lines() {
         println!("{line}");
     }

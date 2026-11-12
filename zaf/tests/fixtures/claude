@@ -1,0 +1,10 @@
+#!/bin/sh
+# A stand-in for the `claude` CLI in the command-line tests, so none of them touches a real login
+# or runs a real plugin command: a test puts this directory first on PATH.
+#
+# It says it is logged in and does nothing else; `claude plugin …` lists nothing and succeeds.
+set -eu
+case "$*" in
+    "auth status"*) printf '{"loggedIn": true}\n' ;;
+    *) ;;
+esac
