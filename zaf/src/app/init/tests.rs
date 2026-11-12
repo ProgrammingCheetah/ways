@@ -1,5 +1,6 @@
 use std::fs;
 use std::io::Cursor;
+use std::process::Command;
 
 use super::*;
 
@@ -161,7 +162,7 @@ fn scripted_answers_write_a_manifest_the_loader_accepts() {
     let (result, prompts) = run(dir.path(), "bookshelf\nexample/shelf\n\ncargo test --all\n");
     let path = result.expect("written");
     assert_eq!(path, dir.path().join(MANIFEST_FILE));
-    assert!(prompts.contains("project name: "), "{prompts}");
+    assert!(prompts.contains("project name ["), "{prompts}");
     let manifest = Manifest::load(&path).expect("loads");
     assert_eq!(manifest.project.name.as_ref(), "bookshelf");
     assert_eq!(
@@ -220,7 +221,10 @@ fn an_existing_manifest_is_refused_untouched_and_unasked() {
 #[test]
 fn a_blank_name_or_board_and_a_short_input_write_nothing() {
     let dir = tempfile::tempdir().expect("temp dir");
-    assert!(matches!(run(dir.path(), "\n").0, Err(InitError::Blank(_))));
+    assert!(matches!(
+        run(dir.path(), "\n\n").0,
+        Err(InitError::Blank(_))
+    ));
     assert!(matches!(
         run(dir.path(), "a\n\n").0,
         Err(InitError::Blank(_))
@@ -230,4 +234,107 @@ fn a_blank_name_or_board_and_a_short_input_write_nothing() {
         Err(InitError::Closed(_))
     ));
     assert!(!dir.path().join(MANIFEST_FILE).exists());
+}
+
+/// A folder `zabo` holding a git repo, with `origin` at `url` when given.
+fn repo_folder(url: Option<&str>) -> (tempfile::TempDir, PathBuf) {
+    let root = tempfile::tempdir().expect("temp dir");
+    let dir = root.path().join("zabo");
+    fs::create_dir(&dir).expect("folder");
+    let git = |args: &[&str]| {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(&dir)
+            .status()
+            .expect("git runs");
+        assert!(status.success(), "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    if let Some(url) = url {
+        git(&["remote", "add", "origin", url]);
+    }
+    (root, dir)
+}
+
+#[test]
+fn init_defaults_from_folder_and_remote() {
+    for url in ["git@github.com:o/zabo.git", "https://github.com/o/zabo.git"] {
+        let (_root, dir) = repo_folder(Some(url));
+        let (result, prompts) = run(&dir, "\n\n\n\n");
+        let manifest = Manifest::load(&result.expect("written")).expect("loads");
+        assert_eq!(manifest.project.name.as_ref(), "zabo", "{url}");
+        assert_eq!(
+            manifest.board.repo.as_ref().map(AsRef::as_ref),
+            Some("o/zabo"),
+            "{url}"
+        );
+        let forge = manifest.forge.expect("a forge section");
+        assert_eq!(
+            forge.repo.as_ref().map(AsRef::as_ref),
+            Some("o/zabo"),
+            "{url}"
+        );
+        assert!(manifest.gate.is_none(), "{url}");
+        assert!(prompts.contains("project name [zabo]: "), "{prompts}");
+        assert!(
+            prompts.contains("board repo (owner/name) [o/zabo]: "),
+            "{prompts}"
+        );
+    }
+}
+
+#[test]
+fn init_typed_answer_wins() {
+    let (_root, dir) = repo_folder(Some("git@github.com:o/zabo.git"));
+    let (result, _) = run(&dir, "shelf\nx/board\nx/code\ncargo test\n");
+    let manifest = Manifest::load(&result.expect("written")).expect("loads");
+    assert_eq!(manifest.project.name.as_ref(), "shelf");
+    assert_eq!(
+        manifest.board.repo.as_ref().map(AsRef::as_ref),
+        Some("x/board")
+    );
+    let forge = manifest.forge.expect("a forge section");
+    assert_eq!(forge.repo.as_ref().map(AsRef::as_ref), Some("x/code"));
+    assert_eq!(manifest.gate.expect("a gate").full.as_ref(), "cargo test");
+}
+
+#[test]
+fn init_no_remote_requires_repo() {
+    let (_root, dir) = repo_folder(None);
+    let (result, _) = run(&dir, "\n\n\n\n");
+    assert!(
+        matches!(result, Err(InitError::Blank(question)) if question.starts_with("board repo")),
+        "a blank board repo is refused by name"
+    );
+    assert!(!dir.join(MANIFEST_FILE).exists());
+
+    let (_root, dir) = repo_folder(Some("git@gitlab.com:o/zabo.git"));
+    let (result, _) = run(&dir, "\n\n\n\n");
+    assert!(
+        matches!(result, Err(InitError::Blank(_))),
+        "not GitHub: no default"
+    );
+    assert!(!dir.join(MANIFEST_FILE).exists());
+}
+
+#[test]
+fn github_urls_read_as_owner_name() {
+    for url in [
+        "git@github.com:o/n.git",
+        "git@github.com:o/n",
+        "ssh://git@github.com/o/n.git",
+        "https://github.com/o/n.git",
+        "https://github.com/o/n/",
+        "https://user:tok@github.com/o/n.git\n",
+    ] {
+        assert_eq!(github_repo(url).as_deref(), Some("o/n"), "{url}");
+    }
+    for url in [
+        "git@gitlab.com:o/n.git",
+        "https://github.com/o",
+        "/srv/repo.git",
+        "",
+    ] {
+        assert_eq!(github_repo(url), None, "{url}");
+    }
 }
