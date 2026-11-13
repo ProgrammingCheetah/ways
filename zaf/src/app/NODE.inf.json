@@ -1,8 +1,8 @@
 {
   "path": "zaf/src/app",
-  "charted": "2026-11-03",
+  "charted": "2026-11-15",
   "short": "use cases, one per verb",
-  "is": "Fifteen use-case modules, one per verb (verify lives in check), each taking a query or command over port traits and returning a flat result, with check, report and spawn split into submodules.",
+  "is": "Twenty-two use-case modules, one per verb or concern (verify lives in check, `zaf do` in actions, the scheduler's edge in schedule, the zaf home's project list in projects), each taking a query or command over port traits and returning a flat result, the larger ones split into submodules.",
   "type": "code",
   "tags": [
     "category:source",
@@ -16,6 +16,11 @@
     "../app.rs"
   ],
   "fs": [
+    {
+      "name": "actions/",
+      "role": "`zaf do`: the action file format and its metadata (metadata.rs), the project and machine tiers (resolve.rs), the one runner every caller uses (run.rs), who may run or read an action by its mode (caller.rs), the slice environment ZAF_BASE, ZAF_SLICE, ZAF_PR and ZAF_TASK_TITLE (slice_env.rs), the slice records slice-open and slice-pr hand back (records.rs), and the Team Phases with derive_phase, the pure rule table that guards the merge path (phase.rs; phase/gather.rs reads what it decides on, phase/live.rs which phase runs are live)",
+      "node": false
+    },
     {
       "name": "ask/",
       "role": "`zaf ask`: keeper questions up the [ask] ladder, quote-verified (a failed citation check is reported, exit 2), logged to .zaf/asklog.jsonl",
@@ -63,7 +68,7 @@
     },
     {
       "name": "doctor/",
-      "role": "fake.rs (Commands fake) and tests.rs",
+      "role": "actions.rs (every action of either tier with its validity and mode), needed.rs (each action name the project needs and the tier that provides it), phases.rs (each action a [phases] list names), hub.rs (the hub service line), fake.rs (Commands fake) and tests.rs",
       "node": false
     },
     {
@@ -97,6 +102,16 @@
       "node": false
     },
     {
+      "name": "hub.rs",
+      "role": "`zaf hub`: the Engineer's live view; it only reads and costs no model turns",
+      "node": false
+    },
+    {
+      "name": "hub/",
+      "role": "gather.rs and state.rs (the board, ledger, slots, phases and last reports into a Snapshot; one project's whole state as JSON), draw.rs (the frame as text, pure), watch.rs (the terminal wait, redrawn when a report arrives, never on a timer), dashboard.rs (the frame as an HTML page on the LAN), service.rs (the systemd user service), lock.rs (one serving hub a machine), reports.rs (`.zaf/hub/reports`, one line per report), hook.rs (what the profiles' PostToolUse hook reports), phases.rs (the phases a model declares and reports with `zaf progress`), live.rs (the process table: running launches, free slots, claims of ended instances)",
+      "node": false
+    },
+    {
       "name": "init.rs",
       "role": "the manifest questions `zaf setup` asks: minimal manifest from four questions (a fifth, forge url, for a non-GitHub origin, which writes Forgejo kinds)",
       "node": false
@@ -108,7 +123,17 @@
     },
     {
       "name": "profile/",
-      "role": "`zaf profile init`: deterministic hermetic Claude homes, pack installed via claude plugin commands",
+      "role": "`zaf profile init`: deterministic hermetic Claude homes, pack installed via claude plugin commands; stamp.rs the .zaf-stamp.json saying what a profile was made from",
+      "node": false
+    },
+    {
+      "name": "projects.rs",
+      "role": "the zaf home's projects.toml: every folder a verb has run in or `zaf setup` has set up",
+      "node": false
+    },
+    {
+      "name": "projects/",
+      "role": "tests.rs",
       "node": false
     },
     {
@@ -118,7 +143,7 @@
     },
     {
       "name": "report/",
-      "role": "report's prices, transcript parser and golden fixtures",
+      "role": "report's prices, transcript parser, SQLite ledger, per-epic rows and golden fixtures",
       "node": true
     },
     {

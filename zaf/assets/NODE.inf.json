@@ -1,6 +1,6 @@
 {
   "path": "zaf/assets",
-  "charted": "2026-11-10",
+  "charted": "2026-11-15",
   "short": "embedded prompts, briefs and profile settings",
   "is": "The prompt texts, review briefs, team spawn brief and per-profile Claude settings that app modules compile into the binary with include_str!.",
   "type": "code",
@@ -46,6 +46,6 @@
   "notes": [
     "Used by: keeper.md in app/ask, interface.md in app/brief, check/ in app/check/step/runner.rs, profiles/ in app/profile, spawn/ in app/spawn",
     "Every plugins/teams brief opens with interface.md's exact bytes for a shared cache prefix; change it and re-paste it there; zaf/tests/pack_briefs.rs fails when one differs",
-    "Profile folder names match the profile keys in ZAF.toml [roles] (programmer lean, team build)"
+    "Profile folder names match the profile keys in .zaf.toml [roles] (programmer lean, team build)"
   ]
 }

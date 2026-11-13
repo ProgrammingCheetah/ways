@@ -1,6 +1,6 @@
 {
   "path": "zaf/src/app/spawn",
-  "charted": "2026-11-10",
+  "charted": "2026-11-15",
   "short": "spawner tick: plan, reserve, launch",
   "is": "One tick of the spawner, split into a pure planner, the run folders that record each launch and the process holding it, the counter-only .zaf/spawn.state, and the I/O that reserves launches, runs planning and challenger instances through the Runner port and records them in their run folders and on the epic. Nothing it plans from is kept in step by hand: running instances, slots, live claims and each epic's stage are derived on every read.",
   "type": "code",
@@ -65,6 +65,16 @@
     },
     {
       "name": "phase/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "post_tick.rs",
+      "role": "tick step 7: run the `post-tick` hook with what the tick did",
+      "node": false
+    },
+    {
+      "name": "post_tick/",
       "role": "tests.rs",
       "node": false
     },

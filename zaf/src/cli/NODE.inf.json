@@ -1,6 +1,6 @@
 {
   "path": "zaf/src/cli",
-  "charted": "2026-11-03",
+  "charted": "2026-11-15",
   "short": "verb modules and shared exit codes",
   "is": "One module per verb that runs the app use case, prints terse, --json or --more output, and maps the outcome to the shared exit codes.",
   "type": "code",
@@ -25,6 +25,11 @@
       "node": false
     },
     {
+      "name": "asklog.rs",
+      "role": "asklog: the pages cited most, the questions that keep returning, the gaps",
+      "node": false
+    },
+    {
       "name": "board.rs",
       "role": "board actions; a question asked inside a phase run (ZAF_RUN) of its own task is recorded in the run folder's `questions`",
       "node": false
@@ -35,8 +40,18 @@
       "node": false
     },
     {
+      "name": "changes.rs",
+      "role": "changes: a task's change against its base, stat first, hunks with --path",
+      "node": false
+    },
+    {
       "name": "check.rs",
       "role": "check and verify; stores records under .zaf/runs/",
+      "node": false
+    },
+    {
+      "name": "do_action.rs",
+      "role": "`zaf do`: list the actions the caller may read, run one, or print the file a name resolves to; exit 0 prints nothing",
       "node": false
     },
     {
@@ -60,8 +75,38 @@
       "node": false
     },
     {
+      "name": "guard.rs",
+      "role": "guard: computes the budget level and writes .zaf/guard.json",
+      "node": false
+    },
+    {
       "name": "guard/",
       "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "hub.rs",
+      "role": "`zaf hub` and `zaf hub report`, and the reports the other verbs leave; in a terminal it waits and redraws on a new report",
+      "node": false
+    },
+    {
+      "name": "hub/",
+      "role": "dashboard.rs (`zaf hub --port <n>`: the loop that feeds the LAN page) and service.rs (`zaf hub service install | remove`), each with tests; tests.rs",
+      "node": false
+    },
+    {
+      "name": "profile.rs",
+      "role": "profile init: the hermetic Claude profiles under .zaf/profiles/",
+      "node": false
+    },
+    {
+      "name": "progress.rs",
+      "role": "`zaf progress`: a model declares its phases on a task and reports each change, one hub report a call",
+      "node": false
+    },
+    {
+      "name": "report.rs",
+      "role": "report: tokens per model, the subagent growth profile, the per-run table",
       "node": false
     },
     {
@@ -72,6 +117,11 @@
     {
       "name": "scheduler.rs",
       "role": "`spawn --watch`: the scheduler that stays up; takes scheduler.lock (a second one names the first and exits 1), catches SIGINT and SIGTERM, and runs app/schedule/scheduler.rs with this process as its Host: requests, the timer, the binary look and exec, the lock-held wait, the start, restart and stop lines",
+      "node": false
+    },
+    {
+      "name": "setup.rs",
+      "role": "setup: asks for a missing manifest, moves a root ZAF.toml, makes the two homes, generates the profiles, then hands the Engineer what it cannot do",
       "node": false
     },
     {
@@ -100,6 +150,11 @@
       "node": false
     },
     {
+      "name": "status.rs",
+      "role": "status: board, instances, slots, guard and open questions on one screen, with every live zaf instance of the machine; with [phases], where the core places each ticket",
+      "node": false
+    },
+    {
       "name": "status/",
       "role": "tests.rs",
       "node": false
@@ -116,7 +171,7 @@
     }
   ],
   "notes": [
-    "Verbs: board (ready, claim, report, question, ruling), ask, brief, check, verify, changes, slice (open, pr, merge, drop), spawn, asklog, status, report, guard, doctor, setup, profile init, epic (list, show, sign), forge (open, merge, checks, head, log)",
+    "Verbs: board (ready, claim, report, handoff, question, ruling), ask, brief, check, verify, changes, slice (open, pr, merge, drop), spawn (phase, stop, trace), asklog, status, report, guard, doctor, setup, profile init, do, hub (report, service install|remove), progress (plan, at), update, epic (list, show, sign), forge (open, merge, checks, head, log)",
     "`init` is not a verb: `setup` asks the manifest questions through app/init.rs",
     "check.rs names adapters directly (SystemShell, gate RUNS_DIR), the only non-test place outside composition.rs that does"
   ]

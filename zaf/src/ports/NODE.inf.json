@@ -1,8 +1,8 @@
 {
   "path": "zaf/src/ports",
-  "charted": "2026-11-03",
+  "charted": "2026-11-15",
   "short": "port traits and their value types",
-  "is": "Seven narrow traits (Board, Vcs, Forge, Design, Gate, Runner, Shell) with the value types they exchange and the one PortError they all return.",
+  "is": "Eight narrow traits (Board, Vcs, Forge, Design, Gate, Runner, Shell, Releases) with the value types they exchange and the one PortError they all return.",
   "type": "code",
   "tags": [
     "category:source",
@@ -97,7 +97,7 @@
     }
   ],
   "notes": [
-    "Each port but Shell has a tests.rs that runs its contract against the matching fake in crate::fakes",
+    "Each port but Shell and Releases has a tests.rs that runs its contract against the matching fake in crate::fakes",
     "Shell has no fake in fakes/; test modules implement it ad hoc",
     "lib.rs names six ports; Shell is the seventh, used by check command steps, doctor and profile's plugin installs",
     "Design may be absent (kind none); the board's epics and rulings then stand in as the design",

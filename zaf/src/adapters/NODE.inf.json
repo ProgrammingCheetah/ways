@@ -1,8 +1,8 @@
 {
   "path": "zaf/src/adapters",
-  "charted": "2026-11-10",
+  "charted": "2026-11-15",
   "short": "live adapters over external CLIs and APIs",
-  "is": "The live port implementations: a directory design source, a shell gate, the GitHub board and forge through gh, the Forgejo board and forge over its REST API through curl, a jj VCS, a process runner and the system shell; what both issue boards share (kind labels, state rules, comment notes) lives once beside them.",
+  "is": "The live port implementations: a directory design source, a shell gate, the GitHub board and forge through gh, the Forgejo board and forge over its REST API through curl, a jj VCS, a process runner, the system shell and the machine's build slot; what both issue boards share (kind labels, state rules, comment notes) lives once beside them.",
   "type": "code",
   "tags": [
     "category:source",
@@ -108,6 +108,16 @@
     },
     {
       "name": "shell/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "slot.rs",
+      "role": "the machine's build slot as `[gate] slot` names it: a command prefix the machine provides, which waits until a build may run",
+      "node": false
+    },
+    {
+      "name": "slot/",
       "role": "tests.rs",
       "node": false
     }

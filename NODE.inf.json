@@ -1,6 +1,6 @@
 {
   "path": ".",
-  "charted": "2026-11-04",
+  "charted": "2026-11-15",
   "short": "ways: a Claude Code plugin marketplace of ways of working, plus the zaf binary",
   "is": "The ways repository: a Claude Code plugin marketplace (the teams, handoff and nodes packs under plugins/) and zaf, the Rust CLI the teams pack drives, with the framework's design draft under docs/.",
   "type": "code",
@@ -23,6 +23,11 @@
   ],
   "fs": [
     {
+      "name": ".chartignore",
+      "role": "directories /nodes:chart gives no node (dist, build, __pycache__)",
+      "node": false
+    },
+    {
       "name": ".claude-plugin/",
       "role": "marketplace.json: the catalog, name \"ways\"",
       "node": false
@@ -34,7 +39,17 @@
     },
     {
       "name": ".github/",
-      "role": "workflows: zaf.yml (gate on zaf/ changes) and zaf-release.yml (binaries on zaf-v* tags)",
+      "role": "workflows: zaf.yml (the gate, on Ubuntu and macOS) and zaf-release.yml (binaries on zaf-v* tags)",
+      "node": false
+    },
+    {
+      "name": ".gitignore",
+      "role": "a comment alone: .zaf/ is committed under its own .zaf/.gitignore allow-list",
+      "node": false
+    },
+    {
+      "name": ".mcp.json",
+      "role": "starts the Basic Memory MCP server offline, limited to the `zaf` project (zaf/memory/)",
       "node": false
     },
     {
@@ -59,13 +74,18 @@
     },
     {
       "name": "docs/",
-      "role": "zuri-ai-framework.md (the design draft), zaf-actions.md (the actions design, rulings of 2026-11-03, and what Claude assumed, the Forgejo board among it) and baseline-2026-10-27.md (teams 1.x measurements)",
+      "role": "index.md (the design index: pages `zaf` and `zuri`, both current), zuri-ai-framework.md (the design draft), zaf-actions.md (the actions design, its rulings, and what Claude assumed) and baseline-2026-10-27.md (teams 1.x measurements)",
       "node": false
     },
     {
       "name": "plugins/",
       "role": "the packs: teams, handoff, nodes",
       "node": true
+    },
+    {
+      "name": "tools/",
+      "role": "gemini-review: runs a zaf review brief through Gemini, fetching the diff itself and failing when no review happened; the run is logged under .zaf/logs/",
+      "node": false
     },
     {
       "name": "zaf/",
@@ -75,10 +95,10 @@
   ],
   "notes": [
     "To understand a path, load `nodes chain <path>`; `node: false` entries are fully described by their `fs` line.",
-    "The design page is docs/zuri-ai-framework.md (draft v0, 2026-10-27); .zaf.toml sets [design] kind = \"repo-dir\" over docs/, so `zaf ask` checks the keeper's quotes against those pages.",
+    "The design pages are docs/zaf-actions.md (page `zaf`) and docs/zuri-ai-framework.md (page `zuri`, draft v0, 2026-10-27), listed in docs/index.md; .zaf.toml sets [design] kind = \"repo-dir\" over docs/, so `zaf ask` checks the keeper's quotes against those pages.",
     ".zaf/'s machine-local state (asklog, guard, profiles, runs, slices, spawn state and workspaces) is git-ignored by .zaf/.gitignore, which allows only its own file, config.toml, actions/ and roles/.",
-    "Board and forge are GitHub issues and PRs on ProgrammingCheetah/ways (.zaf.toml).",
+    "Board and forge are the issues and pull requests of zuri/ways on the Engineer's self-hosted Forgejo (.zaf.toml: kinds forgejo-issues and forgejo, the token in FORGEJO_TOKEN).",
     "Binary releases are tagged zaf-vX.Y.Z: zaf-release.yml checks zaf/Cargo.toml's version matches the tag, builds x86_64 musl Linux and aarch64 macOS, and uploads archives plus sha256 sums to a GitHub release.",
-    "The CI gate zaf.yml runs only when zaf/ or the workflow changes, on Ubuntu and macOS, after installing jj v0.46.0 because the Vcs adapter's tests drive a real jj."
+    "The CI gate zaf.yml runs only when zaf/, .zaf/, .zaf.toml or the workflow itself changes (.forgejo's on Linux alone, .github's on Ubuntu and macOS), after installing jj v0.46.0 because the Vcs adapter's tests drive a real jj."
   ]
 }

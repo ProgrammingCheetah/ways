@@ -1,8 +1,8 @@
 {
   "path": "zaf/src",
-  "charted": "2026-11-03",
+  "charted": "2026-11-15",
   "short": "crate source in hexagonal layers",
-  "is": "The zaf library and its thin binary: domain types, port traits, one use case per verb, live adapters with in-memory fakes, the ZAF.toml model, a single composition root and the command line.",
+  "is": "The zaf library and its thin binary: domain types, port traits, one use case per verb, live adapters with in-memory fakes, the manifest model, a single composition root and the command line.",
   "type": "code",
   "tags": [
     "category:source",
@@ -11,7 +11,7 @@
   "conventions": [
     "Layers inner to outer: domain, ports, app, adapters; app sees only port traits and never names an adapter",
     "composition.rs alone reads the manifest and picks adapters, returning each port as a boxed trait object or CompositionError::Absent",
-    "A module x lives in x.rs with its children in x/; a few use x/mod.rs instead (app ask, asklog, brief, check, profile, spawn)",
+    "A module x lives in x.rs with its children in x/; a few use x/mod.rs instead (app actions, ask, asklog, brief, check, profile, spawn)",
     "Unit tests sit in x/tests.rs behind #[cfg(test)] mod tests, so many folders hold only tests.rs",
     "Plain text newtypes use the text_newtype! macro from newtype.rs; a value with a rule gets a hand-written parser in its own module"
   ],
@@ -47,13 +47,18 @@
       "node": false
     },
     {
+      "name": "composition/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
       "name": "domain/",
       "role": "framework objects and text formats",
       "node": true
     },
     {
       "name": "fakes/",
-      "role": "in-memory fake per port (board, design, forge, gate, vcs; the runner replays recorded output)",
+      "role": "in-memory fake per port (board, design, forge, gate, releases, vcs; the runner replays recorded output)",
       "node": false
     },
     {
@@ -68,7 +73,7 @@
     },
     {
       "name": "manifest/",
-      "role": "ZAF.toml model and validation",
+      "role": "the manifest model, its layers and validation",
       "node": true
     },
     {

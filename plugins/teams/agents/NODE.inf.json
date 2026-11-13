@@ -1,6 +1,6 @@
 {
   "path": "plugins/teams/agents",
-  "charted": "2026-11-03",
+  "charted": "2026-11-15",
   "short": "the teams role briefs",
   "is": "Seven agent definitions: six briefs for the instances zaf launches (team, programmer, keeper, planning, challenger, release) and `designer`, the judgment lane of the Engineer's design session.",
   "type": "code",
@@ -36,12 +36,12 @@
     },
     {
       "name": "planning.md",
-      "role": "turns a signed epic into exact Task and Spike sub-issues, or re-plans after a ruling (opus, xhigh)",
+      "role": "turns a signed epic into exact Task and Spike sub-issues, or re-plans after a ruling (opus, xhigh, 80 turns)",
       "node": false
     },
     {
       "name": "programmer.md",
-      "role": "one task, one round, green in its own workspace from the task's zaf brief pack (sonnet, high, 60 turns)",
+      "role": "one task, one round, green in its own workspace from the task's zaf brief pack (sonnet, high, 150 turns)",
       "node": false
     },
     {
@@ -56,7 +56,7 @@
     }
   ],
   "notes": [
-    "in this repo the interface page is `zaf/assets/interface.md`; all six briefs matched it byte for byte on 2026-11-03",
+    "in this repo the interface page is `zaf/assets/interface.md`; zaf/tests/pack_briefs.rs fails when a brief differs from it",
     "frontmatter model and effort are the by-hand defaults; the spawner passes .zaf.toml's `[roles.<role>]` model, effort, turns and profile instead",
     "keeper.md points to zaf's own keeper prompt (`zaf/assets/keeper.md`) and never restates it",
     "planning.md reads `nodes chain <path>` only when `nodes` is on PATH, its one optional tie to the nodes pack"

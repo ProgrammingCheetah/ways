@@ -1,8 +1,8 @@
 {
   "path": "zaf/src/app/report",
-  "charted": "2026-11-03",
+  "charted": "2026-11-15",
   "short": "report submodules and golden fixtures",
-  "is": "The price table, the Claude Code transcript parser and the golden-file fixtures behind `zaf report`, which ports tools/burn.py.",
+  "is": "The price table, the Claude Code transcript parser, the SQLite ledger that keeps what every run cost, the per-epic rows of `zaf report --epics` and the golden-file fixtures behind `zaf report`, which ports tools/burn.py.",
   "type": "code",
   "tags": [
     "category:source",
@@ -18,8 +18,28 @@
   ],
   "fs": [
     {
+      "name": "epics.rs",
+      "role": "`zaf report --epics`: one row per epic from the ledger, what it cost beside what it finished",
+      "node": false
+    },
+    {
+      "name": "epics/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
       "name": "fixtures/",
       "role": "Claude projects tree plus burn.py golden outputs",
+      "node": false
+    },
+    {
+      "name": "ledger.rs",
+      "role": "the ledger: one row per run in an SQLite file on the machine, so the numbers outlive the transcripts",
+      "node": false
+    },
+    {
+      "name": "ledger/",
+      "role": "tests.rs",
       "node": false
     },
     {

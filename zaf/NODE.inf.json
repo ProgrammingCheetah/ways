@@ -1,6 +1,6 @@
 {
   "path": "zaf",
-  "charted": "2026-11-03",
+  "charted": "2026-11-16",
   "short": "zaf Rust crate, the framework's verb binary",
   "is": "The Rust crate for zaf, the single project-blind binary of Zuri's AI Framework whose verbs the teams plugin drives over a board, a VCS, a forge, a design source, runners and a gate.",
   "type": "code",
@@ -27,6 +27,11 @@
       "node": false
     },
     {
+      "name": "CLAUDE.md",
+      "role": "how to work on zaf: read memory/zaf-overview.md before design work, write what is decided or learned back there",
+      "node": false
+    },
+    {
       "name": "Cargo.lock",
       "role": "pinned dependencies",
       "node": false
@@ -42,6 +47,11 @@
       "node": true
     },
     {
+      "name": "memory/",
+      "role": "zaf's design knowledge as a Basic Memory project (plain Markdown): zaf-overview.md links the principle, vocabulary and scheduler (domain/), the scheduler rulings (decisions/) and the open decisions (roadmap/); README.md is the one-time setup on a fresh clone",
+      "node": false
+    },
+    {
       "name": "src/",
       "role": "library and binary source",
       "node": true
@@ -55,12 +65,18 @@
       "name": "web/",
       "role": "the hub's page: a Svelte and Vite project whose committed build, dist/, is embedded in the binary (README.md says how to rebuild)",
       "node": false
+    },
+    {
+      "name": "zuri.domain.md",
+      "role": "the Engineer's own document of what zaf should become; changed only when they ask",
+      "node": false
     }
   ],
   "notes": [
-    "The gate commands live in the repo-root ZAF.toml [gate] (full, light, tests), each `cd zaf && cargo ...`",
+    "The gate commands live in the repo-root .zaf.toml [gate] (full, light, tests), each `cd zaf && cargo ...`",
     "The design spec is docs/zuri-ai-framework.md (§7.4 for the ports-and-adapters layout); the crate has no README of its own",
     "web/dist is committed and compiled in by src/app/hub/dashboard/assets.rs, so cargo needs no Node; Node is only for changing the page",
-    "Dependencies are only clap, serde, toml, serde_json, thiserror, derive_more, strum, semver and humantime; every backend is reached by shelling out"
+    "Dependencies are only clap, serde, toml, serde_json, thiserror, derive_more, strum, semver, humantime, libc, rusqlite (the ledger) and sha2; every backend is reached by shelling out",
+    "What is built is in docs/zaf-actions.md; where zaf is going is in zuri.domain.md and memory/"
   ]
 }

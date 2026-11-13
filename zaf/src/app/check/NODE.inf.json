@@ -1,6 +1,6 @@
 {
   "path": "zaf/src/app/check",
-  "charted": "2026-11-03",
+  "charted": "2026-11-15",
   "short": "task checks and the PR step engine",
   "is": "The machinery behind `zaf check` and `zaf verify`: the target (task or pull request), the model-free task check, and a threaded engine that runs `[check.<target>] steps` and dedupes their findings into a stored CheckRecord.",
   "type": "code",
@@ -9,7 +9,7 @@
     "review"
   ],
   "conventions": [
-    "One module per step kind under step/: ci, command:<cmd>, runner:<name>:<role>, bot:<login>, codeql; a ?flagged suffix runs a step only for security-flagged tasks",
+    "One module per step kind under step/: ci, command:<cmd>, runner:<name>:<role>, bot:<login>, codeql, action:<name>; a ?flagged suffix runs a step only for security-flagged tasks",
     "Step reports speak `MUST: <path>:<line> <title>` and `NOTE: ...`; a runner step's report must end with `REVIEWED: <the path of the last file in the diff>` or the step fails, and the path must equal Forge::last_changed_file or the step fails too; any other line is ignored",
     "A task check uses no model: light gate, Tests: via [gate] tests, Architecture: ids as whole-word symbols in owned paths, Acceptance: lines listed as manual"
   ],
@@ -61,7 +61,7 @@
     },
     {
       "name": "step/",
-      "role": "step kinds: bot, ci, codeql, command, runner (each with tests)",
+      "role": "step kinds: action, bot, ci, codeql, command, runner (each with tests); log.rs keeps what a runner or command step printed in .zaf/logs/",
       "node": false
     },
     {

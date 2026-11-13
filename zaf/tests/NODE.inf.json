@@ -1,8 +1,8 @@
 {
   "path": "zaf/tests",
-  "charted": "2026-11-03",
+  "charted": "2026-11-15",
   "short": "binary-level integration tests with a fake gh and a fake curl",
-  "is": "Integration tests that run the built zaf binary in a temp project against a scripted fake gh and, for slices, a throwaway jj repository with a bare remote. Three crates read no binary: architecture.rs holds the layers to their imports, board_contract.rs checks every Board backend the same way, and forge_contract.rs takes one pull request through the Forgejo forge on a real instance.",
+  "is": "Integration tests that run the built zaf binary in a temp project against a scripted fake gh or fake curl and, for slices, a throwaway jj repository with a bare remote; the ways_*.rs crates run the ways repository's own actions through `zaf do`, and the pack_*.rs crates check the teams pack's files. Three crates read no binary: architecture.rs holds the layers to their imports, board_contract.rs checks every Board backend the same way, and forge_contract.rs takes one pull request through the Forgejo forge on a real instance.",
   "type": "code",
   "tags": [
     "category:tests",
@@ -26,13 +26,28 @@
       "node": false
     },
     {
+      "name": "cli_ask.rs",
+      "role": "zaf ask: the instance it reads from the environment",
+      "node": false
+    },
+    {
       "name": "cli_board.rs",
       "role": "board verbs: terse and JSON forms, exits 0, 1, 2",
       "node": false
     },
     {
+      "name": "cli_brief.rs",
+      "role": "zaf brief: the ## Actions section, and the instance and zaf home it reads from the environment",
+      "node": false
+    },
+    {
       "name": "cli_forge.rs",
       "role": "zaf forge verbs on a GitHub forge (fake gh) and a Forgejo one (fake curl): what each prints, exits 0, 1, 2",
+      "node": false
+    },
+    {
+      "name": "cli_progress.rs",
+      "role": "zaf progress: the phases a model declares and reports, and the hub report each call leaves",
       "node": false
     },
     {
@@ -46,13 +61,98 @@
       "node": false
     },
     {
+      "name": "do_action.rs",
+      "role": "zaf do end to end, and the runner itself where a kill would take a minute; a temp project and a temp zaf home per run",
+      "node": false
+    },
+    {
+      "name": "doctor_actions.rs",
+      "role": "doctor reports every action with its validity and mode; an invalid file fails the report by file and line",
+      "node": false
+    },
+    {
+      "name": "doctor_manifests.rs",
+      "role": "doctor fails on a retired ZAF.toml beside a new manifest file and names both",
+      "node": false
+    },
+    {
       "name": "fixtures/",
-      "role": "gh: fake gh shell script; forgejo/curl: fake curl for the Forgejo adapter",
+      "role": "gh: fake gh shell script; forgejo/curl: fake curl for the Forgejo adapter; claude: a stand-in claude CLI that says it is logged in and does nothing else",
       "node": false
     },
     {
       "name": "forge_contract.rs",
       "role": "the Forgejo forge on a real instance when ZAF_CONTRACT_FORGEJO_URL, _REPO and _TOKEN_ENV are set: a new branch, a pull request opened, a pending then a passing status, the hand-off, the merge; the branch deleted after",
+      "node": false
+    },
+    {
+      "name": "gate_action.rs",
+      "role": "a [gate] line that names an action (`zaf do gate-light`) runs as any line, in the task's workspace",
+      "node": false
+    },
+    {
+      "name": "hub_dashboard.rs",
+      "role": "zaf hub --port <n>: a port that is taken is refused by name",
+      "node": false
+    },
+    {
+      "name": "local_manifest.rs",
+      "role": ".zaf/local.toml as the manifest's top layer: its slots win, any other manifest setting fails a verb",
+      "node": false
+    },
+    {
+      "name": "pack_actions.rs",
+      "role": "the teams pack's 20 standard actions: every file executable and a valid action",
+      "node": false
+    },
+    {
+      "name": "pack_briefs.rs",
+      "role": "the pack's six role briefs open with the exact bytes of zaf's interface page",
+      "node": false
+    },
+    {
+      "name": "pack_designer.rs",
+      "role": "the pack's two Designer actions (design, review-epic) run with stand-ins for zaf and claude",
+      "node": false
+    },
+    {
+      "name": "profile_stale.rs",
+      "role": "a profile older than the manifest or zaf: spawn refuses it, doctor fails on it, status names it, each with the same line",
+      "node": false
+    },
+    {
+      "name": "projects_list.rs",
+      "role": "the zaf home's project list: a project joins once, on its first verb or on setup",
+      "node": false
+    },
+    {
+      "name": "report_ledger.rs",
+      "role": "the ledger: `zaf report` and `zaf spawn --once` fill it",
+      "node": false
+    },
+    {
+      "name": "setup_e2e.rs",
+      "role": "zaf setup from an empty folder: asks for the manifest, writes it, installs the pack's actions, generates the profiles",
+      "node": false
+    },
+    {
+      "name": "setup_homes.rs",
+      "role": "the two homes: what setup makes, what every other verb makes first, and the .zaf/.gitignore allow-list as git check-ignore sees it",
+      "node": false
+    },
+    {
+      "name": "setup_move.rs",
+      "role": "a root ZAF.toml moves to .zaf.toml only when the Engineer runs zaf setup, once; every other verb reads it",
+      "node": false
+    },
+    {
+      "name": "spawn_hooks.rs",
+      "role": "the tick's hooks: .zaf/actions/hooks/pre-tick runs first, and one that exits non-zero ends the tick",
+      "node": false
+    },
+    {
+      "name": "spawn_no_wait.rs",
+      "role": "spawn --once --no-wait exits 0 at once while another tick holds spawn.lock; plain --once keeps waiting",
       "node": false
     },
     {
@@ -66,8 +166,18 @@
       "node": false
     },
     {
+      "name": "spawn_stop.rs",
+      "role": "spawn stop <task>: ends the instance and its group and releases the claim; no live instance is refused",
+      "node": false
+    },
+    {
       "name": "spawn_trace.rs",
       "role": "the trace: a real tick appends where every ticket sits and prints each move and a count (--more every ticket), a dry run writes none, lines past 14 days are dropped, an unwritable trace warns and the tick succeeds, a tick that cannot gather leaves an error line, and a scheduler's tick that cannot read the facts keeps its last placement and starts nothing; `zaf spawn trace` oldest first, one ticket, --since, no file exits 0",
+      "node": false
+    },
+    {
+      "name": "spawn_unblock.rs",
+      "role": "the tick's unblocking: a blocked task whose blockers are all done, one case of the label sync",
       "node": false
     },
     {
@@ -76,8 +186,123 @@
       "node": false
     },
     {
+      "name": "spawn_zaf_step.rs",
+      "role": "the tick's zaf-kind step: a task's ready zaf-kind action run in its own process",
+      "node": false
+    },
+    {
+      "name": "ways_base_up.rs",
+      "role": "the base-up action: brings a branch up to its base",
+      "node": false
+    },
+    {
+      "name": "ways_ci.rs",
+      "role": "the CI workflow runs for every change to the actions and the manifest, not only to the crate",
+      "node": false
+    },
+    {
+      "name": "ways_ci_wait.rs",
+      "role": "the ci-wait action: waits for a pull request's checks to settle at its head",
+      "node": false
+    },
+    {
+      "name": "ways_commit.rs",
+      "role": "the commit action: commits a slice's work in its workspace",
+      "node": false
+    },
+    {
+      "name": "ways_fix_merge.rs",
+      "role": "a merge whose base conflicts starts fix, and the fix round can bring the base in",
+      "node": false
+    },
+    {
+      "name": "ways_forbidden.rs",
+      "role": "the manifest's [forbidden] list keeps every instance from merging outside `zaf do slice-merge` and `zaf do release`",
+      "node": false
+    },
+    {
+      "name": "ways_gitignore.rs",
+      "role": ".zaf/ is committed under the allow-list zaf setup writes",
+      "node": false
+    },
+    {
+      "name": "ways_issue_file.rs",
+      "role": "the issue-file action: files an issue under an epic, its body from a file",
+      "node": false
+    },
+    {
+      "name": "ways_land.rs",
+      "role": "the land action (`land <pr>`, over pr-merge)",
+      "node": false
+    },
+    {
       "name": "ways_manifest.rs",
       "role": "the ways repo's own .zaf.toml loads, ZAF.toml is gone, and doctor finds every needed action in the project tier with no machine dependency",
+      "node": false
+    },
+    {
+      "name": "ways_merge_base.rs",
+      "role": "the merge-base action: fetches and merges the base",
+      "node": false
+    },
+    {
+      "name": "ways_pr_merge.rs",
+      "role": "the pr-merge action: a merge commit or a squash",
+      "node": false
+    },
+    {
+      "name": "ways_pr_open.rs",
+      "role": "the pr-open action: opens a slice's pull request and hands the number back",
+      "node": false
+    },
+    {
+      "name": "ways_push.rs",
+      "role": "the push action: moves a slice's bookmark forward",
+      "node": false
+    },
+    {
+      "name": "ways_release.rs",
+      "role": "the release action: checks zaf/Cargo.toml, then the three steps it composes",
+      "node": false
+    },
+    {
+      "name": "ways_ship.rs",
+      "role": "the ship action (`ship <bookmark> <base> <title>`)",
+      "node": false
+    },
+    {
+      "name": "ways_slice.rs",
+      "role": "the slice-open, slice-pr and slice-drop actions",
+      "node": false
+    },
+    {
+      "name": "ways_steps.rs",
+      "role": "every file in .zaf/actions/ has valid metadata and its designed mode, and doctor reports none as a problem",
+      "node": false
+    },
+    {
+      "name": "ways_sync.rs",
+      "role": "the sync action: fetches and starts a new change on the base",
+      "node": false
+    },
+    {
+      "name": "ways_tag.rs",
+      "role": "the tag action (`tag <name> [rev]`)",
+      "node": false
+    },
+    {
+      "name": "ways_task_pr.rs",
+      "role": "the task-pr action: hands back a task's pull request",
+      "node": false
+    },
+    {
+      "name": "ways_workspace_drop.rs",
+      "role": "the workspace-drop action: forgets a slice's workspace",
+      "node": false
+    },
+    {
+      "name": "ways_workspace_open.rs",
+      "role": "the workspace-open action: makes a slice's workspace",
       "node": false
     }
   ],

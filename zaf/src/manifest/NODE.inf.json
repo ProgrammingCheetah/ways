@@ -1,8 +1,8 @@
 {
   "path": "zaf/src/manifest",
-  "charted": "2026-11-03",
-  "short": "ZAF.toml model and validation",
-  "is": "The typed model of ZAF.toml: one struct per section with the pack's defaults, the [requires] version pins, and the loader that defaults and validates the whole document.",
+  "charted": "2026-11-15",
+  "short": "the manifest model, its layers and validation",
+  "is": "The typed model of a project's manifest (.zaf.toml at its root, .zaf/config.toml, or both, under the machine-private .zaf/local.toml): one struct per section with the pack's defaults, the [requires] version pins, the layers and how they combine, and the loader that defaults and validates the whole document.",
   "type": "code",
   "tags": [
     "category:schema",
@@ -10,7 +10,7 @@
     "toml"
   ],
   "conventions": [
-    "Each ZAF.toml table maps to a *Section struct in sections.rs; every fixed section denies unknown keys, [check.<target>] is an open table",
+    "Each manifest table maps to a *Section struct in sections.rs; every fixed section denies unknown keys, [check.<target>] is an open table",
     "Keys a kind needs (repo for github-issues and github, repo or path for design, image for container) are checked at load in Manifest::validate"
   ],
   "entry_points": [
@@ -35,6 +35,16 @@
       "node": false
     },
     {
+      "name": "layers.rs",
+      "role": "the files a manifest is read from and how they combine; local_layer is the top",
+      "node": false
+    },
+    {
+      "name": "layers/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
       "name": "requirement.rs",
       "role": "[requires]: semver requirement or pinned release tag",
       "node": false
@@ -55,7 +65,7 @@
     "Sections: project, requires, board, vcs, forge, design, style, workspaces, branches, gate, runners, roles, check, ask, spawn, isolation, pack, forbidden, phases",
     "[phases] maps a task type's name to its ordered list of action names; the load refuses an empty list and a name listed twice, and a higher layer replaces a type's whole list",
     "isolation kind container parses and validates, but no adapter acts on it",
-    "Board kind forgejo-issues needs url and repo; token_env names the variable holding the token (FORGEJO_TOKEN by default), never the token. Forge kind forgejo parses with the same keys, but composing it is CompositionError::NotBuilt",
+    "Board kind forgejo-issues needs url and repo; token_env names the variable holding the token (FORGEJO_TOKEN by default), never the token. Forge kind forgejo takes the same keys",
     "Machine-private .zaf/local.toml is the top layer (layers.rs local_layer): only [spawn] slots and [gate] slot reach the manifest, any other setting is ManifestError::LocalSetting; its [budget], [report.prices] and [auth] tables are dropped here and read by their own readers"
   ]
 }

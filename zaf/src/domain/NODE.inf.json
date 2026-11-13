@@ -1,8 +1,8 @@
 {
   "path": "zaf/src/domain",
-  "charted": "2026-11-03",
+  "charted": "2026-11-15",
   "short": "framework objects and their line formats",
-  "is": "The backend-blind types (tickets, epics, tasks, asks, answers, findings, instances, profiles, ids, labels) and the text formats they travel in, each with its parser, plus the verbatim quote check.",
+  "is": "The backend-blind types (tickets, epics, tasks, asks, answers, findings, instances, profiles, ids, labels, the machine budget and build slot, the scheduling core) and the text formats they travel in, each with its parser, plus the verbatim quote check.",
   "type": "code",
   "tags": [
     "category:source",
@@ -37,6 +37,16 @@
     },
     {
       "name": "ask/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "budget.rs",
+      "role": "the machine budget: whether a launch fits the machine and its project, in units a task size costs (`[spawn] budget` in the zaf home)",
+      "node": false
+    },
+    {
+      "name": "budget/",
       "role": "tests.rs",
       "node": false
     },
@@ -86,6 +96,16 @@
       "node": false
     },
     {
+      "name": "memory.rs",
+      "role": "memory as the budget counts it: mebibytes read from the machine, and the units the budget is written in",
+      "node": false
+    },
+    {
+      "name": "memory/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
       "name": "profile.rs",
       "role": "context profiles: lean, build, design, review",
       "node": false
@@ -113,6 +133,11 @@
     {
       "name": "schedule/",
       "role": "facts, phase, outcome, place, lane, wait and label, each with a tests.rs; tests.rs holds the parity table against today's rule table and the eight failures of 2026-11-12",
+      "node": false
+    },
+    {
+      "name": "slot.rs",
+      "role": "the record a slotted gate run keeps while it holds the machine's build slot",
       "node": false
     },
     {
