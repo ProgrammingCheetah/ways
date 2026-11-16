@@ -887,7 +887,9 @@ fn drop_refuses_present() {
         .expect("a reason")
         .to_owned();
     assert!(refused.contains("present"), "{refused}");
-    assert!(hub.folders().contains(&here), "it stays");
+    // The list holds the folder as the machine resolves it (`/private/var` for `/var` on macOS).
+    let listed = here.canonicalize().expect("the folder resolves");
+    assert!(hub.folders().contains(&listed), "it stays");
     assert!(here.is_dir(), "its folder is untouched");
 
     // A folder not on the list is not found, and a body that is not a project is a bad request.

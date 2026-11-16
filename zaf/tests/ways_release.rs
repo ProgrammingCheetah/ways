@@ -570,7 +570,15 @@ fn release_refuses_a_tag_or_a_main_that_is_somewhere_else() {
     run(
         temp,
         "git",
-        &["clone", "-q", &mirror.to_string_lossy(), "other"],
+        // The branch is named: a bare remote's HEAD follows the machine's `init.defaultBranch`.
+        &[
+            "clone",
+            "-q",
+            "-b",
+            "main",
+            &mirror.to_string_lossy(),
+            "other",
+        ],
     );
     let other = temp.join("other");
     write(&other, "mirror.txt", "mirror only\n");
