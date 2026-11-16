@@ -465,8 +465,25 @@ fn a_killed_phase_records_its_signal() {
     let run = start(&project);
     await_file(&project.root.join("started"));
     // The `pid` file holds the action's process, the one the launcher waits on.
-    let holder = fs::read_to_string(run.join("pid")).expect("pid");
-    let pid = holder.split_whitespace().next().expect("pid").to_owned();
+    // It first holds the launcher's own, until the launcher has read its child's start: the action
+    // may say it started before that, so wait for the process that runs `zaf do`.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let pid = loop {
+        let holder = fs::read_to_string(run.join("pid")).expect("pid");
+        let pid = holder.split_whitespace().next().expect("pid").to_owned();
+        let command = std::process::Command::new("ps")
+            .args(["-o", "command=", "-p", &pid])
+            .output()
+            .expect("ps");
+        if String::from_utf8_lossy(&command.stdout).contains(" do implement") {
+            break pid;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the pid file never named the action"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
 
     let status = std::process::Command::new("kill")
         .args(["-TERM", &pid])
