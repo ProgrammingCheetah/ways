@@ -1,0 +1,53 @@
+{
+  "path": "zaf/memory",
+  "charted": "2026-11-16",
+  "short": "zaf's design knowledge, a Basic Memory project",
+  "is": "zaf's store of design knowledge as plain Markdown notes kept with the repo: where zaf is going, what the Engineer ruled, and what is still open.",
+  "type": "document",
+  "tags": [
+    "category:docs",
+    "category:design",
+    "basic-memory"
+  ],
+  "conventions": [
+    "Each note opens with Basic Memory front matter (title, type, tags, permalink `zaf/...`) and links others as [[Title]]",
+    "Notes hold durable knowledge only, never working papers or run status",
+    "What is decided or learned is written here in the same change: update the note it belongs to, or add one and link it from zaf-overview.md",
+    "A note goes in domain/ (what zaf is), decisions/ (what was ruled) or roadmap/ (what is open)"
+  ],
+  "entry_points": [
+    "zaf-overview.md"
+  ],
+  "fs": [
+    {
+      "name": "README.md",
+      "role": "the one-time setup on a fresh clone: install basic-memory, register this folder as the project `zaf`",
+      "node": false
+    },
+    {
+      "name": "decisions/",
+      "role": "scheduler-rulings.md: the Engineer's scheduler rulings of 2026-11-12",
+      "node": false
+    },
+    {
+      "name": "domain/",
+      "role": "principle.md (the design rules), vocabulary.md (the scheduler direction's words, one meaning each) and scheduler.md (the scheduler)",
+      "node": false
+    },
+    {
+      "name": "roadmap/",
+      "role": "open-decisions.md: what the scheduler direction left unruled as of 2026-11-13",
+      "node": false
+    },
+    {
+      "name": "zaf-overview.md",
+      "role": "start here: what zaf is, with links to every other note",
+      "node": false
+    }
+  ],
+  "notes": [
+    "The repo's .mcp.json starts a Basic Memory server limited to the project `zaf`; the search index lives outside the repo in ~/.basic-memory/ and is rebuilt from these files",
+    "zaf/CLAUDE.md says to read zaf-overview.md before design work",
+    "What is built is in docs/zaf-actions.md; the Engineer's own document is zaf/zuri.domain.md"
+  ]
+}

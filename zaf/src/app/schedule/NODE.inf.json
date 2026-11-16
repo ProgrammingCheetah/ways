@@ -1,0 +1,99 @@
+{
+  "path": "zaf/src/app/schedule",
+  "charted": "2026-11-16",
+  "short": "the scheduler's edge around the pure core",
+  "is": "What stands between the pure scheduling core (domain/schedule) and the world: the ports read into each ticket's facts, the phase run folders, the tick's phase steps over the core's placement, the trace of every tick, and the scheduler that stays up (`zaf spawn --watch`).",
+  "type": "code",
+  "tags": [
+    "category:source",
+    "scheduler"
+  ],
+  "conventions": [
+    "The core decides and this module reads and writes: where a ticket sits always comes from domain::schedule::place",
+    "record.rs is the one reader and writer of a phase run folder under .zaf/phases/",
+    "State labels are output only, set from each ticket's place and never read back as state",
+    "Every module has its tests in <module>/tests.rs"
+  ],
+  "entry_points": [
+    "../schedule.rs",
+    "tick.rs",
+    "scheduler.rs"
+  ],
+  "fs": [
+    {
+      "name": "ask.rs",
+      "role": "tick step 5: every question the scheduler raises (getting nowhere, a failed wait with no on-fail, an overdue check wait, a dead dependency, a cycle, an unchallenged epic), each ending with a marker read back from the board so no cause has two open questions; raised under spawn.lock once the open questions are read again under it",
+      "node": false
+    },
+    {
+      "name": "binary.rs",
+      "role": "the running image's identity against the start path, settled over two looks, `--version` with a deadline, exec with the same arguments",
+      "node": false
+    },
+    {
+      "name": "gather.rs",
+      "role": "open tickets with a phase list into TicketFacts and what the tick reads beside them (priority label, ready_since), adjacent model actions folded, an unreadable ticket named and skipped; gather_one for `zaf spawn phase`, gather_for for the dry run, status and the hub",
+      "node": false
+    },
+    {
+      "name": "labels.rs",
+      "role": "tick step 2's label sync: question, blocked and stale-to-ready set from the place, never over a claim or done, written only when it differs; a failed write is named and the rest goes on",
+      "node": false
+    },
+    {
+      "name": "lock.rs",
+      "role": "`.zaf/scheduler.lock` held with flock for life, its one line naming the holder; running() for readers, which never lock",
+      "node": false
+    },
+    {
+      "name": "record.rs",
+      "role": "the run folder: task, action, head, size, instance, pid or the inline mark of the tick that runs it, output, questions, head-end, exit last",
+      "node": false
+    },
+    {
+      "name": "request.rs",
+      "role": "`.zaf/tick.request`: ask() appends a line only while a scheduler runs; Requests reads each complete line once on a size-and-mtime mark and empties the file past 16 KiB",
+      "node": false
+    },
+    {
+      "name": "scheduler.rs",
+      "role": "the loop, pure behind a Host: one tick at a time for who asked, the timer, restart only between ticks with no request waiting, stop on a signal; Memory keeps the placement as a cache",
+      "node": false
+    },
+    {
+      "name": "shadow.rs",
+      "role": "the dry run's `placement` as JSON, a lane ticket with its weight; decides nothing",
+      "node": false
+    },
+    {
+      "name": "tick.rs",
+      "role": "may_start, the one gate the tick and `zaf spawn phase` both pass; the held lines; tick steps 3 to 6 over the lane, slots from the live model runs; the placement handed back for the scheduler's cache",
+      "node": false
+    },
+    {
+      "name": "tick/",
+      "role": "support.rs (the steps' test helpers) and tests.rs",
+      "node": false
+    },
+    {
+      "name": "ticks.rs",
+      "role": "`.zaf/ticks.jsonl` under `.zaf/ticks.lock`: append, cut, read, the last tick's time from the file's end",
+      "node": false
+    },
+    {
+      "name": "trace.rs",
+      "role": "the tick's trace line, pure: short places, the moves against the last line, the count line with the open epics' done tasks, the 14-day cut",
+      "node": false
+    },
+    {
+      "name": "trace/",
+      "role": "listing.rs (what `zaf spawn trace` prints) and tests",
+      "node": false
+    }
+  ],
+  "notes": [
+    "The process that hosts the loop (the lock, signals, the exec of a new binary) is cli/scheduler.rs; the hub runs the same loop through app/spawn/watch.rs",
+    "The rulings behind it are in zaf/memory/decisions/scheduler-rulings.md (R5 labels as output, R24 the trace)",
+    "ask/, binary/, gather/, labels/, lock/, record/, request/, scheduler/, shadow/ and ticks/ hold only tests.rs"
+  ]
+}

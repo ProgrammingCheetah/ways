@@ -102,3 +102,37 @@ fn the_home_is_made_when_missing() {
     let nested = home.path().join("zaf");
     assert!(HubLock::take(&nested, &holder(10), 8080, &|_| true).is_ok());
 }
+
+#[test]
+fn starts_at_once_leave_one_hub() {
+    let home = tempfile::tempdir().unwrap();
+    // A dead hub's lock is there for every start to find stale.
+    HubLock::take(home.path(), &holder(1), 8080, &|_| true).unwrap();
+    let taken: Vec<bool> = std::thread::scope(|scope| {
+        let starts: Vec<_> = (10..26_u32)
+            .map(|pid| {
+                let home = home.path();
+                scope.spawn(move || {
+                    HubLock::take(home, &holder(pid), 9000, &|holder| holder.pid != 1).is_ok()
+                })
+            })
+            .collect();
+        starts
+            .into_iter()
+            .map(|start| start.join().unwrap())
+            .collect()
+    });
+    assert_eq!(taken.iter().filter(|took| **took).count(), 1, "{taken:?}");
+}
+
+#[test]
+fn a_start_leaves_no_temporary_file() {
+    let home = tempfile::tempdir().unwrap();
+    HubLock::take(home.path(), &holder(10), 8080, &|_| true).unwrap();
+    let mut names: Vec<String> = std::fs::read_dir(home.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, [LOCK_FILE, GUARD_FILE]);
+}

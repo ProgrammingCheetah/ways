@@ -1,0 +1,126 @@
+{
+  "path": "zaf/src/app/hub",
+  "charted": "2026-11-16",
+  "short": "`zaf hub`: the live view and its control page",
+  "is": "The hub: what reads a project, or every project on the zaf home's list, into one state, draws it as a terminal frame or serves it as a page on the LAN, and admits the keyed controls that page may run.",
+  "type": "code",
+  "tags": [
+    "category:source",
+    "category:ui",
+    "hub"
+  ],
+  "conventions": [
+    "Reading changes nothing and costs no model turns; only a `POST /api/<control>` the guard admitted changes state",
+    "The control key lives in the hub's memory only: never in a file, a log, the page's source or a Debug print",
+    "State is derived on every read (slots, live claims, Next for you); nothing is stored between frames",
+    "The server is the standard library's TcpListener with a thread a connection, so the hub adds no dependency"
+  ],
+  "entry_points": [
+    "../hub.rs",
+    "dashboard.rs",
+    "state.rs"
+  ],
+  "fs": [
+    {
+      "name": "controls.rs",
+      "role": "Controls: what the caller hands the server, the zaf home and what runs each control; a control with nothing behind it is an unknown route",
+      "node": false
+    },
+    {
+      "name": "controls/",
+      "role": "one route per control",
+      "node": true
+    },
+    {
+      "name": "dashboard.rs",
+      "role": "the HTTP server: `GET /` the page, `/events` a frame per report, `/api/events` the change stream, `/api/state` the machine state as JSON; any other method 405, a POST without the key 403",
+      "node": false
+    },
+    {
+      "name": "dashboard/",
+      "role": "assets.rs (the files of zaf/web/dist embedded at compile time, a fixed table) and tests",
+      "node": false
+    },
+    {
+      "name": "draw.rs",
+      "role": "a Snapshot as a frame of text, pure",
+      "node": false
+    },
+    {
+      "name": "gather.rs",
+      "role": "the board, ledger, slots, phases and last reports into a Snapshot; a task shows where the core places it (shown_state)",
+      "node": false
+    },
+    {
+      "name": "guard.rs",
+      "role": "the Key made at start from the OS's random source and the Guard that checks the X-Zaf-Key header before a control gets any work; Guard::link is the key's one way out",
+      "node": false
+    },
+    {
+      "name": "hook.rs",
+      "role": "what the profiles' PostToolUse hook reports: one general word for a tool call and who made it, the command never kept",
+      "node": false
+    },
+    {
+      "name": "link.rs",
+      "role": "`zaf hub link`: a Unix socket in the zaf home (mode 0600) that hands the control link to the same user, refusing a caller with a live instance above it",
+      "node": false
+    },
+    {
+      "name": "live.rs",
+      "role": "the process table: running launches, free slots, claims of ended instances, read again on every redraw",
+      "node": false
+    },
+    {
+      "name": "lock.rs",
+      "role": "one serving hub a machine: the lock file in the zaf home naming the holder and its port, taken over when the holder is dead",
+      "node": false
+    },
+    {
+      "name": "next.rs",
+      "role": "Next for you: what waits on the Engineer across all projects, most blocking first (unsigned epic, question or door, ready work no scheduler ticks, a phase that got nowhere, a project that cannot run)",
+      "node": false
+    },
+    {
+      "name": "phases.rs",
+      "role": "the phases a model declares and reports with `zaf progress`, one file per task and role under .zaf/hub/plans",
+      "node": false
+    },
+    {
+      "name": "reports.rs",
+      "role": "`.zaf/hub/reports`: one line per report, the last MAX_LINES kept; a write never fails its caller",
+      "node": false
+    },
+    {
+      "name": "service.rs",
+      "role": "the systemd user unit that runs `zaf hub --port <n>`: install and remove behind a Systemctl trait",
+      "node": false
+    },
+    {
+      "name": "state.rs",
+      "role": "ProjectState: one project's epics, queue and running instances as one JSON value; an unreachable board is a reason in plain words, not an error",
+      "node": false
+    },
+    {
+      "name": "state/",
+      "role": "machine.rs (MachineState: every listed project read at once on its own thread under one deadline, headed by the machine line; a missing project kept and marked) and tests",
+      "node": false
+    },
+    {
+      "name": "tests.rs",
+      "role": "the hub's unit tests; tests/liveness.rs is the fixture the liveness tests stand on",
+      "node": false
+    },
+    {
+      "name": "watch.rs",
+      "role": "the terminal wait: redrawn when a report arrives, never on a timer",
+      "node": false
+    }
+  ],
+  "notes": [
+    "Designed in docs/zaf-actions.md §5 and Forgejo epic #1 (the control hub)",
+    "The loops that feed the page and the processes that run a tick or a watch live in cli/hub/; this module never names an adapter",
+    "The page itself is zaf/web, served from its committed build",
+    "guard/, link/, lock/, next/, service/ and watch/ hold only tests.rs"
+  ]
+}

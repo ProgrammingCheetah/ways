@@ -200,7 +200,6 @@ impl Requests {
         if let Some(why) = failed {
             return Err(why);
         }
-        requests.mark = Mark::read(&requests.path);
         Ok((requests, pending))
     }
 
@@ -233,7 +232,6 @@ impl Requests {
             let (rest, failed) = self.empty();
             requests.extend(rest);
             not_emptied = failed;
-            self.mark = Mark::read(&self.path);
         }
         Ok(Looked {
             requests,
@@ -266,7 +264,8 @@ impl Requests {
     /// Under the file's lock, reads what is left after what was read and empties the file; gives
     /// what it read, and why it could not do all of it. What it read is given whatever failed
     /// after, and how far it read is kept, so a file that could not be emptied is read on from
-    /// there. No file is nothing to empty.
+    /// there. No file is nothing to empty. The mark of the emptied file is taken before the lock
+    /// is let go, so no request can land between the two and be passed over.
     fn empty(&mut self) -> (Vec<Request>, Option<String>) {
         let mut file = match OpenOptions::new().read(true).write(true).open(&self.path) {
             Ok(file) => file,
@@ -287,6 +286,15 @@ impl Requests {
             return (requests, Some(self.not_emptied(&why)));
         }
         self.read = 0;
+        // Still under the lock: a request appended once it is let go moves the file past this
+        // mark, so the next look reads it. No mark when it cannot be read: the next look reads.
+        self.mark = file.metadata().map_or_else(
+            |_| Mark::default(),
+            |meta| Mark {
+                len: meta.len(),
+                modified: meta.modified().ok(),
+            },
+        );
         (requests, None)
     }
 

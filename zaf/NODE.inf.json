@@ -48,8 +48,8 @@
     },
     {
       "name": "memory/",
-      "role": "zaf's design knowledge as a Basic Memory project (plain Markdown): zaf-overview.md links the principle, vocabulary and scheduler (domain/), the scheduler rulings (decisions/) and the open decisions (roadmap/); README.md is the one-time setup on a fresh clone",
-      "node": false
+      "role": "zaf's design knowledge as a Basic Memory project of plain Markdown notes",
+      "node": true
     },
     {
       "name": "src/",
@@ -63,8 +63,8 @@
     },
     {
       "name": "web/",
-      "role": "the hub's page: a Svelte and Vite project whose committed build, dist/, is embedded in the binary (README.md says how to rebuild)",
-      "node": false
+      "role": "the hub's page: a Svelte and Vite project whose committed build, dist/, is embedded in the binary",
+      "node": true
     },
     {
       "name": "zuri.domain.md",

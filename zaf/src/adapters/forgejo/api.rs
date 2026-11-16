@@ -364,6 +364,9 @@ impl ForgejoApi {
         );
         let mut command = Command::new(PROGRAM);
         command.args([
+            // First, as curl requires: the user's curlrc is not read, so nothing in it (a
+            // `trace`, a `proxy`) sees the token's header.
+            "--disable",
             "--silent",
             "--show-error",
             "--globoff",

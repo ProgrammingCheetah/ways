@@ -367,7 +367,8 @@ pub fn orphaned<'a>(
 }
 
 /// Plans one tick and reserves its launches, each held by `holder`, the process that will
-/// run them, until its runner starts the instance.
+/// run them, until its runner starts the instance. When a reservation or the counter cannot be
+/// written, the reservations already made are taken back and the error is the tick's.
 ///
 /// Before planning, the run folders and the process table are read: a launch that ended
 /// with nobody to record it gets `lost` on its epic and in its run folder, and every task
@@ -397,13 +398,24 @@ pub fn prepare(
     let mut plan = tick::plan(&snapshot, &state, level, Settings::from(manifest));
     plan.phases_running = phases_running(state_dir, alive)?;
     let now = humantime::format_rfc3339_seconds(SystemTime::now()).to_string();
-    for planned in &plan.launches {
-        runs::reserve(state_dir, planned, holder, &now)?;
-        state.next_instance = state
-            .next_instance
-            .max(planned.instance.number.get().saturating_add(1));
+    // A tick that fails here launches nothing, so what it reserved must not go on holding a slot
+    // for as long as `holder` lives.
+    let mut reserved = Vec::new();
+    let mut reserve = || -> Result<(), SpawnError> {
+        for planned in &plan.launches {
+            reserved.push(runs::reserve(state_dir, planned, holder, &now)?);
+            state.next_instance = state
+                .next_instance
+                .max(planned.instance.number.get().saturating_add(1));
+        }
+        save(state_dir, &state)
+    };
+    if let Err(error) = reserve() {
+        for dir in &reserved {
+            runs::unreserve(dir);
+        }
+        return Err(error);
     }
-    save(state_dir, &state)?;
     Ok(Prepared {
         plan,
         lost,

@@ -413,6 +413,31 @@ fn a_wrong_key_changes_nothing() {
 }
 
 #[test]
+fn a_refusal_is_not_lost_to_a_body_left_unread() {
+    let hub = hub(Ticked::Ran(Vec::new()));
+    // A head that nearly fills the hub's first read and a body that runs past it, sent as one: the
+    // hub refuses with part of the body still unread. Closing then would reset the connection,
+    // and the read below would fail.
+    let body = "x".repeat(2000);
+    let request = format!(
+        "POST /api/tick HTTP/1.1\r\nHost: zaf\r\n{KEY_HEADER}: wrong\r\nX-Padding: {}\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "p".repeat(800),
+        body.len()
+    );
+    let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, hub.port)).expect("connects");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .expect("timeout");
+    stream.write_all(request.as_bytes()).expect("writes");
+    let mut answer = String::new();
+    stream.read_to_string(&mut answer).expect("reads");
+
+    assert!(answer.starts_with("HTTP/1.1 403 Forbidden"), "{answer}");
+    assert!(hub.ticker.asked().is_empty());
+}
+
+#[test]
 fn tick_needs_version_first() {
     let hub = hub(Ticked::Ran(Vec::new()));
 

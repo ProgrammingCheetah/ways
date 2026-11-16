@@ -60,15 +60,30 @@ fi
 jj_run bookmark set "$slice" -r @- || exit 2
 head=$(jj_run log --no-graph -r @- -T 'commit_id') || exit 2
 
-# Already on the remote at this commit: nothing new.
-published=$(jj_run log --no-graph -r "$bookmark & remote_bookmarks(exact:\"$slice\")" -T 'commit_id ++ "\n"') || exit 2
+# The remote a plain push goes to, as jj picks it: the `git.push` setting, else the only remote,
+# else origin. The bookmark on any other remote says nothing about this one.
+if ! remote=$(jj_run config get git.push 2>/dev/null) || [ -z "$remote" ]; then
+    remotes=$(jj_run git remote list) || exit 2
+    remote=$(printf '%s\n' "$remotes" | awk 'NF { count++; name = $1 } END { if (count == 1) print name; else print "origin" }')
+fi
+
+# Already on that remote at this commit: nothing new.
+published=$(jj_run log --no-graph -r "$bookmark & remote_bookmarks(exact:\"$slice\", exact:\"$remote\")" -T 'commit_id ++ "\n"') || exit 2
 if [ -n "$published" ]; then
     echo "$head"
     exit 0
 fi
 
+# jj makes a bookmark on a remote unasked only while it tracks the bookmark on no remote; one
+# tracked elsewhere is tracked here first. Only where the remote has none: tracking one that is
+# there would take its work in.
+there=$(jj_run log --no-graph -r "remote_bookmarks(exact:\"$slice\", exact:\"$remote\")" -T 'commit_id ++ "\n"') || exit 2
+if [ -z "$there" ]; then
+    jj_run bookmark track "$slice@$remote" >&2 || exit 2
+fi
+
 # A plain push, never forced: a remote whose bookmark moved past what jj last saw refuses it.
-if ! pushed=$(jj_run git push --bookmark "exact:$slice" 2>&1); then
+if ! pushed=$(jj_run git push --remote "$remote" --bookmark "exact:$slice" 2>&1); then
     printf '%s\n' "$pushed" >&2
     case $pushed in
         *"unexpectedly moved on the remote"*)

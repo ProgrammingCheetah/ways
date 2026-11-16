@@ -1,0 +1,72 @@
+{
+  "path": "zaf/web",
+  "charted": "2026-11-16",
+  "short": "the hub's page, a Svelte and Vite project",
+  "is": "The Svelte application `zaf hub --port <n>` serves at `/`, built by Vite into a committed dist/ that the zaf binary embeds at compile time.",
+  "type": "code",
+  "tags": [
+    "category:ui",
+    "category:source",
+    "lang:javascript",
+    "svelte",
+    "hub"
+  ],
+  "conventions": [
+    "Commit dist/ in the same change as the source it was built from; commit package-lock.json when a dependency changes",
+    "Built files have fixed names (assets/app.js, assets/app.css, set in vite.config.js); a build that makes another file fails cargo's `every_built_file_is_served` until assets.rs lists it",
+    "The page loads nothing from outside the hub's server",
+    "`npm ci`, `npm run build`, `npm test` (Vitest on jsdom) from zaf/web; cargo never needs Node"
+  ],
+  "entry_points": [
+    "README.md",
+    "index.html",
+    "src/main.js"
+  ],
+  "fs": [
+    {
+      "name": ".gitignore",
+      "role": "ignores node_modules",
+      "node": false
+    },
+    {
+      "name": "README.md",
+      "role": "rebuild, develop and layout",
+      "node": false
+    },
+    {
+      "name": "dist/",
+      "role": "the committed build (index.html, assets/app.js, assets/app.css), embedded by zaf/src/app/hub/dashboard/assets.rs; never edited by hand",
+      "node": false
+    },
+    {
+      "name": "index.html",
+      "role": "the page's shell that Vite builds from",
+      "node": false
+    },
+    {
+      "name": "package-lock.json",
+      "role": "pinned dependencies",
+      "node": false
+    },
+    {
+      "name": "package.json",
+      "role": "zaf-hub-page, private: dev, build and test scripts; Svelte 5, Vite 6, Vitest 3, Testing Library, jsdom",
+      "node": false
+    },
+    {
+      "name": "src/",
+      "role": "components, the hub's API client and their tests",
+      "node": true
+    },
+    {
+      "name": "vite.config.js",
+      "role": "fixed output names, the dev proxy of /api to a hub on port 7777, the Vitest setup",
+      "node": false
+    }
+  ],
+  "notes": [
+    "`npm run dev` needs a running `zaf hub --port 7777` in a project",
+    "The JSON it reads and the controls it posts to are served by zaf/src/app/hub/ (dashboard.rs, controls/)",
+    "No term of the type vocabulary is nearer than code for a web front end"
+  ]
+}

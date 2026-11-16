@@ -1,0 +1,105 @@
+{
+  "path": "zaf/web/src",
+  "charted": "2026-11-16",
+  "short": "the page's components, API client and tests",
+  "is": "The page's source: a layout shell, one component per view, the client of the hub's JSON interface, the control key and its POSTs, and Vitest tests against a fixture hub.",
+  "type": "code",
+  "tags": [
+    "category:ui",
+    "category:source",
+    "category:tests",
+    "svelte"
+  ],
+  "conventions": [
+    "The control key is read once from the link's fragment (`#key=`), kept in memory for the tab only (never local storage, a cookie or the DOM), stripped from the address and sent only in the X-Zaf-Key header",
+    "With `controls: false` in the state, or no key, no button shows",
+    "Tests are `*.test.js` beside what they test"
+  ],
+  "entry_points": [
+    "main.js",
+    "App.svelte"
+  ],
+  "fs": [
+    {
+      "name": "Action.svelte",
+      "role": "one control button that shows what happened, or the hub's reason for a refusal",
+      "node": false
+    },
+    {
+      "name": "AnswerControl.svelte",
+      "role": "a question to rule on: accept what it proposes, or edit the answer and send that",
+      "node": false
+    },
+    {
+      "name": "App.svelte",
+      "role": "the layout shell: the machine line in the header, then Next for you and one section a project; reads the state again on each change",
+      "node": false
+    },
+    {
+      "name": "App.test.js",
+      "role": "the shell against a fixture hub's GET /api/state",
+      "node": false
+    },
+    {
+      "name": "Controls.test.js",
+      "role": "the key and the control buttons",
+      "node": false
+    },
+    {
+      "name": "MachineLine.svelte",
+      "role": "the machine line",
+      "node": false
+    },
+    {
+      "name": "NextForYou.svelte",
+      "role": "the Next for you list, with a copy button for each command",
+      "node": false
+    },
+    {
+      "name": "NextForYou.test.js",
+      "role": "one item of every kind, as GET /api/state lists them",
+      "node": false
+    },
+    {
+      "name": "ProjectSection.svelte",
+      "role": "one project: its epics, queue and instances, with its controls when the hub serves them and the page holds the key",
+      "node": false
+    },
+    {
+      "name": "ProjectSections.svelte",
+      "role": "a ProjectSection for each project",
+      "node": false
+    },
+    {
+      "name": "ProjectSections.test.js",
+      "role": "the project sections",
+      "node": false
+    },
+    {
+      "name": "Stream.test.js",
+      "role": "the change stream, on a stand-in for the browser's EventSource",
+      "node": false
+    },
+    {
+      "name": "api.js",
+      "role": "GET /api/state (`{ machine, next, projects }`), watchChanges (holds GET /api/events open, opens a dropped stream again after a second) and the machine line's words",
+      "node": false
+    },
+    {
+      "name": "app.css",
+      "role": "light and dark from the system's theme; one column that works at phone width",
+      "node": false
+    },
+    {
+      "name": "controls.js",
+      "role": "the control key and `POST /api/<control>`; remembers the projects this tab gave a version for",
+      "node": false
+    },
+    {
+      "name": "main.js",
+      "role": "mounts App",
+      "node": false
+    }
+  ],
+  "notes": []
+}

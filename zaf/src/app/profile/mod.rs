@@ -919,10 +919,32 @@ const DO_FORMS: [&str; 4] = ["zaf do", "zaf -* do", "zaf do -*", "zaf -* do -*"]
 /// Each tool's escape hatches: subcommands of a tool the profile allows with `Bash(<tool> *)`
 /// that run any program or rewrite the tool's own config. Denied whenever the tool is allowed,
 /// from `[requires]` or from a gate line; a tool the profile does not allow adds none.
-const HATCHES: [(&str, &[&str]); 3] = [
+///
+/// npm's are the subcommands that take a program or a package to run on the line (`exec` and its
+/// alias `x`, `explore`, and `init` with its aliases, which runs `create-<name>`) and the ones
+/// that write its config (`config` and its alias `c`, and `set`), where `script-shell` names the
+/// program every script runs in. `npm run <script>`, `npm test`, `npm ci` and `npm install`
+/// stay: they run what `package.json` and the lockfile name, which a frontend task needs.
+const HATCHES: [(&str, &[&str]); 4] = [
     ("jj", &["util", "config set", "config edit"]),
     ("gh", &["alias", "extension"]),
     ("yarn", &["exec", "node", "dlx"]),
+    (
+        "npm",
+        &[
+            "exec",
+            "x",
+            "explore",
+            "init",
+            "create",
+            "innit",
+            "config set",
+            "config edit",
+            "c set",
+            "c edit",
+            "set",
+        ],
+    ),
 ];
 
 /// The tools whose config flag can define an alias, so the flag is denied anywhere on the line.

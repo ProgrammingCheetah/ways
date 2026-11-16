@@ -37,3 +37,18 @@ fn a_path_with_a_space_is_quoted_and_the_zaf_home_is_passed_on() {
         "{text}"
     );
 }
+
+#[test]
+fn the_working_directory_is_never_quoted() {
+    let unit = Unit {
+        exe: PathBuf::from("/opt/zaf/zaf"),
+        port: 7777,
+        project: PathBuf::from("/work/my $project/a%b"),
+        zaf_home: None,
+    };
+    let text = unit.render();
+    assert!(
+        text.contains("WorkingDirectory=/work/my $project/a%%b\n"),
+        "{text}"
+    );
+}

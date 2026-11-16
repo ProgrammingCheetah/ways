@@ -570,6 +570,31 @@ fn the_snapshot_reads_a_cycle_through_open_tasks_that_are_not_ready() {
 }
 
 #[test]
+fn a_tick_that_fails_to_reserve_takes_back_what_it_reserved() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let runs_dir = state_dir.join(RUNS_DIR);
+    std::fs::create_dir_all(&runs_dir).expect("the runs folder");
+    // A file where the second launch's run folder belongs: its reservation fails.
+    let blocked = runs_dir.join("planning-instance-2-on-12");
+    std::fs::write(&blocked, "").expect("a file in the way");
+
+    let failed = prepare(&board(), &state_dir, &manifest(), &|_| true, &tick());
+
+    assert!(
+        matches!(&failed, Err(SpawnError::Write { path, .. }) if path == &blocked),
+        "{failed:?}"
+    );
+    assert!(
+        !runs_dir.join("planning-instance-1-on-2").exists(),
+        "the first reservation is taken back"
+    );
+    let (state, found) = derive(&state_dir, &|_| true).expect("derives");
+    assert_eq!(state.running(), 0, "no slot is held");
+    assert!(found.iter().all(|run| !run.lost(&|_| false)));
+}
+
+#[test]
 fn a_second_tick_sees_the_reserved_slots_taken() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state_dir = dir.path().join(".zaf");

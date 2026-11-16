@@ -1,13 +1,19 @@
 #!/bin/sh
-# zaf description: release a finished version: check zaf/Cargo.toml is at it, squash-merge the integration branch's pull request into main at the head it listed, sync main, and tag zaf-v<version>
-# zaf 1: refused, nothing changed by this action: the argument is not <version>, zaf/Cargo.toml is not at it, or ZAF_BASE is unset or has no open pull request; or a step it ran refused (the merge, the sync or the tag)
-# zaf 2: a backend failed (gh refused, or a step it ran failed)
+# zaf description: release a finished version: with the integration branch's checks green on the forge, make main one squash commit (the branch's files, on the main before it, the message from a file), tag it zaf-v<version>, and push main and the tag to origin, then to the github mirror; the working copy never moves; one already released is pushed where it is missing; hands back the release commit
+# zaf 1: refused, nothing changed: the arguments are not <version> <message-file>, the message cannot be read or is empty, ZAF_BASE is unset, a remote is missing, the branch or main is not on origin, zaf/Cargo.toml on the branch is not at the version, the branch does not carry main, the local main or the mirror's main is not where origin's is or behind it, the tag is on another commit, or the branch's pull request has checks that are not green (none yet, running, failed, or for another head)
+# zaf 2: a backend failed (jj or git is missing or refused, the forge is unreachable, or the push to origin failed: origin then lacks the tag, and main with it unless the tag's push was the one that failed); run it again
+# zaf 3: origin has the release and the mirror does not: the push to the mirror failed; run it again
 # zaf mode: 750
 # zaf group: release
 version=$1
+message_file=$2
 
-if [ -z "$ZAF_ROOT" ] || [ "$#" -ne 1 ]; then
-    echo "usage: release <version>, with ZAF_ROOT set" >&2
+# The remote the forge reads, and the mirror that gets main and the tags after it.
+remote=origin
+mirror=github
+
+if [ -z "$ZAF_ROOT" ] || [ "$#" -ne 2 ]; then
+    echo "usage: release <version> <message-file>, with ZAF_ROOT set" >&2
     exit 1
 fi
 
@@ -18,83 +24,253 @@ case $version in
         exit 1
         ;;
 esac
+tag=zaf-v$version
 
-# The crate's version: the first `version` key of the manifest's [package] table.
-crate=$(awk '
-    /^[ \t]*\[/ { in_package = ($0 ~ /^[ \t]*\[package\][ \t]*(#.*)?$/); next }
-    in_package && /^[ \t]*version[ \t]*=/ {
-        line = $0
-        sub(/^[^=]*=[ \t]*"/, "", line)
-        sub(/".*$/, "", line)
-        print line
-        exit
-    }
-' "$ZAF_ROOT/zaf/Cargo.toml" 2>/dev/null)
-if [ "$crate" != "$version" ]; then
-    echo "zaf/Cargo.toml is at ${crate:-no version}, not $version" >&2
+# A relative message file is the caller's: zaf runs the action in the caller's directory.
+case $message_file in
+    /*) ;;
+    *) message_file=$(pwd)/$message_file ;;
+esac
+if [ ! -r "$message_file" ] || [ -d "$message_file" ]; then
+    echo "cannot read the message file $message_file" >&2
+    exit 1
+fi
+# The pull request's title, were one to be opened: the message's first line with anything on it.
+title=$(awk 'NF { print; exit }' "$message_file")
+if [ -z "$title" ]; then
+    echo "the message file $message_file is empty" >&2
     exit 1
 fi
 
-if [ -z "$ZAF_BASE" ]; then
+branch=$ZAF_BASE
+if [ -z "$branch" ]; then
     echo "ZAF_BASE is unset: there is no integration branch to release" >&2
     exit 1
 fi
+case $branch in
+    -* | *\"* | *\\* | main)
+        echo "$branch is not a usable integration branch" >&2
+        exit 1
+        ;;
+esac
 
-# The forge repository the manifest names, the first manifest that names one, in the order zaf
-# reads them. With none, gh works the repository out from the root's remotes, as it does by hand.
-forge_repo() {
-    for manifest in "$ZAF_ROOT/.zaf.toml" "$ZAF_ROOT/.zaf/config.toml" "$ZAF_ROOT/ZAF.toml"; do
-        [ -f "$manifest" ] || continue
-        found=$(awk '
-            /^[ \t]*\[/ { in_forge = ($0 ~ /^[ \t]*\[forge\][ \t]*(#.*)?$/); next }
-            in_forge && /^[ \t]*repo[ \t]*=/ {
-                line = $0
-                sub(/^[^=]*=[ \t]*"/, "", line)
-                sub(/".*$/, "", line)
-                print line
-                exit
-            }
-        ' "$manifest")
-        if [ -n "$found" ]; then
-            echo "$found"
-            return
-        fi
-    done
+# The root's own working copy is someone else's checkout: no command here snapshots or moves it.
+jj_run() {
+    jj --no-pager --color=never --ignore-working-copy -R "$ZAF_ROOT" "$@"
 }
 
-# gh runs at the project root, the repository itself, as the other pull request actions do.
+# The commit ids of a revset, one a line. A jj that fails is its failure: each caller ends the run
+# on it (`|| exit 2`, since an exit in here would end only the `$(...)`).
+commits_of() {
+    jj_run log --no-graph -r "$1" -T 'commit_id ++ "\n"'
+}
+
+# zaf reads the forge from the manifest at the project root.
 cd "$ZAF_ROOT" || exit 2
 
-repo=$(forge_repo)
-if [ -n "$repo" ]; then
-    set -- --repo "$repo"
-else
-    set --
-fi
+remotes=$(jj_run git remote list) || exit 2
+for name in "$remote" "$mirror"; do
+    if ! printf '%s\n' "$remotes" | awk -v name="$name" '$1 == name { found = 1 } END { exit !found }'; then
+        echo "the repository has no remote named $name" >&2
+        exit 1
+    fi
+done
+store=$(jj_run git root) || exit 2
 
-# Only the integration branch's pull request into main is released: `--base main` leaves out any
-# other pull request from the branch. The list names each one's head commit, which the merge pins.
-open=$(gh pr list --head "$ZAF_BASE" --base main --state open --json number,headRefOid --jq '.[] | "\(.number) \(.headRefOid)"' "$@") || exit 2
-pr=$(printf '%s\n' "$open" | awk 'NF { print $1; exit }')
-head=$(printf '%s\n' "$open" | awk 'NF { print $2; exit }')
-if [ -z "$pr" ]; then
-    echo "$ZAF_BASE has no open pull request into main" >&2
+# Both remotes as they stand now, the tag with them: a name on another commit there is seen here.
+jj_run git fetch --remote "$remote" || exit 2
+jj_run git fetch --remote "$mirror" --branch main --tag "exact:$tag" || exit 2
+
+branch_rev="remote_bookmarks(exact:\"$branch\", exact:\"$remote\")"
+branch_head=$(commits_of "$branch_rev") || exit 2
+main_head=$(commits_of "remote_bookmarks(exact:\"main\", exact:\"$remote\")") || exit 2
+if [ -z "$branch_head" ]; then
+    echo "$branch is not on $remote" >&2
     exit 1
 fi
-case $pr in
-    *[!0-9]*)
-        echo "gh listed $pr, not a pull request number" >&2
-        exit 2
-        ;;
-esac
-case $head in
-    "" | *[!0-9a-f]*)
-        echo "gh listed no head commit for pull request #$pr" >&2
-        exit 2
-        ;;
-esac
+if [ -z "$main_head" ]; then
+    echo "main is not on $remote" >&2
+    exit 1
+fi
 
-# Each step stops the release at its first failure, and its code passes through.
-zaf do pr-merge "$pr" --squash --match-head-commit "$head" || exit $?
-zaf do sync main || exit $?
-zaf do tag "zaf-v$version" || exit $?
+# The crate's version on the branch: the first `version` key of the manifest's [package] table.
+if ! manifest=$(jj_run file show -r "$branch_head" zaf/Cargo.toml 2>/dev/null); then
+    manifest=
+fi
+crate=$(printf '%s\n' "$manifest" | awk '
+    /^[ \t]*\[/ { in_package = ($0 ~ /^[ \t]*\[package\][ \t]*(#.*)?$/); next }
+    in_package && /^[ \t]*version[ \t]*=/ {
+        line = $0
+        sub(/^[^=]*=[ \t]*/, "", line)
+        quote = substr(line, 1, 1)
+        if (quote != "\"" && quote != "\047") next
+        line = substr(line, 2)
+        end = index(line, quote)
+        if (end == 0) next
+        print substr(line, 1, end - 1)
+        exit
+    }
+')
+if [ "$crate" != "$version" ]; then
+    echo "zaf/Cargo.toml on $branch is at ${crate:-no version}, not $version" >&2
+    exit 1
+fi
+
+# The mirror only follows: its main is origin's, or one behind it.
+mirror_main=$(commits_of "remote_bookmarks(exact:\"main\", exact:\"$mirror\")") || exit 2
+if [ -n "$mirror_main" ]; then
+    behind=$(commits_of "$mirror_main & ::$main_head") || exit 2
+    if [ -z "$behind" ]; then
+        echo "$mirror's main is at $mirror_main, which $remote's main does not hold; settle the mirror first" >&2
+        exit 1
+    fi
+fi
+
+# The tree a commit holds.
+tree_of() {
+    git --git-dir "$store" rev-parse --verify --quiet "$1^{tree}"
+}
+branch_tree=$(tree_of "$branch_head") || exit 2
+main_tree=$(tree_of "$main_head") || exit 2
+
+# The release commit, when a run before this one made it and stopped: origin's main with the
+# branch's files already, or a local main that is those files on origin's main, never pushed.
+ready=
+local_main=$(commits_of 'bookmarks(exact:"main")') || exit 2
+if [ "$main_tree" = "$branch_tree" ]; then
+    ready=$main_head
+fi
+# Any other local main with work origin lacks, or a conflicted one, is the Engineer's to settle.
+if [ -n "$local_main" ] && [ "$local_main" != "$main_head" ]; then
+    local_parents=$(commits_of "parents(bookmarks(exact:\"main\"))") || exit 2
+    if [ -n "$ready" ] || [ "$local_parents" != "$main_head" ] || [ "$(tree_of "$local_main")" != "$branch_tree" ]; then
+        echo "the local main is not at $remote's $main_head; push or reset it first" >&2
+        exit 1
+    fi
+    ready=$local_main
+fi
+
+# The squash takes the branch's files whole, so whatever main has must be in the branch already:
+# main's commit among the branch's, or (main holding only squash commits) a commit of the branch
+# with main's files exactly, the release the branch started from.
+if [ "$main_tree" != "$branch_tree" ]; then
+    inside=$(commits_of "$main_head & ::$branch_head") || exit 2
+    if [ -z "$inside" ]; then
+        trees=$(git --git-dir "$store" log --format=%T "$branch_head") || exit 2
+        if ! printf '%s\n' "$trees" | grep -qx "$main_tree"; then
+            echo "$branch does not carry main ($main_head): the release would undo what main has; bring main in first (zaf do base-up $branch)" >&2
+            exit 1
+        fi
+    fi
+fi
+
+# A tag on another commit is a refusal, never a move; on the release commit of a run before this
+# one it is that run's.
+tagged=$(commits_of "tags(exact:\"$tag\")") || exit 2
+if [ -n "$tagged" ] && [ "$tagged" != "$ready" ]; then
+    echo "tag $tag is already on another commit ($tagged)" >&2
+    exit 1
+fi
+
+# The branch's pull request into main: the open one is handed back, and one is opened when there is
+# none, whose checks are then not there yet. Its checks count only at the head the squash takes.
+pr=$(zaf forge open -- "$branch" main "$title" "") || exit 2
+case $pr in
+    "" | *[!0-9]*)
+        echo "the forge named $pr, not a pull request number" >&2
+        exit 2
+        ;;
+esac
+pr_head=$(zaf forge head "$pr") || exit 2
+if [ "$pr_head" != "$branch_head" ]; then
+    echo "pull request #$pr is at ${pr_head:-no commit}, not at $branch's $branch_head" >&2
+    exit 1
+fi
+# One line per check: its bucket (pass, fail, pending, skipping or cancel), name and link.
+checks=$(zaf forge checks "$pr") || exit 2
+passed=$(printf '%s\n' "$checks" | awk -F '\t' '$1 == "pass"')
+other=$(printf '%s\n' "$checks" | awk -F '\t' 'NF && $1 != "pass" && $1 != "skipping" { print "not green: " $2 " (" $1 ") " $3 }')
+if [ -n "$other" ]; then
+    printf '%s\n' "$other" >&2
+    echo "the checks of pull request #$pr are not green at $branch_head" >&2
+    exit 1
+fi
+if [ -z "$passed" ]; then
+    echo "pull request #$pr has no passed check at $branch_head" >&2
+    exit 1
+fi
+
+# Every refusal is behind: from here the release is made.
+if [ "$ready" = "$main_head" ]; then
+    # Made and on origin already: only the tag and the pushes are left.
+    target=$ready
+    echo "main is at $target already, with the files of $branch at $branch_head"
+elif [ -n "$ready" ]; then
+    # Made, and not pushed.
+    target=$ready
+    echo "main: $main_head -> $target, the files of $branch at $branch_head, made by an earlier run"
+else
+    # A new commit on main, found again by a description no other commit has; then the branch's
+    # files, then the message. The change id names it through both rewrites.
+    marker="zaf release $version of $branch_head onto $main_head"
+    jj_run new --no-edit "$main_head" -m "$marker" || exit 2
+    if ! change=$(jj_run log --no-graph -r "latest(children($main_head) & description(exact:\"$marker\n\"))" -T 'change_id'); then
+        exit 2
+    fi
+    if [ -z "$change" ]; then
+        echo "the release commit could not be found after it was made" >&2
+        exit 2
+    fi
+    # A step that fails throws the commit away: nothing moved.
+    undo() {
+        jj_run abandon "$change" >&2
+        exit 2
+    }
+    jj_run restore --from "$branch_head" --into "$change" || undo
+    jj_run describe -r "$change" --stdin <"$message_file" || undo
+    target=$(commits_of "$change") || undo
+    # The commit is what the release says it is: the branch's files, on the main before it.
+    target_tree=$(tree_of "$target") || undo
+    parents=$(commits_of "parents($target)") || undo
+    if [ "$target_tree" != "$branch_tree" ] || [ "$parents" != "$main_head" ]; then
+        echo "the release commit $target is not the files of $branch on $main_head" >&2
+        undo
+    fi
+
+    # A main known only on the remote is tracked first, so the push below moves the remote's.
+    if [ -z "$local_main" ]; then
+        jj_run bookmark track "main@$remote" || undo
+    fi
+    jj_run bookmark set main -r "$target" || undo
+    echo "main: $main_head -> $target, the files of $branch at $branch_head"
+fi
+
+if [ -z "$tagged" ]; then
+    jj_run tag set "$tag" -r "$target" || exit 2
+fi
+echo "tag $tag on $target"
+
+# Plain pushes, never forced: main, then the tag (the forge's release workflow starts on it).
+# Origin first; the mirror only once origin has both.
+push_to() {
+    at=$(commits_of "remote_bookmarks(exact:\"main\", exact:\"$1\")") || return 1
+    if [ "$at" != "$target" ]; then
+        # jj pushes a bookmark or a tag only to a remote it tracks it on, a remote that lacks it included.
+        jj_run bookmark track "main@$1" || return 1
+        jj_run git push --remote "$1" --bookmark "exact:main" || return 1
+    fi
+    jj_run tag track "$tag@$1" || return 1
+    jj_run git push --remote "$1" --tag "exact:$tag" || return 1
+    echo "pushed main and $tag to $1"
+}
+if ! push_to "$remote"; then
+    echo "the push to $remote failed; run the release again" >&2
+    exit 2
+fi
+if ! push_to "$mirror"; then
+    echo "$remote has the release, $mirror does not: the push to $mirror failed; run the release again" >&2
+    exit 3
+fi
+
+echo "pull request #$pr stays open: the forge does not see a squash made here as its merge; close it by hand"
+echo "$target"

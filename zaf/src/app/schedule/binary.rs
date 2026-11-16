@@ -30,7 +30,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
 /// How long a new binary gets to answer `--version`.
@@ -216,12 +216,12 @@ pub enum VersionError {
 }
 
 /// Runs `<path> --version` and gives what it printed, its first line (`zaf 0.3.2`), when it exits
-/// 0 within [`VERSION_WAIT`]. A file that cannot be run, a non-zero exit, a signal or no answer in
-/// time is [`VersionError::Refused`], in words; a file still open for writing is
+/// 0 within [`VERSION_WAIT`]. A file that cannot be run, a non-zero exit, a signal, no answer in
+/// time or an output still held open then is [`VersionError::Refused`], in words; a file still open for writing is
 /// [`VersionError::Busy`]. It runs in a process group of its own, so a Ctrl-C meant for the
 /// scheduler does not refuse a binary that is fine.
 pub fn version_of(path: &Path) -> Result<String, VersionError> {
-    let mut child = match Command::new(path)
+    let child = match Command::new(path)
         .arg("--version")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -235,7 +235,22 @@ pub fn version_of(path: &Path) -> Result<String, VersionError> {
         }
         Err(error) => return Err(VersionError::Refused(format!("it cannot be run: {error}"))),
     };
-    let deadline = Instant::now() + VERSION_WAIT;
+    version_within(child, VERSION_WAIT)
+}
+
+/// [`version_of`] for a `child` started with its output piped, given `wait` to answer. Its output
+/// is read on a thread of its own and waited for no longer than the child is: a descendant that
+/// keeps the output open after the child ended never holds the scheduler up.
+fn version_within(mut child: Child, wait: Duration) -> Result<String, VersionError> {
+    let (send, read) = std::sync::mpsc::channel();
+    if let Some(mut stdout) = child.stdout.take() {
+        std::thread::spawn(move || {
+            let mut out = String::new();
+            let _ = std::io::Read::read_to_string(&mut stdout, &mut out);
+            let _ = send.send(out);
+        });
+    }
+    let deadline = Instant::now() + wait;
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
@@ -245,7 +260,7 @@ pub fn version_of(path: &Path) -> Result<String, VersionError> {
                 let _ = child.wait();
                 return Err(VersionError::Refused(format!(
                     "it did not answer --version within {} s",
-                    VERSION_WAIT.as_secs()
+                    wait.as_secs()
                 )));
             }
             Err(error) => {
@@ -255,10 +270,6 @@ pub fn version_of(path: &Path) -> Result<String, VersionError> {
             }
         }
     };
-    let mut out = String::new();
-    if let Some(mut stdout) = child.stdout.take() {
-        let _ = std::io::Read::read_to_string(&mut stdout, &mut out);
-    }
     if !status.success() {
         let how = status
             .code()
@@ -267,6 +278,12 @@ pub fn version_of(path: &Path) -> Result<String, VersionError> {
             "its --version ended with {how}"
         )));
     }
+    let Ok(out) = read.recv_timeout(deadline.saturating_duration_since(Instant::now())) else {
+        return Err(VersionError::Refused(format!(
+            "its --version output did not end within {} s",
+            wait.as_secs()
+        )));
+    };
     let version = out.lines().next().unwrap_or_default().trim().to_owned();
     if version.is_empty() {
         return Err(VersionError::Refused(

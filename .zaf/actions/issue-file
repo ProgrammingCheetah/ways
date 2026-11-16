@@ -49,8 +49,13 @@ board_repo() {
             /^[ \t]*\[/ { in_board = ($0 ~ /^[ \t]*\[board\][ \t]*(#.*)?$/); next }
             in_board && /^[ \t]*repo[ \t]*=/ {
                 line = $0
-                sub(/^[^=]*=[ \t]*"/, "", line)
-                sub(/".*$/, "", line)
+                sub(/^[^=]*=[ \t]*/, "", line)
+                quote = substr(line, 1, 1)
+                if (quote != "\"" && quote != "\047") next
+                line = substr(line, 2)
+                end = index(line, quote)
+                if (end == 0) next
+                line = substr(line, 1, end - 1)
                 print line
                 exit
             }

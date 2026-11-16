@@ -78,8 +78,8 @@ pub struct PeerCredentials {
     pub uid: u32,
 }
 
-/// Who connected on `stream`: `SO_PEERCRED` on Linux. Elsewhere, and when the kernel does not say,
-/// none; a caller that needs to know who asks treats none as a refusal.
+/// Who connected on `stream`: `SO_PEERCRED` on Linux. On a platform that has no such read, and
+/// when the kernel does not say, none; a caller that needs to know who asks treats none as a refusal.
 #[cfg(target_os = "linux")]
 pub fn peer_of(stream: &std::os::unix::net::UnixStream) -> Option<PeerCredentials> {
     use std::os::fd::AsRawFd;
@@ -108,8 +108,42 @@ pub fn peer_of(stream: &std::os::unix::net::UnixStream) -> Option<PeerCredential
     })
 }
 
+/// Who connected on `stream`, on macOS: the user from `getpeereid` (`LOCAL_PEERCRED` underneath)
+/// and the process from `LOCAL_PEERPID`, an option at level `SOL_LOCAL`. None when the kernel does
+/// not say, as on Linux.
+#[cfg(target_os = "macos")]
+pub fn peer_of(stream: &std::os::unix::net::UnixStream) -> Option<PeerCredentials> {
+    use std::os::fd::AsRawFd;
+    let fd = stream.as_raw_fd();
+    let mut uid: libc::uid_t = 0;
+    let mut gid: libc::gid_t = 0;
+    // SAFETY: `uid` and `gid` live for the call, which only writes into them.
+    if unsafe { libc::getpeereid(fd, &raw mut uid, &raw mut gid) } != 0 {
+        return None;
+    }
+    let mut pid: libc::pid_t = 0;
+    let mut size = libc::socklen_t::try_from(std::mem::size_of::<libc::pid_t>()).ok()?;
+    // SAFETY: `pid` and `size` live for the call and `size` is the size of `pid`.
+    let status = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            std::ptr::from_mut(&mut pid).cast(),
+            &raw mut size,
+        )
+    };
+    if status != 0 {
+        return None;
+    }
+    Some(PeerCredentials {
+        pid: u32::try_from(pid).ok().filter(|pid| *pid > 0)?,
+        uid,
+    })
+}
+
 /// Who connected on `stream`; this platform does not say.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn peer_of(_stream: &std::os::unix::net::UnixStream) -> Option<PeerCredentials> {
     None
 }
@@ -447,7 +481,9 @@ fn kept_of_ps_line(line: &[u8]) -> Option<(u32, Kept)> {
     Some((pid, kept))
 }
 
-/// The name of a `NAME=value` word, a name being capitals, digits and `_`, not led by a digit.
+/// The name of a `NAME=value` word, a name being letters of either case, digits and `_`, not led
+/// by a digit: a lowercase name (`api_token=...`) ends the entry before it as a capital one does,
+/// so its value is never taken for the rest of a kept one.
 fn assigned_name(word: &[u8]) -> Option<&str> {
     let split = word.iter().position(|byte| *byte == b'=')?;
     let name = &word[..split];
@@ -455,7 +491,7 @@ fn assigned_name(word: &[u8]) -> Option<&str> {
     let valid = !first.is_ascii_digit()
         && name
             .iter()
-            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || *byte == b'_');
+            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_');
     valid.then(|| std::str::from_utf8(name).ok()).flatten()
 }
 
@@ -962,6 +998,15 @@ mod tests {
             ))
         );
         assert_eq!(kept_of_ps_line(b"   "), None);
+    }
+
+    #[test]
+    fn a_lowercase_variable_ends_the_entry_before_it() {
+        let line =
+            b"4242 claude ZAF_RUN=/p/.zaf/runs/x api_token=secret http_proxy=http://h ZAF_SIZE=S";
+        let (_, kept) = kept_of_ps_line(line).expect("a line");
+        assert_eq!(kept.run.as_deref(), Some("/p/.zaf/runs/x"));
+        assert_eq!(kept.size.as_deref(), Some("S"));
     }
 
     #[test]

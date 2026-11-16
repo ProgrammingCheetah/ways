@@ -66,8 +66,13 @@ pub fn append(state_dir: &Path, entry: &Entry, now: SystemTime) -> Appended {
 /// passed over.
 pub fn read(state_dir: &Path) -> Result<Option<Vec<Recorded>>, String> {
     let path = state_dir.join(TICKS_FILE);
-    match std::fs::read_to_string(&path) {
-        Ok(text) => Ok(Some(text.lines().filter_map(Recorded::parse).collect())),
+    match std::fs::read(&path) {
+        Ok(bytes) => Ok(Some(
+            String::from_utf8_lossy(&bytes)
+                .lines()
+                .filter_map(Recorded::parse)
+                .collect(),
+        )),
         Err(source) if source.kind() == ErrorKind::NotFound => Ok(None),
         Err(source) => Err(format!("cannot read {}: {source}", path.display())),
     }
@@ -117,10 +122,12 @@ fn lock(state_dir: &Path) -> Result<File, String> {
     Ok(file)
 }
 
-/// The trace's text; empty when there is none yet.
+/// The trace's text; empty when there is none yet. Bytes that are no UTF-8 (a line cut in the
+/// middle of a character by a crash) read as the replacement character, so that line alone does
+/// not read back and the rest of the trace does.
 fn read_text(path: &Path) -> Result<String, String> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => Ok(text),
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
         Err(source) if source.kind() == ErrorKind::NotFound => Ok(String::new()),
         Err(source) => Err(format!("cannot read {}: {source}", path.display())),
     }

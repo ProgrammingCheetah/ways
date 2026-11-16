@@ -89,6 +89,35 @@ fn a_binary_that_answers_its_version_gives_the_first_line() {
 }
 
 #[test]
+fn a_descendant_that_keeps_the_output_open_does_not_hold_the_check_up() {
+    // The child answers and ends at once; what it started keeps its output open for a minute.
+    let Ok(child) = Command::new("/bin/sh")
+        .args(["-c", "echo zaf 9.9.9; sleep 60 &"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .process_group(0)
+        .spawn()
+    else {
+        return;
+    };
+    let group = libc::pid_t::try_from(child.id()).expect("a pid");
+    let began = Instant::now();
+
+    let answer = version_within(child, Duration::from_secs(1));
+
+    // SAFETY: `kill` takes plain integers; it ends the `sleep` left in the child's own group.
+    unsafe { libc::kill(-group, libc::SIGKILL) };
+    assert!(began.elapsed() < Duration::from_secs(30), "held up");
+    assert_eq!(
+        answer,
+        Err(VersionError::Refused(
+            "its --version output did not end within 1 s".to_owned()
+        ))
+    );
+}
+
+#[test]
 fn a_binary_that_fails_or_cannot_run_is_refused() {
     if let Some(false_) = ["/bin/false", "/usr/bin/false"]
         .iter()

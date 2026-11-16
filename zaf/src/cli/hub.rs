@@ -7,6 +7,7 @@
 //! A verb that changes state leaves its own report once it has run; a report that cannot be written
 //! never fails or changes the verb.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::io::{IsTerminal, Read, Write};
 use std::path::Path;
@@ -452,8 +453,20 @@ fn show(cli: &Cli, port: Option<u16>, read_only: bool) -> u8 {
         snapshot.apply(&read);
         Ok(())
     };
+    // A served hub draws its first frame from the ledger as it stands and fills it once its URL
+    // is out (`fill`): on a fresh zaf home the fill reads every transcript on the machine. The
+    // terminal frame fills it at its first read, as every later read of either does.
+    let filled = Cell::new(dashboard.is_none());
+    let fill = || {
+        filled.set(true);
+        super::report::ingest_ledger(&composition).is_ok_and(|wrote| wrote > 0)
+    };
     let gatherer = |now: SystemTime| {
-        let ledger = ledger_rows(&composition);
+        let ledger = if filled.get() {
+            ledger_rows(&composition)
+        } else {
+            stored_ledger_rows()
+        };
         // Where the core places each ticket, as the tick gathers them; a gather that fails leaves
         // the labels' word.
         let places: Option<Places> =
@@ -497,6 +510,7 @@ fn show(cli: &Cli, port: Option<u16>, read_only: bool) -> u8 {
             show_link: live,
             // Only a hub that holds the lock answers `zaf hub link`: the socket is the lock's.
             link_home: lock.as_ref().and(home.clone()),
+            fill: Some(&fill),
         };
         // Every listed project, and this one even when the list does not have it yet.
         let mut listed = || {
@@ -579,6 +593,14 @@ fn ledger_rows(composition: &Composition) -> Vec<LedgerRow> {
     zaf_home()
         .and_then(|home| Ledger::open(&home.join(LEDGER_FILE)).ok())
         .and_then(|ledger| ledger.rows().ok())
+        .unwrap_or_default()
+}
+
+/// This machine's ledger as it stands: nothing is ingested and nothing is made, so it reads at
+/// once. A ledger that is not there, or cannot be read, shows no cost.
+fn stored_ledger_rows() -> Vec<LedgerRow> {
+    zaf_home()
+        .and_then(|home| Ledger::rows_if_present(&home.join(LEDGER_FILE)).ok())
         .unwrap_or_default()
 }
 

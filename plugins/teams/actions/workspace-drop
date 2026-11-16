@@ -1,6 +1,6 @@
 #!/bin/sh
 # zaf description: forget a slice's jj workspace, remove its directory and any empty parents; one already gone is quiet
-# zaf 1: refused: the slice name leaves the workspaces directory
+# zaf 1: refused, nothing changed: the slice name leaves the workspaces directory, a part of its path is a symbolic link, or its directory is not a workspace (it may hold other slices)
 # zaf 2: a backend failed (jj is missing or refused, or the directory could not be removed)
 # zaf mode: 750
 # zaf group: team, release, merge
@@ -27,6 +27,24 @@ esac
 
 workspaces=$ZAF_ROOT/.zaf/workspaces
 dir=$workspaces/$slice
+
+# `rm -rf` follows a symbolic link in the middle of a path, so no part of the slice's path below
+# the workspaces directory may be one: the removal would land somewhere else.
+part=$slice
+while [ "$part" != "." ]; do
+    if [ -L "$workspaces/$part" ]; then
+        echo "$workspaces/$part is a symbolic link; a slice's path has none" >&2
+        exit 1
+    fi
+    part=$(dirname "$part")
+done
+
+# Only a workspace is removed whole. A directory that is not one is a parent of other slices, or
+# someone's files: an empty one goes with the empty parents below, any other is a refusal.
+if [ -d "$dir" ] && [ ! -d "$dir/.jj" ] && ! rmdir "$dir" 2>/dev/null; then
+    echo "$dir is not a slice workspace" >&2
+    exit 1
+fi
 
 # Forgetting a name jj does not hold is not an error, which is what makes a second drop quiet.
 # The root's own working copy is someone else's checkout, so it is never snapshotted.

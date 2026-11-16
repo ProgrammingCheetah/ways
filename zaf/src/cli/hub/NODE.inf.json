@@ -1,0 +1,49 @@
+{
+  "path": "zaf/src/cli/hub",
+  "charted": "2026-11-16",
+  "short": "the serving hub's loops and processes",
+  "is": "The parts of `zaf hub` that touch the machine: the loop that feeds the LAN page, the service verbs, and the tick and watch the page's controls run as the spawn verb in a project's root.",
+  "type": "code",
+  "tags": [
+    "category:ui",
+    "cli",
+    "hub"
+  ],
+  "conventions": [
+    "The hub serves every project from one folder and a tick finds its project from the folder it runs in, so each tick is a process of its own in the project's root"
+  ],
+  "entry_points": [
+    "../hub.rs"
+  ],
+  "fs": [
+    {
+      "name": "dashboard.rs",
+      "role": "`zaf hub --port <n>`: the loop that feeds app::hub's server; a new report is the only thing that reads the board and publishes a frame",
+      "node": false
+    },
+    {
+      "name": "service.rs",
+      "role": "`zaf hub service install | remove`: reads the machine and prints the outcome; macOS has no service yet and exits 64",
+      "node": false
+    },
+    {
+      "name": "tests.rs",
+      "role": "the hub verb's tests",
+      "node": false
+    },
+    {
+      "name": "tick.rs",
+      "role": "the Ticker behind `POST /api/tick`: `zaf spawn --once --no-wait --version <v>` in the project's root, waited for only WAIT, the answer being what it printed so far",
+      "node": false
+    },
+    {
+      "name": "watch.rs",
+      "role": "the tick of `POST /api/watch`: `zaf spawn --once` in a process group of its own, told whose tick it is (SCHEDULED_BY_VAR) since the hub holds the project's scheduler lock, and waited for to its end",
+      "node": false
+    }
+  ],
+  "notes": [
+    "The server, the guard and the controls themselves are app/hub/",
+    "dashboard/, service/, tick/ and watch/ hold only tests.rs"
+  ]
+}

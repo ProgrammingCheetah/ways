@@ -658,3 +658,44 @@ fn machine_line_sums() {
     assert_eq!(json["machine"]["budget"]["units"], 24);
     assert_eq!(json["projects"].as_array().map(Vec::len), Some(3));
 }
+
+#[test]
+fn a_read_that_hangs_holds_one_thread() {
+    let dir = tempfile::tempdir().expect("temp");
+    let home = dir.path().join("home");
+    listed(dir.path(), &home, "stuck");
+    let (release, held) = mpsc::channel::<()>();
+    let held = Mutex::new(held);
+    let reads = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&reads);
+    let reader: Arc<Reader> = Arc::new(move |root, now| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        let _ = held.lock().expect("held").recv();
+        read_with(root, now, 0)
+    });
+
+    let bound = Duration::from_millis(100);
+    let first = machine(&home, bound, Arc::clone(&reader));
+    let reason = first.projects[0].reason.as_deref().expect("its reason");
+    assert!(reason.contains("did not answer within"), "{reason}");
+    // The first read is still on its thread: the next refreshes start no other.
+    for _ in 0..3 {
+        let again = machine(&home, bound, Arc::clone(&reader));
+        let reason = again.projects[0].reason.as_deref().expect("its reason");
+        assert!(reason.contains("has not ended"), "{reason}");
+    }
+    assert_eq!(reads.load(Ordering::SeqCst), 1);
+
+    // Once it ends, the project is read again.
+    drop(release);
+    let mut read = None;
+    for _ in 0..100 {
+        let state = machine(&home, Duration::from_secs(10), Arc::clone(&reader));
+        if state.projects[0].reason.is_none() {
+            read = Some(state);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(read.is_some(), "read again after the hung read ended");
+}
