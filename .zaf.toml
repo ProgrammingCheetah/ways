@@ -45,7 +45,8 @@ task = "feature/{version}-{epic}-{task}"
 [gate]
 full = "cd zaf && cargo fmt --check && cargo build && cargo clippy --all-targets -- -D warnings && cargo test"
 light = "cd zaf && cargo fmt --check && cargo test"
-tests = "cd zaf && cargo test {name}"
+# One test by name: the crate's, or the page's (zaf/web); a name no runner knows fails.
+tests = "tools/run-test {name}"
 
 # The repo has no style page yet; the README is the stand-in until one exists.
 [style]

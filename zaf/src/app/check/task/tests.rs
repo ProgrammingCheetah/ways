@@ -97,6 +97,32 @@ fn key(kind: &str, subject: &str) -> (String, String) {
 }
 
 #[test]
+fn a_name_of_several_words_is_one_quoted_argument() {
+    let dir = project();
+    let shell = ScriptedShell::default();
+    let tests_template = CommandLine::from("tools/run-test {name}");
+    let inputs = TaskInputs {
+        gate: None,
+        tests: Some(&tests_template),
+        shell: &shell,
+        root: dir.path(),
+    };
+    check_task(
+        &template("`answer button`, `x; rm -rf it's`, `plain::name`", "none"),
+        &inputs,
+    );
+    let ran = shell.ran.lock().expect("lock").clone();
+    assert_eq!(
+        ran,
+        [
+            "tools/run-test 'answer button'",
+            "tools/run-test 'x; rm -rf it'\\''s'",
+            "tools/run-test plain::name"
+        ]
+    );
+}
+
+#[test]
 fn a_named_test_that_passes_and_one_that_fails() {
     let dir = project();
     let gate = passing_gate();

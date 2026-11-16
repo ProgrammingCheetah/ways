@@ -127,7 +127,7 @@ fn end_time(
     let head = facts.head();
     match end {
         PhaseEnd::PrOpen => pull
-            .filter(|pull| pull.changes_a_file)
+            .filter(|pull| pull.changes_a_file && !last_run_asked(phase, facts, report))
             .map(|pull| pull.opened_at),
         PhaseEnd::Merged => pull?.merged_at,
         PhaseEnd::ReviewPosted => {
@@ -257,6 +257,24 @@ pub fn phase_status(phase: &Phase, facts: &TicketFacts) -> PhaseStatus {
         }),
         None => PhaseStatus::Open,
     }
+}
+
+/// Whether the last run of `phase` raised a question: `report` when given (a run just ended), else
+/// the latest recorded run that ended, not by the machinery ([`is_machinery`]), at whatever head.
+/// A run that raised a question does not end its phase, whatever its end fact (the Engineer,
+/// 2026-11-15): what it pushed before it asked is a stand-in, and the phase runs again once the
+/// question is ruled. With no run on record nothing asked, so a pull request opened by hand counts.
+fn last_run_asked(phase: &Phase, facts: &TicketFacts, report: Option<&Report>) -> bool {
+    if let Some(report) = report {
+        return !report.questions.is_empty();
+    }
+    facts
+        .runs
+        .iter()
+        .filter(|run| run.action == phase.name && !run.live() && run.exit.is_some())
+        .filter(|run| !is_machinery(run.exit.map(|exit| exit.code)))
+        .max_by_key(|run| run.started_at)
+        .is_some_and(|run| !run.questions.is_empty())
 }
 
 /// The latest counted run of `phase` at the pull request's current head: one that ended, not by
