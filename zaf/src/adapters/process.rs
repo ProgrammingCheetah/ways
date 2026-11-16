@@ -660,7 +660,29 @@ mod tests {
             for (name, value) in env {
                 command.env(name, value);
             }
-            Self(command.spawn().expect("runs sleep"))
+            let stub = Self(command.spawn().expect("runs sleep"));
+            stub.await_environment(env);
+            stub
+        }
+
+        /// Waits, where `/proc` is read, until the stub's own environment shows there: a read made
+        /// straight after the start has been seen to miss it. Bounded; a test that still misses it
+        /// fails on its own assertion.
+        fn await_environment(&self, env: &[(&str, &str)]) {
+            let file = format!("/proc/{}/environ", self.0.id());
+            let Some((name, value)) = env.first() else {
+                return;
+            };
+            let wanted = format!("{name}={value}");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while Path::new(&file).exists() && std::time::Instant::now() < deadline {
+                let shown = std::fs::read(&file)
+                    .is_ok_and(|bytes| String::from_utf8_lossy(&bytes).contains(&wanted));
+                if shown {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
         }
 
         /// A stub that holds `mebibytes` of resident memory: python fills a bytes object, which

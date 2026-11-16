@@ -1,0 +1,64 @@
+#!/bin/sh
+# tools/run-test <name>: runs the tests a ticket names, for `[gate] tests`. The crate's tests whose
+# name holds <name> run first; when the crate has none, the page's (zaf/web) with that name. Exit 0
+# only when at least one test ran and none failed: a name no runner knows is a failure, never a pass.
+name=$1
+if [ "$#" -ne 1 ] || [ -z "$name" ]; then
+    echo "usage: tools/run-test <name>" >&2
+    exit 2
+fi
+root=$(cd "$(dirname "$0")/.." && pwd) || exit 2
+
+# A Rust test's name has no space, so a name with one is the page's.
+case $name in
+*[[:space:]]*) ran=0 ;;
+*)
+    out=$(cd "$root/zaf" && cargo test -- "$name" 2>&1)
+    code=$?
+    if [ "$code" -ne 0 ]; then
+        printf '%s\n' "$out" | tail -n 20
+        exit 1
+    fi
+    ran=$(printf '%s\n' "$out" | awk '/^test result: /{n += $4} END{print n + 0}')
+    ;;
+esac
+if [ "$ran" -gt 0 ]; then
+    echo "$ran passed in zaf"
+    exit 0
+fi
+
+if [ ! -d "$root/zaf/web/node_modules" ]; then
+    (cd "$root/zaf/web" && npm ci >/dev/null 2>&1) || {
+        echo "no test named '$name' in zaf, and zaf/web could not be installed (npm ci)" >&2
+        exit 1
+    }
+fi
+out=$(cd "$root/zaf/web" && npm test --silent -- -t "$name" --reporter=json 2>/dev/null)
+counts=$(printf '%s' "$out" | node -e '
+let text = "";
+process.stdin.on("data", (chunk) => (text += chunk));
+process.stdin.on("end", () => {
+  try {
+    const report = JSON.parse(text.slice(text.indexOf("{")));
+    console.log(report.numPassedTests + " " + report.numFailedTests);
+  } catch {
+    console.log("x x");
+  }
+});')
+passed=${counts% *}
+failed=${counts#* }
+case "$passed$failed" in
+*x*)
+    echo "the page's tests printed no report for '$name'" >&2
+    exit 1
+    ;;
+esac
+if [ "$failed" -gt 0 ]; then
+    echo "$failed failed in zaf/web for '$name'" >&2
+    exit 1
+fi
+if [ "$passed" -eq 0 ]; then
+    echo "no test named '$name' in zaf or zaf/web" >&2
+    exit 1
+fi
+echo "$passed passed in zaf/web"

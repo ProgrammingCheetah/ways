@@ -84,7 +84,7 @@
     },
     {
       "name": "tools/",
-      "role": "gemini-review: runs a zaf review brief through Gemini, fetching the diff itself and failing when no review happened; the run is logged under .zaf/logs/",
+      "role": "gemini-review: runs a zaf review brief through Gemini, fetching the diff itself and failing when no review happened; the run is logged under .zaf/logs/. run-test: runs one test by name for `[gate] tests`, the crate's or the page's, and fails when none ran",
       "node": false
     },
     {

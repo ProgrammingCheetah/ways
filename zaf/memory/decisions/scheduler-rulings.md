@@ -45,6 +45,8 @@ A fresh QA instance tested the design against the day's eight real failures and 
 | R23 | **The tick hooks stay** (`pre-tick`, `post-tick`, `post-phase`) | "They cost nothing and may reveal more complex patterns" |
 | R24 | **Verbose: a trace of where everything was.** Every tick appends where every ticket sits and why to `.zaf/ticks.jsonl`, kept 14 days; the tick prints each move; `zaf spawn trace` reads it back. Output only, never read back to decide | "It'll allow us to check where everything was" |
 | R25 | **The lowest priority number is the most urgent.** Built as the labels `priority/1` to `priority/3`, 1 the most urgent (2026-11-13) | "It doesn't matter to me, as long as lowest = urgent" |
+| R26 | **A run that raised a question does not end its phase, whatever its end fact** (2026-11-15). `pr-open` used to hold as soon as the pull request changed a file, so a stand-in pushed before the question counted as done once the question was ruled. The phase runs again with the ruling | Ticket #19: its `implement` asked #71, and after the ruling it went on to `review` and `merge` with a stand-in page |
+| R27 | **A ticket's test name is one shell word, and a name no runner knows fails** (2026-11-15). `zaf check` quotes `{name}`; ways' `[gate] tests` is `tools/run-test {name}`, which runs the crate's test of that name, else the page's, and fails when none ran. Named runners in the manifest are for 0.5.0 | A frontend test's name read as a pass having run nothing, and a name of several words broke the line |
 
 ## Observations
 
@@ -57,6 +59,8 @@ A fresh QA instance tested the design against the day's eight real failures and 
 - [decision] A phase reports facts and the lane works out the outcome #R13
 - [decision] Running comes first and has its own place #R16
 - [decision] The tick hooks stay #R23
+- [decision] A run that raised a question does not end its phase, whatever its end fact #R26
+- [decision] A test name is one shell word, and a name no runner knows fails #R27
 - [decision] Every tick leaves a trace of where each ticket sits; it is output only #R24
 - [context] The QA review of 2026-11-12 found the first version ruled out one of eight real failures in full #qa
 - [context] The bugs that led here: a blocked label nothing cleared, a script's exit code read as "done", a gate present in one scheduler and missing in the other #why

@@ -147,11 +147,30 @@ fn test_status(name: &str, inputs: &TaskInputs<'_>) -> LineStatus {
     let Some(template) = inputs.tests else {
         return LineStatus::Skipped("no [gate] tests template declared".to_owned());
     };
-    let command = CommandLine::from(template.as_ref().replace(NAME_PLACEHOLDER, name));
+    let command = CommandLine::from(
+        template
+            .as_ref()
+            .replace(NAME_PLACEHOLDER, &shell_word(name)),
+    );
     match inputs.shell.run(&command) {
         Ok(gate_run) if gate_run.verdict == GateVerdict::Passed => LineStatus::Pass,
         Ok(gate_run) => LineStatus::Fail(last_line(&gate_run.output)),
         Err(error) => LineStatus::Fail(error.to_string()),
+    }
+}
+
+/// `name` as one word of a shell line. A plain name (letters, digits and `_ : . - /`) stands as it
+/// is; any other is single-quoted, so a name of several words is one argument and nothing in a
+/// ticket's name is run by the shell.
+fn shell_word(name: &str) -> String {
+    let plain = !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | ':' | '.' | '-' | '/'));
+    if plain {
+        name.to_owned()
+    } else {
+        format!("'{}'", name.replace('\'', "'\\''"))
     }
 }
 

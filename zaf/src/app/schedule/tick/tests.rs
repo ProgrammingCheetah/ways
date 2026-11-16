@@ -1421,8 +1421,9 @@ fn a_ticket_labelled_ready_whose_dependency_is_open_is_not() {
 
 #[test]
 fn a_run_that_opened_a_pull_request_and_asked_waits_on_its_question() {
-    // implement opened a pull request changing a file, so its `pr-open` end holds, and asked a
-    // question on the way. CI is green, so merge would be next; the question holds the ticket.
+    // implement opened a pull request changing a file and asked a question on the way. A run that
+    // raised a question does not end its phase, so implement stays current, though CI is green;
+    // the question holds the ticket.
     let scene = Scene::new();
     scene.task(3, "S");
     scene.open_pr(3, Some(CheckState::Passed));
@@ -1445,7 +1446,7 @@ fn a_run_that_opened_a_pull_request_and_asked_waits_on_its_question() {
     assert_eq!(lines(&tick.held), ["#3 skipped: a question is open on it"]);
     assert_eq!(
         refused(scene.spawn_phase(3, "merge")),
-        "merge is not #3's current phase: merge waits: a question is open on it"
+        "merge is not #3's current phase: implement waits: a question is open on it"
     );
 }
 

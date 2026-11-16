@@ -46,6 +46,33 @@ fn pr_open_holds_only_for_a_pull_request_that_changes_a_file() {
 }
 
 #[test]
+fn pr_open_does_not_hold_while_the_last_run_raised_a_question() {
+    let implement = phase("implement", &[PhaseEnd::PrOpen], None);
+    let mut facts = with_pull();
+    assert!(end_fact_holds(&implement, &facts), "opened by hand");
+
+    // The run pushed a stand-in and asked: the phase is not ended, ruled or not.
+    facts.runs.push(
+        run("implement", None, 10)
+            .exits(0, 15)
+            .leaves(Some("h1"))
+            .asks(71),
+    );
+    assert!(!end_fact_holds(&implement, &facts));
+
+    // A later run that asked nothing ends it; a run of another action changes nothing.
+    facts
+        .runs
+        .push(run("fix", Some("h1"), 30).exits(0, 35).asks(72));
+    facts.runs.push(
+        run("implement", Some("h1"), 40)
+            .exits(0, 45)
+            .leaves(Some("h1")),
+    );
+    assert!(end_fact_holds(&implement, &facts));
+}
+
+#[test]
 fn review_posted_holds_only_for_a_review_made_on_the_head() {
     let posted = phase("review", &[PhaseEnd::ReviewPosted], None);
     let mut facts = with_pull();
