@@ -6,21 +6,21 @@
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 use super::Cli;
 use super::exit::{BACKEND, OK};
 use super::slice::VERSION_VAR;
 use crate::app::actions::{
-    Caller, MINUTE, Nesting, Refused, RunOutcome, RunRequest, RunResult, SliceContext, Tier,
-    last_lines, list_actions, read_action, refuse_forbidden, run_action,
+    Caller, MINUTE, Nesting, Refused, RunOutcome, RunRequest, RunResult, RunStep, SliceContext,
+    Terminal, Tier, last_lines, list_actions, read_action, refuse_forbidden, run_action,
 };
 use crate::composition::{Composition, CompositionError, zaf_home};
 use crate::manifest::{ActionsSection, HOME_FILE};
 
 /// How many lines of the log a `FAIL` shows.
-const TAIL_LINES: usize = 10;
+pub(super) const TAIL_LINES: usize = 10;
 
 /// What `zaf do` takes. Flags come before the name: everything after it goes to the body as
 /// given, `--json` and `--help` included.
@@ -75,9 +75,33 @@ pub fn run(cli: &Cli, args: &DoArgs) -> u8 {
         }
         (Some((name, rest)), false) => {
             let name = name.to_string_lossy();
-            let outcome = run_named(&name, rest, only);
+            let outcome = run_named(&name, rest, only, this_terminal(), VersionFrom::Env);
             print_outcome(cli, &outcome)
         }
+    }
+}
+
+/// Where a run takes its release version from: the version a `target: task` action names its
+/// slice by, that fills `{version}` in the manifest's `[env]`, and that its body gets as
+/// `ZAF_VERSION`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum VersionFrom<'a> {
+    /// `ZAF_VERSION` of this process, none when it is unset or blank: a run someone asked for,
+    /// and a verb's step run on its behalf.
+    Env,
+    /// This version, whatever this process's environment holds: the tick's own `--version`,
+    /// which a tick started by hand or by `zaf spawn --watch` has nowhere else.
+    Given(&'a str),
+}
+
+impl VersionFrom<'_> {
+    /// The version, none when there is none or it is blank.
+    fn version(self) -> Option<String> {
+        match self {
+            Self::Env => std::env::var(VERSION_VAR).ok(),
+            Self::Given(version) => Some(version.to_owned()),
+        }
+        .filter(|version| !version.is_empty())
     }
 }
 
@@ -139,8 +163,41 @@ fn machine_timeout(home: &Path) -> Result<u64, String> {
     Ok(section.timeout_minutes)
 }
 
-/// The run of one name, with everything that stops it before the body as `NOT_RUN`.
-pub(super) fn run_named(name: &str, args: &[OsString], only: Option<Tier>) -> RunOutcome {
+/// Whether this process has a terminal: its stdin and its stdout both are one. A model's shell, a
+/// pipe and a detached launch have none, so a `terminal: yes` action is refused there.
+pub(super) fn this_terminal() -> Terminal {
+    if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+        Terminal::Present
+    } else {
+        Terminal::Absent
+    }
+}
+
+/// The run of one name, with everything that stops it before the body as `NOT_RUN`. `terminal` is
+/// whether the caller has one: [`this_terminal`] for a run someone asked for here, and
+/// [`Terminal::Absent`] for a step a verb runs on its own, where no one is there to answer.
+/// `version` says where the release version comes from: [`VersionFrom::Env`] but for the tick.
+pub(super) fn run_named(
+    name: &str,
+    args: &[OsString],
+    only: Option<Tier>,
+    terminal: Terminal,
+    version: VersionFrom<'_>,
+) -> RunOutcome {
+    run_named_in(name, args, only, terminal, version, None)
+}
+
+/// [`run_named`] as a step of the phase run folder `run`, which the body gets as `ZAF_RUN`: the
+/// tick's inline run of a `zaf`-kind action, so a question it raises is recorded in its run; the
+/// step is told the body's process once it has started.
+pub(super) fn run_named_in(
+    name: &str,
+    args: &[OsString],
+    only: Option<Tier>,
+    terminal: Terminal,
+    version: VersionFrom<'_>,
+    run: Option<RunStep<'_>>,
+) -> RunOutcome {
     let not_run = |reason| RunOutcome::not_run(name, None, reason);
     let place = match Place::here() {
         Ok(place) => place,
@@ -185,9 +242,7 @@ pub(super) fn run_named(name: &str, args: &[OsString], only: Option<Tier>) -> Ru
         .project
         .as_ref()
         .map(|project| project.vcs().map_err(|error| error.to_string()));
-    let version = std::env::var(VERSION_VAR)
-        .ok()
-        .filter(|version| !version.is_empty());
+    let version = version.version();
     let slice = place
         .project
         .as_ref()
@@ -223,6 +278,8 @@ pub(super) fn run_named(name: &str, args: &[OsString], only: Option<Tier>) -> Ru
         only,
         slice,
         env,
+        terminal,
+        run,
     })
 }
 
@@ -249,7 +306,8 @@ pub(super) fn print_outcome(cli: &Cli, outcome: &RunOutcome) -> u8 {
     if let Some(log) = &outcome.log {
         if cli.more {
             print_whole(log);
-        } else if outcome.result == RunResult::Fail {
+        } else if outcome.result == RunResult::Fail && !outcome.on_terminal {
+            // A body on the terminal wrote there, so its log holds none of its lines to quote.
             print_tail(log);
         }
     }
@@ -307,6 +365,10 @@ fn list(cli: &Cli, path: &str) -> u8 {
                 // Only an action that declares a kind has one to show.
                 if let Some(kind) = action.kind {
                     row["kind"] = kind.to_string().into();
+                }
+                // Likewise `terminal`: shown only where it is declared.
+                if action.terminal {
+                    row["terminal"] = true.into();
                 }
                 row
             })

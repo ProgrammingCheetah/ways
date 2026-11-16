@@ -4,7 +4,7 @@ use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 
 use super::*;
-use crate::app::actions::{Caller, MINUTE, Nesting, run_action};
+use crate::app::actions::{Caller, MINUTE, Nesting, Terminal, run_action};
 
 const TASK: u64 = 140;
 
@@ -64,6 +64,8 @@ impl Place {
             only: None,
             slice: None,
             env: Default::default(),
+            terminal: Terminal::Absent,
+            run: None,
         })
     }
 
@@ -128,7 +130,7 @@ fn slice_open_writes_the_workspace_record() {
         place.records().workspace(task()).as_ref(),
         Some(&place.workspace)
     );
-    assert_eq!(place.records().pr(task()), None);
+    assert_eq!(place.records().pr(task()), Ok(None));
 }
 
 #[test]
@@ -168,7 +170,7 @@ fn slice_pr_writes_the_pr_record() {
         "271"
     );
     assert_eq!(place.written(), ["140.pr"], "no temp file left behind");
-    assert_eq!(place.records().pr(task()), Some(PrNumber::from(271)));
+    assert_eq!(place.records().pr(task()), Ok(Some(PrNumber::from(271))));
     assert_eq!(place.records().workspace(task()), None);
 }
 
@@ -203,11 +205,11 @@ fn a_bad_value_leaves_the_last_record_as_it_was() {
 
     place.action(SLICE_PR, &hands_back("nope"));
     assert_refused(&place.run(SLICE_PR, &["140"]));
-    assert_eq!(place.records().pr(task()), Some(PrNumber::from(271)));
+    assert_eq!(place.records().pr(task()), Ok(Some(PrNumber::from(271))));
 
     place.action(SLICE_PR, &hands_back("272"));
     assert_eq!(place.run(SLICE_PR, &["140"]).exit, 0);
-    assert_eq!(place.records().pr(task()), Some(PrNumber::from(272)));
+    assert_eq!(place.records().pr(task()), Ok(Some(PrNumber::from(272))));
 }
 
 #[test]
@@ -347,18 +349,40 @@ fn records_that_do_not_hold_read_as_none() {
     let place = Place::new();
     let records = place.records();
     assert_eq!(records.workspace(task()), None);
-    assert_eq!(records.pr(task()), None);
+    assert_eq!(records.pr(task()), Ok(None), "no record is no pull request");
 
     fs::create_dir_all(place.slices()).expect("mkdir");
     fs::write(place.slices().join("140"), "relative/path").expect("write");
-    fs::write(place.slices().join("140.pr"), "abc").expect("write");
     assert_eq!(records.workspace(task()), None);
-    assert_eq!(records.pr(task()), None);
 
     // A workspace that has gone is no workspace.
     let gone = place.root.join("gone");
     fs::write(place.slices().join("140"), gone.display().to_string()).expect("write");
     assert_eq!(records.workspace(task()), None);
+}
+
+#[test]
+fn a_pull_request_record_that_does_not_hold_is_an_error_never_none() {
+    let place = Place::new();
+    let records = place.records();
+    fs::create_dir_all(place.slices()).expect("mkdir");
+    let file = place.slices().join("140.pr");
+    for garbled in ["abc", "12\n", "", "0", "-3"] {
+        fs::write(&file, garbled).expect("write");
+        let error = records.pr(task()).expect_err(garbled);
+        assert_eq!(error.path, file, "{garbled:?}");
+        assert!(
+            error.reason.contains("not a pull request number"),
+            "{garbled:?}: {error}"
+        );
+    }
+    // One that cannot be read at all is an error too.
+    fs::remove_file(&file).expect("remove");
+    fs::create_dir(&file).expect("a folder in its place");
+    let error = records.pr(task()).expect_err("a folder");
+    assert!(error.reason.starts_with("cannot be read"), "{error}");
+    // Either way it still holds its task: no claim is let go on a read that failed.
+    assert!(records.tasks_with_pr().contains(&task()));
 }
 
 #[test]
@@ -472,7 +496,7 @@ fn forget_removes_the_check_records() {
         ["141", "141.pr", "check-pr-272.json", "check-task-141.json"]
     );
     assert_eq!(place.records().workspace(task()), None);
-    assert_eq!(place.records().pr(task()), None);
+    assert_eq!(place.records().pr(task()), Ok(None));
     // Forgetting what is not there is done.
     place.records().forget(task()).expect("forget again");
     SliceRecords::new(&place.root.join("nowhere"))

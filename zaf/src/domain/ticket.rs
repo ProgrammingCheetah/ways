@@ -4,6 +4,9 @@
 //! comments) is the backend's choice and never shows here. A [`TicketSummary`] is the one
 //! shape a ticket leaves zaf in: every `--json` prints it, whichever backend holds the ticket.
 
+use std::time::SystemTime;
+
+use super::schedule::{Priority, PriorityIgnored};
 use super::{GroupName, TaskTemplate, TaskTemplateError, TicketId, TicketState};
 use crate::newtype::text_newtype;
 
@@ -76,6 +79,35 @@ impl Ticket {
     }
 }
 
+/// An open task as [`crate::ports::Board::open_tickets`] lists it: the [`Ticket`], and what else
+/// the board says of it that the scheduler weighs: the Engineer's priority and when it opened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenTicket {
+    /// The ticket.
+    pub ticket: Ticket,
+    /// What its `priority/<n>` labels say ([`Priority::from_labels`]): none, the priority the
+    /// Engineer set, or why the labels are ignored. zaf never writes or removes such a label.
+    pub priority: Result<Option<Priority>, PriorityIgnored>,
+    /// When its issue was opened; none when the board does not say.
+    pub opened_at: Option<SystemTime>,
+}
+
+impl OpenTicket {
+    /// `ticket` with no priority and no time it opened, as a board that keeps neither lists it.
+    pub fn plain(ticket: Ticket) -> Self {
+        Self {
+            ticket,
+            priority: Ok(None),
+            opened_at: None,
+        }
+    }
+
+    /// The tickets of `open`, as the board's [`Ticket`]s.
+    pub fn tickets(open: Vec<Self>) -> Vec<Ticket> {
+        open.into_iter().map(|open| open.ticket).collect()
+    }
+}
+
 /// A task to file under an epic, as [`crate::ports::Board::file_task`] opens it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewTask {
@@ -145,6 +177,17 @@ impl Standing {
             Self::Done
         }
     }
+}
+
+/// Where an issue stands as a blocker, and when it closed, as
+/// [`crate::ports::Board::standing_at`] reads both at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StandingAt {
+    /// Where it stands.
+    pub standing: Standing,
+    /// When its issue closed; none while it is open, for one done by its label alone, or when the
+    /// board does not say.
+    pub closed_at: Option<SystemTime>,
 }
 
 #[cfg(test)]

@@ -127,6 +127,10 @@ pub struct Plan {
     pub cycles: Vec<Vec<TicketId>>,
     /// Every dead blocker the open tasks reached name.
     pub dead: Vec<DeadBlocker>,
+    /// The task phases that run now. The plan decides on [`SlotCount`] alone, so this changes no
+    /// launch; the printed slots line counts them, as the tick's budget does. [`plan`] leaves it
+    /// `0` and the I/O step fills it in.
+    pub phases_running: u32,
 }
 
 /// The slots the guard allows: yellow halves them (at least one), orange allows one, red none.
@@ -275,6 +279,7 @@ pub fn plan(snapshot: &Snapshot, state: &SpawnState, level: Level, settings: Set
         epics: skipped,
         cycles,
         dead,
+        phases_running: 0,
     }
 }
 

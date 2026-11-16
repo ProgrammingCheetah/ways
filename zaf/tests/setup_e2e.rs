@@ -353,7 +353,11 @@ fn setup_rerun_changes_nothing() {
 /// keeps per machine are generated first, with `zaf profile init`.
 #[test]
 fn ways_doctor_passes_with_own_actions() {
-    let scene = Scene::new();
+    // ways keeps its board and forge on Forgejo, so the instance answers and the token is set.
+    let mut scene = Scene::forgejo();
+    scene
+        .env
+        .push(("FORGEJO_TOKEN".to_owned(), "secret".to_owned()));
     let ways = ways_root();
     fs::copy(ways.join(".zaf.toml"), scene.root.join(".zaf.toml")).expect("manifest");
     copy_dir(&ways.join(".zaf/actions"), &scene.root.join(".zaf/actions"));

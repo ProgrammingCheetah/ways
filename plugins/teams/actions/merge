@@ -1,23 +1,51 @@
 #!/bin/sh
-# zaf description: phase merge: land the task's slice with `slice-merge`, which a clean `zaf check pr` at the head of the pull request lets through
-# zaf 1: refused: the argument is not <task>, the base conflicts, the base merge was pushed and needs a new `zaf check pr`, or the merge was refused
+# zaf description: phase merge: land the task's slice with `slice-merge`, which a clean `zaf check pr` at the head of the pull request lets through; a base that conflicts with the slice starts `fix`, whose programmer brings the base in with `sync-base`
+# zaf 1: conflicted: the base conflicts with the slice in the paths the log names, and the slice is unchanged; `fix` runs next, and its programmer merges the base with `zaf do sync-base <task>` and resolves them
 # zaf 2: a backend failed (jj, gh or the board failed, or `slice-merge` never ran)
+# zaf 3: the base was merged into the slice and pushed: the head moved, so CI and the review run again on it before the merge
+# zaf 4: refused: the argument is not <task>, or a step refused (the forge refused the merge, or the head moved since the check); the merge runs again, and three at one head ask the Engineer
 # zaf mode: 755
 # zaf target: task
 # zaf kind: zaf
 # zaf ends: merged
+# zaf on-fail: fix
 
+# The task as a bare number; zaf has already read it as one.
+task=${1#\#}
 if [ "$#" -ne 1 ] || [ -z "$ZAF_ROOT" ]; then
     echo "usage: merge <task>, run by zaf with ZAF_ROOT set" >&2
-    exit 1
+    exit 4
 fi
 
 cd "$ZAF_ROOT" || exit 2
 
-# `slice-merge` ends with 1 or 2; 125, a step that never ran, is a backend that failed.
-zaf do slice-merge "$1"
-status=$?
+# `slice-merge` ends with 1 or 2; 125, a step that never ran, is a backend that failed. Its 1 is
+# three things, told apart here by what its log says, so the scheduler starts `fix` only for the
+# one a programmer can answer: a conflict.
+status=0
+log=$(zaf do --more slice-merge "$1" 2>&1) || status=$?
+printf '%s\n' "$log"
 case $status in
-    0 | 1 | 2) exit "$status" ;;
+    0) exit 0 ;;
+    1) ;;
     *) exit 2 ;;
 esac
+
+case $log in
+    *"FAIL merge-base: exit 1,"*)
+        # The paths `merge-base` named, on one line, last in the log: the run folder keeps the
+        # last lines, and the fix brief quotes them.
+        paths=$(printf '%s\n' "$log" | awk '
+            / conflicts in:$/ { on = 1; list = ""; next }
+            on && /^(OK|FAIL|NOT_RUN) / { on = 0 }
+            on && NF { list = list (list == "" ? "" : ", ") $1 }
+            END { print list }')
+        echo "the base conflicts with the slice in: $paths" >&2
+        echo "fix: bring the base in with zaf do sync-base $task, resolve those paths and commit the merge" >&2
+        exit 1
+        ;;
+    *"the base was merged into"*"and pushed"*)
+        exit 3
+        ;;
+esac
+exit 4

@@ -45,6 +45,7 @@ fn post_tick_gets_the_started_phase() {
             "waits": [],
             "ran": [],
             "questions": [],
+            "asked": [],
             "idle": false,
         })
     );
@@ -101,6 +102,7 @@ fn an_idle_tick_says_idle() {
             "waits": [],
             "ran": [],
             "questions": [],
+            "asked": [],
             "idle": true,
         })
     );

@@ -61,6 +61,7 @@ The environment the verbs read (the spawner sets both; by hand, set them yoursel
 | `zaf changes <task> [--path <file>]` | see the task's change: stat first, one file's hunks on request |
 | `zaf check <task>` | run the task's checks: the gate, its named tests, its acceptance lines and interfaces (`zaf verify <task>` is the same) |
 | `zaf do slice-pr <task>` | in `build`, `check` or `review`: commit what is left, publish the branch, open or update its pull request and print its number |
+| `zaf do sync-base <task>` | in `build` to `land`, when a merge's base conflicts (a fix round's `Why this run` says so): fetch the base and merge it into the task's workspace; a clean merge says so, a conflicted one stays in the workspace with its paths named for you to resolve and commit; your uncommitted work rides along, and nothing is pushed |
 | `zaf check pr:<n>:<task>` | run the pull request's review steps, wait for them, print the findings; `--status` reads the last result |
 | `zaf do slice-merge <task>` | in `land`, when the last `zaf check pr` is clean for the pull request's head: merge it, mark the task done, remove the workspace; exit 1 after a base merge that needs a new `zaf check pr` |
 | `zaf do slice-drop <task>` | in `build`, `check` or `done`: drop the task's workspace; the branch stays |
@@ -68,6 +69,7 @@ The environment the verbs read (the spawner sets both; by hand, set them yoursel
 | `zaf progress at <task> <phase> [--role <role>]` | report the phase you are in, on each change; a phase the plan did not declare is refused |
 | `zaf report --epics` | print one row per epic: tokens and cost per role, tasks done |
 | `zaf status` | the board, running instances, slots, guard and open questions on one screen |
+| `zaf spawn trace [<ticket>] [--since <when>]` | see where the tickets moved, tick by tick, oldest first, from the trace every tick leaves; `--since` takes a time or a span such as `2h`; `--more` adds what each tick did |
 | `zaf doctor` | validate the manifest and the actions, and the tools they require |
 
 Asking well:
@@ -82,17 +84,20 @@ Asking well:
 # The programmer
 
 - **Purpose:** one task, green.
-- **Input:** your prompt: the task, the round, the path of its pack and its workspace, and on a fix round the findings command. The pack holds the ticket, its named design pages, the owned paths and the style; its Interface section repeats this page. Anything beyond it: `zaf ask`.
+- **Input:** your prompt: the task, the round, the path of its pack and its workspace, and on a fix round the findings command. The pack holds the ticket, its named design pages, the owned paths and the style; its Interface section repeats this page. A fix round's pack opens with `## Why this run`: the phase that failed and how (its exit code and what that code means, the failed checks, what its run printed last) and every ruling made since a model last worked on the task. Anything beyond it: `zaf ask`.
 - **Output:** commits in the task's workspace that pass `zaf check <task>`, and a one-paragraph hand-back.
 - **Lifecycle:** spawned by a team instance for one round; ends at the hand-back; never resumed. A fix round is a fresh programmer.
 - **Budget:** 150 turns; each phase report costs one.
-- **Never:** touch a path the pack does not own; push, publish, open a pull request, or move a bookmark or branch (the team's verbs do that); run `zaf board claim`, `zaf board report`, any `zaf do slice-*`, `zaf do pr-merge` or `zaf do land`, or `zaf check pr:` without `--status`; read another task; edit the design pages; spawn anyone.
+- **Never:** touch a path the pack does not own (a conflict `zaf do sync-base` left is the one exception: resolve it wherever it is); push, publish, open a pull request, or move a bookmark or branch (the team's verbs do that); run `zaf board claim`, `zaf board report`, any `zaf do slice-*`, `zaf do pr-merge` or `zaf do land`, or `zaf check pr:` without `--status`; read another task; edit the design pages; spawn anyone.
 
 ## Steps
 
 1. Read the pack. Then declare your phases: `zaf progress plan <task> read ask build check --role programmer`. Report each change as you start the phase: `zaf progress at <task> <phase> --role programmer` (a phase may repeat, as `build` after a failed check). Code commands start `cd <workspace> &&`; `zaf` verbs run from the project root, where your shell starts.
    Keep each Bash call to plain commands, because these shapes are denied and cost you the turn: `git` (use `jj log`, `jj diff`, `jj file annotate`, `jj file chmod`), heredocs (use Write or Edit), `$?` and `${pipestatus[1]}` (run the command without a pipe; a failed command reports its own exit code), `for` and `while`, `$(...)` and `<(...)`.
-2. Fix round: run the findings command first. Fix every must-fix; a note is yours to take or leave, and you say which.
+2. Fix round: read `## Why this run` first; it says which of these the round is for.
+   - A red check or a must-fix: run the findings command. Fix every must-fix; a note is yours to take or leave, and you say which.
+   - A merge whose base conflicts (the section says `merge` failed with exit 1, conflicted, and what it printed names the paths): `zaf do sync-base <task>` merges the base into your workspace and leaves the conflicts there, naming the paths. Edit each until no conflict marker is left, keeping both sides' intent, run `zaf check <task>`, then commit the merge (`jj commit -m "Merge the base into the slice"`). It never pushes; the round publishes it when you hand back.
+   - A ruling listed under `### Rulings since the last model run`: build to it. When it asks for no change to the code, change nothing and say so in the hand-back; the phase that raised it then applies again.
 3. `zaf progress at <task> ask --role programmer`. Read the pack's `## Rulings` section before asking anything: a question ruled there is settled. Questions the pack does not answer, all at once: `zaf ask -t <task> "rule: Is an empty name refused, and with which status?" "where: Which page defines the retry window?"`. Kinds: `fact` (what the design says), `rule` (allowed, required, forbidden), `term` (an entity or word), `exists` (is there a decision), `where` (which page); up to five, one sentence each, no code, under thirty words. Each answer comes back as
    ```
    q1: settled

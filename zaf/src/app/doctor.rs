@@ -20,6 +20,8 @@
 //! board on the same instance, repository and token asks only what the board's checks did not.
 //! `gh` is GitHub's tool: when neither the board nor the forge is on GitHub, a `gh` the manifest
 //! requires but the machine lacks is reported as not needed, and does not fail the report.
+//! The hub service is reported too, installed or not, running or not, and on which port (see
+//! [`HubCheck`]); it is informational and never fails the report.
 
 use std::fmt;
 use std::fs;
@@ -37,10 +39,12 @@ use crate::ports::{AccessCheck, Board, Forge};
 
 mod actions;
 pub mod fake;
+pub mod hub;
 mod needed;
 mod phases;
 
 pub use actions::ActionCheck;
+pub use hub::HubCheck;
 pub use needed::NeededCheck;
 pub use phases::PhaseCheck;
 
@@ -361,6 +365,10 @@ pub struct Report {
     /// report.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub forge: Vec<BackendCheck>,
+    /// Whether the hub service runs (see [`hub::check`]); informational, it never fails the
+    /// report. Filled by the caller, which holds the process table and the LAN address.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hub: Option<HubCheck>,
 }
 
 impl Report {
@@ -406,6 +414,7 @@ impl Report {
         lines.extend(self.needed.iter().flat_map(NeededCheck::lines));
         lines.extend(self.phases.iter().flat_map(PhaseCheck::lines));
         lines.push(self.workspaces.line());
+        lines.extend(self.hub.iter().map(HubCheck::line));
         if !self.manifest.is_empty() {
             let files: Vec<String> = self
                 .manifest
@@ -725,6 +734,7 @@ pub fn doctor_with(
         unread: unread_tomls(root),
         board: Vec::new(),
         forge: Vec::new(),
+        hub: None,
     }
 }
 

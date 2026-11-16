@@ -10,19 +10,30 @@
 //! from any project, as the process table reads it when asked ([`Status::with_machine`]);
 //! the budget line sets that use against the zaf home's `[spawn] budget`
 //! ([`Status::with_budget`]).
+//!
+//! In a project with `[phases]`, where each ticket sits is the core's placement, not its label
+//! (R5, [`Status::with_placement`]): `ready` then counts the tickets in the lane (each with its
+//! next action under `--more`), and a `waiting` line counts the tickets that wait, each with what
+//! it waits on under `--more` (`waiting(question #45)`, `waiting(ticket #5)`). A ticket the core
+//! does not place keeps its label's word.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use super::epic::EpicLine;
 use super::guard::{self, GuardError, GuardState};
 use super::profile::StaleProfile;
+use super::schedule::gather::Gathered;
+use super::schedule::shadow;
+use super::schedule::trace::ShortPlace;
 use super::spawn::{self, blockers, blockers::DeadLine};
+use crate::domain::schedule::Place;
 use crate::domain::{
     Budget, DEFAULT_RESERVE, Mebibytes, SLOTS_DIR, SizeTable, SlotRecord, TaskTemplate, Ticket,
     TicketId, TicketSummary, Units,
 };
-use crate::ports::{Board, ClaimRecord, Holder, MachineInstance, PortError, live_use};
+use crate::ports::{Board, ClaimRecord, Holder, MachineInstance, NewQuestion, PortError, live_use};
 
 /// The spawner's state file under the state folder.
 pub const SPAWN_STATE_FILE: &str = "spawn.state";
@@ -112,13 +123,73 @@ pub struct SlotLine {
     pub since: String,
 }
 
+/// An open question in full: what `zaf status --more` prints and `--json` carries.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct QuestionDetail {
+    /// Its issue number.
+    pub number: u64,
+    /// The issue it was raised on, when its body says.
+    pub raised_on: Option<u64>,
+    /// The whole question, without the `Raised on` line.
+    pub text: String,
+}
+
+impl QuestionDetail {
+    fn of(ticket: &Ticket) -> Self {
+        Self {
+            number: ticket.id.get(),
+            raised_on: NewQuestion::raised_on(ticket.body.as_str()).map(TicketId::get),
+            text: NewQuestion::text_of(ticket).trim().to_owned(),
+        }
+    }
+}
+
+/// A ticket in the lane, as the core places it, and the action it runs next.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct LaneLine {
+    /// The ticket.
+    pub task: u64,
+    /// Its next action.
+    pub next: String,
+}
+
+/// A ticket that waits, as the core places it, and on what, in short: `waiting(question #45)`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct WaitingLine {
+    /// The ticket.
+    pub task: u64,
+    /// What it waits on, in short ([`ShortPlace`]).
+    pub on: String,
+}
+
+/// A task phase that runs now: a slot, like an instance, counted as the tick's budget counts it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct PhaseLine {
+    /// The task.
+    pub task: u64,
+    /// The action it runs.
+    pub action: String,
+    /// The epic the phase's instance names, when it does.
+    pub epic: Option<u64>,
+    /// When it started, RFC 3339.
+    pub started_at: String,
+}
+
 /// The whole screen.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Status {
     /// The open epics, each with its stage; none on a board that cannot list them.
     pub epics: Vec<EpicLine>,
-    /// Tasks open for a claim whose body follows the template.
+    /// Tasks open for a claim whose body follows the template; with the placement read
+    /// ([`Status::with_placement`]), the tickets in the lane and those the core does not place
+    /// that are labelled `ready`.
     pub ready: Vec<TicketSummary>,
+    /// The tickets in the lane, each with its next action; empty until
+    /// [`Status::with_placement`].
+    pub lane: Vec<LaneLine>,
+    /// The tickets that wait, each with what it waits on; none until [`Status::with_placement`]
+    /// reads the placement, and then no `waiting` line is printed.
+    pub waiting: Option<Vec<WaitingLine>>,
     /// Ready tasks whose body does not, which the spawner skips.
     pub unparsed: Vec<UnparsedLine>,
     /// Claims held now by an instance that runs, or by one this machine did not launch.
@@ -132,6 +203,9 @@ pub struct Status {
     pub instances: Vec<InstanceLine>,
     /// Every running launch, one per task.
     pub running: Vec<Launch>,
+    /// The task phases that run now, read from `.zaf/phases/`; each holds one slot and is
+    /// counted in `running_count`.
+    pub phases: Vec<PhaseLine>,
     /// The slots.
     pub slots: Slots,
     /// The build slots gate runs hold now, one per live record in `.zaf/slots/`.
@@ -140,6 +214,8 @@ pub struct Status {
     pub guard: Option<GuardState>,
     /// Questions still waiting for the Engineer.
     pub questions: Vec<TicketSummary>,
+    /// The same questions with their whole text, read from the bodies the board already gave.
+    pub question_details: Vec<QuestionDetail>,
     /// Generated profiles older than the manifest or zaf, or with no stamp; `zaf spawn`
     /// refuses them. [`status`] leaves it empty, [`Status::with_stale`] fills it.
     pub stale: Vec<StaleProfile>,
@@ -312,9 +388,21 @@ pub fn status(
         .map(claim_line)
         .collect();
     let orphaned = orphaned_claims.into_iter().map(claim_line).collect();
-    let questions = board.questions()?.iter().map(Ticket::summary).collect();
+    let open_questions = board.questions()?;
+    let questions = open_questions.iter().map(Ticket::summary).collect();
+    let question_details = open_questions.iter().map(QuestionDetail::of).collect();
     // A batch of tasks shares one instance and one slot; the state counts them.
-    let in_use = state.running();
+    let phases: Vec<PhaseLine> = spawn::live_phases(state_dir, alive)
+        .map_err(spawn_error)?
+        .into_iter()
+        .map(|phase| PhaseLine {
+            task: phase.task.get(),
+            epic: phase.epic().map(TicketId::get),
+            started_at: humantime::format_rfc3339_seconds(phase.started_at).to_string(),
+            action: phase.action.to_string(),
+        })
+        .collect();
+    let in_use = state.running() + phases.len();
     let instances = state
         .running_instances()
         .into_iter()
@@ -326,6 +414,8 @@ pub fn status(
     Ok(Status {
         epics,
         ready,
+        lane: Vec::new(),
+        waiting: None,
         unparsed,
         claimed,
         orphaned,
@@ -337,8 +427,10 @@ pub fn status(
         running_count: in_use,
         instances,
         running: state.launches,
+        phases,
         guard: guard::read(state_dir)?,
         questions,
+        question_details,
         stale: Vec::new(),
         cycles,
         dead_blockers,
@@ -412,6 +504,48 @@ impl Status {
         self
     }
 
+    /// The screen with where the core places each open ticket with a phase list at `now`, from
+    /// `gathered`: `ready` is then the tickets in the lane, beside those the core does not place
+    /// that are labelled `ready`; `lane` gives each lane ticket's next action and `waiting` each
+    /// waiting ticket and what it waits on.
+    #[must_use]
+    pub fn with_placement(mut self, gathered: &Gathered, now: SystemTime) -> Self {
+        let tickets: BTreeMap<TicketId, &Ticket> = gathered
+            .open
+            .iter()
+            .map(|ticket| (ticket.id, ticket))
+            .collect();
+        let placed_here: BTreeSet<u64> = gathered
+            .tickets
+            .iter()
+            .map(|facts| facts.ticket.get())
+            .collect();
+        self.ready
+            .retain(|summary| !placed_here.contains(&summary.number.get()));
+        let mut waiting = Vec::new();
+        for placed in shadow::places(gathered, now) {
+            match &placed.place {
+                Place::InLane { next, .. } => {
+                    self.lane.push(LaneLine {
+                        task: placed.ticket.get(),
+                        next: next.to_string(),
+                    });
+                    if let Some(ticket) = tickets.get(&placed.ticket) {
+                        self.ready.push(ticket.summary());
+                    }
+                }
+                Place::Waiting(_) => waiting.push(WaitingLine {
+                    task: placed.ticket.get(),
+                    on: ShortPlace::of(&placed.place).to_string(),
+                }),
+                Place::Running(_) | Place::Done => {}
+            }
+        }
+        self.ready.sort_by_key(|summary| summary.number);
+        self.waiting = Some(waiting);
+        self
+    }
+
     /// The screen with the profiles `profile::stale` names.
     #[must_use]
     pub fn with_stale(mut self, stale: Vec<StaleProfile>) -> Self {
@@ -421,6 +555,12 @@ impl Status {
 
     /// The screen as text.
     pub fn render_text(&self) -> String {
+        self.render(false)
+    }
+
+    /// The screen as text; with `more`, each open question in full, where it was raised and the
+    /// command that rules it.
+    pub fn render(&self, more: bool) -> String {
         let mut out = String::new();
         let mut line = |text: String| {
             out.push_str(&text);
@@ -434,12 +574,29 @@ impl Status {
             self.ready.len(),
             numbers(self.ready.iter().map(|t| t.number.get()))
         ));
+        if more {
+            for lane in &self.lane {
+                line(format!("  #{} {}", lane.task, lane.next));
+            }
+        }
         if !self.unparsed.is_empty() {
             line("Ready, does not parse:".to_owned());
             for task in &self.unparsed {
                 line(format!("  #{} {}", task.number, task.title));
                 for problem in &task.problems {
                     line(format!("    {problem}"));
+                }
+            }
+        }
+        if let Some(waiting) = &self.waiting {
+            line(format!(
+                "waiting   {}{}",
+                waiting.len(),
+                numbers(waiting.iter().map(|w| w.task))
+            ));
+            if more {
+                for wait in waiting {
+                    line(format!("  #{} {}", wait.task, wait.on));
                 }
             }
         }
@@ -461,6 +618,12 @@ impl Status {
             numbers(self.questions.iter().map(|q| q.number.get()))
         ));
         line(format!("running   {}", self.running_count));
+        for phase in &self.phases {
+            let epic = phase
+                .epic
+                .map_or_else(String::new, |epic| format!(" (epic #{epic})"));
+            line(format!("  {} #{}{epic}", phase.action, phase.task));
+        }
         for instance in &self.instances {
             let tasks: Vec<String> = instance
                 .tasks
@@ -517,7 +680,35 @@ impl Status {
             ));
         }
         for question in &self.questions {
-            line(format!("question  {} {}", question.number, question.title));
+            let detail = self
+                .question_details
+                .iter()
+                .find(|detail| detail.number == question.number.get());
+            let cut = detail.is_some_and(|detail| detail.text != question.title.as_str());
+            if !more {
+                let mark = if cut { " …" } else { "" };
+                line(format!(
+                    "question  {} {}{mark}",
+                    question.number, question.title
+                ));
+                continue;
+            }
+            line(format!("question  {}", question.number));
+            let text = detail.map_or(question.title.as_str(), |detail| detail.text.as_str());
+            for text_line in text.lines() {
+                line(if text_line.is_empty() {
+                    String::new()
+                } else {
+                    format!("  {text_line}")
+                });
+            }
+            if let Some(on) = detail.and_then(|detail| detail.raised_on) {
+                line(format!("  raised on #{on}"));
+            }
+            line(format!(
+                "  rule it: zaf board ruling {} \"<answer>\"",
+                question.number.get()
+            ));
         }
         out
     }

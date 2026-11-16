@@ -1,15 +1,22 @@
 #!/bin/sh
-# zaf description: fetch and merge the base as it stands on the remote into a slice, moving a lagging local base up and never back; up to date is quiet
-# zaf 1: conflicted: the merge stops on conflicts, the paths are in the log and the slice is unchanged
-# zaf 2: a backend failed or the call was refused (the arguments are not <slice> <base>, the slice is not open on that base, it has uncommitted work, jj is missing or the fetch failed); the slice is unchanged
+# zaf description: fetch and merge the base as it stands on the remote into a slice, moving a lagging local base up and never back; up to date is quiet; with `--keep` (what `sync-base` runs for a programmer) the workspace's uncommitted work rides along and a conflicted merge stays in the workspace
+# zaf 1: conflicted: the merge stops on conflicts and the paths are in the log; the slice is unchanged, or with `--keep` the conflicted merge is the workspace's working copy
+# zaf 2: a backend failed or the call was refused (the arguments are not <slice> <base> [--keep], the slice is not open on that base, it has uncommitted work (without `--keep`) or unresolved conflicts, jj is missing or the fetch failed); the slice is unchanged
 # zaf mode: 750
-# zaf group: team, release, merge
+# zaf group: team, release, implement, fix, merge
 slice=$1
 base=$2
 
 # Exit 1 means conflicted here (docs/zaf-actions.md §3), so every refusal is exit 2.
-if [ -z "$ZAF_ROOT" ] || [ "$#" -ne 2 ]; then
-    echo "usage: merge-base <slice> <base>, with ZAF_ROOT set" >&2
+keep=no
+if [ "$#" -eq 3 ] && [ "$3" = "--keep" ]; then
+    keep=yes
+elif [ "$#" -ne 2 ]; then
+    echo "usage: merge-base <slice> <base> [--keep], with ZAF_ROOT set" >&2
+    exit 2
+fi
+if [ -z "$ZAF_ROOT" ]; then
+    echo "usage: merge-base <slice> <base> [--keep], with ZAF_ROOT set" >&2
     exit 2
 fi
 
@@ -64,11 +71,22 @@ none() {
     [ -z "$ids" ]
 }
 
+# A merge left with conflicts is resolved before another one starts.
+if ! conflicted=$(jj_run log --no-graph -r @ -T conflict); then
+    exit 2
+fi
+if [ "$conflicted" = "true" ]; then
+    echo "slice $slice has unresolved conflicts; resolve them first:" >&2
+    jj_run resolve --list >&2
+    exit 2
+fi
+
 # The merge moves the working copy, so uncommitted work stays out of its way: commit it first.
+# With `--keep` the working copy itself becomes the merge, so the work rides along in it.
 if ! empty=$(jj_run log --no-graph -r @ -T empty); then
     exit 2
 fi
-if [ "$empty" != "true" ]; then
+if [ "$keep" = "no" ] && [ "$empty" != "true" ]; then
     echo "slice $slice has uncommitted work; commit it first" >&2
     exit 2
 fi
@@ -104,6 +122,47 @@ fi
 
 slice_revset="bookmarks(exact:\"$slice\")"
 
+if [ "$keep" = "yes" ]; then
+    # The workspace is the slice here: its working copy, the work in it and the commits under it.
+    if none "$base_revset ~ ::@"; then
+        echo "$slice is up to date with $base: nothing to merge"
+        exit 0
+    fi
+    if none "parents(@) ~ ::$base_revset"; then
+        # Nothing committed of its own: the working copy moves onto the base's tip.
+        jj_run rebase -r @ -d "$base_revset" || exit 2
+    else
+        jj_run rebase -r @ -d "parents(@)" -d "$base_revset" || exit 2
+    fi
+    if ! description=$(jj_run log --no-graph -r @ -T description); then
+        exit 2
+    fi
+    if [ -z "$description" ]; then
+        jj_run describe -m "Merge $base into $slice" || exit 2
+    fi
+    if ! conflicted=$(jj_run log --no-graph -r @ -T conflict); then
+        exit 2
+    fi
+    if [ "$conflicted" = "true" ]; then
+        if ! paths=$(jj_run resolve --list); then
+            exit 2
+        fi
+        echo "the merge of $base into $slice is in the workspace, and it conflicts in:" >&2
+        printf '%s\n' "$paths" >&2
+        echo "resolve those paths in the workspace; nothing was pushed" >&2
+        exit 1
+    fi
+    if [ "$empty" = "true" ]; then
+        # Nothing rode along: the merge is committed and the bookmark follows, as without --keep.
+        jj_run new || exit 2
+        jj_run bookmark set "$slice" -r @- || exit 2
+        echo "merged $base into $slice cleanly; nothing was pushed"
+    else
+        echo "merged $base into $slice cleanly; the uncommitted work is in the merge, which is the working copy; nothing was pushed"
+    fi
+    exit 0
+fi
+
 # The base has nothing the slice lacks.
 if none "$base_revset ~ ::$slice_revset"; then
     exit 0
@@ -121,14 +180,17 @@ if ! conflicted=$(jj_run log --no-graph -r @ -T conflict); then
     exit 2
 fi
 if [ "$conflicted" = "true" ]; then
-    # The paths first, then the slice back as it was: the merge commit is thrown away.
-    echo "the merge of $base into $slice conflicts in:" >&2
-    jj_run resolve --list >&2 || exit 2
+    # The slice back as it was, the merge commit thrown away, then the paths, last in the log.
+    if ! paths=$(jj_run resolve --list); then
+        exit 2
+    fi
     if ! merge_commit=$(jj_run log --no-graph -r @ -T 'commit_id'); then
         exit 2
     fi
     jj_run new "$slice_revset" || exit 2
     jj_run abandon "$merge_commit" || exit 2
+    echo "the merge of $base into $slice conflicts in:" >&2
+    printf '%s\n' "$paths" >&2
     exit 1
 fi
 

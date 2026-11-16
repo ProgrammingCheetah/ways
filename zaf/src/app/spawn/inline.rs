@@ -2,61 +2,39 @@
 //!
 //! A `zaf`-kind action (merge is one) is run by zaf alone, with no model and no wait, so it costs
 //! nothing: it holds no slot and no units, and running it changes nothing of the budget, which is
-//! derived from the run folders and the process table on every read. For each task whose
-//! standing is `Ready` at such an action, [`run_zaf_actions`] runs it, one task after another, and
-//! records the exit code in a [`Ran`]. A failure never stops the others: the task's standing is
-//! derived again at the next tick, still `Ready` at the same action, so it runs again then
-//! (#421 rulings 6 and 22).
+//! derived from the run folders and the process table on every read. For each lane entry the tick
+//! hands it, the ticket in the lane at such an action and let through by the gate
+//! ([`crate::app::schedule::tick::may_start`]), [`run_zaf_actions`] runs it, one after another,
+//! and records the exit code in a [`Ran`]. A failure never stops the others: the ticket is placed
+//! again at the next tick, still in the lane at the same action, so it runs again then (#421
+//! rulings 6 and 22), until it got nowhere three times at one head (a merge the forge refuses at a
+//! head that does not move): the gate then holds it, and the tick raises a question instead
+//! ([`super::failures`]).
 //!
-//! The module is pure: the caller hands in each task's phase list and facts and a `run` that
-//! performs `zaf do <action> <task>` and gives its exit code.
+//! The module is pure: the caller hands in the lane entries and a `run` that performs `zaf do
+//! <action> <task>` and gives its exit code.
 
 use super::outcome::{Ran, TickOutcome};
-use crate::app::actions::{
-    ActionKind, ActionName, ListedPhase, Standing, StandingFacts, derive_standing,
-};
+use crate::app::actions::ActionName;
 use crate::domain::TicketId;
+use crate::domain::schedule::LaneEntry;
 
-/// One task the tick reads: its type's phase list and what is known of it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TickTask {
-    /// The task.
-    pub task: TicketId,
-    /// Its type's phase list, each action with its declared `kind`, `ends` and `on-fail`.
-    pub list: Vec<ListedPhase>,
-    /// The facts its standing is derived from.
-    pub facts: StandingFacts,
-}
-
-impl TickTask {
-    /// The `zaf`-kind action the task is ready to run, if its standing is `Ready` at one.
-    pub fn ready_zaf_action(&self) -> Option<ActionName> {
-        let Standing::Ready { action, .. } = derive_standing(&self.list, &self.facts) else {
-            return None;
-        };
-        self.list
-            .iter()
-            .any(|phase| phase.action == action && phase.kind == ActionKind::Zaf)
-            .then_some(action)
-    }
-}
-
-/// Runs the ready `zaf`-kind action of each of `tasks`, in the order given, and lists each in
-/// the order it ran. `run(task, action)` performs `zaf do <action> <task>` and gives its exit
-/// code; whatever the code, the next task's action still runs.
+/// Runs the next action of each of `entries`, in the order given, and lists each in the order it
+/// ran. `run(task, action)` performs `zaf do <action> <task>` and gives its exit code; whatever the
+/// code, the next entry's action still runs.
 pub fn run_zaf_actions(
-    tasks: &[TickTask],
+    entries: &[LaneEntry],
     run: &mut dyn FnMut(TicketId, &ActionName) -> u8,
 ) -> Vec<Ran> {
-    let ready: Vec<(TicketId, ActionName)> = tasks
+    entries
         .iter()
-        .filter_map(|task| Some((task.task, task.ready_zaf_action()?)))
-        .collect();
-    ready
-        .into_iter()
-        .map(|(task, action)| {
-            let exit = run(task, &action);
-            Ran { task, action, exit }
+        .map(|entry| {
+            let exit = run(entry.ticket, &entry.next);
+            Ran {
+                task: entry.ticket,
+                action: entry.next.clone(),
+                exit,
+            }
         })
         .collect()
 }
@@ -64,11 +42,11 @@ pub fn run_zaf_actions(
 /// The outcome of a tick that did step 3 alone: [`TickOutcome::ran`] filled, the rest empty
 /// for the steps that fill them.
 pub fn run_inline(
-    tasks: &[TickTask],
+    entries: &[LaneEntry],
     run: &mut dyn FnMut(TicketId, &ActionName) -> u8,
 ) -> TickOutcome {
     TickOutcome {
-        ran: run_zaf_actions(tasks, run),
+        ran: run_zaf_actions(entries, run),
         ..TickOutcome::default()
     }
 }

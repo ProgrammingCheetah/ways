@@ -3,6 +3,12 @@
 //! The verbs that act as an instance (`claim`, `report`) read who it is from
 //! [`INSTANCE_VAR`], which the spawner sets, in the form the board prints it:
 //! `<role> instance <number> on #<epic>`.
+//!
+//! A `question` asked inside a phase run (`ZAF_RUN`, which the launcher sets) of the task it is
+//! raised on is also recorded in that run folder's `questions`; one that cannot be recorded exits
+//! `2`, the question open, so asking again records it.
+
+use std::path::Path;
 
 use serde_json::json;
 
@@ -13,15 +19,27 @@ use crate::app::actions::SliceRecords;
 use crate::app::board::{
     self, BoardError, ClaimCommand, DoneOutcome, FileOutcome, ReportCommand, RulingCommand,
 };
+use crate::app::hub::controls::{self, Failure};
+use crate::app::schedule::record;
 use crate::composition::Composition;
 use crate::domain::{Instance, InstanceNumber, NewTask, RoleName, Ticket, TicketId, TicketState};
-use crate::ports::{ClaimOutcome, NewQuestion};
+use crate::ports::{ClaimOutcome, NewQuestion, RUN_VAR};
 
 /// The environment variable naming the instance a verb acts as.
 pub const INSTANCE_VAR: &str = "ZAF_INSTANCE";
 
 /// How many claims a role without a batch size holds at once.
 const UNBATCHED: u32 = 1;
+
+/// Records `question`, just raised on `on`, in the phase run this process runs inside (`ZAF_RUN`),
+/// when that run is one of `on` that has not ended ([`record::record_question`]). Outside a run, or
+/// in a run of another task or of no task, nothing is written.
+fn record_in_run(on: TicketId, question: TicketId) -> Result<(), String> {
+    let Some(run_dir) = std::env::var_os(RUN_VAR).filter(|dir| !dir.is_empty()) else {
+        return Ok(());
+    };
+    record::record_question(Path::new(&run_dir), on, question).map(|_| ())
+}
 
 /// Runs a board action.
 pub fn run(cli: &Cli, action: &BoardAction) -> u8 {
@@ -112,6 +130,13 @@ pub fn run(cli: &Cli, action: &BoardAction) -> u8 {
                 door: *door,
             };
             board::question(board, &command).map(|number| {
+                // A question asked inside a phase run is part of that run's record.
+                if let Err(reason) = record_in_run(*on, number) {
+                    eprintln!(
+                        "zaf {path}: question {number} is open on {on}, but its run did not record it: {reason}"
+                    );
+                    return BACKEND;
+                }
                 let json = json!({ "question": number.get(), "on": on.get(), "door": door });
                 let kind = if *door { "door question" } else { "question" };
                 print(cli, &json, format!("{kind} {number} on {on}"))
@@ -238,6 +263,23 @@ fn read_body(path: &str, body: Option<&str>, file: Option<&std::path::Path>) -> 
     })
 }
 
+/// What `POST /api/answer` runs: the ruling of `zaf board ruling`, from the project at `root`
+/// ([`controls::rule`]). A project whose manifest or board cannot be composed is a failure of a
+/// backend, as for the verb.
+pub fn rule_in(
+    root: &Path,
+    home: Option<&Path>,
+    question: TicketId,
+    ruling: &str,
+) -> Result<Option<TicketId>, Failure> {
+    let composition = Composition::discover_with_home(root, home)
+        .map_err(|error| Failure::Failed(error.to_string()))?;
+    let board = composition
+        .board()
+        .map_err(|error| Failure::Failed(error.to_string()))?;
+    controls::rule(board.as_ref(), question, ruling)
+}
+
 /// The exit code a board error comes to.
 pub(super) fn exit_code(error: &BoardError) -> u8 {
     match error {
@@ -248,7 +290,7 @@ pub(super) fn exit_code(error: &BoardError) -> u8 {
         | BoardError::NotAnOpeningState(_)
         | BoardError::NoSuchType { .. } => REFUSED,
         // A read that failed is no answer about the task: exit 2, never a refusal.
-        BoardError::Unreadable(_) => BACKEND,
+        BoardError::Unreadable(_) | BoardError::Record(_) => BACKEND,
         BoardError::Port(error) => code_for(error),
     }
 }

@@ -55,6 +55,17 @@ pub fn hand_back(log: &Path) -> io::Result<Option<String>> {
     Ok(last)
 }
 
+/// A slice record that is there but cannot be read, or holds no value zaf would have written:
+/// `<path>: <why>`. It is never read as no record.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{}: {reason}", path.display())]
+pub struct RecordUnreadable {
+    /// The record.
+    pub path: PathBuf,
+    /// Why it does not read.
+    pub reason: String,
+}
+
 /// A project's records: `.zaf/slices/<task>` and `.zaf/slices/<task>.pr`, plain files.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SliceRecords {
@@ -77,8 +88,10 @@ impl SliceRecords {
         }
     }
 
-    /// Every task with a recorded pull request, read by the rule of [`Self::pr`]. An absent
-    /// folder, or a file that is no record, names none.
+    /// Every task with a pull request record, `<task>.pr`, whether or not it reads by the rule of
+    /// [`Self::pr`]: a record that cannot be read still names its task, so nothing that reads
+    /// this as "held by its pull request" lets go of a task on a read that failed. An absent
+    /// folder, or a file named otherwise, names none.
     pub fn tasks_with_pr(&self) -> BTreeSet<TicketId> {
         let Ok(entries) = fs::read_dir(&self.dir) else {
             return BTreeSet::new();
@@ -89,7 +102,8 @@ impl SliceRecords {
                 let name = entry.file_name().into_string().ok()?;
                 let digits = name.strip_suffix(".pr")?;
                 let task = digits.parse::<TicketId>().ok()?;
-                self.pr(task).map(|_| task)
+                // Gone since the listing: no record.
+                (!matches!(self.pr(task), Ok(None))).then_some(task)
             })
             .collect()
     }
@@ -99,13 +113,14 @@ impl SliceRecords {
     /// dropped task is back in `claim` and a reopened slice starts clean. A record that is not
     /// there is already forgotten. Every removal is tried, and the first error is returned.
     pub fn forget(&self, task: TicketId) -> io::Result<()> {
-        // Read before the record goes: it names the pull request whose check record goes too.
+        // Read before the record goes: it names the pull request whose check record goes too. A
+        // record that cannot be read names none, and goes all the same.
         let mut doomed = vec![
             self.dir.join(workspace_file(task)),
             self.dir.join(pr_file(task)),
             self.runs.join(check_file(Target::Task(task))),
         ];
-        if let Some(pr) = self.pr(task) {
+        if let Ok(Some(pr)) = self.pr(task) {
             doomed.push(self.runs.join(check_file(Target::Pr { pr, task: None })));
         }
         let mut first = Ok(());
@@ -127,11 +142,29 @@ impl SliceRecords {
         workspace_value(&text).map(Path::to_owned)
     }
 
-    /// The task's pull request. Read by the same rule that wrote it: a record that does not hold
-    /// is no record.
-    pub fn pr(&self, task: TicketId) -> Option<PrNumber> {
-        let text = fs::read_to_string(self.dir.join(pr_file(task))).ok()?;
-        pr_value(&text)
+    /// The task's pull request: none when no record is there. A record that is there but cannot
+    /// be read, or that does not hold by the rule that wrote it (ASCII digits alone), is the
+    /// error, never "no pull request": that would be a guess, and a reader that guessed none
+    /// would start over a task whose pull request is open.
+    pub fn pr(&self, task: TicketId) -> Result<Option<PrNumber>, RecordUnreadable> {
+        let path = self.dir.join(pr_file(task));
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(RecordUnreadable {
+                    path,
+                    reason: format!("cannot be read: {error}"),
+                });
+            }
+        };
+        match pr_value(&text) {
+            Some(pr) => Ok(Some(pr)),
+            None => Err(RecordUnreadable {
+                reason: format!("holds {}, not a pull request number", shown(&text)),
+                path,
+            }),
+        }
     }
 
     /// When the task's pull request record was written; none when that cannot be read.

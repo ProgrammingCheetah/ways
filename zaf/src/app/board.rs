@@ -1,7 +1,9 @@
 //! `zaf board ready|claim|report|handoff|question|ruling|done|file|lint`: reading and writing
 //! the board, and the hand-off on a task's pull request.
 
-use crate::app::actions::{Phase, PhaseUnreadable, SliceRecords, derive_phase, gather_phase_facts};
+use crate::app::actions::{
+    Phase, PhaseUnreadable, RecordUnreadable, SliceRecords, derive_phase, gather_phase_facts,
+};
 use crate::domain::{
     Instance, NewTask, TaskProblem, TaskTemplate, TaskTemplateError, Ticket, TicketId, TicketState,
     TicketType,
@@ -35,6 +37,9 @@ pub enum BoardError {
     /// `board handoff` found no pull request recorded for the task; nothing was written.
     #[error("{0} has no recorded pull request")]
     NoPullRequest(TicketId),
+    /// The task's pull request record is there but cannot be read; nothing was written.
+    #[error("the pull request record cannot be read: {0}")]
+    Record(#[from] RecordUnreadable),
     /// `board file` was given a body outside the task template; nothing was filed.
     #[error("the body is not a task: {0}")]
     NotATask(#[from] TaskTemplateError),
@@ -159,7 +164,7 @@ pub fn handoff(
     task: TicketId,
     text: &str,
 ) -> Result<PrNumber, BoardError> {
-    let pr = records.pr(task).ok_or(BoardError::NoPullRequest(task))?;
+    let pr = records.pr(task)?.ok_or(BoardError::NoPullRequest(task))?;
     forge.set_handoff(pr, text)?;
     Ok(pr)
 }
@@ -170,10 +175,18 @@ pub fn handoff(
 /// Asking the same text on the same issue again reuses the question still open
 /// instead of opening a second one, and returns its number.
 pub fn question(board: &dyn Board, command: &NewQuestion) -> Result<TicketId, BoardError> {
-    let open = board
-        .questions()?
-        .into_iter()
-        .find(|ticket| command.is_asked_by(ticket));
+    question_among(board, command, &board.questions()?)
+}
+
+/// [`question`] with the open questions already read: `open`, as the caller read them just before
+/// (step 5 of the tick reads them under the spawner's lock, so they are current). The same question
+/// open among them is given back; else it is raised. Either way its issue is made to wait.
+pub fn question_among(
+    board: &dyn Board,
+    command: &NewQuestion,
+    open: &[Ticket],
+) -> Result<TicketId, BoardError> {
+    let open = open.iter().find(|ticket| command.is_asked_by(ticket));
     let number = match open {
         Some(ticket) => ticket.id,
         None => board.open_question(command)?,
@@ -228,7 +241,7 @@ pub fn done(
         Phase::Done => return Ok(DoneOutcome::AlreadyDone),
         Phase::Land => {}
         _ => {
-            let merged = match records.pr(task) {
+            let merged = match records.pr(task)? {
                 Some(pr) => forge.merged(pr)?,
                 None => false,
             };

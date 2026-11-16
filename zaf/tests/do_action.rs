@@ -12,7 +12,9 @@ use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use common::{Project, outcome, write};
-use zaf::app::actions::{Caller, MINUTE, Nesting, RunRequest, RunResult, Tier, run_action};
+use zaf::app::actions::{
+    Caller, MINUTE, Nesting, RunRequest, RunResult, Terminal, Tier, run_action,
+};
 
 const MANIFEST: &str = r#"[project]
 name = "example"
@@ -637,6 +639,8 @@ fn request<'a>(
         only: None,
         slice: None,
         env: BTreeMap::new(),
+        terminal: Terminal::Absent,
+        run: None,
     }
 }
 
@@ -920,6 +924,56 @@ fn do_json_shows_a_declared_kind() {
     assert!(listed[0].get("kind").is_none(), "{stdout}");
     assert_eq!(listed[1]["name"], "waiter");
     assert_eq!(listed[1]["kind"], "wait");
+}
+
+#[test]
+fn do_json_shows_a_declared_terminal() {
+    let project = project();
+    action(&project, "plain", "", "true");
+    action(&project, "talk", "# zaf terminal: yes\n", "true");
+
+    let (code, stdout, stderr) = outcome(&zaf(&project, &["do", "--json"]));
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    let listed: serde_json::Value = serde_json::from_str(&stdout).expect(&stdout);
+    assert_eq!(listed[0]["name"], "plain");
+    assert!(listed[0].get("terminal").is_none(), "{stdout}");
+    assert_eq!(listed[1]["name"], "talk");
+    assert_eq!(listed[1]["terminal"], true);
+}
+
+/// A run whose stdin and stdout are no terminal, as a model's shell, a pipe or a test's are, does
+/// not start an action that needs one: `NOT_RUN`, exit 125, no log, and the body never ran. The
+/// same holds for `--json`.
+#[test]
+fn do_refuses_a_terminal_action_without_a_terminal() {
+    let project = project();
+    action(
+        &project,
+        "talk",
+        "# zaf terminal: yes\n",
+        ": > \"$ZAF_ROOT/ran\"",
+    );
+
+    let run = zaf(&project, &["do", "talk"]);
+    let (code, stdout, stderr) = outcome(&run);
+    assert_eq!(code, 125, "{stdout}{stderr}");
+    assert_eq!(stdout, "");
+    assert_eq!(
+        stderr,
+        "NOT_RUN talk: it needs a terminal, and this run has none\n"
+    );
+    assert!(!project.root.join("ran").exists(), "the body never ran");
+    assert!(logs_of(&project, "talk").is_empty(), "no log is left");
+
+    let (code, stdout, _) = outcome(&zaf(&project, &["do", "--json", "talk"]));
+    assert_eq!(code, 125);
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect(&stdout);
+    assert_eq!(json["result"], "NOT_RUN");
+    assert_eq!(
+        json["meaning"],
+        "it needs a terminal, and this run has none"
+    );
+    assert!(!project.root.join("ran").exists(), "the body never ran");
 }
 
 #[test]

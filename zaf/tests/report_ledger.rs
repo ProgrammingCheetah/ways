@@ -5,7 +5,7 @@ mod common;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use common::{Project, outcome, write};
+use common::{Project, outcome, without_tick_line, write};
 use rusqlite::Connection;
 use zaf::app::report::ledger::{LEDGER_FILE, Ledger, LedgerRow};
 use zaf::app::report::{self, PriceTable, Query};
@@ -211,7 +211,14 @@ fn spawn_ledger_failure_only_warns() {
     let (code, stdout, stderr) = outcome(&broken.zaf(&args));
     assert_eq!(code, healthy_code);
     assert_eq!(code, 0);
-    assert_eq!(stdout, healthy_stdout);
+    // Each block begins `tick HH:MM`, read from the clock: two runs that straddle a minute differ
+    // there alone, so the rest is what must match.
+    assert!(healthy_stdout.starts_with("tick "), "{healthy_stdout}");
+    assert!(stdout.starts_with("tick "), "{stdout}");
+    assert_eq!(
+        without_tick_line(&stdout),
+        without_tick_line(&healthy_stdout)
+    );
     assert!(stderr.contains("warning"), "{stderr}");
     assert!(stderr.contains(db.to_str().expect("utf-8")), "{stderr}");
 }

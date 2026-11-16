@@ -2,9 +2,11 @@
 //!
 //! `list` prints one line per open epic, `#<n> <stage> <done> of <total>  <title>`; `show`
 //! prints that line for one epic and then one indented line per task,
-//! `#<t> <state> [<group>]  <title>`. `sign`
+//! `#<t> <state> [<group>]  <title>`, and with `--more` a blank line and the epic's body. `sign`
 //! prints `signed #<n> sha256:<hex>`, or `#<n> is already signed` when the signature holds the
-//! body; it exits 1 inside an instance or for a ticket that is no open epic.
+//! body; it exits 1 inside an instance or for a ticket that is no open epic. A new signature asks
+//! the running scheduler for a tick; a request that cannot be written says so on stderr and
+//! changes neither the signature nor the exit.
 
 use std::time::SystemTime;
 
@@ -14,6 +16,7 @@ use super::exit::{self, BACKEND, OK, REFUSED};
 use super::{Cli, EpicAction};
 use crate::adapters::process;
 use crate::app::epic::{self, EpicError, SignGuard, SignOutcome};
+use crate::app::schedule::request;
 use crate::composition::Composition;
 
 /// Runs the verb.
@@ -40,6 +43,8 @@ pub fn run(cli: &Cli, action: &EpicAction) -> u8 {
         EpicAction::Show { epic } => epic::show(board.as_ref(), *epic).map(|view| {
             if cli.json {
                 println!("{}", json!(view));
+            } else if cli.more {
+                println!("{}", view.render_more());
             } else {
                 println!("{}", view.render());
             }
@@ -68,6 +73,17 @@ pub fn run(cli: &Cli, action: &EpicAction) -> u8 {
                     );
                 } else {
                     println!("{terse}");
+                }
+                // A signed epic is planned at the next tick: the scheduler that runs is asked for
+                // it now. With none, nothing is asked. A request that cannot be written is one
+                // line on stderr; the epic stays signed and the exit is the signature's.
+                if signed {
+                    let who = format!("sign {epic}");
+                    if let Err(not_asked) =
+                        request::ask(&state_dir, &who, SystemTime::now(), &process::alive)
+                    {
+                        eprintln!("zaf {path}: {}", not_asked.left_to_the_timer(&who));
+                    }
                 }
             })
         }

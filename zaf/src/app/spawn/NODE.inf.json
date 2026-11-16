@@ -29,18 +29,18 @@
       "node": false
     },
     {
-      "name": "failures.rs",
-      "role": "tick steps 5 and 6: a model phase whose last three runs on a task all ended non-zero is not started, and one question is raised on the task; derived from the phase run folders each tick, never stored; a ruling lets it start again",
+      "name": "digest.rs",
+      "role": "the text block a real tick prints (header, who asked for a scheduler's tick, slots, each move and the count line, what it did, what runs, what was skipped, what waits on the Engineer, nothing to do) and the scheduler's next-tick and lock-held lines; pure, time injected",
       "node": false
     },
     {
-      "name": "failures/",
+      "name": "digest/",
       "role": "tests.rs",
       "node": false
     },
     {
       "name": "inline.rs",
-      "role": "tick step 3: run each task's ready zaf-kind action with zaf do, one after another, at no budget cost; a failure never stops the rest",
+      "role": "tick step 3: run each lane entry's zaf-kind action with zaf do, one after another, at no budget cost; a failure never stops the rest",
       "node": false
     },
     {
@@ -49,38 +49,18 @@
       "node": false
     },
     {
-      "name": "question.rs",
-      "role": "tick step 5: a failed wait with no on-fail raises one question on its task, unless it has an open one; starts nothing, charges nothing",
-      "node": false
-    },
-    {
-      "name": "question/",
-      "role": "tests.rs",
-      "node": false
-    },
-    {
-      "name": "waits.rs",
-      "role": "tick step 4: launch each task's ready wait action detached with zaf spawn phase, never waiting for it, at no budget cost; a failed launch is logged and the rest still go",
-      "node": false
-    },
-    {
-      "name": "waits/",
-      "role": "tests.rs",
+      "name": "mod.rs",
+      "role": "prepare (lost, orphaned claims, plan, reserve under spawn.lock), release_orphaned (also for one task, as `zaf spawn phase` asks), launch, launch_all, dry run",
       "node": false
     },
     {
       "name": "outcome.rs",
-      "role": "TickOutcome { started, waits, ran, questions }: what a tick did; idle when all are empty",
-      "node": false
-    },
-    {
-      "name": "mod.rs",
-      "role": "prepare (lost, orphaned claims, plan, reserve under spawn.lock), launch, launch_all, dry run",
+      "role": "TickOutcome { started, waits, ran, questions, asked }: what a tick did, each question raised with its cause (Asked, `asked #61 on #7: <cause>`); idle when all are empty",
       "node": false
     },
     {
       "name": "phase.rs",
-      "role": "`zaf spawn phase`: checks the action is the task's current phase and none runs, takes the next instance number and writes the phase run folder under spawn.lock; reads it back for the launcher; records the child's exit code in the folder's `exit` file before anything that follows",
+      "role": "`zaf spawn phase`: gathers the task as the tick does and passes it through the tick's gate (app/schedule/tick.rs may_start), refusing in its words, and for a model action counts the slots under spawn.lock; releases the task's claim when its instance has ended; takes the next instance number and writes the phase run folder under spawn.lock (through app/schedule/record.rs); reads it back for the launcher; records the head the phase left and then the exit code before anything that follows; opens the run folder of an inline `zaf`-kind run once the gate, asked again under spawn.lock, lets it (open_inline), marked with the tick's process",
       "node": false
     },
     {
@@ -89,12 +69,12 @@
       "node": false
     },
     {
-      "name": "phase_tick.rs",
-      "role": "the phase steps of zaf spawn --once: derives each claimed or ready phased task's standing from the forge and the phase run folders, storing none, and runs tick steps 3 to 6 in order into one TickOutcome; an unreadable task is named and skipped",
+      "name": "record.rs",
+      "role": "TickRecord::last: the last line of the trace (.zaf/ticks.jsonl) read back, its time and what the tick did; watch_running: whether a scheduler holds .zaf/scheduler.lock; both only read, nothing is written",
       "node": false
     },
     {
-      "name": "phase_tick/",
+      "name": "record/",
       "role": "tests.rs",
       "node": false
     },
@@ -110,7 +90,7 @@
     },
     {
       "name": "start.rs",
-      "role": "tick step 6: plan the one model phase to start, the longest ready (or failed wait's on-fail) that fits the budget, and start it without waiting; a phase ready STARVE_AFTER (30 minutes) that does not fit holds the budget, so no other model phase starts",
+      "role": "tick step 6: plan the one model phase to start from the lane entries and the epic launches, the heaviest candidate (age plus priority) that fits the budget, walked by raw age, and start it without waiting; a phase ready STARVE_AFTER (30 minutes) that does not fit ends the walk, so nothing ready after it starts, whatever its priority",
       "node": false
     },
     {
@@ -129,6 +109,16 @@
       "node": false
     },
     {
+      "name": "stop.rs",
+      "role": "`zaf spawn stop`: finds the live phase run folder of a task, ends its process and group (terminate, a grace, then kill) and releases the task's claim through the Board port; none live is refused",
+      "node": false
+    },
+    {
+      "name": "stop/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
       "name": "tests.rs",
       "role": "tick and launch tests",
       "node": false
@@ -140,6 +130,26 @@
     },
     {
       "name": "tick/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "waits.rs",
+      "role": "tick step 4: launch each lane entry's wait action detached with zaf spawn phase, never waiting for it, at no budget cost; a failed launch is logged and the rest still go",
+      "node": false
+    },
+    {
+      "name": "waits/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "watch.rs",
+      "role": "the watches a hub runs for POST /api/watch: Watches (the owner, whose drop ends every watch) and WatchHandle (start and stop, which end nothing by being dropped); a watch is the scheduler's loop on a thread of the hub's process, holding the project's scheduler.lock as the hub, so watch_running reads it; one watch a project whoever started it, and a stop ends it after its current tick, never a scheduler another process holds; Tick is what runs one tick; SCHEDULED_BY_VAR tells a tick it is the hub's scheduler's own",
+      "node": false
+    },
+    {
+      "name": "watch/",
       "role": "tests.rs",
       "node": false
     }

@@ -215,7 +215,7 @@ fn an_end_needs_a_kind() {
 }
 
 #[test]
-fn on_fail_is_for_waits() {
+fn on_fail_is_for_waits_and_zaf_actions() {
     let wait = parsed(&block(
         "# zaf kind: wait\n# zaf ends: ci-done\n# zaf on-fail: fix\n",
     ));
@@ -224,14 +224,17 @@ fn on_fail_is_for_waits() {
         Some(ActionName::from("fix")),
         "a wait names its fix"
     );
-    for kind in ["model", "zaf"] {
-        let error = refusal(&block(&format!(
-            "# zaf kind: {kind}\n# zaf ends: exit\n# zaf on-fail: fix\n"
-        )));
-        assert_eq!(error.line, 5, "kind {kind}");
-        assert!(error.reason.contains("on-fail"), "kind {kind}: {error}");
-        assert!(error.reason.contains("wait"), "kind {kind}: {error}");
-    }
+    // A merge refused for a conflict starts the fix (slice 8).
+    let merge = parsed(&block(
+        "# zaf kind: zaf\n# zaf ends: merged\n# zaf on-fail: fix\n",
+    ));
+    assert_eq!(merge.metadata.on_fail, Some(ActionName::from("fix")));
+    let error = refusal(&block(
+        "# zaf kind: model\n# zaf ends: exit\n# zaf on-fail: fix\n",
+    ));
+    assert_eq!(error.line, 5);
+    assert!(error.reason.contains("on-fail"), "{error}");
+    assert!(error.reason.contains("wait"), "{error}");
     let error = refusal(&block("# zaf on-fail: fix\n"));
     assert_eq!(error.line, 3);
     assert!(error.reason.contains("on-fail"), "{error}");
@@ -246,6 +249,87 @@ fn a_wait_may_omit_on_fail() {
     let action = parsed(&block("# zaf kind: wait\n# zaf ends: review-posted\n"));
     assert_eq!(action.metadata.kind, Some(ActionKind::Wait));
     assert_eq!(action.metadata.on_fail, None);
+}
+
+#[test]
+fn terminal_is_off_unless_declared() {
+    assert!(!parsed(&block("")).metadata.terminal);
+    assert!(parsed(&block("# zaf terminal: yes\n")).metadata.terminal);
+}
+
+#[test]
+fn terminal_takes_only_yes_and_only_once() {
+    for value in ["no", "Yes", "true", "", "yes please"] {
+        let error = refusal(&block(&format!("# zaf terminal: {value}\n")));
+        assert_eq!(error.line, 3, "terminal {value:?}");
+        assert!(error.reason.contains("terminal"), "{value:?}: {error}");
+        assert!(error.reason.contains("`yes`"), "{value:?}: {error}");
+    }
+    let error = refusal(&block("# zaf terminal: yes\n# zaf terminal: yes\n"));
+    assert_eq!(error.line, 4);
+    assert!(error.reason.contains("twice"), "{error}");
+    // The unknown-key refusal names it among the keys.
+    let error = refusal(&block("# zaf terminals: yes\n"));
+    assert!(error.reason.contains("on-fail and terminal"), "{error}");
+}
+
+#[test]
+fn terminal_is_not_for_a_phase_action() {
+    for kind in ["model", "wait", "zaf"] {
+        let error = refusal(&block(&format!(
+            "# zaf kind: {kind}\n# zaf ends: exit\n# zaf terminal: yes\n"
+        )));
+        assert_eq!(error.line, 5, "kind {kind}: the terminal line");
+        assert!(error.reason.contains("`land`"), "kind {kind}: {error}");
+        assert!(error.reason.contains("`terminal`"), "kind {kind}: {error}");
+        assert!(error.reason.contains("`kind`"), "kind {kind}: {error}");
+    }
+    // Declared in the other order, the same refusal on the same line.
+    let error = refusal(&block(
+        "# zaf terminal: yes\n# zaf kind: model\n# zaf ends: exit\n",
+    ));
+    assert_eq!(error.line, 3);
+}
+
+#[test]
+fn the_stdio_plan_follows_the_file_and_the_caller() {
+    let logged = parsed(&block("")).metadata;
+    let terminal = parsed(&block("# zaf terminal: yes\n")).metadata;
+    for (runs_as, caller) in [
+        (RunsAs::Action, Terminal::Present),
+        (RunsAs::Action, Terminal::Absent),
+        (RunsAs::Hook, Terminal::Present),
+        (RunsAs::Hook, Terminal::Absent),
+    ] {
+        assert_eq!(
+            stdio_plan(&logged, runs_as, caller),
+            Ok(StdioPlan::Logged),
+            "{runs_as:?}, {caller:?}"
+        );
+    }
+    assert_eq!(
+        stdio_plan(&terminal, RunsAs::Action, Terminal::Present),
+        Ok(StdioPlan::OnTerminal)
+    );
+    assert_eq!(
+        stdio_plan(&terminal, RunsAs::Action, Terminal::Absent),
+        Err("it needs a terminal, and this run has none")
+    );
+    for caller in [Terminal::Present, Terminal::Absent] {
+        assert_eq!(
+            stdio_plan(&terminal, RunsAs::Hook, caller),
+            Err(HOOK_HAS_NO_TERMINAL),
+            "{caller:?}"
+        );
+    }
+}
+
+#[test]
+fn only_a_logged_run_takes_the_manifests_bound() {
+    assert_eq!(StdioPlan::Logged.time_bound(None, 30), Some(30));
+    assert_eq!(StdioPlan::Logged.time_bound(Some(5), 30), Some(5));
+    assert_eq!(StdioPlan::OnTerminal.time_bound(None, 30), None);
+    assert_eq!(StdioPlan::OnTerminal.time_bound(Some(5), 30), Some(5));
 }
 
 #[test]
@@ -780,20 +864,51 @@ fn a_caller_prints_on_one_line() {
 
 /// Runs the project action `name` as the Engineer from the project root.
 fn run_project_action(place: &Tiers, name: &str) -> RunOutcome {
-    run_action(&RunRequest {
+    run_action(&request(place, name, Terminal::Absent, MINUTE))
+}
+
+/// A run of the project action `name` as the Engineer from the project root, for a caller with or
+/// without a terminal, whose manifest bound is one `minute`.
+fn request<'a>(
+    place: &'a Tiers,
+    name: &'a str,
+    terminal: Terminal,
+    minute: std::time::Duration,
+) -> RunRequest<'a> {
+    RunRequest {
         name,
         args: &[],
         cwd: &place.root,
         project_root: Some(&place.root),
         home: &place.home,
         timeout_minutes: 1,
-        minute: MINUTE,
+        minute,
         nesting: Nesting::default(),
         caller: Caller::Engineer,
         only: None,
         slice: None,
         env: std::collections::BTreeMap::new(),
-    })
+        terminal,
+        run: None,
+    }
+}
+
+/// An executable file at `path` with the usual metadata, `extra` lines of it, then `body`.
+fn script(path: &Path, extra: &str, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+    let text = format!("#!/bin/sh\n# zaf description: d\n# zaf 1: failed\n{extra}{body}\n");
+    std::fs::write(path, text).expect("write");
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+}
+
+/// The process group `pid` is in, as `ps` reads it.
+fn group_of(pid: &str) -> String {
+    let output = std::process::Command::new("ps")
+        .args(["-o", "pgid=", "-p", pid])
+        .output()
+        .expect("ps");
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
 }
 
 /// An executable project action with valid metadata that leaves `ran` in the root when it runs.
@@ -828,4 +943,119 @@ fn no_shebang_is_refused_before_spawning() {
     let outcome = run_project_action(&place, "bare");
     assert_eq!(outcome.result, RunResult::Ok, "{outcome:?}");
     assert!(place.root.join("ran").exists(), "the body ran");
+}
+
+#[test]
+fn a_terminal_action_never_runs_without_a_terminal() {
+    let place = Tiers::new();
+    let file = place.root.join(".zaf/actions/talk");
+    script(&file, "# zaf terminal: yes\n", ": > \"$ZAF_ROOT/ran\"");
+
+    let outcome = run_project_action(&place, "talk");
+
+    assert_eq!(outcome.result, RunResult::NotRun);
+    assert_eq!(outcome.exit, NOT_RUN_EXIT);
+    assert_eq!(outcome.log, None, "no log is left");
+    assert_eq!(
+        outcome.headline().expect("a refusal prints"),
+        "NOT_RUN talk: it needs a terminal, and this run has none"
+    );
+    assert!(!place.root.join("ran").exists(), "the body never ran");
+    assert!(!place.root.join(".zaf/logs").exists(), "no log folder");
+}
+
+#[test]
+fn a_terminal_action_keeps_the_callers_group_and_logs_one_line() {
+    let place = Tiers::new();
+    let file = place.root.join(".zaf/actions/talk");
+    // Its group, and a sleep past the manifest's bound of one (short) minute, which a body on the
+    // terminal does not take.
+    script(
+        &file,
+        "# zaf terminal: yes\n",
+        "ps -o pgid= -p $$ | tr -d ' ' > \"$ZAF_ROOT/group\"\nsleep 0.6",
+    );
+
+    let outcome = run_action(&request(
+        &place,
+        "talk",
+        Terminal::Present,
+        std::time::Duration::from_millis(200),
+    ));
+
+    assert_eq!(outcome.result, RunResult::Ok, "{outcome:?}");
+    assert!(outcome.on_terminal);
+    assert!(outcome.seconds >= 0.6, "no bound applied: {outcome:?}");
+    let group = std::fs::read_to_string(place.root.join("group")).expect("the body wrote it");
+    assert_eq!(
+        group.trim(),
+        group_of(&std::process::id().to_string()),
+        "the body is in the caller's group, not one of its own"
+    );
+    let log = outcome.log.expect("a log");
+    assert_eq!(
+        std::fs::read_to_string(&log).expect("the log"),
+        "zaf: talk ran on the terminal; its output went there and is not kept here\n"
+    );
+}
+
+#[test]
+fn a_terminal_action_keeps_a_bound_it_declares() {
+    let place = Tiers::new();
+    let file = place.root.join(".zaf/actions/talk");
+    // The inner shell is the body's child, in the caller's group with it: the kill must take it
+    // too, or it outlives the body and leaves its mark.
+    script(
+        &file,
+        "# zaf terminal: yes\n# zaf timeout: 1\n",
+        "sh -c 'sleep 3; : > \"$ZAF_ROOT/child-survived\"'\n: > \"$ZAF_ROOT/survived\"",
+    );
+
+    let started = std::time::Instant::now();
+    let outcome = run_action(&request(
+        &place,
+        "talk",
+        Terminal::Present,
+        std::time::Duration::from_millis(300),
+    ));
+
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(
+        (outcome.result, outcome.exit),
+        (RunResult::Fail, TIMEOUT_EXIT)
+    );
+    assert_eq!(outcome.meaning.as_deref(), Some("timed out after 1 min"));
+    assert!(outcome.on_terminal);
+    std::thread::sleep(std::time::Duration::from_millis(3500).saturating_sub(started.elapsed()));
+    assert!(!place.root.join("survived").exists(), "the body was killed");
+    assert!(
+        !place.root.join("child-survived").exists(),
+        "the body's child was killed"
+    );
+}
+
+#[test]
+fn a_hook_never_takes_the_terminal() {
+    let place = Tiers::new();
+    let file = place.root.join(".zaf/actions/hooks/pre-tick");
+    script(&file, "# zaf terminal: yes\n", ": > \"$ZAF_ROOT/ran\"");
+
+    let outcome = run_hook(&request(
+        &place,
+        "hooks/pre-tick",
+        Terminal::Present,
+        MINUTE,
+    ));
+
+    assert_eq!(outcome.result, RunResult::NotRun, "{outcome:?}");
+    assert_eq!(outcome.exit, NOT_RUN_EXIT);
+    assert_eq!(
+        outcome.meaning.as_deref(),
+        Some("it needs a terminal, and a hook runs with no one there")
+    );
+    assert!(!place.root.join("ran").exists(), "the hook never ran");
 }

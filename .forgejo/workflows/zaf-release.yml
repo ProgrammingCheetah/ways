@@ -22,6 +22,11 @@ concurrency:
   group: zaf-release-${{ inputs.tag || github.ref }}
   cancel-in-progress: false
 
+env:
+  # rustup gets a home on the job's own disk: updating the toolchain baked into the runner's
+  # image in place fails with "Invalid cross-device link" whenever a new stable is out.
+  RUSTUP_HOME: /tmp/rustup
+
 jobs:
   release:
     name: release (x86_64-unknown-linux-musl)

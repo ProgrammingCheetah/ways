@@ -156,6 +156,41 @@ fn latest_commit_reads_the_workspace() {
 }
 
 #[test]
+fn a_merge_in_progress_is_the_latest_commit() {
+    let fixture = Fixture::new(false);
+    let (dir, _base) = fixture.slice();
+    write(&dir, "slice.txt", "slice\n");
+    jj(&dir, &["commit", "-m", "On the slice"]);
+    let slice = jj(&dir, &["log", "--no-graph", "-r", "@-", "-T", "commit_id"]);
+    // A second line of work, then the working copy made a merge of both, as `sync-base` leaves it.
+    jj(&dir, &["new", "root()"]);
+    write(&dir, "other.txt", "other\n");
+    jj(&dir, &["commit", "-m", "Elsewhere"]);
+    let other = jj(&dir, &["log", "--no-graph", "-r", "@-", "-T", "commit_id"]);
+    jj(&dir, &["new", &slice, &other]);
+    let merge = jj(&dir, &["log", "--no-graph", "-r", "@", "-T", "commit_id"]);
+    assert_eq!(
+        JjVcs.latest_commit(&dir),
+        Ok(CommitId::from(merge.as_str())),
+        "the merge, never an error for two parents"
+    );
+    // Committed (which rewrites it, described), the merge is the parent like any other commit.
+    jj(&dir, &["commit", "-m", "Merged"]);
+    let merged = jj(&dir, &["log", "--no-graph", "-r", "@-", "-T", "commit_id"]);
+    assert_eq!(
+        jj(
+            &dir,
+            &["log", "--no-graph", "-r", "@-", "-T", "parents.len()"]
+        ),
+        "2"
+    );
+    assert_eq!(
+        JjVcs.latest_commit(&dir),
+        Ok(CommitId::from(merged.as_str()))
+    );
+}
+
+#[test]
 fn diffs_come_as_stat_first_and_hunks_on_request() {
     let fixture = Fixture::new(false);
     let (dir, base) = fixture.slice();

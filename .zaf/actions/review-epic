@@ -1,0 +1,38 @@
+#!/bin/sh
+# zaf description: the Designer (teams:designer) challenges one open epic, unattended, in the build profile: one question on the epic for each choice that is unclear, contradictory, untestable or a hidden one-way door; it edits nothing and signs nothing
+# zaf 1: refused: the argument is not <epic>, ZAF_ROOT is unset, or the epic is not an open epic
+# zaf 2: a backend failed (the epic could not be read, or the Designer exited non-zero)
+# zaf mode: 755
+# zaf timeout: 45
+
+# The epic as a bare number: `#12` and `12` are the same.
+epic=${1#\#}
+if [ "$#" -ne 1 ] || [ -z "$ZAF_ROOT" ]; then
+    echo "usage: review-epic <epic>, run by zaf with ZAF_ROOT set" >&2
+    exit 1
+fi
+case $epic in
+    "" | *[!0-9]*)
+        echo "epic $1 is not an issue number" >&2
+        exit 1
+        ;;
+esac
+
+cd "$ZAF_ROOT" || exit 2
+
+# Only an open epic is reviewed: `zaf epic show` refuses anything else with 1, and a board that
+# cannot answer is 2. Its lines stay in this action's log.
+zaf epic show "$epic"
+status=$?
+case $status in
+    0) ;;
+    1) exit 1 ;;
+    *) exit 2 ;;
+esac
+
+prompt="You are the Designer, as the challenger of a document the Engineer signs: epic #$epic of the project at $ZAF_ROOT. Read the epic with \`zaf epic show $epic --more\`, then the design pages the project names (its CLAUDE.md and its design source say where). For every choice in the epic that is unclear, contradictory, untestable or a hidden one-way door, raise one question on the epic: \`zaf board question $epic \"<the question, with a pre-filled answer and its evidence>\"\`, adding \`--door\` when the decision is one-way. Never edit the epic, never sign it, and write no code and no file. End with a one-screen summary in plain words as your final message: what you read, each question you raised, and what you could not check."
+
+# The Designer runs once in the project's build profile, as the planning instance and the
+# challenger do, at the model and effort its brief names.
+CLAUDE_CONFIG_DIR="$ZAF_ROOT/.zaf/profiles/build" claude -p "$prompt" \
+    --agent teams:designer --model opus --effort xhigh --add-dir "$ZAF_ROOT" || exit 2

@@ -26,9 +26,28 @@ pub(super) struct IssueRow {
     /// Set for a pull request, `null` for an issue.
     #[serde(default)]
     pub pull_request: Option<serde_json::Value>,
+    /// When it was opened, RFC 3339 with the instance's offset.
+    #[serde(default)]
+    pub created_at: Option<String>,
+    /// When it was closed; `null` while it is open.
+    #[serde(default)]
+    pub closed_at: Option<String>,
 }
 
 impl IssueRow {
+    /// When it was opened, when Forgejo said in a form that reads.
+    pub fn opened(&self) -> Option<SystemTime> {
+        self.created_at.as_deref().and_then(parse_time)
+    }
+
+    /// When it was closed: none while it is open, or when Forgejo did not say in a form that reads.
+    pub fn closed(&self) -> Option<SystemTime> {
+        if self.is_open() {
+            return None;
+        }
+        self.closed_at.as_deref().and_then(parse_time)
+    }
+
     /// Whether it carries the label `name`.
     pub fn has_label(&self, name: &str) -> bool {
         self.labels.iter().any(|label| label.name == name)

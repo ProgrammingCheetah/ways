@@ -148,10 +148,13 @@ impl GhCommand {
         Ok(pages.into_iter().flatten().collect())
     }
 
-    /// `gh` with `argv` and the environment every call gets, not yet run.
+    /// `gh` with `argv` and the environment every call gets, not yet run. It runs in a process
+    /// group of its own, so a Ctrl-C meant for zaf (the scheduler's, between two ticks) does not
+    /// cut a read short; it never reads the terminal.
     fn command(&self, argv: &[&str]) -> Command {
         let mut command = Command::new(PROGRAM);
         command.args(argv);
+        std::os::unix::process::CommandExt::process_group(&mut command, 0);
         for (key, value) in &self.env {
             command.env(key, value);
         }

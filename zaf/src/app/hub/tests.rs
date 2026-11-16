@@ -3,9 +3,13 @@ use std::time::Duration;
 use super::*;
 use crate::domain::EpicStage;
 
+mod liveness;
+use liveness::{Dead, board, gathered, instance, refresh, run_folder};
+
 fn ticket(number: u64, phase: Phase) -> TicketRow {
     TicketRow {
         number,
+        title: "Name each ticket in the hub".to_owned(),
         who: "sonnet programmer".to_owned(),
         phase,
         word: "testing".to_owned(),
@@ -17,6 +21,7 @@ fn ticket(number: u64, phase: Phase) -> TicketRow {
 fn epic() -> EpicRow {
     EpicRow {
         number: 103,
+        title: "The hub".to_owned(),
         stage: EpicStage::Challenged,
         done: 17,
         total: 82,
@@ -36,7 +41,13 @@ fn epic() -> EpicRow {
 }
 
 fn frame_of(epic: EpicRow, width: usize) -> String {
-    draw(&Snapshot { epics: vec![epic] }, width)
+    draw(
+        &Snapshot {
+            epics: vec![epic],
+            ..Snapshot::default()
+        },
+        width,
+    )
 }
 
 #[test]
@@ -420,4 +431,205 @@ fn no_model_row_passes_the_width() {
             );
         }
     }
+}
+
+#[test]
+fn dead_instance_frees_its_slot() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    run_folder(dir.path(), &instance(7), 4242);
+    let board = board();
+    let running = gathered(dir.path(), &board, &Dead::default());
+    let epic = &running.epics[0];
+    assert_eq!(epic.slots_free, 1, "one instance holds one slot");
+    assert_eq!(epic.tickets.len(), 1, "its task is drawn");
+
+    // The same folder, its process gone: no slot, no row, in the state and in the frame.
+    let gone = gathered(dir.path(), &board, &Dead::new([4242].into()));
+    let epic = &gone.epics[0];
+    assert_eq!(epic.slots_free, 2, "{epic:?}");
+    assert!(epic.tickets.is_empty(), "{epic:?}");
+    let frame = draw(&gone, 100);
+    assert!(frame.contains("2 of 2 slots free"), "{frame}");
+    assert!(!frame.contains("#143"), "{frame}");
+}
+
+#[test]
+fn instance_ending_between_redraws() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    run_folder(dir.path(), &instance(7), 4242);
+    let board = board();
+    let dead = Dead::default();
+    let mut snapshot = gathered(dir.path(), &board, &dead);
+    let before = draw(&snapshot, 100);
+    assert!(before.contains("1 of 2 slots free"), "{before}");
+    assert!(before.contains("#143"), "{before}");
+
+    // The process ends; the board is not read again, only the process table is.
+    dead.borrow_mut().insert(4242);
+    refresh(&mut snapshot, dir.path(), &dead).expect("reads");
+    let after = draw(&snapshot, 100);
+    assert!(after.contains("2 of 2 slots free"), "{after}");
+    assert!(!after.contains("#143"), "{after}");
+}
+
+#[test]
+fn a_quiet_redraw_reads_the_process_table() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    run_folder(dir.path(), &instance(7), 4242);
+    let board = board();
+    let dead = Dead::default();
+    let reads = std::cell::Cell::new(0_u32);
+    let second = |seconds: u64| std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(seconds);
+    let (mut watch, first) = Watch::start(
+        |_| {
+            reads.set(reads.get() + 1);
+            Ok(gathered(dir.path(), &board, &dead))
+        },
+        |snapshot: &mut Snapshot| refresh(snapshot, dir.path(), &dead),
+        second(0),
+        Mark::default(),
+        100,
+    )
+    .expect("starts");
+    assert!(first.contains("1 of 2 slots free"), "{first}");
+    dead.borrow_mut().insert(4242);
+    let next = watch
+        .step(second(1), Mark::default())
+        .expect("steps")
+        .expect("a frame");
+    assert!(next.contains("2 of 2 slots free"), "{next}");
+    assert!(!next.contains("#143"), "{next}");
+    assert_eq!(reads.get(), 1, "the board was not read again");
+}
+
+#[test]
+fn running_row_names_its_ticket_by_id_and_title() {
+    let frame = frame_of(epic(), 100);
+    let line = frame
+        .lines()
+        .find(|line| line.contains("#143"))
+        .expect("ticket");
+    assert!(
+        line.trim_start()
+            .starts_with("#143  Name each ticket in the hub"),
+        "the title follows the id: {frame}"
+    );
+    assert!(line.contains("sonnet programmer"), "{frame}");
+    assert!(line.ends_with("40s"), "{frame}");
+    let epic_line = frame.lines().next().expect("epic line");
+    assert!(epic_line.starts_with("epic #103  The hub"), "{frame}");
+}
+
+#[test]
+fn long_title_is_cut_to_the_width() {
+    let title = "A ticket title that runs on and on, far past what any narrow terminal could show";
+    let mut long = epic();
+    long.groups.clear();
+    long.tickets[0].title = title.to_owned();
+    let wide = frame_of(long.clone(), 300);
+    assert!(wide.contains(title), "whole at a wide width: {wide}");
+    assert!(!wide.contains('…'), "{wide}");
+    let lines = wide.lines().count();
+    for width in [70, 80, 100] {
+        let frame = frame_of(long.clone(), width);
+        assert_eq!(frame.lines().count(), lines, "cut, never wrapped: {frame}");
+        let line = frame
+            .lines()
+            .find(|line| line.contains("#143"))
+            .expect("ticket");
+        assert!(line.contains("#143  A ticket"), "{frame}");
+        assert!(
+            line.contains('…'),
+            "cut with an ellipsis at {width}: {frame}"
+        );
+        assert!(line.ends_with("40s"), "the tail is kept: {frame}");
+        assert!(line.chars().count() <= width, "{frame}");
+        assert!(line.contains('['), "the bar is kept: {frame}");
+    }
+}
+
+/// The state gathered from `board` and `state_dir`'s run folders, every process alive.
+fn state_of(state_dir: &std::path::Path, board: &crate::fakes::FakeBoard) -> state::ProjectState {
+    let (forge, vcs) = (
+        crate::fakes::FakeForge::default(),
+        crate::fakes::FakeVcs::default(),
+    );
+    let records = crate::app::actions::SliceRecords::new(state_dir);
+    let alive = |_: &crate::ports::Holder| true;
+    state::gather_state(&state::StateInputs {
+        project: "ways",
+        root: state_dir,
+        state_dir,
+        board: Ok(board),
+        forge: Some(&forge),
+        vcs: Some(&vcs),
+        records: &records,
+        ledger: &[],
+        prices: &crate::app::report::PriceTable::default(),
+        pull_base: None,
+        alive: &alive,
+        now: std::time::SystemTime::UNIX_EPOCH,
+        places: None,
+    })
+}
+
+#[test]
+fn epic_instance_row_names_its_epic() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let board = board();
+    let planning = crate::domain::Instance {
+        role: "planning".into(),
+        epic: crate::domain::TicketId::from(103),
+        number: 1.into(),
+    };
+    run_folder(dir.path(), &planning, 4242);
+
+    let state = state_of(dir.path(), &board);
+
+    let row = state
+        .instances
+        .iter()
+        .find(|row| row.role == "planning")
+        .expect("the planning instance");
+    assert_eq!(row.task, None);
+    assert_eq!(row.number, Some(103));
+    assert_eq!(row.title.as_deref(), Some("Epic"));
+}
+
+#[test]
+fn gathered_state_carries_whole_titles() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let board = board();
+    let long = "A task title far longer than any frame would keep, whole in the state";
+    board.add_ticket(crate::domain::Ticket {
+        id: crate::domain::TicketId::from(144),
+        epic: Some(crate::domain::TicketId::from(103)),
+        title: long.into(),
+        body: "".into(),
+        state: Some(crate::domain::TicketState::Ready),
+        url: "".into(),
+        kind: None,
+    });
+    run_folder(dir.path(), &instance(7), 4242);
+
+    let state = state_of(dir.path(), &board);
+
+    assert_eq!(state.epics[0].number, 103);
+    assert_eq!(state.epics[0].title, "Epic");
+    let queued = |number: u64| {
+        state
+            .queue
+            .iter()
+            .find(|task| task.number == number)
+            .unwrap_or_else(|| panic!("#{number} in the queue"))
+    };
+    assert_eq!(queued(144).title, long);
+    assert_eq!(queued(143).title, "A task");
+    let running = &state.instances[0];
+    assert_eq!(running.number, Some(143));
+    assert_eq!(running.title.as_deref(), Some("A task"));
+
+    let snapshot = gathered(dir.path(), &board, &Dead::default());
+    assert_eq!(snapshot.epics[0].title, "Epic");
+    assert_eq!(snapshot.epics[0].tickets[0].title, "A task");
 }

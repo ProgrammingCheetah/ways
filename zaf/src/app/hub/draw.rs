@@ -9,6 +9,8 @@ use crate::app::actions::Phase;
 const LABEL_COLUMNS: usize = 28;
 /// The cells of a bar when the line has room.
 const BAR_CELLS: usize = 30;
+/// Two spaces, the brackets, two spaces: the line's fixed width beside the bar's cells.
+const BAR_FIXED: usize = 2 + 2 + 2;
 /// The fewest cells a bar shrinks to before the line is cut instead.
 const MIN_BAR_CELLS: usize = 4;
 /// The steps of a ticket's bar: the seven Team Phases.
@@ -37,12 +39,28 @@ pub fn draw(snapshot: &Snapshot, width: usize) -> String {
 
 fn epic_lines(epic: &EpicRow, width: usize, lines: &mut Vec<String>) {
     let tail = format!("{} of {}  ${:.2}", epic.done, epic.total, epic.dollars);
-    lines.push(row(
+    let label = titled(
         &format!("epic #{}", epic.number),
+        &epic.title,
+        label_room(width, &tail),
+    );
+    lines.push(row(
+        &label,
+        LABEL_COLUMNS,
         (epic.done, epic.total),
         &tail,
         width,
     ));
+    // Every ticket label of the epic is as wide as the longest, so the bars line up.
+    let tickets = || {
+        epic.tickets
+            .iter()
+            .chain(epic.groups.iter().flat_map(|group| &group.tickets))
+    };
+    let columns = tickets()
+        .map(|ticket| ticket_label(ticket).chars().count())
+        .max()
+        .unwrap_or(0);
     lines.push(format!(
         "  {} · {} of {} slots free · {} ready · {}",
         epic.stage,
@@ -52,43 +70,80 @@ fn epic_lines(epic: &EpicRow, width: usize, lines: &mut Vec<String>) {
         questions(epic.questions)
     ));
     for ticket in &epic.tickets {
-        lines.push(ticket_line(ticket, width));
+        lines.push(ticket_line(ticket, columns, width));
         model_lines(ticket, width, lines);
     }
     for group in &epic.groups {
-        group_lines(group, width, lines);
+        group_lines(group, columns, width, lines);
     }
 }
 
-fn group_lines(group: &GroupRow, width: usize, lines: &mut Vec<String>) {
+fn group_lines(group: &GroupRow, columns: usize, width: usize, lines: &mut Vec<String>) {
     lines.push(String::new());
     lines.push(row(
         &format!("group: {}", group.name),
+        LABEL_COLUMNS,
         (group.done, group.total),
         &format!("{} of {}", group.done, group.total),
         width,
     ));
     for ticket in &group.tickets {
-        lines.push(ticket_line(ticket, width));
+        lines.push(ticket_line(ticket, columns, width));
         model_lines(ticket, width, lines);
     }
 }
 
-fn ticket_line(ticket: &TicketRow, width: usize) -> String {
+/// A ticket's label whole: its id, then its title.
+fn ticket_label(ticket: &TicketRow) -> String {
+    format!("  #{}  {}", ticket.number, ticket.title)
+}
+
+/// One ticket's line. Its label, the id then the title, is `columns` wide at most, and the title
+/// is cut with an ellipsis when the line has no room for it.
+fn ticket_line(ticket: &TicketRow, columns: usize, width: usize) -> String {
     let step = phase_step(ticket.phase);
     let since = ticket.since.map_or_else(|| "-".to_owned(), age);
     let tail = format!(
-        "{:<9}  {}  {}",
+        "{}  {:<9}  {}  {}",
+        ticket.who,
         ticket.phase.to_string(),
         ticket.word,
         since
     );
+    let room = label_room(width, &tail);
+    let label = titled(&format!("  #{}", ticket.number), &ticket.title, room);
     row(
-        &format!("  #{}  {}", ticket.number, ticket.who),
+        &label,
+        columns.min(room.max(label.chars().count())),
         (u32::try_from(step).unwrap_or(0), PHASE_STEPS as u32),
         &tail,
         width,
     )
+}
+
+/// The columns a label may take on a line of `width` with `tail` after the bar, the bar at its
+/// least.
+fn label_room(width: usize, tail: &str) -> usize {
+    width.saturating_sub(BAR_FIXED + MIN_BAR_CELLS + tail.chars().count())
+}
+
+/// `head`, two spaces and `title`, the title cut with an ellipsis to fit `room` columns in all.
+/// A title with no room left is left out, and `head` is never cut.
+fn titled(head: &str, title: &str, room: usize) -> String {
+    let left = room.saturating_sub(head.chars().count() + 2);
+    if title.is_empty() || left == 0 {
+        return head.to_owned();
+    }
+    format!("{head}  {}", fit(title, left))
+}
+
+/// `text` whole when it fits `room` characters, else cut to `room` ending in an ellipsis.
+fn fit(text: &str, room: usize) -> String {
+    if text.chars().count() <= room {
+        return text.to_owned();
+    }
+    let kept: String = text.chars().take(room.saturating_sub(1)).collect();
+    format!("{}…", kept.trim_end())
 }
 
 /// The rows under a ticket, one per model that declared phases: its role, a bar over the phases
@@ -107,6 +162,7 @@ fn model_lines(ticket: &TicketRow, width: usize, lines: &mut Vec<String>) {
         };
         lines.push(row(
             &format!("    {}", model.role),
+            LABEL_COLUMNS,
             (
                 u32::try_from(step).unwrap_or(0),
                 u32::try_from(model.phases.len()).unwrap_or(u32::MAX),
@@ -133,11 +189,11 @@ fn questions(count: u32) -> String {
     }
 }
 
-/// One line: the label, a bar of `done` of `of`, then the tail. The bar shrinks to fit `width`.
-fn row(label: &str, (done, of): (u32, u32), tail: &str, width: usize) -> String {
-    let label = format!("{label:<LABEL_COLUMNS$}");
-    // Two spaces, the brackets, two spaces: the line's fixed width beside the bar's cells.
-    let fixed = label.chars().count() + 2 + 2 + 2 + tail.chars().count();
+/// One line: the label padded to `columns`, a bar of `done` of `of`, then the tail. The bar
+/// shrinks to fit `width`.
+fn row(label: &str, columns: usize, (done, of): (u32, u32), tail: &str, width: usize) -> String {
+    let label = format!("{label:<columns$}");
+    let fixed = label.chars().count() + BAR_FIXED + tail.chars().count();
     let cells = width.saturating_sub(fixed).clamp(MIN_BAR_CELLS, BAR_CELLS);
     format!("{label}  [{}]  {tail}", bar_of(done, of, cells))
 }

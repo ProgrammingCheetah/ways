@@ -1387,3 +1387,34 @@ fn running_phase_claim_is_kept() {
     assert!(tick.released.is_empty(), "{:?}", tick.released);
     assert_eq!(board.claims().expect("claims").len(), 1);
 }
+
+/// A phase run folder under `<state dir>/phases/`: task, action, instance and the holder.
+fn phase_folder(state_dir: &Path, task: u64, action: &str, instance: &str) {
+    let dir = state_dir.join(format!("phases/{action}-1-task-{task}"));
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(dir.join("action"), action).expect("action");
+    std::fs::write(dir.join("instance"), instance).expect("instance");
+    std::fs::write(dir.join("pid"), "4242 1000").expect("pid");
+    std::fs::write(dir.join("task"), task.to_string()).expect("task");
+}
+
+#[test]
+fn the_slots_line_counts_the_running_phases_and_the_decision_does_not() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let board = FakeBoard::default();
+    phase_folder(&state_dir, 3, "implement", "implement instance 1 on #1");
+
+    let prepared = plan_only(&board, &state_dir, &manifest(), &|_| true).expect("plans");
+
+    assert_eq!(prepared.plan.phases_running, 1);
+    assert_eq!(prepared.plan.slots.free, 2, "what the plan decides on");
+    assert!(
+        prepared
+            .plan
+            .render_text()
+            .starts_with("slots 2 of 2 (guard green), 1 running, 1 free\n"),
+        "{}",
+        prepared.plan.render_text()
+    );
+}

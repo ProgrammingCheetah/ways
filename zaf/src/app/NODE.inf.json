@@ -38,7 +38,7 @@
     },
     {
       "name": "brief/",
-      "role": "`zaf brief`: task context pack (ticket, pages, a ## Rulings section with the questions and rulings on the task, nodes chain, style, interface page; for a resumed phase with a pull request also its diff, the findings at its head and the hand-off)",
+      "role": "`zaf brief`: task context pack (ticket, pages, a ## Rulings section with the questions and rulings on the task, nodes chain, style, interface page; for a resumed phase with a pull request also its diff, the findings at its head and the hand-off; for an on-fail phase, why.rs's ## Why this run: the failed phase, its exit code and meaning, its failed checks, the last lines of its run, and every ruling since the last model run)",
       "node": false
     },
     {
@@ -122,6 +122,16 @@
       "node": true
     },
     {
+      "name": "schedule.rs",
+      "role": "the scheduler's edge around the pure core: every question the scheduler raises, each with a marker it reads back (ask), the phase run folder's one writer and reader (record), the ports read into each open ticket's facts (gather), the one gate every phase start passes and the tick's phase steps over the placement (tick), the placement as the JSON dry run shows it (shadow), the state labels set from each ticket's place before any start (labels), the trace line every real tick leaves with its moves (trace, pure) and the file that keeps it 14 days (ticks); the scheduler that stays up (`zaf spawn --watch`): its loop (scheduler, pure behind a Host), its lock (lock), the requests for a tick (request) and the look at its own binary (binary)",
+      "node": false
+    },
+    {
+      "name": "schedule/",
+      "role": "ask.rs (tick step 5: every question the scheduler raises, getting nowhere, a failed wait with no on-fail, an overdue check wait, a dead dependency, a cycle, an unchallenged epic, each ending with a marker read back from the board, so no cause has two open questions and a ruling resets what it should; each raised under spawn.lock once the open questions are read again under it, so two ticks that overlap raise it once), record.rs (the run folder: task, action, head, size, instance, pid or the inline mark of the tick that runs it, output, questions, head-end, exit last), gather.rs (open tickets with a phase list into TicketFacts and what the tick reads beside them, the priority label and ready_since from the board, an ignored priority label a warning, adjacent model actions folded, an unreadable ticket named and skipped; gather_one for `zaf spawn phase`, gather_for for the dry run, status and the hub), tick.rs (may_start, the one gate the tick and `zaf spawn phase` both pass, asking the core's place; the held lines; tick steps 3 to 6 over the lane, slots from the live model runs; the placement handed back for the scheduler's cache; tick/support.rs the steps' test helpers), shadow.rs (the dry run's `placement`, a lane ticket with its weight), labels.rs (tick step 2's label sync: question, blocked and stale-to-ready set from the place, never over a claim or done, written only when it differs; the unblocked and labelled lines; read for the dry run, sync for the tick, a failed write named and the rest goes on), trace.rs (the tick's trace line, its short places, the moves against the last line, the count line with the open epics' done tasks, the 14-day cut; listing.rs what `zaf spawn trace` prints), ticks.rs (`.zaf/ticks.jsonl` under `.zaf/ticks.lock`: append, cut, read, the last tick's time from the file's end), scheduler.rs (the loop: one tick at a time for who asked, the timer, restart only between ticks with no request waiting, stop on a signal; Memory, the placement kept as a cache), lock.rs (`.zaf/scheduler.lock` held with flock for life, its one line naming the holder; running() for readers, which never lock), request.rs (`.zaf/tick.request`: ask() appends a line only while a scheduler runs; Requests reads each complete line once on a size-and-mtime mark, empties past 16 KiB, lets go of what it served), binary.rs (the running image's identity against the start path, settle over two looks, `--version` with a deadline, exec with the same arguments), each with a tests.rs",
+      "node": false
+    },
+    {
       "name": "setup.rs",
       "role": "`zaf setup`: lay out .zaf/, fetch design, worksheet for missing tools",
       "node": false
@@ -148,7 +158,7 @@
     },
     {
       "name": "status.rs",
-      "role": "`zaf status`: epics with their stage, board, instances, slots, guard on one screen",
+      "role": "`zaf status`: epics with their stage, board, instances, slots, guard on one screen; with `[phases]`, ready is the core's lane and a waiting line names what each ticket waits on",
       "node": false
     },
     {

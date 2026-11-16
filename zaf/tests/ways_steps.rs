@@ -49,8 +49,9 @@ turns = 1
 /// The actions §7 gives mode 755: they run a check, read or file on the board, and name no
 /// group. `issue-file` is the planning instance's, a role no manifest declares, so no group
 /// can name it. The five phase actions the `[phases]` lists name (§5.1) are here too: the
-/// launcher runs them, and what they call is guarded by the group of each step.
-const OPEN: [&str; 11] = [
+/// launcher runs them, and what they call is guarded by the group of each step. So is
+/// `review-epic`, which only raises questions.
+const OPEN: [&str; 12] = [
     "ci",
     "ci-wait",
     "fix",
@@ -61,18 +62,22 @@ const OPEN: [&str; 11] = [
     "merge",
     "nodes-check",
     "review",
+    "review-epic",
     "task-pr",
 ];
 
 /// The phase roles of the ruling on #518: `implement` and `fix` open and publish a slice, `merge`
 /// lands one. Each is named in the group of every step it calls, so no action is widened to 755.
-const SLICE_STEPS: [&str; 6] = [
+/// A fix round brings the base in with `sync-base`, which runs `merge-base` (slice 8).
+const SLICE_STEPS: [&str; 8] = [
     "slice-open",
     "slice-pr",
     "workspace-open",
     "commit",
     "pr-open",
     "push",
+    "sync-base",
+    "merge-base",
 ];
 const LAND_STEPS: [&str; 5] = [
     "slice-merge",
@@ -86,8 +91,9 @@ const LAND_STEPS: [&str; 5] = [
 /// release's.
 const RELEASE_ONLY: [&str; 2] = ["base-up", "release"];
 
-/// The one action only the Engineer runs: it merges onto any base, `main` included.
-const OWNER_ONLY: &str = "ship";
+/// The actions only the Engineer runs: `ship` merges onto any base, `main` included, and `design`
+/// is the Engineer's own session on the terminal.
+const OWNER_ONLY: [&str; 2] = ["design", "ship"];
 
 /// The three actions that run one line, each with that line.
 const LINES: [(&str, &str); 3] = [
@@ -134,7 +140,7 @@ fn parsed(name: &str) -> (String, ParsedAction) {
 fn row(name: &str) -> (&'static str, Vec<&'static str>) {
     if OPEN.contains(&name) {
         ("755", vec![])
-    } else if name == OWNER_ONLY {
+    } else if OWNER_ONLY.contains(&name) {
         ("700", vec![])
     } else if RELEASE_ONLY.contains(&name) {
         ("750", vec!["release"])

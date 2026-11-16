@@ -13,7 +13,7 @@ use super::Cli;
 use super::exit::{self, BACKEND, REFUSED};
 use super::slice::{VERSION_VAR, refuse_not_open};
 use crate::adapters::gate::RUNS_DIR;
-use crate::app::actions::{RunOutcome, SliceRecords};
+use crate::app::actions::{RunOutcome, SliceRecords, Terminal};
 use crate::app::check::{
     CheckRecord, Engine, EngineSettings, Shell, Step, StepPorts, Target, TaskInputs, check_task,
 };
@@ -280,9 +280,16 @@ impl StepPorts for LivePorts {
         self.composition.runner(name).map_err(unavailable)
     }
 
-    /// Runs the action as `zaf do <name>` would from here: the same tiers, modes and log.
+    /// Runs the action as `zaf do <name>` would from here: the same tiers, modes and log. A step
+    /// has no one at the terminal to answer it, so a `terminal: yes` action is refused.
     fn action(&self, name: &str) -> RunOutcome {
-        super::do_action::run_named(name, &[], None)
+        super::do_action::run_named(
+            name,
+            &[],
+            None,
+            Terminal::Absent,
+            super::do_action::VersionFrom::Env,
+        )
     }
 }
 

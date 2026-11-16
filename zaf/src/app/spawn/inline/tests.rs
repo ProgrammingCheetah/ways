@@ -1,10 +1,15 @@
+use std::collections::BTreeSet;
 use std::time::{Duration, SystemTime};
 
 use super::*;
-use crate::app::actions::{PhaseEnd, PhaseRun, PullFacts, ReviewFact, RunExit};
+use crate::app::actions::{ActionKind, ListedPhase, PhaseEnd};
+use crate::app::schedule::tick::support;
 use crate::app::spawn::runs;
 use crate::app::spawn::tick::PlannedLaunch;
-use crate::domain::{Instance, InstanceNumber, RoleName};
+use crate::domain::schedule::{
+    ExitCode, HeadEnd, PullFacts, ReviewFact, RunExit, RunRecord, TicketFacts,
+};
+use crate::domain::{CommitId, Instance, InstanceNumber, RoleName, TaskSize};
 use crate::ports::Holder;
 
 fn time(secs: u64) -> SystemTime {
@@ -34,49 +39,53 @@ fn list() -> Vec<ListedPhase> {
 }
 
 /// A task that implemented, got its review at the head, and waits at merge.
-fn at_merge(task: u64) -> TickTask {
-    TickTask {
-        task: TicketId::from(task),
-        list: list(),
-        facts: StandingFacts {
-            ready_since: time(1),
-            pull: Some(PullFacts {
-                opened_at: time(10),
-                merged_at: None,
-                head: Some("head".to_owned()),
-                checks: Vec::new(),
-                failed_checks: Vec::new(),
-                reviews: vec![ReviewFact {
-                    head: Some("head".to_owned()),
-                    posted_at: time(30),
-                }],
-            }),
-            runs: vec![PhaseRun {
-                action: name("implement"),
-                head: None,
-                started_at: time(2),
-                alive: false,
-                exit: Some(RunExit {
-                    code: 0,
-                    at: time(9),
-                }),
-                last_line: None,
-            }],
-        },
-    }
+fn at_merge(task: u64) -> (TicketFacts, Vec<ListedPhase>) {
+    let pull = PullFacts {
+        opened_at: time(10),
+        merged_at: None,
+        head: Some(CommitId::from("head")),
+        changes_a_file: true,
+        checks: Vec::new(),
+        reviews: vec![ReviewFact {
+            head: Some(CommitId::from("head")),
+            posted_at: time(30),
+        }],
+    };
+    // D1: the list has no `pr-open` phase, so implement's `exit` is keyed on the head: the run
+    // left the head the review was made on.
+    let implemented = RunRecord {
+        action: name("implement"),
+        head: None,
+        head_end: HeadEnd::Left(Some(CommitId::from("head"))),
+        started_at: time(2),
+        alive: false,
+        exit: Some(RunExit {
+            code: ExitCode::from(0),
+            at: time(9),
+        }),
+        questions: BTreeSet::new(),
+        last_line: None,
+    };
+    let facts = support::facts(
+        task,
+        &list(),
+        TaskSize::S,
+        time(1),
+        Some(pull),
+        vec![implemented],
+    );
+    (facts, list())
 }
 
-/// A task with no pull request yet: it is ready at the model action, not at merge.
-fn at_implement(task: u64) -> TickTask {
-    TickTask {
-        task: TicketId::from(task),
-        list: list(),
-        facts: StandingFacts {
-            ready_since: time(1),
-            pull: None,
-            runs: Vec::new(),
-        },
-    }
+/// A task with no pull request yet: it is in the lane at the model action, not at merge.
+fn at_implement(task: u64) -> (TicketFacts, Vec<ListedPhase>) {
+    let facts = support::facts(task, &list(), TaskSize::S, time(1), None, Vec::new());
+    (facts, list())
+}
+
+/// The lane entries of `tickets` the tick's gate hands step 3.
+fn ready(tickets: Vec<(TicketFacts, Vec<ListedPhase>)>) -> Vec<LaneEntry> {
+    support::sorted(&support::gathered(tickets), time(100)).zaf
 }
 
 /// A runner that records each call and gives `exit_of(task)`.
@@ -92,7 +101,7 @@ fn recording<'a>(
 
 #[test]
 fn every_ready_merge_runs() {
-    let tasks = [at_merge(441), at_merge(442)];
+    let tasks = ready(vec![at_merge(441), at_merge(442)]);
     let mut calls = Vec::new();
     let ran = run_zaf_actions(&tasks, &mut recording(&mut calls, |_| 0));
     assert_eq!(
@@ -107,8 +116,8 @@ fn every_ready_merge_runs() {
 #[test]
 fn only_a_task_ready_at_a_zaf_action_runs() {
     let mut merged = at_merge(443);
-    merged.facts.pull.as_mut().expect("a pull").merged_at = Some(time(40));
-    let tasks = [at_implement(440), merged, at_merge(441)];
+    merged.0.pull.as_mut().expect("a pull").merged_at = Some(time(40));
+    let tasks = ready(vec![at_implement(440), merged, at_merge(441)]);
     let mut calls = Vec::new();
     run_zaf_actions(&tasks, &mut recording(&mut calls, |_| 0));
     assert_eq!(
@@ -120,7 +129,7 @@ fn only_a_task_ready_at_a_zaf_action_runs() {
 
 #[test]
 fn a_failed_merge_does_not_stop_others() {
-    let tasks = [at_merge(441), at_merge(442), at_merge(443)];
+    let tasks = ready(vec![at_merge(441), at_merge(442), at_merge(443)]);
     let mut calls = Vec::new();
     let ran = run_zaf_actions(
         &tasks,
@@ -134,13 +143,15 @@ fn a_failed_merge_does_not_stop_others() {
         ran.iter().map(|ran| ran.exit).collect::<Vec<_>>(),
         vec![1, 0, 0]
     );
-    // The failed task is left as it was: at the next tick it is ready at merge again.
-    assert_eq!(tasks[0].ready_zaf_action(), Some(name("merge")));
+    // The failed task is left as it was: at the next tick it is in the lane at merge again.
+    let again = ready(vec![at_merge(441)]);
+    assert_eq!(again.len(), 1);
+    assert_eq!(again[0].next, name("merge"));
 }
 
 #[test]
 fn a_merge_that_never_ran_is_listed_with_its_125() {
-    let tasks = [at_merge(441), at_merge(442)];
+    let tasks = ready(vec![at_merge(441), at_merge(442)]);
     let mut calls = Vec::new();
     let ran = run_zaf_actions(
         &tasks,
@@ -179,7 +190,7 @@ fn zaf_actions_cost_nothing() {
     let (before, _) = crate::app::spawn::derive(dir.path(), &alive).expect("derives");
     let folders_before = runs::read_all(dir.path()).expect("reads").len();
 
-    let tasks = [at_merge(441), at_merge(442)];
+    let tasks = ready(vec![at_merge(441), at_merge(442)]);
     let mut calls = Vec::new();
     let outcome = run_inline(&tasks, &mut recording(&mut calls, |_| 0));
 
@@ -199,7 +210,7 @@ fn zaf_actions_cost_nothing() {
 
 #[test]
 fn the_outcome_lists_what_ran() {
-    let tasks = [at_merge(441), at_implement(440), at_merge(442)];
+    let tasks = ready(vec![at_merge(441), at_implement(440), at_merge(442)]);
     let mut calls = Vec::new();
     let outcome = run_inline(
         &tasks,
@@ -234,11 +245,14 @@ fn the_outcome_lists_what_ran() {
 #[test]
 fn a_tick_with_nothing_ready_is_idle() {
     let mut calls = Vec::new();
-    let outcome = run_inline(&[at_implement(440)], &mut recording(&mut calls, |_| 0));
+    let outcome = run_inline(
+        &ready(vec![at_implement(440)]),
+        &mut recording(&mut calls, |_| 0),
+    );
     assert!(calls.is_empty());
     assert!(outcome.is_idle());
     assert_eq!(outcome, TickOutcome::default());
-    assert_eq!(outcome.render_text(), "idle\n");
+    assert_eq!(outcome.render_text(), "");
     assert_eq!(outcome.to_json()["idle"], true);
     assert!(run_inline(&[], &mut |_, _| 0).is_idle());
 }

@@ -4,9 +4,11 @@
 #![allow(dead_code, reason = "each test crate uses its own part of this module")]
 
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Child, Command, Output, Stdio};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 /// The repository the manifest names for the board and the forge.
 pub const REPO: &str = "example/tracker";
@@ -112,13 +114,19 @@ impl Project {
 
     /// The `zaf` command `zaf_in` runs, not yet started: for a test that must not block on it.
     pub fn command_in(&self, dir: &Path, args: &[&str]) -> Command {
+        self.command_of(Path::new(env!("CARGO_BIN_EXE_zaf")), dir, args)
+    }
+
+    /// The command `command_in` makes, of the zaf binary at `program`: a copy, for a test that
+    /// replaces the binary a scheduler runs.
+    pub fn command_of(&self, program: &Path, dir: &Path, args: &[&str]) -> Command {
         let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
         let inherited = std::env::var_os("PATH").unwrap_or_default();
         let search_path = std::env::join_paths(
             std::iter::once(fixtures).chain(std::env::split_paths(&inherited)),
         )
         .expect("search path");
-        let mut command = Command::new(env!("CARGO_BIN_EXE_zaf"));
+        let mut command = Command::new(program);
         command
             .args(args)
             .current_dir(dir)
@@ -128,13 +136,15 @@ impl Project {
             .env_remove("ZAF_INSTANCE")
             .env_remove("ZAF_VERSION");
         // A suite run inside an action (the gate is one) must not hand its caller's
-        // action state to the runs it makes.
+        // action state to the runs it makes, nor its phase run, which records the questions
+        // asked inside it.
         for var in [
             "ZAF_ROOT",
             "ZAF_ACTION",
             "ZAF_DEPTH",
             "ZAF_ACTION_CHAIN",
             "ZAF_ACTION_LOG",
+            "ZAF_RUN",
         ] {
             command.env_remove(var);
         }
@@ -178,6 +188,32 @@ impl Project {
     }
 }
 
+/// Holds the scheduler lock of `project` as a running scheduler does, until the returned file is
+/// dropped: its `flock`, which says a scheduler runs, and its line naming this test's process,
+/// which says where (`pid <this test>, since 2027-01-15T08:00:00Z (zaf 0.3.1, --version 0.3.0)`).
+pub fn scheduler_up(project: &Project) -> fs::File {
+    let me = zaf::adapters::process::holder_of(std::process::id()).expect("this process");
+    let line = serde_json::json!({
+        "pid": me.pid,
+        "start": me.start,
+        "since": "2027-01-15T08:00:00Z",
+        "zaf": "0.3.1",
+        "version": "0.3.0",
+    });
+    let state = project.root.join(".zaf");
+    fs::create_dir_all(&state).expect("state");
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(state.join("scheduler.lock"))
+        .expect("the lock file");
+    file.lock().expect("the lock");
+    file.write_all(format!("{line}\n").as_bytes())
+        .expect("the lock line");
+    file
+}
+
 /// The exit code, stdout and stderr of a run, for asserting on.
 pub fn outcome(output: &Output) -> (i32, String, String) {
     (
@@ -185,6 +221,17 @@ pub fn outcome(output: &Output) -> (i32, String, String) {
         String::from_utf8_lossy(&output.stdout).into_owned(),
         String::from_utf8_lossy(&output.stderr).into_owned(),
     )
+}
+
+/// A tick's stdout without its first line when that line is the `tick HH:MM` header, which reads
+/// the wall clock: what is left is what two ticks of the same scene print alike, whichever minute
+/// each began in.
+pub fn without_tick_line(stdout: &str) -> &str {
+    match stdout.split_once('\n') {
+        Some((first, rest)) if first.starts_with("tick ") => rest,
+        None if stdout.starts_with("tick ") => "",
+        _ => stdout,
+    }
 }
 
 /// Runs a program in `dir` and returns its stdout; a failure fails the test.
@@ -302,4 +349,142 @@ impl Curl {
             .filter(|asked| !asked.ends_with("/settings/api"))
             .collect()
     }
+}
+
+/// How long a test waits for a long-lived process to say something before it fails.
+pub const PATIENCE: Duration = Duration::from_secs(30);
+
+/// A long-lived `zaf` (the scheduler) started by a test: its stdout and stderr gathered as they
+/// come, and killed when dropped, so no test leaves it running whatever path it takes.
+pub struct Running {
+    child: Child,
+    out: Arc<Mutex<String>>,
+    err: Arc<Mutex<String>>,
+}
+
+impl Running {
+    /// Starts `command` with its output piped. A binary just written may be held open for writing
+    /// by a child another test thread is forking (`ETXTBSY`) for an instant: the start is tried
+    /// again then.
+    pub fn start(mut command: Command) -> Self {
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut child = loop {
+            match command.spawn() {
+                Ok(child) => break child,
+                Err(error)
+                    if error.raw_os_error() == Some(libc::ETXTBSY) && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Err(error) => panic!("cannot start zaf: {error}"),
+            }
+        };
+        let out = gather(child.stdout.take().expect("stdout"));
+        let err = gather(child.stderr.take().expect("stderr"));
+        Self { child, out, err }
+    }
+
+    /// Its process id.
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// What it printed on stdout so far.
+    pub fn stdout(&self) -> String {
+        self.out.lock().expect("stdout").clone()
+    }
+
+    /// What it printed on stderr so far.
+    pub fn stderr(&self) -> String {
+        self.err.lock().expect("stderr").clone()
+    }
+
+    /// Waits up to [`PATIENCE`] for `done(stdout, stderr)`, failing the test with both and `what`
+    /// past that.
+    pub fn wait_for(&self, what: &str, done: impl Fn(&str, &str) -> bool) {
+        let deadline = Instant::now() + PATIENCE;
+        loop {
+            let (out, err) = (self.stdout(), self.stderr());
+            if done(&out, &err) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "never {what}:\n--- stdout\n{out}\n--- stderr\n{err}"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Waits for stdout to hold `count` lines that contain `text`.
+    pub fn wait_for_lines(&self, text: &str, count: usize) {
+        self.wait_for(&format!("{count} lines with {text:?}"), |out, _| {
+            out.lines().filter(|line| line.contains(text)).count() >= count
+        });
+    }
+
+    /// Sends it the signal `name` (`TERM`, `INT`).
+    pub fn signal(&self, name: &str) {
+        let status = Command::new("kill")
+            .args([format!("-{name}"), self.pid().to_string()])
+            .status()
+            .expect("kill");
+        assert!(status.success(), "kill -{name} failed");
+    }
+
+    /// Waits up to [`PATIENCE`] for it to end, and gives its exit code; none when a signal ended
+    /// it. Past that it is killed and the test fails.
+    pub fn wait_exit(&mut self) -> Option<i32> {
+        let deadline = Instant::now() + PATIENCE;
+        loop {
+            if let Some(status) = self.child.try_wait().expect("try_wait") {
+                // Let the readers take the last of the output.
+                std::thread::sleep(Duration::from_millis(100));
+                return status.code();
+            }
+            if Instant::now() > deadline {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+                panic!(
+                    "it never ended:\n--- stdout\n{}\n--- stderr\n{}",
+                    self.stdout(),
+                    self.stderr()
+                );
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Whether it still runs.
+    pub fn runs(&mut self) -> bool {
+        self.child.try_wait().expect("try_wait").is_none()
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        if self.child.try_wait().ok().flatten().is_none() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+
+/// Gathers what `stream` prints, line by line, as it comes.
+fn gather(stream: impl Read + Send + 'static) -> Arc<Mutex<String>> {
+    let text = Arc::new(Mutex::new(String::new()));
+    let filled = Arc::clone(&text);
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        while matches!(reader.read_line(&mut line), Ok(read) if read > 0) {
+            filled.lock().expect("output").push_str(&line);
+            line.clear();
+        }
+    });
+    text
 }

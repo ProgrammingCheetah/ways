@@ -456,7 +456,11 @@ fn board_done_after_the_recorded_pr_merged() {
     let scene = Scene::landable();
     // `slice-merge` merges the base in first, which moves the head: the task has left `land`.
     scene.commit();
-    let pr = scene.records().pr(scene.task()).expect("a pull request");
+    let pr = scene
+        .records()
+        .pr(scene.task())
+        .expect("reads")
+        .expect("a pull request");
     scene.forge.merge(pr).expect("merge");
     assert_eq!(scene.phase(), Phase::Build);
     assert_eq!(scene.done(), Ok(DoneOutcome::Marked));
@@ -513,7 +517,11 @@ fn board_done_outside_land_refuses() {
 fn board_done_open_pr_refuses() {
     let scene = Scene::landable();
     scene.commit();
-    let pr = scene.records().pr(scene.task()).expect("a pull request");
+    let pr = scene
+        .records()
+        .pr(scene.task())
+        .expect("reads")
+        .expect("a pull request");
     assert_eq!(scene.forge.merged(pr), Ok(false));
     assert!(matches!(
         scene.done(),
@@ -677,7 +685,11 @@ fn a_repository_with_no_issue_types_says_so() {
 #[test]
 fn board_handoff_twice_leaves_the_second_text_on_the_recorded_pr() {
     let scene = Scene::landable();
-    let pr = scene.records().pr(scene.task()).expect("a pull request");
+    let pr = scene
+        .records()
+        .pr(scene.task())
+        .expect("reads")
+        .expect("a pull request");
     let write = |text: &str| handoff(&scene.forge, &scene.records(), scene.task(), text);
     assert_eq!(write("first"), Ok(pr));
     assert_eq!(write("second"), Ok(pr));
@@ -687,7 +699,11 @@ fn board_handoff_twice_leaves_the_second_text_on_the_recorded_pr() {
 #[test]
 fn no_pr_no_handoff() {
     let scene = Scene::landable();
-    let pr = scene.records().pr(scene.task()).expect("a pull request");
+    let pr = scene
+        .records()
+        .pr(scene.task())
+        .expect("reads")
+        .expect("a pull request");
     std::fs::remove_file(scene.root.join(".zaf/slices/319.pr")).expect("remove");
     let refusal = handoff(&scene.forge, &scene.records(), scene.task(), "text");
     assert_eq!(refusal, Err(BoardError::NoPullRequest(scene.task())));

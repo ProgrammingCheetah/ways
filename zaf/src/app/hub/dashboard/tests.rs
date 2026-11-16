@@ -1,14 +1,43 @@
 use std::io::{BufRead, BufReader};
 use std::net::Ipv6Addr;
+use std::time::SystemTime;
 
+use super::super::state::gather_machine;
 use super::*;
+use crate::app::projects::Projects;
 
 const FRAME: &str = "epic #103   [###---]  1 of 4\n  1 of 2 slots free <b>&</b>\n";
 
 fn started(frame: &str) -> (Page, u16) {
+    started_with(frame, Arc::new(|| Err("not read in this test".to_owned())))
+}
+
+fn started_with(frame: &str, state: Arc<StateReader>) -> (Page, u16) {
     let dashboard = Dashboard::bind(0).expect("binds");
     let port = dashboard.port();
-    (dashboard.start(frame), port)
+    let guard = Guard::start(false).expect("a key");
+    (dashboard.start(frame, state, guard), port)
+}
+
+/// A reader of a zaf home whose list holds one project, `gone`, whose folder was removed: it is
+/// read as missing, and nothing of it is asked of a board. `reads` counts the reads made.
+fn one_missing_project(reads: &Arc<AtomicUsize>) -> Arc<StateReader> {
+    let home = tempfile::tempdir().expect("home");
+    let folder = home.path().join("gone");
+    std::fs::create_dir(&folder).expect("folder");
+    Projects::add(home.path(), &folder).expect("listed");
+    std::fs::remove_dir(&folder).expect("removed");
+    let reads = Arc::clone(reads);
+    Arc::new(move || {
+        reads.fetch_add(1, Ordering::SeqCst);
+        Ok(gather_machine(home.path(), SystemTime::now()))
+    })
+}
+
+/// The JSON body of an answer.
+fn json_of(answer: &str) -> serde_json::Value {
+    let (_, body) = answer.split_once("\r\n\r\n").expect("a head and a body");
+    serde_json::from_str(body).expect("JSON")
 }
 
 fn connect(port: u16) -> TcpStream {
@@ -76,30 +105,65 @@ fn next_event(lines: &mut BufReader<TcpStream>) -> (String, String) {
     }
 }
 
-#[test]
-fn get_root_returns_the_frame() {
-    let (_page, port) = started(FRAME);
-    let answer = get(port, "/");
-    assert_eq!(status_of(&answer), "HTTP/1.1 200 OK");
-    assert!(answer.contains("Content-Type: text/html"), "{answer}");
-    assert!(
-        answer.contains("epic #103   [###---]  1 of 4\n"),
-        "the frame, as text: {answer}"
-    );
-    assert!(
-        answer.contains("&lt;b&gt;&amp;&lt;/b&gt;"),
-        "the frame is text, never markup: {answer}"
-    );
-    assert!(!answer.contains("<b>"), "{answer}");
+/// The paths the page's HTML loads its script and style from.
+fn assets_of(index: &str) -> (String, String) {
+    let value_after = |marker: &str| {
+        let start = index
+            .find(marker)
+            .unwrap_or_else(|| panic!("{marker} in {index}"));
+        let rest = &index[start + marker.len()..];
+        rest[..rest.find('"').expect("a closing quote")].to_owned()
+    };
+    (
+        value_after("<script type=\"module\" crossorigin src=\""),
+        value_after("rel=\"stylesheet\" crossorigin href=\""),
+    )
 }
 
 #[test]
-fn the_page_shows_the_newest_frame() {
-    let (page, port) = started("old\n");
-    page.publish("new frame\n");
+fn serves_index() {
+    let (_page, port) = started(FRAME);
     let answer = get(port, "/");
-    assert!(answer.contains("new frame"), "{answer}");
-    assert!(!answer.contains("old"), "{answer}");
+    assert_eq!(status_of(&answer), "HTTP/1.1 200 OK");
+    assert!(
+        answer.contains("Content-Type: text/html; charset=utf-8"),
+        "{answer}"
+    );
+    let (_, body) = answer.split_once("\r\n\r\n").expect("a head and a body");
+    assert!(
+        body.contains("<div id=\"app\"></div>"),
+        "the app's mount: {body}"
+    );
+    assert!(
+        body.contains("name=\"viewport\" content=\"width=device-width, initial-scale=1\""),
+        "it works at phone width: {body}"
+    );
+    assert!(
+        body.contains("name=\"color-scheme\" content=\"light dark\""),
+        "it follows the system's theme: {body}"
+    );
+    assert_eq!(
+        answer.split_once("\r\n\r\n").map(|(_, body)| body),
+        Some(String::from_utf8_lossy(assets::find("/").expect("embedded").body).as_ref()),
+        "the body is the embedded build"
+    );
+}
+
+#[test]
+fn serves_assets_with_types() {
+    let (_page, port) = started(FRAME);
+    let index = get(port, "/");
+    let (script, style) = assets_of(&index);
+    for (path, content_type) in [
+        (script, "Content-Type: text/javascript; charset=utf-8"),
+        (style, "Content-Type: text/css; charset=utf-8"),
+    ] {
+        let answer = get(port, &path);
+        assert_eq!(status_of(&answer), "HTTP/1.1 200 OK", "{path}");
+        assert!(answer.contains(content_type), "{path}: {answer}");
+        let (_, body) = answer.split_once("\r\n\r\n").expect("a head and a body");
+        assert!(!body.is_empty(), "{path} has a body");
+    }
 }
 
 #[test]
@@ -108,15 +172,27 @@ fn the_page_loads_nothing_from_outside() {
     let answer = get(port, "/");
     let (head, body) = answer.split_once("\r\n\r\n").expect("a head and a body");
     assert!(head.contains("default-src 'none'"), "{head}");
-    for forbidden in [
-        "http://", "https://", "//", " src=", " href=", "@import", "url(",
-    ] {
+    assert!(head.contains("script-src 'self'"), "{head}");
+    assert!(!head.contains("unsafe-inline"), "{head}");
+    // The document names no other host: what it loads is its own script and style.
+    for forbidden in ["http://", "https://", "@import", "<style", "<script>"] {
         assert!(
             !body.contains(forbidden),
             "{forbidden:?} in the page: {body}"
         );
     }
-    assert!(body.contains("new EventSource('/events"), "{body}");
+}
+
+#[test]
+fn a_file_is_not_found_outside_the_build() {
+    let (_page, port) = started(FRAME);
+    for path in ["/assets/other.js", "/assets/", "/index", "/../Cargo.toml"] {
+        assert_eq!(
+            status_of(&get(port, path)),
+            "HTTP/1.1 404 Not Found",
+            "{path}"
+        );
+    }
 }
 
 #[test]
@@ -185,11 +261,8 @@ fn a_publish_sends_one_event_to_each_stream() {
 #[test]
 fn a_stream_behind_the_page_catches_up() {
     let (page, port) = started("first\n");
-    let version = {
-        let answer = get(port, "/");
-        assert!(answer.contains("data-version=\"0\""), "{answer}");
-        0
-    };
+    // A client that has the first frame, version 0, and opens its stream after a report.
+    let version = 0;
     page.publish("second\n");
     let mut stream = open_stream(port, &format!("/events?since={version}"));
     let (id, data) = next_event(&mut stream);
@@ -223,6 +296,31 @@ fn a_reconnecting_stream_sends_the_last_event_id() {
         "2",
         "the header wins over the query: frame 1 was not sent again"
     );
+}
+
+#[test]
+fn an_announce_sends_a_named_change_event() {
+    let (page, port) = started(FRAME);
+    let mut changes = open_stream(port, "/api/events");
+    let mut frames = open_stream(port, "/events");
+    page.announce(&Change {
+        project: "/work/ways".into(),
+        why: super::super::Why::Started,
+    });
+    assert_eq!(
+        line_of(&mut changes),
+        "\n",
+        "the end of the opening comment"
+    );
+    assert_eq!(line_of(&mut changes), "event: change\n");
+    assert_eq!(
+        line_of(&mut changes),
+        "data: {\"project\":\"/work/ways\",\"why\":\"started\"}\n"
+    );
+    // The text frame's stream is its own: a change is not a frame.
+    page.publish("next\n");
+    let (_, data) = next_event(&mut frames);
+    assert_eq!(data, "\"next\\n\"");
 }
 
 #[test]
@@ -286,4 +384,117 @@ fn the_url_is_the_address_and_the_port() {
         "http://[::1]:80/"
     );
     assert!(!lan_address().is_unspecified());
+}
+
+#[test]
+fn state_route_answers_json() {
+    let reads = Arc::new(AtomicUsize::new(0));
+    let (_page, port) = started_with("frame\n", one_missing_project(&reads));
+    let answer = get(port, "/api/state");
+    assert_eq!(status_of(&answer), "HTTP/1.1 200 OK");
+    assert!(
+        answer.contains("Content-Type: application/json\r\n"),
+        "{answer}"
+    );
+    assert!(answer.contains("Cache-Control: no-store"), "{answer}");
+    let json = json_of(&answer);
+    let mut keys: Vec<_> = json.as_object().expect("an object").keys().collect();
+    keys.sort();
+    assert_eq!(keys, ["controls", "machine", "next", "projects"]);
+    assert_eq!(json["controls"], true, "a hub that serves controls says so");
+    assert_eq!(json["machine"]["projects"], 1);
+    assert_eq!(json["projects"][0]["project"], "gone");
+    assert_eq!(json["projects"][0]["missing"], true);
+    // What waits on the Engineer comes from the same read: the project that cannot run.
+    assert_eq!(json["next"][0]["kind"], "broken");
+    assert_eq!(json["next"][0]["project"], "gone");
+    // A query changes nothing about the route, and each request is read again.
+    assert_eq!(status_of(&get(port, "/api/state?x=1")), "HTTP/1.1 200 OK");
+    assert_eq!(reads.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn state_route_refuses_post() {
+    let reads = Arc::new(AtomicUsize::new(0));
+    let (page, port) = started_with("frame\n", one_missing_project(&reads));
+    let before = get(port, "/");
+    let mut stream = open_stream(port, "/events");
+    for method in ["POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"] {
+        let answer = ask(
+            port,
+            &format!("{method} /api/state HTTP/1.1\r\nHost: zaf\r\nContent-Length: 4\r\n\r\nbody"),
+        );
+        assert_eq!(
+            status_of(&answer),
+            "HTTP/1.1 405 Method Not Allowed",
+            "{method}"
+        );
+        assert!(answer.contains("Allow: GET"), "{answer}");
+        assert!(
+            answer.contains("Content-Type: application/json"),
+            "{answer}"
+        );
+        assert_eq!(
+            json_of(&answer),
+            serde_json::json!({ "refused": "GET only" }),
+            "the refusal is one field"
+        );
+    }
+    assert_eq!(reads.load(Ordering::SeqCst), 0, "a refusal reads nothing");
+    assert_eq!(get(port, "/"), before, "nothing changed");
+    page.publish("after\n");
+    assert_eq!(next_event(&mut stream).0, "1", "and nothing was published");
+}
+
+#[test]
+fn a_state_that_cannot_be_read_is_a_refusal() {
+    let (_page, port) = started("frame\n");
+    let answer = get(port, "/api/state");
+    assert_eq!(status_of(&answer), "HTTP/1.1 503 Service Unavailable");
+    assert!(
+        answer.contains("Content-Type: application/json"),
+        "{answer}"
+    );
+    assert_eq!(
+        json_of(&answer),
+        serde_json::json!({ "refused": "not read in this test" })
+    );
+}
+
+#[test]
+fn an_unknown_api_route_is_a_json_refusal() {
+    let (_page, port) = started("frame\n");
+    for target in ["/api", "/api/", "/api/nothing", "/api/event"] {
+        let answer = get(port, target);
+        assert_eq!(status_of(&answer), "HTTP/1.1 404 Not Found", "{target}");
+        assert_eq!(
+            json_of(&answer),
+            serde_json::json!({ "refused": "not found" }),
+            "{target}"
+        );
+    }
+}
+
+#[test]
+fn requests_that_wait_for_a_read_share_it() {
+    let reads = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&reads);
+    let state: Arc<StateReader> = Arc::new(move || {
+        counted.fetch_add(1, Ordering::SeqCst);
+        thread::sleep(Duration::from_millis(300));
+        Err("slow".to_owned())
+    });
+    let (_page, port) = started_with("frame\n", state);
+    let askers: Vec<_> = (0..8)
+        .map(|_| thread::spawn(move || get(port, "/api/state")))
+        .collect();
+    for asker in askers {
+        let answer = asker.join().expect("answered");
+        assert_eq!(status_of(&answer), "HTTP/1.1 503 Service Unavailable");
+    }
+    assert!(
+        reads.load(Ordering::SeqCst) <= 2,
+        "eight requests at once are not eight reads: {}",
+        reads.load(Ordering::SeqCst)
+    );
 }

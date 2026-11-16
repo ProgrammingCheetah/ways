@@ -5,6 +5,7 @@
 //! (GitHub's and Forgejo's) keep the same way lives here once: the kind labels and the rules
 //! over states (`issues`), and the comments they write and read back (`notes`).
 
+pub mod clock;
 pub mod design;
 pub mod forgejo;
 pub mod gate;

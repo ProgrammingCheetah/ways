@@ -31,10 +31,11 @@ impl PhaseUnreadable {
 
 /// The facts about `task` as they stand now.
 ///
-/// A record that does not hold is no record, a recorded pull request the forge reports no head
-/// for is no head, and a workspace record whose directory is gone is no workspace, so each falls
-/// to an earlier phase. A read the board, the forge or the workspace fails is not a fact: it is
-/// the [`PhaseUnreadable`] error, for the caller to refuse with.
+/// A workspace record that does not hold, or whose directory is gone, is no workspace, and a
+/// recorded pull request the forge reports no head for is no head, so each falls to an earlier
+/// phase. A read the board, the forge or the workspace fails is not a fact: it is the
+/// [`PhaseUnreadable`] error, for the caller to refuse with; so is a pull request record that is
+/// there but cannot be read or holds no number.
 pub fn gather_phase_facts(
     board: &dyn Board,
     forge: &dyn Forge,
@@ -61,7 +62,11 @@ pub fn gather_phase_facts(
         }),
         None => None,
     };
-    let pr_number = records.pr(task);
+    // A record that cannot be read is no fact: the guard would fall to an earlier phase and let
+    // `slice-pr` open a second pull request.
+    let pr_number = records
+        .pr(task)
+        .map_err(|error| unreadable(PortError::Backend(error.to_string())))?;
     let pr = match pr_number {
         Some(pr) => Some(PrFacts {
             recorded_at: records.pr_recorded_at(task),

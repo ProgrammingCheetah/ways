@@ -9,6 +9,7 @@ use semver::Version;
 use super::Cli;
 use super::exit::{BACKEND, OK, REFUSED};
 use crate::adapters::github::{GhCommand, GithubReleases};
+use crate::app::schedule::binary;
 use crate::app::update::{self, HOME_REPO, Outcome, UpdateError};
 use crate::manifest::RepoName;
 use crate::ports::Releases;
@@ -16,7 +17,9 @@ use crate::ports::Releases;
 /// Runs the verb.
 pub fn run(cli: &Cli, check: bool) -> u8 {
     let releases = GithubReleases::from(GhCommand::from(RepoName::from(HOME_REPO)));
-    let exe = match std::env::current_exe() {
+    // The file to replace is the image's own, links followed, not the path it was started from;
+    // one already replaced since it started is the file now at that path, not ` (deleted)`.
+    let exe = match std::env::current_exe().map(binary::without_deleted) {
         Ok(exe) => exe,
         Err(error) => {
             eprintln!("zaf update: cannot find this binary: {error}");

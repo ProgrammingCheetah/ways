@@ -109,7 +109,7 @@ fn a_passing_pre_tick_lets_it_run() {
 
     assert_eq!(code, 0, "{stdout}{stderr}");
     assert!(
-        stdout.contains("slots 1 of 1"),
+        stdout.contains("nothing to do"),
         "the tick ran and printed its plan: {stdout}"
     );
     assert!(!project.gh_calls().is_empty(), "the tick read the forge");
@@ -131,7 +131,8 @@ fn an_idle_tick_runs_post_tick_with_idle_on_stdin() {
     assert_eq!(
         json,
         serde_json::json!({
-            "started": null, "waits": [], "ran": [], "questions": [], "idle": true,
+            "started": null, "waits": [], "ran": [], "questions": [], "asked": [],
+            "idle": true,
         })
     );
 }
@@ -144,7 +145,7 @@ fn a_failing_post_tick_leaves_the_exit_code() {
     let (code, stdout, stderr) = outcome(&project.zaf(&SPAWN));
 
     assert_eq!(code, 0, "the tick's exit code is its own: {stdout}{stderr}");
-    assert!(stdout.contains("slots 1 of 1"), "the tick ran: {stdout}");
+    assert!(stdout.contains("nothing to do"), "the tick ran: {stdout}");
     assert!(stderr.contains("FAIL hooks/post-tick: exit 1"), "{stderr}");
     assert!(stderr.contains("post-tick refused"), "{stderr}");
 }

@@ -15,6 +15,7 @@
     strum::IntoStaticStr,
     strum::VariantArray,
     serde::Serialize,
+    serde::Deserialize,
 )]
 #[strum(serialize_all = "snake_case")]
 #[serde(rename_all = "snake_case")]

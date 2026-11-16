@@ -16,15 +16,17 @@ use super::api::{ForgejoApi, Method};
 use super::labels::{self, LabelSpec, RepoLabels};
 use super::rows::{CommentRow, IssueRow, LabelRow};
 use crate::adapters::issues::{
-    EPIC_LABEL, QUESTION_LABEL, TASK_LABEL, can_wait, group, keeps_state_on_release,
+    DOOR_LABEL, EPIC_LABEL, QUESTION_LABEL, TASK_LABEL, can_wait, group, keeps_state_on_release,
     waits_on_ruling,
 };
 use crate::adapters::notes::{
     EpicNotes, LeaseNote, RULING_MARKER, SIGNATURE_TEXT, held_by, live_claim, marked,
     recorded_ruling, release_line, report_marker, signature_marker, unmarked,
 };
+use crate::domain::schedule::Priority;
 use crate::domain::{
-    Epic, EpicTask, Instance, NewTask, Signature, Standing, Ticket, TicketId, TicketState,
+    Epic, EpicTask, Instance, NewTask, OpenTicket, Signature, Standing, StandingAt, Ticket,
+    TicketId, TicketState,
 };
 use crate::ports::{
     AccessCheck, Board, ClaimOutcome, ClaimRecord, IssueTypes, NewQuestion, PortError,
@@ -98,6 +100,16 @@ impl ForgejoBoard {
             url: row.html_url.clone().into(),
             kind: labels::kind(row.label_names()),
         })
+    }
+
+    /// The open issues labelled `task` and `state/<state>`, in number order, each read in that
+    /// state with its epic.
+    fn open_tasks_in(&self, state: TicketState) -> Result<Vec<Ticket>, PortError> {
+        let label = labels::state_label(state);
+        self.issues(&[TASK_LABEL, &label], "open")?
+            .iter()
+            .map(|row| self.ticket(row, Some(state)))
+            .collect()
     }
 
     /// The tickets of `rows`, each in the first state its labels hold.
@@ -285,22 +297,53 @@ impl Board for ForgejoBoard {
     /// its label, closed as not planned by its `not planned` or `duplicate` label, closed, or
     /// open.
     fn standing(&self, number: TicketId) -> Result<Standing, PortError> {
+        self.standing_at(number).map(|at| at.standing)
+    }
+
+    /// One issue read: [`Board::standing`]'s answer, and its `closed_at` once it is closed.
+    fn standing_at(&self, number: TicketId) -> Result<StandingAt, PortError> {
+        let missing = StandingAt {
+            standing: Standing::Missing,
+            closed_at: None,
+        };
         let row = match self.issue(number) {
             Ok(row) => row,
-            Err(PortError::NotFound(_)) => return Ok(Standing::Missing),
+            Err(PortError::NotFound(_)) => return Ok(missing),
             Err(error) => return Err(error),
         };
         if row.is_pull() {
-            return Ok(Standing::Missing);
+            return Ok(missing);
         }
-        Ok(standing(&row, &states(&row)))
+        Ok(StandingAt {
+            standing: standing(&row, &states(&row)),
+            closed_at: row.closed(),
+        })
     }
 
     fn ready(&self) -> Result<Vec<Ticket>, PortError> {
-        let ready = labels::state_label(TicketState::Ready);
-        self.issues(&[TASK_LABEL, &ready], "open")?
-            .iter()
-            .map(|row| self.ticket(row, Some(TicketState::Ready)))
+        self.open_tasks_in(TicketState::Ready)
+    }
+
+    /// One list, as `ready` reads it: the open tasks labelled `state/blocked`, with their bodies.
+    fn blocked(&self) -> Result<Vec<Ticket>, PortError> {
+        self.open_tasks_in(TicketState::Blocked)
+    }
+
+    /// One list, as `ready` reads it: every open issue labelled `task`, less those labelled
+    /// `state/done`, each in the first state its labels hold, with its body and its epic.
+    /// One list of the open issues labelled `task`, then each one's epic, as `ready` reads it;
+    /// each with its `priority/<n>` label and the time it opened, from the same list.
+    fn open_tickets(&self) -> Result<Vec<OpenTicket>, PortError> {
+        let mut rows = self.issues(&[TASK_LABEL], "open")?;
+        rows.retain(|row| !states(row).contains(&TicketState::Done));
+        rows.iter()
+            .map(|row| {
+                Ok(OpenTicket {
+                    ticket: self.ticket(row, states(row).first().copied())?,
+                    priority: Priority::from_labels(row.label_names()),
+                    opened_at: row.opened(),
+                })
+            })
             .collect()
     }
 
@@ -383,7 +426,18 @@ impl Board for ForgejoBoard {
             .into_iter()
             .filter(|present| *present != label)
             .collect();
-        self.change(&row, Some(label), &others)
+        self.change(&row, Some(label), &others)?;
+        // Done closes the issue too; a closed issue carries no `not planned` label, so it reads as
+        // completed.
+        if label == TicketState::Done && row.is_open() {
+            let endpoint = format!("issues/{}", task.get());
+            self.api.send::<serde_json::Value>(
+                Method::Patch,
+                &endpoint,
+                Some(&json!({ "state": "closed" })),
+            )?;
+        }
+        Ok(())
     }
 
     fn comment(&self, issue: TicketId, body: &str) -> Result<(), PortError> {
@@ -415,6 +469,12 @@ impl Board for ForgejoBoard {
         let mut rows = self.issues(&[QUESTION_LABEL], "open")?;
         rows.retain(|row| !row.has_label(TASK_LABEL));
         self.tickets(&rows)
+    }
+
+    fn open_doors(&self) -> Result<Vec<TicketId>, PortError> {
+        let mut rows = self.issues(&[QUESTION_LABEL, DOOR_LABEL], "open")?;
+        rows.retain(|row| !row.has_label(TASK_LABEL));
+        Ok(rows.iter().map(|row| TicketId::from(row.number)).collect())
     }
 
     /// Lists the `question` issues, open and closed, whose body says `Raised on #<task>`,

@@ -118,6 +118,70 @@ fn ready_reads_the_field_over_every_page_and_only_open_tasks_of_the_repository()
 }
 
 #[test]
+fn blocked_reads_the_field_and_only_open_tasks_of_the_repository() {
+    let fake = FakeGh::new();
+    let listed = page(
+        &[
+            item(5, "Ready", true, &["task"], REPO),
+            item(6, "Blocked", true, &["task"], REPO),
+            item(7, "BLOCKED", false, &["task"], REPO),
+            item(8, "Blocked", true, &["task"], "example/other"),
+            item(4, "blocked", true, &["task"], REPO),
+            item(10, "Blocked", true, &["question"], REPO),
+        ],
+        None,
+    );
+    fake.on("api graphql *items(first: $page*", &listed);
+    let blocked = project_board(&fake).blocked().expect("blocked reads");
+    let ids: Vec<u64> = blocked.iter().map(|ticket| ticket.id.get()).collect();
+    assert_eq!(ids, [4, 6]);
+    assert_eq!(blocked[0].state, Some(TicketState::Blocked));
+    assert_eq!(blocked[0].body.as_str(), "Goal: g");
+}
+
+#[test]
+fn open_tickets_reads_the_states_from_the_project_in_one_more_call() {
+    let fake = FakeGh::new();
+    let listed = format!(
+        "[{},{},{},{}]",
+        issue(7, &["task"], &[], "OPEN"),
+        issue(4, &["task"], &[], "OPEN"),
+        issue(5, &["task"], &[], "OPEN"),
+        issue(6, &["task"], &[], "OPEN")
+    );
+    fake.on("issue list *", &listed).on(
+        "api graphql *items(first: $page*",
+        &page(
+            &[
+                item(5, "Done", true, &["task"], REPO),
+                item(6, "Question", true, &["task"], REPO),
+                item(4, "Blocked", true, &["task"], REPO),
+            ],
+            None,
+        ),
+    );
+    let open = crate::domain::OpenTicket::tickets(
+        project_board(&fake)
+            .open_tickets()
+            .expect("open tickets read"),
+    );
+    let read: Vec<(u64, Option<TicketState>)> = open
+        .iter()
+        .map(|ticket| (ticket.id.get(), ticket.state))
+        .collect();
+    // A task off the Project has no state, and is still an open task.
+    assert_eq!(
+        read,
+        [
+            (4, Some(TicketState::Blocked)),
+            (6, Some(TicketState::Question)),
+            (7, None),
+        ]
+    );
+    assert_eq!(fake.calls().len(), 2, "the list, then the Project's items");
+}
+
+#[test]
 fn a_ready_task_carries_its_issue_type_and_an_untyped_one_has_none() {
     let fake = FakeGh::new();
     let typed = item(5, "Ready", true, &["task"], REPO).replace(
@@ -196,7 +260,9 @@ fn a_project_without_the_field_gets_one_with_an_option_per_state() {
         .on("api graphql *projectItems*", &items_of(7, Some("Ready")))
         .on("api graphql *createProjectV2Field*", CREATED)
         .on("api graphql *fields(first: 50)*", FIELDS_WITHOUT_STATE)
-        .on("api graphql *updateProjectV2ItemFieldValue*", VALUE_SET);
+        .on("api graphql *updateProjectV2ItemFieldValue*", VALUE_SET)
+        // Done closes the issue too.
+        .on("issue close *", "");
     project_board(&fake)
         .set_state(TicketId::from(7), TicketState::Done)
         .expect("the state is set");

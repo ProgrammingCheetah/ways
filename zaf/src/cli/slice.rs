@@ -13,7 +13,7 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 
-use super::do_action::{print_outcome, run_named};
+use super::do_action::{VersionFrom, print_outcome, run_named, this_terminal};
 use super::exit::{BACKEND, OK, REFUSED, code_for, fail_composition};
 use super::{Cli, SliceAction};
 use crate::app::actions::{self, NO_SUCH_ACTION, RunOutcome, RunResult, Tier, hand_back};
@@ -23,7 +23,7 @@ use crate::domain::TicketId;
 
 /// The environment variable that names the release a slice's branches build toward,
 /// for branch patterns that hold `{version}`.
-pub const VERSION_VAR: &str = "ZAF_VERSION";
+pub use crate::app::actions::VERSION_VAR;
 
 /// The action that opens a task's slice.
 const SLICE_OPEN: &str = "slice-open";
@@ -40,7 +40,7 @@ pub fn run(cli: &Cli, action: &SliceAction) -> u8 {
         SliceAction::Drop { task } => ("slice-drop", *task, false),
     };
     let args = [OsString::from(task.get().to_string())];
-    let outcome = run_named(name, &args, None);
+    let outcome = run_named(name, &args, None, this_terminal(), VersionFrom::Env);
     if is_missing(&outcome) {
         return fail_missing(cli, &cli.verb.path(), name);
     }

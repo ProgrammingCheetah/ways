@@ -6,21 +6,26 @@ name = "ways"
 
 [requires]
 jj = "*"
-gh = "*"
+# The hub's page is a Svelte build (zaf/web): a frontend task runs node and npm itself.
+node = "*"
+npm = "*"
 
-# Tasks live on the "Zaf Feature Release" Project (owner: the repo's), each one's state in its
-# `zaf state` field, which zaf creates on its first write.
+# Tickets are issues of zuri/ways on the Engineer's Forgejo, read and written with the access
+# token in FORGEJO_TOKEN. A task's state and type are labels; an epic depends on each of its tasks.
 [board]
-kind = "github-projects"
-repo = "ProgrammingCheetah/ways"
-project = 2
+kind = "forgejo-issues"
+url = "http://yagdrassyl.local:3000"
+repo = "zuri/ways"
+token_env = "FORGEJO_TOKEN"
 
 [vcs]
 kind = "jj"
 
 [forge]
-kind = "github"
-repo = "ProgrammingCheetah/ways"
+kind = "forgejo"
+url = "http://yagdrassyl.local:3000"
+repo = "zuri/ways"
+token_env = "FORGEJO_TOKEN"
 
 # The design pages are in docs/, listed in docs/index.md. A page's id is its file name up to the
 # first dash, so docs/zaf-actions.md is page `zaf`. `zaf ask` checks the keeper's quotes against

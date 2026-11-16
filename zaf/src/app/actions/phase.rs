@@ -15,13 +15,9 @@ mod gather;
 
 pub use gather::{PhaseUnreadable, gather_phase_facts};
 
-mod standing;
+mod live;
 
-pub use standing::{
-    CheckResult, ListedPhase, MODEL_FAILURE_LIMIT, PHASES_DIR, PhaseRun, PullFacts, ReviewFact,
-    RunExit, Standing, StandingFacts, StandingUnreadable, WaitFailure, derive_standing,
-    ended_instances, gather_standing_facts, running_tasks, wait_failure,
-};
+pub use live::{LivePhase, PHASES_DIR, ended_instances, live_phases, running_tasks};
 
 /// Where a task stands. The seven of §3 and `Unclaimed`, in lifecycle order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, strum::Display)]

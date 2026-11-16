@@ -62,6 +62,7 @@ The environment the verbs read (the spawner sets both; by hand, set them yoursel
 | `zaf changes <task> [--path <file>]` | see the task's change: stat first, one file's hunks on request |
 | `zaf check <task>` | run the task's checks: the gate, its named tests, its acceptance lines and interfaces (`zaf verify <task>` is the same) |
 | `zaf do slice-pr <task>` | in `build`, `check` or `review`: commit what is left, publish the branch, open or update its pull request and print its number |
+| `zaf do sync-base <task>` | in `build` to `land`, when a merge's base conflicts (a fix round's `Why this run` says so): fetch the base and merge it into the task's workspace; a clean merge says so, a conflicted one stays in the workspace with its paths named for you to resolve and commit; your uncommitted work rides along, and nothing is pushed |
 | `zaf check pr:<n>:<task>` | run the pull request's review steps, wait for them, print the findings; `--status` reads the last result |
 | `zaf do slice-merge <task>` | in `land`, when the last `zaf check pr` is clean for the pull request's head: merge it, mark the task done, remove the workspace; exit 1 after a base merge that needs a new `zaf check pr` |
 | `zaf do slice-drop <task>` | in `build`, `check` or `done`: drop the task's workspace; the branch stays |
@@ -69,6 +70,7 @@ The environment the verbs read (the spawner sets both; by hand, set them yoursel
 | `zaf progress at <task> <phase> [--role <role>]` | report the phase you are in, on each change; a phase the plan did not declare is refused |
 | `zaf report --epics` | print one row per epic: tokens and cost per role, tasks done |
 | `zaf status` | the board, running instances, slots, guard and open questions on one screen |
+| `zaf spawn trace [<ticket>] [--since <when>]` | see where the tickets moved, tick by tick, oldest first, from the trace every tick leaves; `--since` takes a time or a span such as `2h`; `--more` adds what each tick did |
 | `zaf doctor` | validate the manifest and the actions, and the tools they require |
 
 Asking well:

@@ -1,15 +1,17 @@
 #!/bin/sh
-# zaf description: phase implement: claim the task, open its slice, run the programmer on its brief, then publish the slice with `slice-pr`, which opens the pull request
-# zaf 1: refused: the argument is not <task>, or a step refused (the task is not ready or is held, or the slice or the pull request was refused)
+# zaf description: phase implement: claim the task, open its slice (or take the workspace of the slice an earlier run opened, as it stands), run the programmer on its brief, then publish the slice with `slice-pr`, which opens the pull request
+# zaf 1: refused: the argument is not <task>, or a step refused (the task is not ready or is held, the slice or the pull request was refused, or the slice has nothing to publish)
 # zaf 2: a backend failed (a verb or a step failed, or the programmer exited non-zero)
 # zaf mode: 755
+# zaf target: task
 # zaf kind: model
 # zaf ends: pr-open
 
 # The task as a bare number; the launcher passes it as the one argument.
 task=${1#\#}
-if [ "$#" -ne 1 ] || [ -z "$ZAF_ROOT" ]; then
-    echo "usage: implement <task>, run by zaf with ZAF_ROOT and ZAF_INSTANCE set" >&2
+# zaf sets ZAF_SLICE on a `target: task` run; ZAF_PR is unset until `slice-pr` records one.
+if [ "$#" -ne 1 ] || [ -z "$ZAF_ROOT" ] || [ -z "$ZAF_SLICE" ]; then
+    echo "usage: implement <task>, run by zaf with ZAF_ROOT, ZAF_SLICE and ZAF_INSTANCE set" >&2
     exit 1
 fi
 case $task in
@@ -32,13 +34,19 @@ cd "$ZAF_ROOT" || exit 2
 
 zaf board claim "$task" || stop $?
 
-# A successful `zaf do` prints nothing, so `--more` brings the log back; its last non-empty line
-# is the workspace path.
-log=$(zaf do --more slice-open "$task") || stop $?
-workspace=$(printf '%s\n' "$log" | awk 'NF { line = $0 } END { print line }')
-if [ -z "$workspace" ]; then
-    echo "slice-open handed back no workspace" >&2
-    exit 2
+# An earlier run may have opened the slice and published nothing: its programmer stopped to ask
+# the Engineer, or crashed. The task is then past `claim`, where `slice-open` is refused, so the
+# open workspace is taken as it stands; whatever it holds, committed or not, stays.
+workspace=$ZAF_ROOT/.zaf/workspaces/$ZAF_SLICE
+if [ ! -d "$workspace/.jj" ]; then
+    # A successful `zaf do` prints nothing, so `--more` brings the log back; its last non-empty
+    # line is the workspace path.
+    log=$(zaf do --more slice-open "$task") || stop $?
+    workspace=$(printf '%s\n' "$log" | awk 'NF { line = $0 } END { print line }')
+    if [ -z "$workspace" ]; then
+        echo "slice-open handed back no workspace" >&2
+        exit 2
+    fi
 fi
 
 # The first line `zaf brief` prints is the pack's path, the second its size.

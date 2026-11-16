@@ -391,6 +391,8 @@ impl ForgejoApi {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        // A process group of its own, so a Ctrl-C meant for zaf does not cut a read short.
+        std::os::unix::process::CommandExt::process_group(&mut command, 0);
         let mut child = command
             .spawn()
             .map_err(|error| PortError::Unavailable(format!("cannot run {PROGRAM}: {error}")))?;

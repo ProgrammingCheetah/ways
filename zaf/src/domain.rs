@@ -1,7 +1,8 @@
 //! The objects of the framework and the text formats they travel in.
 //!
 //! Nothing here knows a backend: the board, the VCS and the design source are
-//! reached only through [`crate::ports`].
+//! reached only through [`crate::ports`]. [`schedule`] is the scheduling core: where
+//! each ticket sits, worked out from facts alone.
 
 mod answer;
 mod ask;
@@ -14,6 +15,7 @@ mod labels;
 mod memory;
 mod profile;
 mod quote;
+pub mod schedule;
 mod slot;
 mod task;
 mod text;
@@ -32,17 +34,18 @@ pub use epic::{
     SignatureError,
 };
 pub use finding::{Finding, FindingSource, Location, Severity};
-pub use ids::{IdError, PageId, TicketId};
+pub use ids::{CommitId, IdError, PageId, TicketId};
 pub use instance::{Instance, InstanceNumber, RoleName};
 pub use labels::{PageStatus, TicketState};
 pub use memory::{MEBIBYTES_PER_UNIT, Mebibytes, Units};
 pub use profile::Profile;
 pub use quote::Quote;
+pub use schedule::{ActionName, CheckName, PhaseEnd};
 pub use slot::{SLOTS_DIR, SlotRecord};
 pub use task::{
     SecurityTrigger, TaskField, TaskModel, TaskProblem, TaskSize, TaskTemplate, TaskTemplateError,
 };
 pub use ticket::{
-    DEFAULT_TASK_TYPE, NewTask, Standing, Ticket, TicketBody, TicketSummary, TicketTitle,
-    TicketType, TicketUrl,
+    DEFAULT_TASK_TYPE, NewTask, OpenTicket, Standing, StandingAt, Ticket, TicketBody,
+    TicketSummary, TicketTitle, TicketType, TicketUrl,
 };

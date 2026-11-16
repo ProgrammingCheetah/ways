@@ -615,6 +615,7 @@ impl ProjectState {
                     state_reason: None,
                     comments: Vec::new(),
                     issue_type: issue.issue_type,
+                    created_at: None,
                 };
                 found.push(OnProject { state, row });
             }

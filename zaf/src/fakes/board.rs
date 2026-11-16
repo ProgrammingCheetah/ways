@@ -4,9 +4,10 @@ use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::SystemTime;
 
+use crate::domain::schedule::Priority;
 use crate::domain::{
-    CHALLENGER_ROLE, Epic, EpicTask, GroupName, Instance, NewTask, Signature, Standing, Ticket,
-    TicketId, TicketState, TicketType,
+    CHALLENGER_ROLE, Epic, EpicTask, GroupName, Instance, NewTask, OpenTicket, Signature, Standing,
+    StandingAt, Ticket, TicketId, TicketState, TicketType,
 };
 use crate::ports::{Board, ClaimOutcome, ClaimRecord, IssueTypes, NewQuestion, PortError};
 
@@ -26,9 +27,36 @@ struct Issue {
     epic: bool,
     group: Option<GroupName>,
     signature: Option<Signature>,
+    /// The labels a person put on it that the board's own fields do not hold (`priority/1`).
+    labels: Vec<String>,
+    /// When it was opened; none unless told.
+    opened_at: Option<SystemTime>,
+    /// When it was closed; none unless told, and none while it is open.
+    closed_at: Option<SystemTime>,
 }
 
 impl Issue {
+    /// An issue holding `ticket`, with nothing written on it.
+    fn of(ticket: Ticket) -> Self {
+        Self {
+            ticket,
+            comments: Vec::new(),
+            reports: Vec::new(),
+            claim: None,
+            door: false,
+            question: false,
+            ruling: None,
+            closed: false,
+            not_planned: false,
+            epic: false,
+            group: None,
+            signature: None,
+            labels: Vec::new(),
+            opened_at: None,
+            closed_at: None,
+        }
+    }
+
     /// Where it stands: `done` by its label, else open, else closed as not planned, else
     /// closed as completed and so done.
     fn standing(&self) -> Standing {
@@ -73,21 +101,42 @@ pub struct FakeBoard {
 impl FakeBoard {
     /// Puts a ticket on the board, replacing one with the same number.
     pub fn add_ticket(&self, ticket: Ticket) {
-        let issue = Issue {
-            ticket: ticket.clone(),
-            comments: Vec::new(),
-            reports: Vec::new(),
-            claim: None,
-            door: false,
-            question: false,
-            ruling: None,
-            closed: false,
-            not_planned: false,
-            epic: false,
-            group: None,
-            signature: None,
-        };
-        self.state().issues.insert(ticket.id, issue);
+        let id = ticket.id;
+        self.state().issues.insert(id, Issue::of(ticket));
+    }
+
+    /// Puts a label on an issue, as a person would on the forge: one the board's own fields do not
+    /// hold, such as `priority/1`. A label already there is not put twice.
+    pub fn add_label(&self, id: TicketId, label: &str) {
+        if let Some(issue) = self.state().issues.get_mut(&id)
+            && !issue.labels.iter().any(|present| present == label)
+        {
+            issue.labels.push(label.to_owned());
+        }
+    }
+
+    /// The labels a person put on an issue ([`FakeBoard::add_label`]), in the order put.
+    pub fn labels(&self, id: TicketId) -> Vec<String> {
+        self.state()
+            .issues
+            .get(&id)
+            .map(|issue| issue.labels.clone())
+            .unwrap_or_default()
+    }
+
+    /// Records when an issue was opened, as the forge would.
+    pub fn set_opened_at(&self, id: TicketId, at: SystemTime) {
+        if let Some(issue) = self.state().issues.get_mut(&id) {
+            issue.opened_at = Some(at);
+        }
+    }
+
+    /// Closes an issue as completed at `at`, as closing it on the forge then would.
+    pub fn close_at(&self, id: TicketId, at: SystemTime) {
+        if let Some(issue) = self.state().issues.get_mut(&id) {
+            issue.closed = true;
+            issue.closed_at = Some(at);
+        }
     }
 
     /// Puts an open epic on the board, as [`Board::epics`] lists it.
@@ -103,6 +152,15 @@ impl FakeBoard {
         });
         if let Some(issue) = self.state().issues.get_mut(&number) {
             issue.epic = true;
+        }
+    }
+
+    /// Puts an open epic on the board that is signed on its body but not challenged yet.
+    pub fn add_signed_epic(&self, number: TicketId, title: &str) {
+        self.add_epic(number, title);
+        let mut state = self.state();
+        if let Some(issue) = state.issues.get_mut(&number) {
+            issue.signature = Some(Signature::of(&issue.ticket.body, SystemTime::UNIX_EPOCH));
         }
     }
 
@@ -153,6 +211,23 @@ impl FakeBoard {
         if let Some(issue) = self.state().issues.get_mut(&issue) {
             issue.closed = true;
         }
+    }
+
+    /// Opens a closed issue again, as a person reopening it would.
+    pub fn reopen(&self, issue: TicketId) {
+        if let Some(issue) = self.state().issues.get_mut(&issue) {
+            issue.closed = false;
+            issue.not_planned = false;
+            issue.closed_at = None;
+        }
+    }
+
+    /// How an issue is closed: none while it is open, `Some(true)` closed as completed,
+    /// `Some(false)` closed as not planned. An issue the board does not hold is none.
+    pub fn closed_as(&self, issue: TicketId) -> Option<bool> {
+        let state = self.state();
+        let issue = state.issues.get(&issue)?;
+        issue.closed.then_some(!issue.not_planned)
     }
 
     /// Closes an issue as not planned, as folding a task into a unit or dropping it would.
@@ -311,11 +386,21 @@ impl Board for FakeBoard {
     }
 
     fn standing(&self, number: TicketId) -> Result<Standing, PortError> {
+        self.standing_at(number).map(|at| at.standing)
+    }
+
+    fn standing_at(&self, number: TicketId) -> Result<StandingAt, PortError> {
         let state = self.state();
-        Ok(state
-            .issues
-            .get(&number)
-            .map_or(Standing::Missing, Issue::standing))
+        Ok(state.issues.get(&number).map_or(
+            StandingAt {
+                standing: Standing::Missing,
+                closed_at: None,
+            },
+            |issue| StandingAt {
+                standing: issue.standing(),
+                closed_at: issue.closed.then_some(issue.closed_at).flatten(),
+            },
+        ))
     }
 
     fn ready(&self) -> Result<Vec<Ticket>, PortError> {
@@ -327,6 +412,36 @@ impl Board for FakeBoard {
             .map(|issue| issue.ticket.clone())
             .collect();
         Ok(ready)
+    }
+
+    /// The open issues in the state `blocked`, in number order.
+    fn blocked(&self) -> Result<Vec<Ticket>, PortError> {
+        let blocked = self
+            .state()
+            .issues
+            .values()
+            .filter(|issue| !issue.closed && issue.ticket.state == Some(TicketState::Blocked))
+            .map(|issue| issue.ticket.clone())
+            .collect();
+        Ok(blocked)
+    }
+
+    /// The open tasks not in `done`, in number order: every ticket added that is no epic and no
+    /// question, whatever its state, each with its `priority/<n>` label and the time it opened.
+    fn open_tickets(&self) -> Result<Vec<OpenTicket>, PortError> {
+        let open = self
+            .state()
+            .issues
+            .values()
+            .filter(|issue| !issue.epic && !issue.question && !issue.closed)
+            .filter(|issue| issue.ticket.state != Some(TicketState::Done))
+            .map(|issue| OpenTicket {
+                ticket: issue.ticket.clone(),
+                priority: Priority::from_labels(issue.labels.iter().map(String::as_str)),
+                opened_at: issue.opened_at,
+            })
+            .collect();
+        Ok(open)
     }
 
     fn task(&self, number: TicketId) -> Result<Ticket, PortError> {
@@ -410,7 +525,13 @@ impl Board for FakeBoard {
 
     fn set_state(&self, task: TicketId, label: TicketState) -> Result<(), PortError> {
         let mut state = self.state();
-        state.issue_mut(task)?.ticket.state = Some(label);
+        let issue = state.issue_mut(task)?;
+        issue.ticket.state = Some(label);
+        // Done closes the issue too, as completed.
+        if label == TicketState::Done && !issue.closed {
+            issue.closed = true;
+            issue.not_planned = false;
+        }
         Ok(())
     }
 
@@ -445,6 +566,18 @@ impl Board for FakeBoard {
         Ok(questions)
     }
 
+    fn open_doors(&self) -> Result<Vec<TicketId>, PortError> {
+        let mut doors: Vec<TicketId> = self
+            .state()
+            .issues
+            .iter()
+            .filter(|(_, issue)| issue.question && issue.door && !issue.closed)
+            .map(|(id, _)| *id)
+            .collect();
+        doors.sort();
+        Ok(doors)
+    }
+
     fn questions_on(&self, task: TicketId) -> Result<Vec<(Ticket, Option<String>)>, PortError> {
         let raised = self
             .state()
@@ -476,18 +609,9 @@ impl Board for FakeBoard {
             kind: None,
         };
         let issue = Issue {
-            ticket,
-            comments: Vec::new(),
-            reports: Vec::new(),
-            claim: None,
             door: question.door,
             question: true,
-            ruling: None,
-            closed: false,
-            not_planned: false,
-            epic: false,
-            group: None,
-            signature: None,
+            ..Issue::of(ticket)
         };
         state.issues.insert(number, issue);
         Ok(number)

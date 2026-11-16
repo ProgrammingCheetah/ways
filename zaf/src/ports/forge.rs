@@ -199,10 +199,9 @@ pub enum CheckLog {
     NoJob,
 }
 
-text_newtype! {
-    /// The name of a check run (`ci`, a scanner, a bot).
-    CheckName
-}
+/// The name of a check run, now the domain's (the scheduling core names the checks a failure
+/// failed on); kept here so `crate::ports::CheckName` still names it.
+pub use crate::domain::CheckName;
 
 text_newtype! {
     /// Who wrote a review comment.

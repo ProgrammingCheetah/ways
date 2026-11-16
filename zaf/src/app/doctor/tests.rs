@@ -1040,3 +1040,55 @@ fn gh_is_not_needed_when_neither_the_board_nor_the_forge_is_on_github() {
     );
     assert_eq!(status_of(&report, "gh"), ToolStatus::Missing);
 }
+
+fn hub_report(home: Option<&Path>, commands: &FakeCommands) -> Report {
+    let dir = tempfile::tempdir().expect("project");
+    let mut report = doctor(dir.path(), &manifest(""), &FakeCommands::new());
+    let before = report.passed();
+    report.hub = Some(hub::check(
+        home,
+        commands,
+        std::net::IpAddr::from([192, 168, 1, 5]),
+        &|_| true,
+    ));
+    assert_eq!(report.passed(), before, "the hub line never moves the exit");
+    report
+}
+
+#[test]
+fn hub_running() {
+    let home = tempfile::tempdir().expect("home");
+    let holder = crate::ports::Holder {
+        pid: 10,
+        start: "100".to_owned(),
+    };
+    crate::app::hub::lock::HubLock::take(home.path(), &holder, 8080, &|_| true).expect("lock");
+    let commands = FakeCommands::new().with("systemctl", "LoadState=loaded\nActiveState=active\n");
+    let lines = hub_report(Some(home.path()), &commands).lines();
+    assert!(lines.contains(&"hub service: running on port 8080 (http://192.168.1.5:8080/)".into()));
+}
+
+#[test]
+fn hub_stopped() {
+    let commands =
+        FakeCommands::new().with("systemctl", "LoadState=loaded\nActiveState=inactive\n");
+    let lines = hub_report(None, &commands).lines();
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("hub service: installed, stopped"))
+    );
+}
+
+#[test]
+fn hub_not_installed() {
+    let commands =
+        FakeCommands::new().with("systemctl", "LoadState=not-found\nActiveState=inactive\n");
+    let report = hub_report(None, &commands);
+    assert!(
+        report
+            .lines()
+            .iter()
+            .any(|line| line.contains("zaf hub service install"))
+    );
+}

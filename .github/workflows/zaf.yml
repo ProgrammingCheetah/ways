@@ -80,3 +80,30 @@ jobs:
       - name: Install musl-tools (the bundled SQLite is C)
         run: sudo apt-get update && sudo apt-get install -y musl-tools
       - run: cargo build --release --locked --target x86_64-unknown-linux-musl
+
+  web-build-fresh:
+    name: web-build-fresh (the committed page build is the fresh one)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: zaf/web/package-lock.json
+      - name: Install the page's locked dependencies
+        working-directory: zaf/web
+        run: npm ci
+      - name: Build the page
+        working-directory: zaf/web
+        run: npm run build
+      - name: Fail when the build differs from the committed one
+        # the repository root, not the `zaf` folder the defaults above set, so the paths below resolve
+        working-directory: .
+        # intent-to-add makes a file the build newly wrote show in the diff; a deleted one shows already
+        run: |
+          git add --intent-to-add zaf/web/dist
+          git diff --exit-code -- zaf/web/dist || {
+            echo "zaf/web/dist is stale: run 'npm ci && npm run build' in zaf/web and commit dist/" >&2
+            exit 1
+          }

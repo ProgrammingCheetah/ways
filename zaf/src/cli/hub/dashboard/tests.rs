@@ -13,6 +13,7 @@ fn snapshot(epic: u64) -> Snapshot {
             number: epic,
             ..EpicRow::default()
         }],
+        ..Snapshot::default()
     }
 }
 
@@ -141,12 +142,12 @@ fn hub_port_prints_the_lan_url() {
     let dir = tempfile::tempdir().expect("tempdir");
     let dashboard = dashboard_on_a_free_port();
     let port = dashboard.port();
-    let address = IpAddr::V4(Ipv4Addr::new(192, 168, 7, 20));
     let mut out = Vec::new();
     serve(
         &mut out,
         dashboard,
-        address,
+        serving(Ipv4Addr::new(192, 168, 7, 20), false, false),
+        no_state(),
         |_| Ok(snapshot(103)),
         dir.path(),
         &mut Idle(2),
@@ -155,13 +156,75 @@ fn hub_port_prints_the_lan_url() {
     assert_eq!(
         String::from_utf8(out).expect("text"),
         format!("http://192.168.7.20:{port}/\n"),
-        "port 0 prints the port it got"
+        "port 0 prints the port it got, and no key where no terminal asked for it"
     );
     assert_ne!(port, 0);
 }
 
+/// What `zaf hub --port 0` prints on `out`, for a hub with a terminal or without, with controls or
+/// read-only.
+fn printed(show_link: bool, read_only: bool) -> String {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let dashboard = dashboard_on_a_free_port();
+    let mut out = Vec::new();
+    serve(
+        &mut out,
+        dashboard,
+        serving(Ipv4Addr::LOCALHOST, show_link, read_only),
+        no_state(),
+        |_| Ok(snapshot(103)),
+        dir.path(),
+        &mut Idle(2),
+    )
+    .expect("serves");
+    String::from_utf8(out).expect("text")
+}
+
 #[test]
-fn the_first_frame_is_the_page() {
+fn a_hub_with_a_terminal_prints_the_link_that_carries_the_key() {
+    let out = printed(true, false);
+    let mut lines = out.lines();
+    let url = lines.next().expect("the URL");
+    let link = lines
+        .next()
+        .and_then(|line| line.strip_prefix("controls: "))
+        .expect("the link");
+    let key = link
+        .strip_prefix(url)
+        .and_then(|rest| rest.strip_prefix("#key="))
+        .expect("the key rides in the link's fragment, which is never sent in a request");
+    assert_eq!(key.len(), 64, "256 bits as hex: {key}");
+    assert!(key.bytes().all(|byte| byte.is_ascii_hexdigit()), "{key}");
+    assert_eq!(lines.next(), None);
+}
+
+#[test]
+fn a_hub_with_no_terminal_prints_no_key() {
+    // A service's output is a journal, and a redirected one is a file.
+    let out = printed(false, false);
+    assert_eq!(out.lines().count(), 1, "the URL alone: {out}");
+    assert!(!out.contains("key"), "{out}");
+}
+
+#[test]
+fn a_read_only_hub_prints_no_link() {
+    let out = printed(true, true);
+    assert_eq!(out.lines().count(), 1, "nothing to open: {out}");
+    assert!(!out.contains("key"), "{out}");
+}
+
+fn serving(address: Ipv4Addr, show_link: bool, read_only: bool) -> Serving {
+    Serving {
+        address: IpAddr::V4(address),
+        guard: Guard::start(read_only).expect("a key"),
+        controls: Controls::default(),
+        show_link,
+        link_home: None,
+    }
+}
+
+#[test]
+fn the_page_is_the_embedded_build() {
     let dir = tempfile::tempdir().expect("tempdir");
     let dashboard = dashboard_on_a_free_port();
     let port = dashboard.port();
@@ -174,7 +237,8 @@ fn the_first_frame_is_the_page() {
     serve(
         &mut Vec::new(),
         dashboard,
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        serving(Ipv4Addr::LOCALHOST, false, false),
+        no_state(),
         |_| Ok(snapshot(103)),
         dir.path(),
         &mut pace,
@@ -182,7 +246,7 @@ fn the_first_frame_is_the_page() {
     .expect("serves");
     let answer = seen.take();
     assert!(answer.starts_with("HTTP/1.1 200 OK"), "{answer}");
-    assert!(answer.contains("epic #103"), "{answer}");
+    assert!(answer.contains("<div id=\"app\"></div>"), "{answer}");
 }
 
 /// Gets the page at its second look.
@@ -217,6 +281,11 @@ fn dashboard_on_a_free_port() -> Dashboard {
     Dashboard::bind(0).expect("binds")
 }
 
+/// A reader for a machine with no zaf home: what the tests that do not look at it give.
+fn no_state() -> Arc<StateReader> {
+    machine_reader(None)
+}
+
 #[test]
 fn a_report_sends_one_event() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -232,7 +301,8 @@ fn a_report_sends_one_event() {
     serve(
         &mut Vec::new(),
         dashboard,
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        serving(Ipv4Addr::LOCALHOST, false, false),
+        no_state(),
         |_| {
             calls.set(calls.get() + 1);
             Ok(snapshot(100 + calls.get()))
@@ -258,7 +328,8 @@ fn no_board_between_reports() {
     serve(
         &mut Vec::new(),
         dashboard_on_a_free_port(),
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        serving(Ipv4Addr::LOCALHOST, false, false),
+        no_state(),
         |_| {
             calls.set(calls.get() + 1);
             Ok(snapshot(103))
@@ -282,7 +353,8 @@ fn a_failing_board_keeps_the_last_frame_and_the_server() {
     let outcome = serve(
         &mut Vec::new(),
         dashboard,
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        serving(Ipv4Addr::LOCALHOST, false, false),
+        no_state(),
         |_| {
             calls.set(calls.get() + 1);
             if calls.get() == 1 {

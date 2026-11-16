@@ -2,7 +2,8 @@ use super::*;
 use crate::app::spawn::runs;
 use crate::app::spawn::tick::PlannedLaunch;
 use crate::domain::{
-    Budget, Instance, InstanceNumber, RoleName, SizeTable, TaskSize, TicketId, TicketState,
+    Budget, Instance, InstanceNumber, OpenTicket, RoleName, SizeTable, TaskSize, TicketId,
+    TicketState,
 };
 use crate::fakes::FakeBoard;
 
@@ -684,4 +685,216 @@ fn a_screen_without_slot_records_has_no_slot_line() {
     let screen = status(&board(), dir.path(), 2, &all_alive).expect("status");
     assert!(screen.held_slots.is_empty());
     assert!(!screen.render_text().contains("slot:"));
+}
+
+/// A board with one question whose title is cut: its body holds the whole text.
+fn long_question_board() -> (FakeBoard, String) {
+    let board = FakeBoard::default();
+    let text = format!(
+        "{} Proposed answer: keep the header.",
+        "Should the export keep it? ".repeat(10)
+    );
+    let question = NewQuestion {
+        on: TicketId::from(4),
+        text: text.clone(),
+        door: true,
+    };
+    let mut cut = ticket(20, &question.title(), TicketState::Question);
+    cut.body = question.body().into();
+    board.add_question(cut);
+    (board, text.trim().to_owned())
+}
+
+#[test]
+fn a_cut_question_title_ends_with_an_ellipsis_and_more_prints_it_whole() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (board, text) = long_question_board();
+    let status = status(&board, dir.path(), 2, &none_alive).expect("status");
+
+    let terse = status.render_text();
+    let line = terse
+        .lines()
+        .find(|l| l.starts_with("question  #20"))
+        .expect("line");
+    assert!(line.ends_with(" …"), "{line}");
+    assert!(!terse.contains("Proposed answer"), "{terse}");
+
+    let more = status.render(true);
+    assert!(more.contains("question  #20\n"), "{more}");
+    assert!(more.contains("Proposed answer: keep the header."), "{more}");
+    assert!(more.contains("  raised on #4\n"), "{more}");
+    assert!(
+        more.contains("  rule it: zaf board ruling 20 \"<answer>\"\n"),
+        "{more}"
+    );
+    assert_eq!(status.question_details[0].text, text);
+    assert_eq!(status.question_details[0].raised_on, Some(4));
+    let json: serde_json::Value = serde_json::from_str(&status.to_json()).expect("json");
+    assert_eq!(json["question_details"][0]["text"], text);
+    assert_eq!(json["questions"][0]["number"], 20);
+}
+
+#[test]
+fn a_whole_question_title_gets_no_ellipsis() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let status = status(&board(), dir.path(), 2, &none_alive).expect("status");
+
+    let terse = status.render_text();
+
+    assert!(
+        terse.contains("question  #9 Which columns are exported?\n"),
+        "{terse}"
+    );
+}
+
+/// A phase run folder of `task`, its holder recorded.
+fn phase_folder(state_dir: &Path, task: u64, action: &str, instance: &str) {
+    let dir = state_dir.join(format!("phases/{action}-1-task-{task}"));
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(dir.join("action"), action).expect("action");
+    std::fs::write(dir.join("instance"), instance).expect("instance");
+    std::fs::write(dir.join("pid"), "4242 1000").expect("pid");
+    std::fs::write(dir.join("task"), task.to_string()).expect("task");
+}
+
+#[test]
+fn a_running_phase_is_listed_and_holds_a_slot() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    phase_folder(dir.path(), 3, "implement", "implement instance 1 on #1");
+    let board = FakeBoard::default();
+
+    let status = status(&board, dir.path(), 4, &all_alive).expect("status");
+
+    assert_eq!(status.running_count, 1);
+    assert_eq!(status.slots.free, 3);
+    assert_eq!(status.phases.len(), 1);
+    assert_eq!(status.phases[0].task, 3);
+    assert_eq!(status.phases[0].epic, Some(1));
+    let text = status.render_text();
+    assert!(
+        text.contains("running   1\n  implement #3 (epic #1)\n"),
+        "{text}"
+    );
+    assert!(text.contains("slots     3 free of 4"), "{text}");
+    let json: serde_json::Value = serde_json::from_str(&status.to_json()).expect("json");
+    assert_eq!(json["phases"][0]["action"], "implement");
+    assert_eq!(
+        json["running_count"], 1,
+        "existing fields keep their meaning"
+    );
+}
+
+#[test]
+fn an_ended_phase_is_not_listed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    phase_folder(dir.path(), 3, "implement", "implement instance 1 on #1");
+    let board = FakeBoard::default();
+
+    let status = status(&board, dir.path(), 4, &none_alive).expect("status");
+
+    assert_eq!(status.running_count, 0);
+    assert!(status.phases.is_empty());
+    assert_eq!(status.slots.free, 4);
+}
+
+#[test]
+fn status_shows_the_lane_and_what_each_ticket_waits_on() {
+    use crate::app::actions::{ActionKind, ActionName, ListedPhase, PhaseEnd};
+    use crate::app::schedule::tick::support::{facts, gathered};
+    use crate::domain::schedule::{Dependency, TicketFacts};
+    use crate::domain::{Standing, TaskSize};
+    use std::time::{Duration, SystemTime};
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let board = FakeBoard::default();
+    let labels = [
+        (3, TicketState::Ready),
+        (5, TicketState::Ready),
+        (7, TicketState::Blocked),
+        (8, TicketState::Blocked),
+        (11, TicketState::Ready),
+    ];
+    for (number, label) in labels {
+        board.add_ticket(ticket(number, &format!("Task {number}"), label));
+    }
+    let list = vec![ListedPhase {
+        action: ActionName::from("implement"),
+        kind: ActionKind::Model,
+        ends: PhaseEnd::PrOpen,
+        on_fail: None,
+    }];
+    let since = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
+    let of = |task: u64| facts(task, &list, TaskSize::S, since, None, Vec::new());
+    // #3 is in the lane, and so is #8, whose `blocked` nothing holds; #5, labelled `ready`, waits
+    // on a question; #7 on #3. #11 has no phase list, so its label speaks for it.
+    let asks = TicketFacts {
+        open_questions: [TicketId::from(45)].into(),
+        ..of(5)
+    };
+    let waits = TicketFacts {
+        dependencies: vec![Dependency {
+            ticket: TicketId::from(3),
+            standing: Standing::Open,
+        }],
+        ..of(7)
+    };
+    let mut placed = gathered(vec![
+        (of(3), list.clone()),
+        (asks, list.clone()),
+        (waits, list.clone()),
+        (of(8), list.clone()),
+    ]);
+    placed.open = OpenTicket::tickets(board.open_tickets().expect("the open tickets read"));
+    let now = since + Duration::from_secs(60);
+
+    let screen = status(&board, &state_dir, 2, &none_alive)
+        .expect("reads")
+        .with_placement(&placed, now);
+
+    let text = screen.render(false);
+    assert!(text.contains("ready     3 (#3 #8 #11)\n"), "{text}");
+    assert!(text.contains("waiting   2 (#5 #7)\n"), "{text}");
+    assert!(
+        !text.contains("waiting(") && !text.contains("  #3 implement"),
+        "{text}"
+    );
+    let more = screen.render(true);
+    assert!(
+        more.contains("ready     3 (#3 #8 #11)\n  #3 implement\n  #8 implement\n"),
+        "{more}"
+    );
+    assert!(
+        more.contains("waiting   2 (#5 #7)\n  #5 waiting(question #45)\n  #7 waiting(ticket #3)\n"),
+        "{more}"
+    );
+    let json: serde_json::Value = serde_json::from_str(&screen.to_json()).expect("json");
+    let ready: Vec<u64> = json["ready"]
+        .as_array()
+        .expect("ready")
+        .iter()
+        .map(|task| task["number"].as_u64().expect("a number"))
+        .collect();
+    assert_eq!(ready, [3, 8, 11]);
+    assert_eq!(
+        json["lane"],
+        serde_json::json!([
+            {"task": 3, "next": "implement"},
+            {"task": 8, "next": "implement"},
+        ])
+    );
+    assert_eq!(
+        json["waiting"],
+        serde_json::json!([
+            {"task": 5, "on": "waiting(question #45)"},
+            {"task": 7, "on": "waiting(ticket #3)"},
+        ])
+    );
+    // Without the placement, as with no `[phases]`: the labels' word, and no waiting line.
+    let labelled = status(&board, &state_dir, 2, &none_alive).expect("reads");
+    assert!(
+        !labelled.render(true).contains("waiting"),
+        "{}",
+        labelled.render(true)
+    );
 }

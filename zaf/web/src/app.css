@@ -1,0 +1,315 @@
+/* Light by default, dark when the system says so. Every colour is one of these. */
+:root {
+  color-scheme: light dark;
+  --bg: #f6f7f9;
+  --fg: #1b1f24;
+  --muted: #5b6573;
+  --line: #d6dbe1;
+  --warn: #a4262c;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14161a;
+    --fg: #d8dce2;
+    --muted: #98a2b0;
+    --line: #2c313a;
+    --warn: #ff8b8b;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+/* A phone is the narrowest page: one column that fills the width, and a wide screen only caps it. */
+.top,
+.sections {
+  max-width: 60rem;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+.top {
+  border-bottom: 1px solid var(--line);
+}
+
+h1 {
+  margin: 0 0 0.25rem;
+  font-size: 1.25rem;
+}
+
+.machine-line {
+  margin: 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.refused {
+  margin: 0;
+  color: var(--warn);
+}
+
+/* One section per project: cards that stack on a phone and read as one column on a wide screen. */
+.project {
+  margin: 0 0 1rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+}
+
+.project h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.1rem;
+  overflow-wrap: anywhere;
+}
+
+.project h3 {
+  margin: 0.75rem 0 0.25rem;
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.note {
+  margin: 0;
+  color: var(--warn);
+  overflow-wrap: anywhere;
+}
+
+.rows,
+.groups {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rows > li {
+  padding: 0.4rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.rows > li:first-child {
+  border-top: 0;
+}
+
+.row-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.5rem;
+  align-items: baseline;
+}
+
+.row-head .title {
+  overflow-wrap: anywhere;
+}
+
+.id {
+  color: var(--muted);
+}
+
+.row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem 0.75rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.badge {
+  padding: 0 0.4rem;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  color: var(--fg);
+  font-size: 0.8rem;
+}
+
+.groups {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.empty {
+  margin: 0;
+  color: var(--muted);
+}
+
+a {
+  color: inherit;
+}
+
+/* Next for you: one card for each thing that waits on the Engineer. */
+h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.1rem;
+}
+
+.nothing {
+  margin: 0;
+  color: var(--muted);
+}
+
+.next-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.next-item {
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+}
+
+.next-item p {
+  margin: 0 0 0.35rem;
+}
+
+.next-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.6rem;
+  align-items: baseline;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.kind {
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.door {
+  border: 1px solid var(--warn);
+  border-radius: 0.25rem;
+  padding: 0 0.35rem;
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.how {
+  color: var(--muted);
+}
+
+.command {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+}
+
+.command code {
+  flex: 1;
+  min-width: 0;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 0.25rem;
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.copy {
+  flex: none;
+  min-height: 2.25rem;
+  padding: 0 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 0.25rem;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}
+
+.link {
+  margin-bottom: 0;
+}
+
+.link a {
+  color: inherit;
+}
+
+/* Control buttons: each says what happened, or why the hub refused, beside it. */
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  margin-top: 0.4rem;
+}
+
+.action {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.6rem;
+  align-items: center;
+  margin-top: 0.25rem;
+}
+
+.control {
+  min-height: 2.25rem;
+  padding: 0 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 0.25rem;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}
+
+.control:disabled {
+  cursor: progress;
+  color: var(--muted);
+}
+
+.said {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.refusal {
+  color: var(--warn);
+  overflow-wrap: anywhere;
+}
+
+.answer {
+  margin-top: 0.25rem;
+}
+
+.proposal {
+  margin: 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.ruling {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.ruling textarea {
+  display: block;
+  width: 100%;
+  margin-top: 0.15rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 0.25rem;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+}

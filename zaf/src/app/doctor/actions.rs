@@ -8,7 +8,8 @@
 //! problem names the file, and the line when there is one.
 //!
 //! A file in a tier's `hooks` folder is checked as an action is, under the name `hooks/<file>`, and
-//! is invalid when `<file>` is none of the hook events (`pre-tick`, `post-tick`, `post-phase`).
+//! is invalid when `<file>` is none of the hook events (`pre-tick`, `post-tick`, `post-phase`), or
+//! when it declares `terminal: yes`, since a hook runs with no one at the terminal and is refused.
 //!
 //! A project file that shadows a machine file is listed with the file it shadows. That does not
 //! fail the report; a shadow whose declared run bits are wider than the shadowed file's gets a note
@@ -25,8 +26,9 @@ use std::path::{Path, PathBuf};
 
 use super::needed::machine_dependents;
 use crate::app::actions::{
-    ActionKind, ActionMetadata, ActionMode, HOOK_EVENTS, HOOKS_DIR, ResolveError, Resolved, Tier,
-    can_shadow, hook_file_in, list, list_hooks, parse, resolve, resolve_in, same_file,
+    ActionKind, ActionMetadata, ActionMode, HOOK_EVENTS, HOOK_HAS_NO_TERMINAL, HOOKS_DIR,
+    ResolveError, Resolved, Tier, can_shadow, hook_file_in, list, list_hooks, parse, resolve,
+    resolve_in, same_file,
 };
 use crate::composition::STATE_DIR;
 use crate::manifest::Manifest;
@@ -143,6 +145,7 @@ fn check_action(
                 mode = Some(parsed.metadata.mode.to_string());
                 problems.extend(unknown_roles(file, &parsed.metadata, manifest));
                 problems.extend(bad_on_fail(file, &parsed.metadata, root, machine_home));
+                problems.extend(terminal_hook(found, &parsed.metadata));
                 own = Some(parsed.metadata);
             }
         },
@@ -198,6 +201,16 @@ fn unknown_event(found: &Resolved) -> Option<String> {
             "{}:1: unknown hook event {file} (the events are {})",
             found.path.display(),
             HOOK_EVENTS.join(", ")
+        )
+    })
+}
+
+/// A problem when a hook declares `terminal: yes`: a run refuses it, so it would never run.
+fn terminal_hook(found: &Resolved, metadata: &ActionMetadata) -> Option<String> {
+    (metadata.terminal && hook_name(&found.name).is_some()).then(|| {
+        format!(
+            "{}: `terminal: yes` on a hook: {HOOK_HAS_NO_TERMINAL}",
+            found.path.display()
         )
     })
 }
@@ -277,7 +290,8 @@ fn unknown_roles(file: &Path, metadata: &ActionMetadata, manifest: &Manifest) ->
 }
 
 /// One problem when `on-fail` names no action either tier provides, or one whose kind is not
-/// `model` (docs/zaf-actions.md §5.1): what a failed wait starts must be a model.
+/// `model` (docs/zaf-actions.md §5.1): what a failed wait or `zaf`-kind phase starts must be a
+/// model.
 fn bad_on_fail(
     file: &Path,
     metadata: &ActionMetadata,

@@ -109,7 +109,7 @@ fn a_free_lock_is_taken_by_no_wait() {
         outcome(&project.zaf(&["spawn", "--once", "--no-wait", "--version", "0.3.0"]));
 
     assert_eq!(code, 0, "{stdout}{stderr}");
-    assert!(stdout.contains("slots 1 of 1"), "the tick ran: {stdout}");
+    assert!(stdout.contains("nothing to do"), "the tick ran: {stdout}");
     assert!(project.root.join("ticked").exists());
 }
 
@@ -134,7 +134,7 @@ fn plain_once_still_waits() {
 
     let (code, stdout, stderr) = outcome(&output);
     assert_eq!(code, 0, "{stdout}{stderr}");
-    assert!(stdout.contains("slots 1 of 1"), "{stdout}");
+    assert!(stdout.contains("nothing to do"), "{stdout}");
     assert!(project.root.join("ticked").exists());
 }
 

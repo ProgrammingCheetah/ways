@@ -8,13 +8,15 @@ use super::Cli;
 use super::exit::{BACKEND, OK, REFUSED, fail, fail_composition, note_design_paths};
 use super::slice::{VERSION_VAR, fail_slice};
 
+use crate::adapters::process;
 use crate::app::actions::{ActionName, Caller, SliceRecords, parse, resolve};
 use crate::app::brief::{
     ActionsView, BriefActionsError, BriefError, BriefPorts, BriefQuery, NodesChain, PhaseView,
-    brief_for_phase,
+    WhyThisRun, brief_for_run, why_this_run,
 };
 use crate::app::slice::{self, SliceQuery};
-use crate::composition::{Composition, zaf_home};
+use crate::app::spawn::phase::Ports;
+use crate::composition::{Composition, STATE_DIR, zaf_home};
 use crate::domain::{Ticket, TicketId, TicketType};
 use crate::ports::{BaseName, Board, Forge, PrNumber, Vcs};
 
@@ -51,6 +53,15 @@ impl Resumed {
     }
 }
 
+/// How a phase `zaf brief --phase` names is one of the task's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PhaseOf {
+    /// The task's type lists it.
+    Listed,
+    /// A listed action names it as its `on-fail`: its pack says why it was started.
+    OnFail,
+}
+
 /// Refuses a phase the task's type does not list: its `[phases]` list is the one for the
 /// ticket's type, and a task with no type or no list for it has no phase to resume.
 fn check_phase(
@@ -58,14 +69,14 @@ fn check_phase(
     composition: &Composition,
     ticket: &Ticket,
     phase: &str,
-) -> Result<(), u8> {
+) -> Result<PhaseOf, u8> {
     let kind = ticket.kind.as_ref().map(TicketType::as_str);
     let list = kind.and_then(|kind| composition.manifest().phase_list(kind));
     if list.is_some_and(|list| list.iter().any(|name| name.as_str() == phase)) {
-        return Ok(());
+        return Ok(PhaseOf::Listed);
     }
     if list.is_some_and(|list| is_on_fail_of(composition, list, phase)) {
-        return Ok(());
+        return Ok(PhaseOf::OnFail);
     }
     let reason = match (kind, list) {
         (None, _) => format!("{} has no type, so no phase list", ticket.id),
@@ -106,7 +117,8 @@ fn is_on_fail_of(composition: &Composition, list: &[ActionName], phase: &str) ->
 }
 
 /// The recorded pull request of the task and what reads its change; none when the task has no
-/// pull request, and then the pack is today's.
+/// pull request, and then the pack is today's. A record that cannot be read writes no pack, exit
+/// 2: the phase would get the pack of a task with no pull request.
 fn resume(
     path: &str,
     cli: &Cli,
@@ -115,8 +127,13 @@ fn resume(
     task: TicketId,
 ) -> Result<Option<Resumed>, u8> {
     let records = SliceRecords::new(composition.root());
-    let Some(pr) = records.pr(task) else {
-        return Ok(None);
+    let pr = match records.pr(task) {
+        Ok(Some(pr)) => pr,
+        Ok(None) => return Ok(None),
+        Err(error) => {
+            eprintln!("zaf {path}: cannot read {task}'s pull request record: {error}");
+            return Err(BACKEND);
+        }
     };
     let query = SliceQuery {
         task,
@@ -141,7 +158,38 @@ fn resume(
     }))
 }
 
-/// Builds a task's context pack; with a phase, a resumed one when the task has a pull request.
+/// An `on-fail` run's `## Why this run`, rendered: the ticket gathered as the tick gathers it. A
+/// forge that cannot be built or a ticket that cannot be read writes the section with the reason
+/// instead, so the pack is still written.
+fn why_section(composition: &Composition, board: &dyn Board, task: TicketId) -> String {
+    let forge = match composition.forge() {
+        Ok(forge) => forge,
+        Err(error) => return WhyThisRun::unread(&error.to_string()),
+    };
+    let root = composition.root();
+    let state_dir = composition.state_dir();
+    // With no home there is no machine tier, so the project's actions alone are looked for.
+    let home = match zaf_home().map(std::path::absolute) {
+        Some(Ok(home)) => home,
+        _ => root.join(STATE_DIR),
+    };
+    let ports = Ports {
+        board,
+        forge: forge.as_ref(),
+        manifest: composition.manifest(),
+        root,
+        home: &home,
+        state_dir: &state_dir,
+        alive: &process::alive,
+    };
+    match why_this_run(&ports, task) {
+        Ok(why) => why.render(),
+        Err(reason) => WhyThisRun::unread(&reason),
+    }
+}
+
+/// Builds a task's context pack; with a phase, a resumed one when the task has a pull request, and
+/// for an `on-fail` phase one that says why it was started.
 pub fn run(cli: &Cli, task: TicketId, phase: Option<&str>) -> u8 {
     let path = cli.verb.path();
     let composition = match Composition::discover_here() {
@@ -152,6 +200,7 @@ pub fn run(cli: &Cli, task: TicketId, phase: Option<&str>) -> u8 {
         Ok(board) => board,
         Err(error) => return fail_composition(&path, &error),
     };
+    let mut why = None;
     let resumed = match phase {
         None => None,
         Some(phase) => {
@@ -159,8 +208,12 @@ pub fn run(cli: &Cli, task: TicketId, phase: Option<&str>) -> u8 {
                 Ok(ticket) => ticket,
                 Err(error) => return fail(&path, &error),
             };
-            if let Err(code) = check_phase(&path, &composition, &ticket, phase) {
-                return code;
+            match check_phase(&path, &composition, &ticket, phase) {
+                Ok(PhaseOf::Listed) => {}
+                Ok(PhaseOf::OnFail) => {
+                    why = Some(why_section(&composition, board.as_ref(), task));
+                }
+                Err(code) => return code,
             }
             match resume(&path, cli, &composition, board.as_ref(), task) {
                 Ok(resumed) => resumed,
@@ -205,7 +258,7 @@ pub fn run(cli: &Cli, task: TicketId, phase: Option<&str>) -> u8 {
         caller: &caller,
     };
     let phase_view = resumed.as_ref().map(Resumed::view);
-    match brief_for_phase(&query, &ports, view, phase_view.as_ref()) {
+    match brief_for_run(&query, &ports, view, phase_view.as_ref(), why.as_deref()) {
         Ok(brief) if cli.json => {
             println!("{}", serde_json::json!(brief));
             OK

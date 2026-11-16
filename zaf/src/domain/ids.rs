@@ -1,6 +1,8 @@
-//! Identifiers that cross every layer: ticket ids and design page ids.
+//! Identifiers that cross every layer: ticket ids, design page ids and commit ids.
 
 use std::str::FromStr;
+
+use crate::newtype::text_newtype;
 
 /// A rejected identifier, naming the text that failed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -18,7 +20,8 @@ pub enum IdError {
 
 /// The number of an issue on the board: an epic, a task or a question.
 ///
-/// Parses from `#12` or `12`, displays as `#12`, and serializes as the bare number.
+/// Parses from `#12` or `12`, displays as `#12`, and serializes as the bare number, which it
+/// also reads back from.
 #[derive(
     Debug,
     Clone,
@@ -31,6 +34,7 @@ pub enum IdError {
     derive_more::From,
     derive_more::Display,
     serde::Serialize,
+    serde::Deserialize,
 )]
 #[display("#{_0}")]
 #[serde(transparent)]
@@ -81,6 +85,12 @@ impl FromStr for PageId {
         }
         Ok(Self(text.to_owned()))
     }
+}
+
+text_newtype! {
+    /// The id the VCS gave a commit: a pull request's head, or the head a phase run started at
+    /// or left.
+    CommitId
 }
 
 #[cfg(test)]

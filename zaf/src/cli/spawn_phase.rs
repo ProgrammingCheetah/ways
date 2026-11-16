@@ -1,17 +1,24 @@
 //! `zaf spawn phase <task> <action>` and the internal `zaf spawn phase-run <run-folder>`.
 //!
-//! `phase` checks that the action is the task's current phase and that none of its phases runs,
-//! writes the phase run folder and starts a detached `zaf spawn phase-run` on it, then returns at
-//! once: exit `0` once the launcher is started, `1` when the state refuses it, `2` when it cannot
-//! start. `phase-run` is the launcher: not in the help, it runs the action as its child through
+//! `phase` checks, through the tick's own gate, that the task may start the action now (it is the
+//! task's current phase, none of its phases runs, nothing holds it waiting, and it is not getting
+//! nowhere), releases the task's claim when the instance holding it has ended (one `released #4
+//! from <instance>` line), writes the phase run folder and starts a detached `zaf spawn phase-run`
+//! on it, then returns at once: exit `0` once the launcher is started, `1` when the state refuses
+//! it, `2` when it cannot start. `phase-run` is the launcher: not in the help, it runs the action as its child through
 //! `zaf do` from the project root with `ZAF_RUN` (the run folder), `ZAF_SIZE` (the task's size)
 //! and `ZAF_INSTANCE` (`<action> instance <n> on #<epic>`) set, records the child's process in
-//! the run folder's `pid`, waits on it, records its exit code in the run folder's `exit` file (a
-//! signal `n` records `128 + n`) as its first step once it has ended, then runs the `post-phase`
+//! the run folder's `pid`, waits on it, and as its first step once it has ended reads the head of
+//! the task's pull request and records it in the run folder's `head-end` (empty when the task has
+//! no pull request, no file when the head cannot be read), then its exit code in the `exit` file,
+//! last (a signal `n` records `128 + n`), then runs the `post-phase`
 //! hook if there is one, told `{"task", "action", "exit"}` on stdin (a hook that fails is logged in
-//! the run folder's `post-phase.log` and changes nothing), then asks for one tick with `zaf spawn
-//! --once --no-wait` (a tick that fails changes nothing), and exits with the child's code. It
-//! serves a model action and a wait alike.
+//! the run folder's `post-phase.log` and changes nothing), then asks for one tick: a line in the
+//! running scheduler's request file, or, with none running, `zaf spawn --once --no-wait` (a tick
+//! that fails changes nothing; a scheduler that cannot be asked is named in `post-phase.log`, and
+//! no tick is asked for), and exits with the child's code. It serves a model action and a wait
+//! alike. Every zaf it starts, the launcher and `zaf do` and the tick, is started from the one
+//! path to start zaf with ([`binary::path_to_start`]).
 
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
@@ -23,11 +30,13 @@ use super::slice::VERSION_VAR;
 use crate::adapters::process;
 use crate::app::actions::{
     ACTION_VAR, CHAIN_VAR, Caller, DEPTH_VAR, HOOKS_DIR, LOG_VAR, MINUTE, Nesting,
-    RunRequest as ActionRequest, RunResult, hook, last_lines, run_hook_with_input,
+    RunRequest as ActionRequest, RunResult, Terminal, hook, last_lines, run_hook_with_input,
 };
+use crate::app::schedule::{binary, record, request};
 use crate::app::spawn::phase::{self, PhaseError, Ports, Started};
 use crate::composition::{Composition, STATE_DIR, zaf_home};
 use crate::domain::TicketId;
+use crate::domain::schedule::HeadEnd;
 use crate::ports::{Holder, INSTANCE_VAR, RUN_VAR, SIZE_VAR};
 
 /// The lines of a failed hook's log that its run-folder log keeps.
@@ -68,6 +77,16 @@ pub fn run(cli: &Cli, task: TicketId, action: &str) -> u8 {
     match phase::start(&ports, task, action, &launch) {
         Ok(started) => {
             if cli.json {
+                let released: Vec<serde_json::Value> = started
+                    .released
+                    .iter()
+                    .map(|released| {
+                        serde_json::json!({
+                            "task": released.task.get(),
+                            "instance": released.instance.to_string(),
+                        })
+                    })
+                    .collect();
                 println!(
                     "{}",
                     serde_json::json!({
@@ -75,9 +94,13 @@ pub fn run(cli: &Cli, task: TicketId, action: &str) -> u8 {
                         "action": action,
                         "instance": started.instance,
                         "run": started.run_dir,
+                        "released": released,
                     })
                 );
             } else {
+                for released in &started.released {
+                    println!("released {} from {}", released.task, released.instance);
+                }
                 println!(
                     "started {} ({})",
                     started.instance,
@@ -100,8 +123,7 @@ pub fn run(cli: &Cli, task: TicketId, action: &str) -> u8 {
 /// Starts `zaf spawn phase-run <run_dir>` as a process of its own: in its own process group, with
 /// no terminal, outliving this one. Returns it as a holder, without waiting on it.
 fn detach(root: &Path, run_dir: &Path) -> Result<Holder, String> {
-    let exe = std::env::current_exe()
-        .map_err(|error| format!("cannot find the zaf binary to start the launcher: {error}"))?;
+    let exe = binary::path_to_start().map_err(|why| format!("{why}, to start the launcher"))?;
     let mut command = Command::new(exe);
     command
         .args(["spawn", "phase-run"])
@@ -180,6 +202,8 @@ fn post_phase(path: &str, run_dir: &Path, launch: &phase::Launch, code: i32) {
             only: None,
             slice: None,
             env,
+            terminal: Terminal::Absent,
+            run: None,
         },
         Some(&input),
     );
@@ -201,12 +225,36 @@ fn post_phase(path: &str, run_dir: &Path, launch: &phase::Launch, code: i32) {
     failure(text);
 }
 
-/// Asks for one tick once the phase has ended and `post-phase` has run (#421 ruling 25): runs
-/// `<zaf> spawn --once --no-wait` from the project root, so budget the phase freed is reused at
-/// once, and waits for it. It does nothing, with exit 0, when another tick holds `spawn.lock`. The
-/// milestone is passed on as `--version` from `ZAF_VERSION`, which the tick needs. A tick that
-/// fails is on stderr and changes nothing else: the launcher's exit stays the child's.
-fn ask_for_tick(path: &str, exe: &Path) {
+/// Asks for one tick once the phase has ended and `post-phase` has run (#421 ruling 25), so budget
+/// the phase freed is reused at once. While a scheduler runs for the project (`zaf spawn --watch`),
+/// the ask is one line in its request file, `phase-end <action> <task>`, and nothing waits; a
+/// request file that cannot be written asks for no tick, and the run folder's `post-phase.log`
+/// says so, naming the scheduler (the scheduler alone ticks while it runs, and its timer still
+/// does). With no scheduler it runs `<zaf> spawn --once --no-wait` from the project root and waits
+/// for it: that does nothing, with exit 0, when another tick holds `spawn.lock`. The milestone is
+/// passed on as `--version` from `ZAF_VERSION`, which the tick needs. A tick that fails is on
+/// stderr and changes nothing else: the launcher's exit stays the child's.
+fn ask_for_tick(path: &str, exe: &Path, launch: &phase::Launch, run_dir: &Path) {
+    if let Ok(composition) = Composition::discover_here() {
+        let who = format!("phase-end {} {}", launch.action, launch.task);
+        match request::ask(
+            &composition.state_dir(),
+            &who,
+            std::time::SystemTime::now(),
+            &process::alive,
+        ) {
+            Ok(Some(_)) => return,
+            Ok(None) => {}
+            // A tick here would only ask the scheduler again: none is asked for, and the run
+            // folder, which outlives this launcher, says so.
+            Err(not_asked) => {
+                if let Err(reason) = phase::log_after_phase(run_dir, &format!("{not_asked}\n")) {
+                    eprintln!("zaf {path}: {reason}");
+                }
+                return;
+            }
+        }
+    }
     // The launcher was started from the project root (`detach`), and the tick runs from there too.
     let mut command = Command::new(exe);
     command.args(["spawn", "--once", "--no-wait"]);
@@ -215,6 +263,9 @@ fn ask_for_tick(path: &str, exe: &Path) {
     }
     command.stdin(Stdio::null()).stdout(Stdio::null());
     clear_action_state(&mut command);
+    // The tick is no part of the run that asked for it: it carries no `ZAF_RUN`, so the machine
+    // read never counts it as the ended run's instance.
+    command.env_remove(RUN_VAR);
     match command.status() {
         Ok(status) if status.success() => {}
         Ok(status) => {
@@ -235,6 +286,17 @@ fn open_output(run_dir: &Path) -> Option<(Stdio, Stdio)> {
     Some((Stdio::from(file), Stdio::from(twin)))
 }
 
+/// The head of `task`'s pull request now, read by the launcher once its child has ended: the head
+/// the phase left ([`record::head_now`]). No pull request recorded is none; a project or a forge
+/// that cannot be built, or a forge that cannot say, leaves it unknown.
+fn head_left(task: TicketId) -> HeadEnd {
+    let Ok(composition) = Composition::discover_here() else {
+        return HeadEnd::Unknown;
+    };
+    let forge = composition.forge().ok();
+    record::head_now(forge.as_deref(), composition.root(), task)
+}
+
 /// The launcher: runs the action of the phase run folder `run_dir` and waits for it.
 pub fn launcher(cli: &Cli, run_dir: &Path) -> u8 {
     let path = cli.verb.path();
@@ -252,10 +314,11 @@ pub fn launcher(cli: &Cli, run_dir: &Path) -> u8 {
             return BACKEND;
         }
     };
-    let exe = match std::env::current_exe() {
+    // The one path to start zaf with: a binary replaced on disk is started as the file now there.
+    let exe = match binary::path_to_start() {
         Ok(exe) => exe,
-        Err(error) => {
-            eprintln!("zaf {path}: cannot find the zaf binary: {error}");
+        Err(why) => {
+            eprintln!("zaf {path}: {why}");
             return BACKEND;
         }
     };
@@ -291,12 +354,15 @@ pub fn launcher(cli: &Cli, run_dir: &Path) -> u8 {
     match child.wait() {
         Ok(status) => {
             let code = phase::exit_code(status.code(), status.signal());
-            // The exit first, then the post-phase hook, then the ask for a tick (ruling 25).
+            // Read once the child has ended, so it is the head the phase left.
+            let head_end = head_left(launch.task);
+            // The head and the exit first, then the post-phase hook, then the ask for a tick
+            // (ruling 25).
             let after = || {
                 post_phase(&path, &run_dir, &launch, code);
-                ask_for_tick(&path, &exe);
+                ask_for_tick(&path, &exe, &launch, &run_dir);
             };
-            if let Err(reason) = phase::end(&run_dir, code, &after) {
+            if let Err(reason) = phase::end(&run_dir, code, &head_end, &after) {
                 eprintln!("zaf {path}: {reason}");
             }
             u8::try_from(code).unwrap_or(BACKEND)

@@ -26,6 +26,8 @@ impl JjCommand {
         command.args(["--no-pager", "--color=never"]);
         command.current_dir(&self.workspace);
         command.args(args);
+        // A process group of its own, so a Ctrl-C meant for zaf does not cut a read short.
+        std::os::unix::process::CommandExt::process_group(&mut command, 0);
         let output = command
             .output()
             .map_err(|error| PortError::Unavailable(format!("jj: {error}")))?;

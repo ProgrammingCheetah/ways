@@ -50,11 +50,17 @@
       "name": "tests/",
       "role": "integration tests on the built binary",
       "node": true
+    },
+    {
+      "name": "web/",
+      "role": "the hub's page: a Svelte and Vite project whose committed build, dist/, is embedded in the binary (README.md says how to rebuild)",
+      "node": false
     }
   ],
   "notes": [
     "The gate commands live in the repo-root ZAF.toml [gate] (full, light, tests), each `cd zaf && cargo ...`",
     "The design spec is docs/zuri-ai-framework.md (§7.4 for the ports-and-adapters layout); the crate has no README of its own",
+    "web/dist is committed and compiled in by src/app/hub/dashboard/assets.rs, so cargo needs no Node; Node is only for changing the page",
     "Dependencies are only clap, serde, toml, serde_json, thiserror, derive_more, strum, semver and humantime; every backend is reached by shelling out"
   ]
 }

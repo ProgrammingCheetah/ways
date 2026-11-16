@@ -34,6 +34,7 @@ use zaf::adapters::forgejo::{
 };
 use zaf::adapters::github::{GhCommand, GithubBoard, GithubProjectBoard, ProjectRef};
 
+use zaf::domain::schedule::Priority;
 use zaf::domain::{
     BodyHash, Epic, EpicStage, Instance, NewTask, Signature, Standing, Ticket, TicketId,
     TicketState, TicketType,
@@ -68,10 +69,18 @@ trait Arrange {
     fn task(&self, epic: TicketId, title: &str, body: &str, state: TicketState) -> TicketId;
     /// Closes a ticket, as completed or as not planned.
     fn close(&self, id: TicketId, completed: bool);
+    /// How a ticket is closed, read past the board: none while it is open, `Some(true)` closed
+    /// as completed, `Some(false)` closed as not planned.
+    fn closed(&self, id: TicketId) -> Option<bool>;
+    /// Opens a closed ticket again, as a person reopening it would; an open one stays as it is.
+    fn reopen(&self, id: TicketId);
     /// Gives a ticket the issue type `kind`, as a person choosing it on the forge would.
     fn set_type(&self, id: TicketId, kind: &str);
     /// Replaces a ticket's body, as a person editing it would.
     fn edit_body(&self, id: TicketId, body: &str);
+    /// Puts the label `name` on a ticket, as a person would on the forge (`priority/1`), creating
+    /// it when the repository lacks it.
+    fn put_label(&self, id: TicketId, name: &str);
     /// Takes a ticket the board itself opened into the arranger's care, to close at the end.
     fn adopt(&self, id: TicketId);
     /// An id no ticket has.
@@ -164,6 +173,89 @@ fn ready_lists_ready_tasks_only_in_id_order(arrange: &dyn Arrange) {
     assert_eq!(ready, [first, second]);
 }
 
+fn blocked_lists_open_blocked_tasks_only_in_id_order(arrange: &dyn Arrange) {
+    let epic = arrange.epic("contract epic");
+    let first = arrange.task(epic, "first", "Blocked by: #1", TicketState::Blocked);
+    let ready = arrange.task(epic, "ready", BODY, TicketState::Ready);
+    let closed = arrange.task(epic, "closed", BODY, TicketState::Blocked);
+    let second = arrange.task(epic, "second", BODY, TicketState::Blocked);
+    arrange.close(closed, true);
+    let blocked_of_these = || -> Vec<Ticket> {
+        arrange
+            .board()
+            .blocked()
+            .expect("blocked reads")
+            .into_iter()
+            .filter(|ticket| [first, ready, closed, second].contains(&ticket.id))
+            .collect()
+    };
+    let ids = |tickets: &[Ticket]| -> Vec<TicketId> { tickets.iter().map(|t| t.id).collect() };
+    let blocked = settled(arrange, blocked_of_these, |blocked| {
+        ids(blocked) == [first, second]
+    });
+    assert_eq!(ids(&blocked), [first, second]);
+    // The body comes with each, so its `Blocked by:` line reads without another call.
+    assert_eq!(blocked[0].body.as_str().trim(), "Blocked by: #1");
+    assert_eq!(blocked[0].state, Some(TicketState::Blocked));
+    assert_eq!(blocked[0].epic, Some(epic));
+}
+
+fn open_tickets_lists_blocked_and_questioned_tasks_and_no_done_one(arrange: &dyn Arrange) {
+    let epic = arrange.epic("contract epic");
+    let blocked = arrange.task(epic, "blocked", "Blocked by: #1", TicketState::Blocked);
+    let questioned = arrange.task(epic, "questioned", BODY, TicketState::Question);
+    let claimed = arrange.task(epic, "claimed", BODY, TicketState::Claimed);
+    let ready = arrange.task(epic, "ready", BODY, TicketState::Ready);
+    let done = arrange.task(epic, "done", BODY, TicketState::Done);
+    let closed = arrange.task(epic, "closed", BODY, TicketState::Ready);
+    arrange.close(closed, true);
+    let board = arrange.board();
+    let question = board
+        .open_question(&NewQuestion {
+            on: questioned,
+            text: "Which way does the open list go?".to_owned(),
+            door: false,
+        })
+        .expect("the question opens");
+    let these = [
+        epic, blocked, questioned, claimed, ready, done, closed, question,
+    ];
+    let open_of_these = || -> Vec<Ticket> {
+        board
+            .open_tickets()
+            .expect("open tickets read")
+            .into_iter()
+            .map(|open| open.ticket)
+            .filter(|ticket| these.contains(&ticket.id))
+            .collect()
+    };
+    let ids = |tickets: &[Ticket]| -> Vec<TicketId> { tickets.iter().map(|t| t.id).collect() };
+    let expected = [blocked, questioned, claimed, ready];
+    let open = settled(arrange, open_of_these, |open| ids(open) == expected);
+    assert_eq!(
+        ids(&open),
+        expected,
+        "no done, closed, epic or question ticket"
+    );
+    let states: Vec<Option<TicketState>> = open.iter().map(|ticket| ticket.state).collect();
+    assert_eq!(
+        states,
+        [
+            Some(TicketState::Blocked),
+            Some(TicketState::Question),
+            Some(TicketState::Claimed),
+            Some(TicketState::Ready),
+        ]
+    );
+    // As `ready` gives it: the body and the epic come with each.
+    assert_eq!(open[0].body.as_str().trim(), "Blocked by: #1");
+    assert!(open.iter().all(|ticket| ticket.epic == Some(epic)));
+    // The question is closed by its ruling, so the check leaves nothing open.
+    board
+        .record_ruling(question, "this way")
+        .expect("the ruling closes it");
+}
+
 fn a_claim_is_held_by_one_instance(arrange: &dyn Arrange) {
     let epic = arrange.epic("contract epic");
     let task = arrange.task(epic, "claimed", BODY, TicketState::Ready);
@@ -216,6 +308,85 @@ fn a_new_state_replaces_the_old(arrange: &dyn Arrange) {
         let ticket = board.task(task).expect("the task reads");
         assert_eq!(ticket.state, Some(state));
     }
+}
+
+fn done_closes_the_issue_as_completed(arrange: &dyn Arrange) {
+    let epic = arrange.epic("contract epic");
+    let task = arrange.task(epic, "finished", BODY, TicketState::Claimed);
+    let board = arrange.board();
+    board
+        .set_state(task, TicketState::Done)
+        .expect("done is set");
+    assert_eq!(arrange.closed(task), Some(true), "closed as completed");
+    let ticket = board.task(task).expect("a closed task still reads");
+    assert_eq!(ticket.state, Some(TicketState::Done));
+    assert_eq!(board.standing(task), Ok(Standing::Done));
+    // Done again on the closed issue changes nothing and fails nothing.
+    board
+        .set_state(task, TicketState::Done)
+        .expect("done again");
+    assert_eq!(arrange.closed(task), Some(true));
+    let open = settled(
+        arrange,
+        || board.open_tickets().expect("the open tasks read"),
+        |open| open.iter().all(|open| open.ticket.id != task),
+    );
+    assert!(open.iter().all(|open| open.ticket.id != task), "{open:?}");
+}
+
+fn an_open_issue_labelled_done_still_reads_as_done(arrange: &dyn Arrange) {
+    let epic = arrange.epic("contract epic with an open done task");
+    let task = arrange.task(epic, "labelled done", BODY, TicketState::Done);
+    // Done before it closed the issue: an issue a person reopened, or one labelled by hand.
+    arrange.reopen(task);
+    assert_eq!(arrange.closed(task), None, "the issue is open");
+    let board = arrange.board();
+    assert_eq!(
+        board.task(task).expect("the task reads").state,
+        Some(TicketState::Done)
+    );
+    assert_eq!(board.standing(task), Ok(Standing::Done));
+    let open = settled(
+        arrange,
+        || board.open_tickets().expect("the open tasks read"),
+        |open| open.iter().all(|open| open.ticket.id != task),
+    );
+    assert!(open.iter().all(|open| open.ticket.id != task), "{open:?}");
+    let read = settled(
+        arrange,
+        || arrange.board().epic(epic),
+        |read| {
+            read.as_ref()
+                .is_ok_and(|read| read.tasks.iter().any(|listed| listed.number == task))
+        },
+    )
+    .expect("the epic reads");
+    assert_eq!(read.tally(), (1, 1), "it counts as done in its epic");
+}
+
+fn a_closed_task_still_counts_in_its_epic(arrange: &dyn Arrange) {
+    let epic = arrange.epic("contract epic with a closed done task");
+    let open = arrange.task(epic, "open", BODY, TicketState::Ready);
+    let done = arrange.task(epic, "done", BODY, TicketState::Claimed);
+    arrange
+        .board()
+        .set_state(done, TicketState::Done)
+        .expect("done is set");
+    let expected = [(open, Standing::Open), (done, Standing::Done)];
+    let standings = |epic: &Epic| -> Vec<(TicketId, Standing)> {
+        epic.tasks
+            .iter()
+            .map(|task| (task.number, task.standing))
+            .collect()
+    };
+    let read = settled(
+        arrange,
+        || arrange.board().epic(epic),
+        |read| read.as_ref().is_ok_and(|read| standings(read) == expected),
+    )
+    .expect("the epic reads");
+    assert_eq!(standings(&read), expected);
+    assert_eq!(read.tally(), (1, 2), "one of two done");
 }
 
 fn a_ruling_closes_its_question_and_frees_the_task(arrange: &dyn Arrange) {
@@ -514,8 +685,20 @@ impl Arrange for FakeArrange {
         }
     }
 
+    fn closed(&self, id: TicketId) -> Option<bool> {
+        self.board.closed_as(id)
+    }
+
+    fn reopen(&self, id: TicketId) {
+        self.board.reopen(id);
+    }
+
     fn edit_body(&self, id: TicketId, body: &str) {
         self.board.set_body(id, body);
+    }
+
+    fn put_label(&self, id: TicketId, name: &str) {
+        self.board.add_label(id, name);
     }
 
     fn adopt(&self, _: TicketId) {}
@@ -673,6 +856,28 @@ impl Arrange for GithubArrange {
         ]);
     }
 
+    fn closed(&self, id: TicketId) -> Option<bool> {
+        let number = id.get().to_string();
+        let read = gh(&[
+            "issue",
+            "view",
+            &number,
+            "--repo",
+            &self.repo,
+            "--json",
+            "state,stateReason",
+        ]);
+        let read: serde_json::Value = serde_json::from_str(&read).expect("gh prints JSON");
+        (read["state"] != "OPEN").then(|| read["stateReason"] == "COMPLETED")
+    }
+
+    fn reopen(&self, id: TicketId) {
+        if self.closed(id).is_some() {
+            let number = id.get().to_string();
+            gh(&["issue", "reopen", &number, "--repo", &self.repo]);
+        }
+    }
+
     fn set_type(&self, id: TicketId, kind: &str) {
         let issue = format!("repos/{}/issues/{}", self.repo, id.get());
         gh(&["api", "-X", "PATCH", &issue, "-f", &format!("type={kind}")]);
@@ -682,6 +887,20 @@ impl Arrange for GithubArrange {
         let number = id.get().to_string();
         gh(&[
             "issue", "edit", &number, "--repo", &self.repo, "--body", body,
+        ]);
+    }
+
+    fn put_label(&self, id: TicketId, name: &str) {
+        gh(&["label", "create", name, "--force", "--repo", &self.repo]);
+        let number = id.get().to_string();
+        gh(&[
+            "issue",
+            "edit",
+            &number,
+            "--add-label",
+            name,
+            "--repo",
+            &self.repo,
         ]);
     }
 
@@ -884,6 +1103,32 @@ impl Arrange for ForgejoArrange {
         self.close_issue(id).expect("the issue closes");
     }
 
+    /// Closed as completed unless it carries the `not planned` label.
+    fn closed(&self, id: TicketId) -> Option<bool> {
+        let read: serde_json::Value = self
+            .api
+            .get(&format!("issues/{}", id.get()))
+            .expect("the issue reads");
+        let not_planned = read["labels"].as_array().is_some_and(|labels| {
+            labels
+                .iter()
+                .any(|label| label["name"] == NOT_PLANNED_LABEL)
+        });
+        (read["state"] != "open").then_some(!not_planned)
+    }
+
+    fn reopen(&self, id: TicketId) {
+        if self.closed(id).is_some() {
+            self.api
+                .send::<serde_json::Value>(
+                    Method::Patch,
+                    &format!("issues/{}", id.get()),
+                    Some(&json!({ "state": "open" })),
+                )
+                .expect("the issue opens again");
+        }
+    }
+
     fn set_type(&self, id: TicketId, kind: &str) {
         self.add_label(id, &type_label(&TicketType::from(kind)));
     }
@@ -896,6 +1141,10 @@ impl Arrange for ForgejoArrange {
                 Some(&json!({ "body": body })),
             )
             .expect("the body is edited");
+    }
+
+    fn put_label(&self, id: TicketId, name: &str) {
+        self.add_label(id, name);
     }
 
     fn adopt(&self, id: TicketId) {
@@ -925,6 +1174,54 @@ impl Drop for ForgejoArrange {
             let _ = self.close_issue(*id);
         }
     }
+}
+
+/// The Engineer's `priority/<n>` label is read with each open task; one that names no level is
+/// ignored and says why; and a state the board writes leaves it alone.
+fn open_tickets_carries_the_priority_label(arrange: &dyn Arrange) {
+    let epic = arrange.epic("contract epic with prioritised tasks");
+    let urgent = arrange.task(epic, "priority one", BODY, TicketState::Ready);
+    let plain = arrange.task(epic, "no priority", BODY, TicketState::Ready);
+    let unknown = arrange.task(epic, "an unknown priority", BODY, TicketState::Ready);
+    arrange.put_label(urgent, "priority/1");
+    arrange.put_label(unknown, "priority/9");
+    let board = arrange.board();
+    let these = [urgent, plain, unknown];
+    let read = || -> Vec<(TicketId, Result<Option<u8>, String>)> {
+        board
+            .open_tickets()
+            .expect("open tickets read")
+            .into_iter()
+            .filter(|open| these.contains(&open.ticket.id))
+            .map(|open| {
+                (
+                    open.ticket.id,
+                    open.priority
+                        .map(|priority| priority.map(Priority::level))
+                        .map_err(|ignored| ignored.to_string()),
+                )
+            })
+            .collect()
+    };
+    let expected = vec![
+        (urgent, Ok(Some(1))),
+        (plain, Ok(None)),
+        (
+            unknown,
+            Err("the label `priority/9` is not priority/1, priority/2 or priority/3".to_owned()),
+        ),
+    ];
+    let listed = settled(arrange, read, |listed| *listed == expected);
+    assert_eq!(listed, expected);
+    // A state written leaves the priority alone.
+    board
+        .set_state(urgent, TicketState::Blocked)
+        .expect("the state is written");
+    board
+        .set_state(urgent, TicketState::Ready)
+        .expect("the state is written again");
+    let listed = settled(arrange, read, |listed| *listed == expected);
+    assert_eq!(listed, expected, "the priority label stays");
 }
 
 /// One test per check and backend: `fake::<check>` always, `github::<check>` when
@@ -985,9 +1282,14 @@ contract![
     an_untyped_ticket_has_no_type,
     a_missing_ticket_is_not_found,
     ready_lists_ready_tasks_only_in_id_order,
+    blocked_lists_open_blocked_tasks_only_in_id_order,
+    open_tickets_lists_blocked_and_questioned_tasks_and_no_done_one,
     a_claim_is_held_by_one_instance,
     a_released_task_is_ready_again,
     a_new_state_replaces_the_old,
+    done_closes_the_issue_as_completed,
+    an_open_issue_labelled_done_still_reads_as_done,
+    a_closed_task_still_counts_in_its_epic,
     a_ruling_closes_its_question_and_frees_the_task,
     standing_follows_how_a_ticket_closed,
     an_open_epic_lists_its_tasks_closed_ones_too,
@@ -997,4 +1299,5 @@ contract![
     a_filed_task_reads_back_under_its_epic,
     a_filed_task_is_a_task_by_default,
     a_filed_task_takes_the_named_type,
+    open_tickets_carries_the_priority_label,
 ];

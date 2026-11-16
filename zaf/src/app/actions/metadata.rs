@@ -49,28 +49,31 @@ impl ActionKind {
     }
 }
 
-/// The fact that ends a phase: the value of `# zaf ends: pr-open | review-posted | ci-done |
-/// merged | exit` (docs/zaf-actions.md §5.1). The first four are answered by the forge; `exit` is
-/// the phase's process exiting 0.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display, strum::EnumString)]
-#[strum(serialize_all = "kebab-case")]
-pub enum PhaseEnd {
-    /// The task's pull request is open.
-    PrOpen,
-    /// A review is posted at the pull request's head.
-    ReviewPosted,
-    /// The pull request's checks are done at its head.
-    CiDone,
-    /// The pull request is merged.
-    Merged,
-    /// The phase's process exited 0.
-    Exit,
-}
+/// The fact that ends a phase, the value of `# zaf ends:`, now the domain's (the scheduling core
+/// reads it); kept here so `crate::app::actions::PhaseEnd` still names it.
+pub use crate::domain::PhaseEnd;
 
 /// The five values of `ends`, as a refusal names them.
 const END_NAMES: &str = "pr-open, review-posted, ci-done, merged, exit";
 
+/// The one value `terminal` takes.
+const TERMINAL_YES: &str = "yes";
+
 pub use crate::manifest::ActionName;
+
+/// One entry of a task type's phase list, with what its action declares: the `kind`, `ends` and
+/// `on-fail` of its metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListedPhase {
+    /// The action's name.
+    pub action: ActionName,
+    /// Whether it starts a model, waits on the outside or is run by zaf alone.
+    pub kind: ActionKind,
+    /// The fact that ends the phase.
+    pub ends: PhaseEnd,
+    /// The model action to start when a wait fails; none when it declares none.
+    pub on_fail: Option<ActionName>,
+}
 
 /// One digit of a mode: the `r`, `w` and `x` bits for one subject.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,9 +167,14 @@ pub struct ActionMetadata {
     /// The fact that ends the phase the action stands for; required whenever `kind` is set and
     /// refused without it.
     pub ends: Option<PhaseEnd>,
-    /// The model action the tick starts when a wait fails; only on `kind: wait`, and optional
-    /// there. Whether it names a model action is for `zaf doctor`, which resolves it.
+    /// The model action the tick starts when a wait or a `zaf`-kind action fails on something it
+    /// answers (a failed check, exit 1, a ruled question); only on `kind: wait` and `kind: zaf`,
+    /// and optional there. Whether it names a model action is for `zaf doctor`, which resolves it.
     pub on_fail: Option<ActionName>,
+    /// `# zaf terminal: yes`: the body keeps the terminal of whoever runs it, its stdin, stdout and
+    /// stderr, so it can hold a conversation. Such an action runs only when zaf has a terminal, is
+    /// never a phase action (`kind`) and never a hook, since both run with no one there.
+    pub terminal: bool,
 }
 
 /// A parsed action file: its metadata and where its body starts.
@@ -298,6 +306,8 @@ struct Fields {
     kind: Option<ActionKind>,
     ends: Option<(usize, PhaseEnd)>,
     on_fail: Option<(usize, ActionName)>,
+    /// The line of `terminal: yes`.
+    terminal: Option<usize>,
 }
 
 impl Fields {
@@ -392,12 +402,23 @@ impl Fields {
                 }
                 self.on_fail = Some((line, ActionName::from(value)));
             }
+            "terminal" => {
+                if self.terminal.is_some() {
+                    return Err(repeated());
+                }
+                if value != TERMINAL_YES {
+                    return Err(format!(
+                        "`terminal: {value}` is not `yes`; omit it for an action that needs no terminal"
+                    ));
+                }
+                self.terminal = Some(line);
+            }
             _ if key.starts_with(|c: char| c.is_ascii_digit() || c == '-' || c == '+') => {
                 self.code(key, value)?;
             }
             _ => {
                 return Err(format!(
-                    "unknown key `{key}`; the keys are description, an exit code, mode, group, target, phases, timeout, kind, ends and on-fail"
+                    "unknown key `{key}`; the keys are description, an exit code, mode, group, target, phases, timeout, kind, ends, on-fail and terminal"
                 ));
             }
         }
@@ -461,14 +482,24 @@ impl Fields {
             (_, ends) => ends.map(|(_, end)| end),
         };
         let on_fail = match self.on_fail {
-            Some((line, _)) if self.kind != Some(ActionKind::Wait) => {
+            Some((line, _)) if !matches!(self.kind, Some(ActionKind::Wait | ActionKind::Zaf)) => {
                 return Err((
                     Some(line),
-                    format!("action `{action}`: `on-fail` is only for `kind: wait`"),
+                    format!(
+                        "action `{action}`: `on-fail` is only for `kind: wait` and `kind: zaf`"
+                    ),
                 ));
             }
             on_fail => on_fail.map(|(_, name)| name),
         };
+        if let (Some(line), Some(_)) = (self.terminal, self.kind) {
+            return Err((
+                Some(line),
+                format!(
+                    "action `{action}`: `terminal` is not for a phase action (`kind`), which runs with no one at the terminal"
+                ),
+            ));
+        }
         Ok(ActionMetadata {
             description,
             codes: self.codes,
@@ -480,6 +511,7 @@ impl Fields {
             kind: self.kind,
             ends,
             on_fail,
+            terminal: self.terminal.is_some(),
         })
     }
 }

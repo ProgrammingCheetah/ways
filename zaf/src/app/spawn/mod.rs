@@ -12,7 +12,10 @@
 //! [`prepare`] records `lost` for a launch that ended with nobody there to record
 //! it, releases every task claimed by an instance that no longer runs, reads the
 //! board and the guard, plans the tick with [`tick::plan`] and reserves each planned
-//! launch in its run folder, held by the tick until the instance starts. [`launch`]
+//! launch in its run folder, held by the tick until the instance starts; it keeps the open
+//! questions it read, by the issue each was raised on, for the tick's label sync
+//! ([`crate::app::schedule::labels`]), which sets each open ticket's label from its place.
+//! [`launch`]
 //! then runs one through the Runner port: it records the launch on the epic, runs
 //! the instance's role in `.zaf/runs/<instance slug>/`, where the runner records the
 //! instance's own process, with `ZAF_RUN` naming that folder and `ZAF_SIZE` its size
@@ -25,36 +28,42 @@
 //!
 //! The phase tick's step 3 ([`inline`]) runs every ready `zaf`-kind action with `zaf do`, one
 //! after another, at no cost to the budget; [`outcome::TickOutcome`] is what a tick did, its
-//! `ran` filled from there. Step 5 ([`question`]) raises one question on each task whose wait
-//! failed with no `on-fail`, at no cost either; its tasks fill `questions`. Step 4 ([`waits`])
+//! `ran` filled from there. Step 5 ([`crate::app::schedule::ask`]) raises every question the
+//! scheduler asks (a failed wait with no `on-fail`, an action getting nowhere, an overdue check
+//! wait, a dead dependency, a cycle, an unchallenged epic), at no cost either; it fills
+//! `questions` and `asked`. Step 4 ([`waits`])
 //! launches every ready `wait` action detached with `zaf spawn phase`, at no cost and never
 //! waiting for one; the waits it launched fill `waits`, and they are not the tick's one model start.
 //! Step 6 ([`start`]) starts at most one model phase, the longest ready that fits the budget,
-//! never waiting for it; it fills `started`. [`phase_tick`] assembles them: it derives the
-//! standing of every claimed or ready task whose type has a `[phases]` list from the forge and
-//! the phase run folders, storing none of it, and runs steps 3 to 6 on them in that order into
-//! one outcome. Such a task is the phase steps' alone: the tick's plan launches no instance
-//! for a task. Step 7 ([`post_tick`]) runs the `post-tick` hook with the whole
+//! never waiting for it; it fills `started`. [`crate::app::schedule::tick`] assembles them: it
+//! places every open ticket whose type has a `[phases]` list with the scheduling core, from the
+//! forge and the phase run folders, storing none of it, and runs steps 3 to 6 on the lane in that
+//! order into one outcome. Such a task is the phase steps' alone: the tick's plan launches no
+//! instance for a task. Step 7 ([`post_tick`]) runs the `post-tick` hook with the whole
 //! outcome as JSON on its stdin.
 //!
 //! A dry run ([`plan_only`] and [`dry_run`]) plans the same tick and describes
-//! each launch it would make, writing nothing: no state, no run folder, no comment.
+//! each launch it would make, writing nothing: no state, no run folder, no comment, no label.
 //!
-//! [`phase`] starts one phase action of a task (`zaf spawn phase`): it takes the next instance
-//! number from the same counter, under the same lock, and writes a phase run folder in
-//! `.zaf/phases/` rather than `.zaf/runs/`.
+//! [`stop`] ends the instance running a task and releases its claim (`zaf spawn stop`).
+//!
+//! [`phase`] starts one phase action of a task (`zaf spawn phase`) through the same gate as the
+//! tick: it releases the task's claim when the instance that holds it has ended
+//! ([`release_orphaned`], as [`prepare`] does), takes the next instance number from the same
+//! counter, under the same lock, and writes a phase run folder in `.zaf/phases/` rather than
+//! `.zaf/runs/`.
 
 pub mod blockers;
-pub mod failures;
+pub mod digest;
 pub mod inline;
 pub mod outcome;
 pub mod phase;
-pub mod phase_tick;
 pub mod post_tick;
-pub mod question;
+pub mod record;
 pub mod runs;
 pub mod start;
 mod state;
+pub mod stop;
 pub mod tick;
 pub mod waits;
 pub mod watch;
@@ -63,16 +72,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-pub use inline::{TickTask, run_inline, run_zaf_actions};
+pub use inline::{run_inline, run_zaf_actions};
 pub use outcome::{Ran, Started, TickOutcome};
-pub use phase_tick::{
-    Gathered, PhaseTask, PhaseTick, Steps, Unreadable, gather, phased, run_steps,
-};
-pub use question::{ask_failed_waits, ask_outcome, question_text};
 use runs::Run;
-pub use start::{
-    EPIC_SIZE, InUse, PlannedModel, STARVE_AFTER, TaskStanding, start_outcome, start_planned,
-};
+pub use start::{EPIC_SIZE, InUse, PlannedModel, STARVE_AFTER, start_outcome, start_planned};
 pub use state::{SpawnState, derive, load, save};
 pub use tick::{
     EpicCandidate, EpicSkip, NOT_BUILT, PLANNING_ROLE, PastLaunch, Plan, PlannedLaunch, Settings,
@@ -82,6 +85,7 @@ pub use waits::{launch_outcome, launch_waits};
 
 use super::actions::{PHASES_DIR, SliceRecords, ended_instances, running_tasks};
 use super::guard::{GUARD_FILE, Level};
+use super::schedule::gather::questions_by_issue;
 use crate::domain::{CHALLENGER_ROLE, Instance, Profile, RoleName, TaskSize, TicketId};
 use crate::manifest::{Manifest, ManifestError};
 use crate::ports::{
@@ -183,26 +187,35 @@ pub fn read_guard(state_dir: &Path) -> Result<Level, SpawnError> {
 /// lead to and the blockers that can never close (see [`blockers`]); the open epics and the
 /// issues an open question waits on; and, from `runs`, every launch recorded so far.
 pub fn snapshot(board: &dyn Board, runs: &[Run]) -> Result<Snapshot, PortError> {
+    read_snapshot(board, runs).map(|(snapshot, _)| snapshot)
+}
+
+/// [`snapshot`], with the open questions it read by the issue each was raised on.
+fn read_snapshot(board: &dyn Board, runs: &[Run]) -> Result<(Snapshot, Questions), PortError> {
     let ready = board.ready()?;
     let found = blockers::read(board, &ready)?;
     let mut open = found.graph;
     for ticket in &ready {
         open.remove(&ticket.id);
     }
-    let questioned = board
-        .questions()?
+    let questions = board.questions()?;
+    let questioned = questions
         .iter()
         .filter_map(|question| NewQuestion::raised_on(question.body.as_str()))
         .collect();
-    Ok(Snapshot {
+    let snapshot = Snapshot {
         ready,
         open,
         dead: found.dead,
         epics: board.epics()?,
         questioned,
         launched: runs.iter().filter_map(past_launch).collect(),
-    })
+    };
+    Ok((snapshot, questions_by_issue(&questions)))
 }
+
+/// The open questions by the issue each was raised on.
+pub type Questions = BTreeMap<TicketId, BTreeSet<TicketId>>;
 
 /// A run folder's launch, when it records the instance and a readable reservation time.
 fn past_launch(run: &Run) -> Option<PastLaunch> {
@@ -211,6 +224,20 @@ fn past_launch(run: &Run) -> Option<PastLaunch> {
         instance: record.instance.parse().ok()?,
         reserved_at: humantime::parse_rfc3339_weak(&record.reserved_at).ok()?,
     })
+}
+
+/// The task phases that run now: the live phase run folders, one each.
+pub fn live_phases(
+    state_dir: &Path,
+    alive: &dyn Fn(&Holder) -> bool,
+) -> Result<Vec<crate::app::actions::LivePhase>, SpawnError> {
+    let dir = state_dir.join(crate::app::actions::PHASES_DIR);
+    crate::app::actions::live_phases(&dir, alive)
+        .map_err(|reason| SpawnError::Read { path: dir, reason })
+}
+
+fn phases_running(state_dir: &Path, alive: &dyn Fn(&Holder) -> bool) -> Result<u32, SpawnError> {
+    Ok(u32::try_from(live_phases(state_dir, alive)?.len()).unwrap_or(u32::MAX))
 }
 
 /// What [`prepare`] did before any launch.
@@ -222,6 +249,9 @@ pub struct Prepared {
     pub lost: Vec<String>,
     /// The tasks claimed by an instance that no longer runs, each released.
     pub released: Vec<Released>,
+    /// The open questions the plan read, by the issue each was raised on: what the label sync
+    /// reads for a project with no `[phases]`, whose tick gathers nothing.
+    pub questions: Questions,
 }
 
 /// A task released from an instance that no longer runs.
@@ -238,7 +268,9 @@ pub struct Released {
 pub const SPAWN_LOCK_FILE: &str = "spawn.lock";
 
 /// Takes the spawner's lock, waiting for a tick that holds it; the OS drops it with the file.
-fn lock(state_dir: &Path) -> Result<std::fs::File, SpawnError> {
+/// Every holder keeps it for a few reads and writes: a tick's `prepare`, a phase start, an inline
+/// run's opening, and the raising of one question ([`crate::app::schedule::ask::ask`]).
+pub(crate) fn lock(state_dir: &Path) -> Result<std::fs::File, SpawnError> {
     let (file, path) = open_lock(state_dir)?;
     file.lock()
         .map(|()| file)
@@ -273,9 +305,10 @@ pub fn lock_is_held(state_dir: &Path) -> Result<bool, SpawnError> {
 }
 
 /// The tasks held by the forge's facts or by a running phase, whatever instance claimed them:
-/// those with a recorded pull request (`.zaf/slices/<task>.pr`) and those with a live phase
-/// process (`.zaf/phases/`, #437). A phase run folder that cannot be read is an error, never a
-/// guess, so no claim is released on a read that failed.
+/// those with a recorded pull request (`.zaf/slices/<task>.pr`, read or not) and those with a live
+/// phase process (`.zaf/phases/`, #437). A phase run folder that cannot be read is an error, never
+/// a guess, and a pull request record that cannot be read holds its task, so no claim is released
+/// on a read that failed.
 pub fn held(
     state_dir: &Path,
     alive: &dyn Fn(&Holder) -> bool,
@@ -358,20 +391,11 @@ pub fn prepare(
         runs::finish(&run.dir, runs::LOST)?;
         lost.push(name);
     }
-    let claims = board.claims()?;
-    let mut released = Vec::new();
-    let held = held(state_dir, alive)?;
-    let ended = ended_phases(state_dir, alive)?;
-    for claim in orphaned(&claims, &found, &ended, alive, &held) {
-        board.release(claim.task, &claim.instance)?;
-        released.push(Released {
-            task: claim.task,
-            instance: claim.instance.clone(),
-        });
-    }
-    let snapshot = snapshot(board, &found)?;
+    let released = release_orphaned(board, state_dir, &found, alive, None)?;
+    let (snapshot, questions) = read_snapshot(board, &found)?;
     let level = read_guard(state_dir)?;
-    let plan = tick::plan(&snapshot, &state, level, Settings::from(manifest));
+    let mut plan = tick::plan(&snapshot, &state, level, Settings::from(manifest));
+    plan.phases_running = phases_running(state_dir, alive)?;
     let now = humantime::format_rfc3339_seconds(SystemTime::now()).to_string();
     for planned in &plan.launches {
         runs::reserve(state_dir, planned, holder, &now)?;
@@ -384,7 +408,37 @@ pub fn prepare(
         plan,
         lost,
         released,
+        questions,
     })
+}
+
+/// Releases each task claimed by an instance that no longer runs ([`orphaned`]), or only `task`'s
+/// claim when one is named, so another instance can claim it; `runs` are the launch run folders.
+/// The caller holds the spawner's lock. A task held by its forge facts or a running phase
+/// ([`held`]) keeps its claim.
+pub fn release_orphaned(
+    board: &dyn Board,
+    state_dir: &Path,
+    runs: &[Run],
+    alive: &dyn Fn(&Holder) -> bool,
+    task: Option<TicketId>,
+) -> Result<Vec<Released>, SpawnError> {
+    let claims: Vec<ClaimRecord> = board
+        .claims()?
+        .into_iter()
+        .filter(|claim| task.is_none_or(|task| claim.task == task))
+        .collect();
+    let mut released = Vec::new();
+    let held = held(state_dir, alive)?;
+    let ended = ended_phases(state_dir, alive)?;
+    for claim in orphaned(&claims, runs, &ended, alive, &held) {
+        board.release(claim.task, &claim.instance)?;
+        released.push(Released {
+            task: claim.task,
+            instance: claim.instance.clone(),
+        });
+    }
+    Ok(released)
 }
 
 /// Releases every task in `claims` that `instance` holds, so another instance can claim it.
@@ -717,13 +771,15 @@ pub fn plan_only(
         .filter_map(Run::instance)
         .map(|instance| instance.to_string())
         .collect();
-    let snapshot = snapshot(board, &found)?;
+    let (snapshot, questions) = read_snapshot(board, &found)?;
     let level = read_guard(state_dir)?;
-    let plan = tick::plan(&snapshot, &state, level, Settings::from(manifest));
+    let mut plan = tick::plan(&snapshot, &state, level, Settings::from(manifest));
+    plan.phases_running = phases_running(state_dir, alive)?;
     Ok(Prepared {
         plan,
         lost,
         released: Vec::new(),
+        questions,
     })
 }
 
@@ -799,9 +855,14 @@ impl Plan {
     /// The plan as text: the slots, the branches not built, every skip.
     pub fn render_text(&self) -> String {
         let slots = &self.slots;
+        // The decision used `slots.free`; the line counts the phases too, so it is truthful.
+        let running = slots.running.saturating_add(self.phases_running);
         let mut lines = vec![format!(
-            "slots {} of {} (guard {}), {} running, {} free",
-            slots.allowed, slots.total, slots.level, slots.running, slots.free
+            "slots {} of {} (guard {}), {running} running, {} free",
+            slots.allowed,
+            slots.total,
+            slots.level,
+            slots.allowed.saturating_sub(running)
         )];
         lines.extend(
             NOT_BUILT
@@ -821,6 +882,25 @@ impl Plan {
         let mut out = lines.join("\n");
         out.push('\n');
         out
+    }
+
+    /// What the tick passed over, one line each as the dry run words it, for the tick's block: the
+    /// epics that launched nothing (an unsigned one is left to the block's `waiting on you`
+    /// line), every blocker cycle and every dead blocker.
+    pub fn skipped_lines(&self) -> Vec<String> {
+        let mut lines: Vec<String> = self
+            .epics
+            .iter()
+            .filter(|(_, skip)| *skip != EpicSkip::Unsigned)
+            .map(|(epic, skip)| format!("{epic} skipped: {}", epic_reason(*skip)))
+            .collect();
+        lines.extend(
+            self.cycles
+                .iter()
+                .map(|cycle| format!("blocker cycle: {}", blockers::render_cycle(cycle))),
+        );
+        lines.extend(self.dead.iter().map(ToString::to_string));
+        lines
     }
 
     /// The plan as JSON, with the finished launches and the lost instances.

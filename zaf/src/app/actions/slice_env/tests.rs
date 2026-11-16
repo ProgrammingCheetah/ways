@@ -5,7 +5,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
 use super::*;
-use crate::app::actions::{Caller, MINUTE, Nesting, RunOutcome, RunResult, run_action};
+use crate::app::actions::{Caller, MINUTE, Nesting, RunOutcome, RunResult, Terminal, run_action};
 use crate::domain::Ticket;
 use crate::fakes::FakeBoard;
 
@@ -86,6 +86,8 @@ impl Place {
             only: None,
             slice,
             env: BTreeMap::new(),
+            terminal: Terminal::Absent,
+            run: None,
         }
     }
 
@@ -200,15 +202,22 @@ fn target_task_without_a_record_has_no_pr() {
     assert_eq!(env[SLICE_VAR], "feature/0.2.0-103-200");
     assert!(!env.contains_key(PR_VAR), "{env:?}");
 
-    // A record that is no pull request number is no record.
+    // A record that is no pull request number is no "no pull request": the body never runs,
+    // since with `ZAF_PR` unset it would act as if the task had none and open a second.
     place.record_pr(TASK, "seventeen");
+    let _ = fs::remove_file(place.root.join("env"));
     let outcome = place.run(
         "slice-thing",
         &["200"],
         Some(context(&board, &branches, Some("0.2.0"))),
     );
-    assert_eq!(outcome.result, RunResult::Ok, "{outcome:?}");
-    assert!(!place.env().contains_key(PR_VAR));
+    let reason = assert_not_run(&outcome);
+    assert!(
+        reason.contains("cannot read #200's pull request record")
+            && reason.contains("holds \"seventeen\", not a pull request number"),
+        "{reason}"
+    );
+    assert!(!place.root.join("env").exists(), "the body did not run");
 }
 
 #[test]
@@ -358,6 +367,47 @@ fn base_unset_without_a_version() {
         .expect("no board needed")
         .apply(&mut command);
     assert_eq!(on_command(&command)[BASE_VAR], None);
+}
+
+#[test]
+fn the_runs_version_is_the_bodys() {
+    let place = Place::new();
+    place.dumper("slice-thing", "# zaf target: task\n");
+    let (board, branches) = (board(), BranchesSection::default());
+
+    // The body gets the version the run named its slice by, whatever this process holds, so a
+    // `zaf do` in it names the same slice.
+    let outcome = place.run(
+        "slice-thing",
+        &["200"],
+        Some(context(&board, &branches, Some("0.1"))),
+    );
+    assert_eq!(outcome.result, RunResult::Ok, "{outcome:?}");
+    let env = place.env();
+    assert_eq!(env[VERSION_VAR], "0.1");
+    assert_eq!(env[SLICE_VAR], "feature/0.1-103-200");
+
+    // The run's version replaces the caller's.
+    let args = [OsString::from("200")];
+    let request = place.request("x", &args, Some(context(&board, &branches, Some("0.1"))));
+    let mut command = caller_command();
+    command.env(VERSION_VAR, "from the caller");
+    SliceEnv::for_run(&request, true)
+        .expect("resolves")
+        .apply(&mut command);
+    assert_eq!(on_command(&command)[VERSION_VAR].as_deref(), Some("0.1"));
+
+    // A run with no version leaves the caller's as it was: neither set nor removed.
+    let request = place.request("x", &[], Some(context(&board, &branches, None)));
+    let mut command = caller_command();
+    command.env(VERSION_VAR, "from the caller");
+    SliceEnv::for_run(&request, false)
+        .expect("no board needed")
+        .apply(&mut command);
+    assert_eq!(
+        on_command(&command)[VERSION_VAR].as_deref(),
+        Some("from the caller")
+    );
 }
 
 #[test]

@@ -297,7 +297,10 @@ fn watch(mut child: Child, timeout: Duration) -> Result<Option<ExitStatus>, Port
 
 /// Best effort: kills the child's whole process group, so `sh -c 'sleep 5'` leaves no orphan.
 fn kill_group(child: &Child) {
-    let _ = Command::new("kill")
+    let mut kill = Command::new("kill");
+    // Its own group: a Ctrl-C meant for zaf does not stop the kill.
+    std::os::unix::process::CommandExt::process_group(&mut kill, 0);
+    let _ = kill
         .arg("-KILL")
         .arg("--")
         .arg(format!("-{}", child.id()))

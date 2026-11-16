@@ -1,0 +1,23 @@
+#!/bin/sh
+# zaf description: the Engineer's design session: the Designer (teams:designer) on this terminal, in the Engineer's own Claude profile, at the project root; the arguments, when there are any, are its opening prompt
+# zaf 1: refused: no ZAF_ROOT, so it was not run by zaf in a project; or claude's own exit 1
+# zaf mode: 700
+# zaf terminal: yes
+
+# Any other code is claude's own: the session ended that way.
+if [ -z "$ZAF_ROOT" ]; then
+    echo "usage: design [<opening prompt>...], run by zaf in a project with ZAF_ROOT set" >&2
+    exit 1
+fi
+cd "$ZAF_ROOT" || exit 1
+
+# The arguments, joined, open the session (`/teams:objectives v0.2`, or a sentence); with none,
+# the Designer gets its bearings and asks.
+if [ "$#" -gt 0 ]; then
+    prompt=$*
+else
+    prompt="This is the design session for the project at $ZAF_ROOT. Read the project's CLAUDE.md and any release papers it has (objectives, design documents, rulings), then ask me what I want to design."
+fi
+
+# The Engineer's own profile: CLAUDE_CONFIG_DIR stays as the Engineer's shell has it.
+exec claude --agent teams:designer "$prompt"

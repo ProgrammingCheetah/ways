@@ -38,8 +38,10 @@ impl JjVcs {
 
 impl Vcs for JjVcs {
     fn latest_commit(&self, workspace: &Path) -> Result<CommitId, PortError> {
-        // The revision the slice's bookmark is settled on when it is published.
-        Self::workspace_command(workspace)?.commit_id("@-")
+        // The revision the slice's bookmark is settled on when it is published: the working
+        // copy's parent. A merge in progress (`sync-base` leaves one, conflicts and all) has two
+        // parents and is the work itself, past any published head, so it is the working copy.
+        Self::workspace_command(workspace)?.commit_id("(@ & merges()) | (@- ~ (@ & merges())-)")
     }
 
     fn diff_stat(&self, workspace: &Path, base: &BaseName) -> Result<DiffStat, PortError> {

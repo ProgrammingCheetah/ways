@@ -22,6 +22,11 @@
   ],
   "fs": [
     {
+      "name": "clock.rs",
+      "role": "the machine's local UTC offset (localtime_r), for printing a clock time",
+      "node": false
+    },
+    {
       "name": "design.rs",
       "role": "DirDesign: Markdown pages beside an index, subfolders included, for repo-dir and git-sibling",
       "node": false
@@ -83,7 +88,7 @@
     },
     {
       "name": "process.rs",
-      "role": "the process table: a Holder (pid plus start time), whether it still runs, and this process's ancestors, from /proc or ps",
+      "role": "the process table: a Holder (pid plus start time), whether it still runs, and this process's ancestors, from /proc or ps; the scheduler's stop signals (SIGINT, SIGTERM) caught into an atomic",
       "node": false
     },
     {

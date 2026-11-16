@@ -2,7 +2,11 @@
 //! §3, §7; rulings 26, 27 and 39): run through `zaf do` on a throwaway jj repository with a bare
 //! remote and a fake `gh` that knows task 2 of epic 1, each acts on the task's slice by the
 //! values zaf hands it, hands back what zaf keeps as the task's record, and runs only in the
-//! phases it names.
+//! phases it names. The `implement` phase action, which calls them around a fake programmer,
+//! opens the slice once and takes the open one on a later run; started by `zaf spawn phase`, a run
+//! that asked a question waits on it and runs again once it is ruled. A tick that finds the task
+//! in the lane under a stale `blocked` labels it `ready` before it starts `implement`, whose claim
+//! then takes it (R5).
 
 mod common;
 
@@ -28,10 +32,15 @@ repo = "example/tracker"
 
 [vcs]
 kind = "jj"
+
+# `zaf brief --phase implement` builds a pack only for a phase the task's type lists.
+[phases]
+Task = ["implement"]
 "#;
 
-/// The actions the three are built from, and the three.
-const ACTIONS: [&str; 11] = [
+/// The actions the slice actions are built from, the slice actions, and `implement`, which calls
+/// them.
+const ACTIONS: [&str; 12] = [
     "workspace-open",
     "workspace-drop",
     "commit",
@@ -43,6 +52,7 @@ const ACTIONS: [&str; 11] = [
     "slice-pr",
     "slice-merge",
     "slice-drop",
+    "implement",
 ];
 
 /// Task 2 of epic 1, claimed by a team instance, as `gh issue view` prints it.
@@ -213,14 +223,17 @@ fn record_check(project: &Project, verdict: &str) {
 const DONE: &str = r#"{"number":2,"title":"Export the list","body":"","labels":[{"name":"task"},{"name":"done"}],"parent":{"number":1},"state":"CLOSED","comments":[{"body":"claimed by team instance 1 on #1 at 2027-01-15T08:00:00Z"}]}"#;
 
 /// The forge's view of pull request 7 at `head`: open until `gh pr merge` is called, which the
-/// fake accepts. Rules go in front of the earlier ones, so a later call moves the head.
+/// fake accepts, as it accepts the board's writes. Rules go in front of the earlier ones, so a
+/// later call moves the head.
 fn forge_at(project: &mut Project, head: &str) {
     project
         .on_first("pr view 7 --json state *", r#"{"state":"MERGED"}"#)
         .on_first("pr view 7 --json state --jq *", "OPEN\n")
         .on_first("pr view 7 --json headRefOid*", &format!("{head}\n"))
         .on_first("pr merge *", "")
-        .on_first("issue edit *", "");
+        .on_first("issue edit *", "")
+        // `zaf board done` closes the issue as completed.
+        .on_first("issue close *", "");
 }
 
 /// Stores a `check pr` record for pull request 7: `verdict` for the commit `head`, begun long ago.
@@ -807,6 +820,80 @@ fn slice_pr_titles_the_request() {
     assert_eq!(record(&project, "2.pr").as_deref(), Some("7"));
 }
 
+/// Moves the base on the remote, as another merged pull request would, and fetches it into the
+/// root, so the local base bookmark is past the commit the slice was opened on.
+fn move_base_on(project: &Project) {
+    advance_base_elsewhere(project, "merged.txt", "merged\n");
+    jj(&project.root, &["git", "fetch"]);
+    assert_ne!(
+        bookmark_at(&project.root, BASE),
+        commit_at(&project.root, "@-"),
+        "the base moved"
+    );
+}
+
+/// Whether the remote holds the slice's branch at all.
+fn remote_has_slice(project: &Project) -> bool {
+    !run(
+        &project.temp.path().join("remote.git"),
+        "git",
+        &["branch", "--list", SLICE],
+    )
+    .trim()
+    .is_empty()
+}
+
+#[test]
+fn slice_pr_refuses_a_slice_with_no_change_against_its_base() {
+    let project = project();
+    let dir = open(&project);
+    let refusal = format!("nothing to publish: {SLICE} has no change against {BASE}");
+
+    // The programmer stopped and changed nothing.
+    let (code, text) = action(&project, &["slice-pr", "2"]);
+
+    assert_eq!(code, 1, "{text}");
+    assert!(text.contains(&refusal), "{text}");
+    // Nothing was pushed and no pull request opened, so none is recorded.
+    assert!(!text.contains("zaf do push"), "{text}");
+    assert!(!text.contains("zaf do pr-open"), "{text}");
+    assert!(!called(&project, "pr create"), "{text}");
+    assert!(!remote_has_slice(&project));
+    assert_eq!(record(&project, "2.pr"), None);
+    assert!(dir.is_dir(), "the slice stays open");
+
+    // A commit that changes no file is no change, and a base that moved on since the slice opened
+    // is none of the slice's either.
+    jj(&dir, &["commit", "-m", "Nothing yet"]);
+    move_base_on(&project);
+    let (code, text) = action(&project, &["slice-pr", "2"]);
+    assert_eq!(code, 1, "{text}");
+    assert!(text.contains(&refusal), "{text}");
+    assert!(!called(&project, "pr create"), "{text}");
+    assert!(!remote_has_slice(&project));
+    assert_eq!(record(&project, "2.pr"), None);
+}
+
+#[test]
+fn slice_pr_publishes_a_slice_with_a_change_though_the_base_moved_on() {
+    let project = project();
+    let dir = open(&project);
+    // The work, committed by hand, and the base moved on since the slice opened.
+    write(&dir, "writer.csv", "a,b\n");
+    jj(&dir, &["commit", "-m", "Add the CSV writer"]);
+    let committed = commit_field(&dir, "@-", "commit_id");
+    move_base_on(&project);
+
+    let (code, text) = action(&project, &["slice-pr", "2"]);
+
+    assert_eq!(code, 0, "{text}");
+    assert!(!text.contains("nothing to publish"), "{text}");
+    assert_eq!(handed_back(&text), "7", "{text}");
+    assert!(called(&project, "pr create"), "{text}");
+    assert_eq!(remote_slice(&project), committed);
+    assert_eq!(record(&project, "2.pr").as_deref(), Some("7"));
+}
+
 #[test]
 fn slice_drop_keeps_the_branch() {
     let project = project();
@@ -900,4 +987,430 @@ fn slice_pr_runs_from_build() {
     assert_eq!(code, 0, "{text}");
     assert_eq!(handed_back(&text), "7", "{text}");
     assert_eq!(record(&failed, "2.pr").as_deref(), Some("7"));
+}
+
+/// The instance the launcher starts `implement` as.
+const IMPLEMENTER: &str = "implement instance 1 on #1";
+
+/// Task 2 of epic 1, a Task claimed by the implement instance, as `gh issue view` prints it.
+const IMPLEMENTING: &str = r#"{"number":2,"title":"Export the list","body":"","labels":[{"name":"task"},{"name":"claimed"}],"parent":{"number":1},"state":"OPEN","comments":[{"body":"claimed by implement instance 1 on #1 at 2027-01-15T08:00:00Z"}],"issueType":{"name":"Task","id":"IT_1"}}"#;
+
+/// The fake programmer's folder: what it was told and saw, and the work it is to do.
+fn programmer(project: &Project) -> PathBuf {
+    project.temp.path().join("programmer")
+}
+
+/// A project whose task 2 is claimed by the implement instance, which runs every action, with a
+/// fake `claude` first on `PATH`. The fake programmer keeps each prompt in `prompts` and, in
+/// `draft`, what `draft.txt` held in its workspace when it started; it raises the question the
+/// file `question` holds, when the test has left one, with `zaf board question`; then it copies
+/// the file `work`, when the test has left one, into its workspace as `writer.csv`, and changes
+/// nothing when there is none, as a programmer who stopped to ask the Engineer.
+fn implementing() -> Project {
+    implementing_with(IMPLEMENTING)
+}
+
+/// [`implementing`], with task 2 as `gh issue view` prints `ticket`.
+fn implementing_with(ticket: &str) -> Project {
+    let mut project = project_with(ticket);
+    let folder = programmer(&project);
+    let record = folder.to_string_lossy().into_owned();
+    let script = format!(
+        "#!/bin/sh\n\
+         printf '%s\\n' \"$2\" >> '{record}/prompts'\n\
+         workspace=${{2##*Workspace: }}\n\
+         workspace=${{workspace%.}}\n\
+         cat \"$workspace/draft.txt\" > '{record}/draft' 2>/dev/null || true\n\
+         if [ -f '{record}/question' ]; then\n\
+         zaf board question 2 \"$(cat '{record}/question')\" >> '{record}/asked' 2>&1\n\
+         fi\n\
+         if [ -f '{record}/work' ]; then cp '{record}/work' \"$workspace/writer.csv\"; fi\n"
+    );
+    let bin = project.temp.path().join("programmer-bin");
+    write(&bin, "claude", &script);
+    fs::set_permissions(bin.join("claude"), fs::Permissions::from_mode(0o755)).expect("mode");
+    fs::create_dir_all(&folder).expect("the programmer's folder");
+    // The brief reads the open questions too: there are none.
+    project
+        .on("issue list --label question *", "[]")
+        .env("PATH", &common::path_with_zaf(&[&bin, &common::fixtures()]))
+        .env("ZAF_INSTANCE", IMPLEMENTER);
+    project
+}
+
+/// The workspace each programmer was started on, from its prompt, in order.
+fn programmer_workspaces(project: &Project) -> Vec<PathBuf> {
+    let prompts = fs::read_to_string(programmer(project).join("prompts")).unwrap_or_default();
+    prompts
+        .lines()
+        .map(|prompt| {
+            let (_, path) = prompt
+                .split_once("Workspace: ")
+                .unwrap_or_else(|| panic!("no workspace in {prompt}"));
+            let path = path.strip_suffix('.').unwrap_or(path);
+            Path::new(path)
+                .canonicalize()
+                .unwrap_or_else(|error| panic!("{path}: {error}"))
+        })
+        .collect()
+}
+
+/// What the remote's slice branch holds in `path`.
+fn pushed_file(project: &Project, path: &str) -> String {
+    run(
+        &project.temp.path().join("remote.git"),
+        "git",
+        &["show", &format!("{SLICE}:{path}")],
+    )
+}
+
+#[test]
+fn implement_opens_the_slice_and_publishes_it() {
+    let project = implementing();
+    write(&programmer(&project), "work", "a,b\n");
+
+    let (code, text) = action(&project, &["implement", "2"]);
+
+    assert_eq!(code, 0, "{text}");
+    // No slice was open, so `slice-open` opened one, the programmer worked in it, and `slice-pr`
+    // published the work as pull request 7.
+    let dir = workspace(&project);
+    assert!(text.contains("zaf do slice-open"), "{text}");
+    assert!(dir.is_dir(), "{text}");
+    assert!(record(&project, "2").is_some(), "{text}");
+    assert_eq!(programmer_workspaces(&project), [dir], "{text}");
+    assert!(text.contains("zaf do slice-pr"), "{text}");
+    assert_eq!(record(&project, "2.pr").as_deref(), Some("7"), "{text}");
+    assert_eq!(pushed_file(&project, "writer.csv"), "a,b\n");
+}
+
+#[test]
+fn implement_again_after_a_question_takes_the_open_slice() {
+    let project = implementing();
+
+    // The first run: the programmer stopped to ask and changed nothing, so `slice-pr` has nothing
+    // to publish and the run is refused, leaving the slice open in `build` with no pull request.
+    let (code, text) = action(&project, &["implement", "2"]);
+    assert_eq!(code, 1, "{text}");
+    assert!(text.contains("nothing to publish"), "{text}");
+    let dir = workspace(&project);
+    let opened = record(&project, "2");
+    assert!(opened.is_some(), "{text}");
+    assert_eq!(record(&project, "2.pr"), None, "{text}");
+
+    // The question is ruled; a file is left uncommitted in the workspace for the programmer, and
+    // this time it does the work.
+    write(&dir, "draft.txt", "kept\n");
+    write(&programmer(&project), "work", "a,b\n");
+
+    let (code, text) = action(&project, &["implement", "2"]);
+
+    // The open slice is taken as it stands: `slice-open`, which its phase would refuse, is not
+    // asked, and the programmer starts on the same workspace with the file still in it.
+    assert_eq!(code, 0, "{text}");
+    assert!(!text.contains("NOT_RUN"), "{text}");
+    assert!(!text.contains("zaf do slice-open"), "{text}");
+    assert_eq!(programmer_workspaces(&project), [dir.clone(), dir.clone()]);
+    assert_eq!(
+        fs::read_to_string(programmer(&project).join("draft")).expect("what the programmer saw"),
+        "kept\n"
+    );
+    assert_eq!(record(&project, "2"), opened);
+    // Then the run goes on to `slice-pr`, which publishes the file with the programmer's work.
+    assert!(text.contains("zaf do slice-pr"), "{text}");
+    assert_eq!(record(&project, "2.pr").as_deref(), Some("7"), "{text}");
+    assert_eq!(
+        fs::read_to_string(dir.join("draft.txt")).expect("the file stays"),
+        "kept\n"
+    );
+    assert_eq!(pushed_file(&project, "draft.txt"), "kept\n");
+    assert_eq!(pushed_file(&project, "writer.csv"), "a,b\n");
+}
+
+/// Task 2 in the task template, a Task claimed by implement instance `instance`, as `gh issue
+/// view` prints it: `zaf spawn phase` reads its size.
+fn claimed_by_implement(instance: u32) -> String {
+    serde_json::json!({
+        "number": 2,
+        "title": "Export the list",
+        "body": "Goal: Members export their reading list as CSV.\n\
+                 Owned paths: src/export/**\n\
+                 Interfaces: none\n\
+                 Design pages: none\n\
+                 Acceptance:\n  - the export writes one row per book\n\
+                 Tests: export_writes_rows\n\
+                 Security trigger: no\n\
+                 Model: sonnet\n\
+                 Size: S\n\
+                 Blocked by: —\n",
+        "labels": [{"name": "task"}, {"name": "claimed"}],
+        "parent": {"number": 1},
+        "state": "OPEN",
+        "comments": [{
+            "body": format!("claimed by implement instance {instance} on #1 at 2027-01-15T08:00:00Z")
+        }],
+        "issueType": {"name": "Task", "id": "IT_1"},
+    })
+    .to_string()
+}
+
+/// The phase run folders of task 2, oldest first.
+fn implement_runs(project: &Project) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(project.root.join(".zaf/phases")) else {
+        return Vec::new();
+    };
+    let mut runs: Vec<PathBuf> = entries
+        .map(|entry| entry.expect("entry").path())
+        .filter(|dir| fs::read_to_string(dir.join("task")).is_ok_and(|task| task.trim() == "2"))
+        .collect();
+    runs.sort_by_key(|dir| {
+        fs::metadata(dir.join("task"))
+            .and_then(|meta| meta.modified())
+            .expect("started")
+    });
+    runs
+}
+
+/// What the run folder's `exit` holds, once its launcher has written it.
+fn exit_of(run: &Path) -> String {
+    let file = run.join("exit");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !file.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "{} never ended",
+            run.display()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    fs::read_to_string(file).expect("exit")
+}
+
+#[test]
+fn implement_runs_a_second_time_after_its_question_is_ruled() {
+    let mut project = implementing_with(&claimed_by_implement(1));
+    project
+        .on(
+            "issue create *",
+            "https://github.com/example/tracker/issues/30\n",
+        )
+        .on("issue edit *", "")
+        // A start gathers the task from the open tickets, as the tick does, and reads the open
+        // epics: none here, so no epic holds the task.
+        .on(
+            "issue list --label task --state open *",
+            &format!("[{}]", claimed_by_implement(1)),
+        )
+        .on("issue list --label epic *", "[]")
+        .on("issue list --label task --state all *", "[]");
+    let asks = programmer(&project);
+    write(&asks, "question", "Which delimiter does the export use?");
+
+    // The first run: the programmer asked and changed nothing, so `slice-pr` refused and the run
+    // exited 1, with the question recorded in its folder.
+    let (code, stdout, stderr) = outcome(&project.zaf(&["spawn", "phase", "2", "implement"]));
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    let first = implement_runs(&project);
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert_eq!(exit_of(&first[0]), "1\n");
+    assert_eq!(
+        fs::read_to_string(first[0].join("questions")).expect("the run's questions"),
+        "30\n"
+    );
+    assert_eq!(record(&project, "2.pr"), None);
+
+    // While the question is open, implement waits on it and is not started again.
+    let question = serde_json::json!([{
+        "number": 30,
+        "title": "Question on #2",
+        "body": "Raised on #2.\n\nWhich delimiter does the export use?",
+        "labels": [{"name": "question"}],
+        "state": "OPEN",
+        "comments": [],
+    }]);
+    project.on_first("issue list --label question *", &question.to_string());
+    let (code, stdout, stderr) = outcome(&project.zaf(&["spawn", "phase", "2", "implement"]));
+    assert_eq!(code, 1, "{stdout}{stderr}");
+    assert!(
+        stderr.contains("implement is not #2's current phase: implement waits"),
+        "{stderr}"
+    );
+    assert_eq!(implement_runs(&project).len(), 1, "no second run");
+
+    // Ruled: the question is closed, and the tick has handed the dead instance's claim to the next
+    // one. Implement runs a second time, does the work and opens the pull request.
+    fs::remove_file(asks.join("question")).expect("asked once");
+    write(&asks, "work", "a,b\n");
+    project
+        .on_first("issue list --label question *", "[]")
+        .on_first("issue view 2 *", &claimed_by_implement(2));
+    let (code, stdout, stderr) = outcome(&project.zaf(&["spawn", "phase", "2", "implement"]));
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    let runs = implement_runs(&project);
+    assert_eq!(runs.len(), 2, "{runs:?}");
+    assert_eq!(exit_of(&runs[1]), "0\n");
+    assert_eq!(record(&project, "2.pr").as_deref(), Some("7"));
+    assert_eq!(pushed_file(&project, "writer.csv"), "a,b\n");
+}
+
+/// The manifest of a project whose tick runs: [`MANIFEST`] with a runner and a role, as the
+/// spawner needs them.
+const TICK_MANIFEST: &str = r#"[project]
+name = "example"
+
+[board]
+kind = "github-issues"
+repo = "example/tracker"
+
+[forge]
+kind = "github"
+repo = "example/tracker"
+
+[vcs]
+kind = "jj"
+
+[runners.claude]
+command = "true"
+
+[roles.team]
+model = "opus"
+effort = "xhigh"
+profile = "build"
+turns = 5
+batch = 2
+
+[phases]
+Task = ["implement"]
+"#;
+
+/// Task 2 in the task template, blocked by #3, labelled `label`, with `comments`.
+fn task_two(label: &str, comments: serde_json::Value) -> String {
+    serde_json::json!({
+        "number": 2,
+        "title": "Export the list",
+        "body": "Goal: Members export their reading list as CSV.\n\
+                 Owned paths: src/export/**\n\
+                 Interfaces: none\n\
+                 Design pages: none\n\
+                 Acceptance:\n  - the export writes one row per book\n\
+                 Tests: export_writes_rows\n\
+                 Security trigger: no\n\
+                 Model: sonnet\n\
+                 Size: S\n\
+                 Blocked by: #3\n",
+        "labels": [{"name": "task"}, {"name": label}],
+        "parent": {"number": 1},
+        "state": "OPEN",
+        "comments": comments,
+        "issueType": {"name": "Task", "id": "IT_1"},
+    })
+    .to_string()
+}
+
+#[test]
+fn a_ticket_in_the_lane_is_always_claimable() {
+    // Task 2 still carries the `blocked` it was filed with; the #3 it names is done, and nothing
+    // set it ready.
+    let blocked = task_two("blocked", serde_json::json!([]));
+    let mut project = implementing_with(&blocked);
+    fs::write(project.root.join(".zaf.toml"), TICK_MANIFEST).expect("manifest");
+    let config = project.temp.path().join("claude-config");
+    fs::create_dir_all(&config).expect("config");
+    project
+        .env("CLAUDE_CONFIG_DIR", config.to_str().expect("utf-8"))
+        .on_first("issue list --label claimed *", "[]")
+        .on(
+            "issue list --label task --state open *",
+            &format!("[{blocked}]"),
+        )
+        .on(
+            "issue view 3 *",
+            r#"{"number":3,"state":"CLOSED","stateReason":"COMPLETED","labels":[{"name":"task"}],"url":"https://github.com/example/tracker/issues/3"}"#,
+        )
+        .on("issue edit *", "")
+        .on("issue comment *", "")
+        .on("issue list *", "[]");
+    write(&programmer(&project), "work", "a,b\n");
+    // The board as the writes leave it: the view of #2 follows its label, `ready` once the tick
+    // sets it and `claimed` by the started phase's instance once `implement` claims it, when the
+    // claims list it too.
+    // The fake gh's scene, where `Project::new` keeps it.
+    let scene = project.temp.path().join("gh-scene");
+    fs::write(
+        scene.join("view-ready"),
+        task_two("ready", serde_json::json!([])),
+    )
+    .expect("view");
+    fs::write(
+        scene.join("view-claimed"),
+        task_two(
+            "claimed",
+            serde_json::json!([{
+                "body": "claimed by implement instance 1 on #1 at 2027-01-15T08:00:00Z"
+            }]),
+        ),
+    )
+    .expect("view");
+    fs::write(scene.join("claims"), r#"[{"number":2}]"#).expect("claims");
+    let wrap = project.temp.path().join("gh-wrap");
+    let fake = common::fixtures().join("gh");
+    write(
+        &wrap,
+        "gh",
+        &format!(
+            "#!/bin/sh\n\
+             first() {{\n\
+             {{ printf '%s\\t0\\t%s\\n' \"$1\" \"$2\"; cat \"$FAKE_GH_DIR/rules\"; }} \
+             > \"$FAKE_GH_DIR/rules.new\" && mv \"$FAKE_GH_DIR/rules.new\" \"$FAKE_GH_DIR/rules\"\n\
+             }}\n\
+             case \"$*\" in\n\
+             'issue edit 2 --add-label ready '*) first 'issue view 2 *' view-ready ;;\n\
+             'issue edit 2 --add-label claimed '*)\n\
+             first 'issue view 2 *' view-claimed\n\
+             first 'issue list --label claimed *' claims ;;\n\
+             esac\n\
+             exec '{}' \"$@\"\n",
+            fake.display()
+        ),
+    );
+    fs::set_permissions(wrap.join("gh"), fs::Permissions::from_mode(0o755)).expect("mode");
+    let bin = project.temp.path().join("programmer-bin");
+    project.env(
+        "PATH",
+        &common::path_with_zaf(&[&wrap, &bin, &common::fixtures()]),
+    );
+    let (code, stdout, stderr) = outcome(&project.zaf(&["profile", "init"]));
+    assert_eq!(code, 0, "{stdout}{stderr}");
+
+    let (code, stdout, stderr) = outcome(&project.zaf(&["spawn", "--once", "--version", "v1"]));
+
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    // Relabelled from its place, then started in the same tick.
+    assert!(
+        stdout
+            .lines()
+            .any(|line| line == "#2 unblocked: #3 is done"),
+        "{stdout}{stderr}"
+    );
+    assert!(stdout.contains("started implement #2"), "{stdout}{stderr}");
+    let runs = implement_runs(&project);
+    assert_eq!(runs.len(), 1, "{runs:?}");
+    // `implement` claimed the task it was started on and ran to the end: the claim found it
+    // `ready`.
+    let exit = exit_of(&runs[0]);
+    let output = fs::read_to_string(runs[0].join("output")).unwrap_or_default();
+    assert_eq!(exit, "0\n", "{output}");
+    let calls = project.gh_calls();
+    let at = |prefix: &str| {
+        calls
+            .iter()
+            .position(|call| call.starts_with(prefix))
+            .unwrap_or_else(|| panic!("no {prefix}: {calls:?}"))
+    };
+    assert!(
+        at("issue edit 2 --add-label ready --remove-label blocked")
+            < at("issue edit 2 --add-label claimed --remove-label ready"),
+        "{calls:?}"
+    );
+    assert_eq!(record(&project, "2.pr").as_deref(), Some("7"));
 }

@@ -1,50 +1,53 @@
 //! `zaf spawn phase <task> <action>`: starts one phase action of a task as its own process
 //! (docs/zaf-actions.md §5.1).
 //!
-//! [`start`] reads the task, derives its standing in its type's phase list
-//! ([`derive_standing`]) and refuses unless `action` is the task's current phase and no phase of
-//! the task runs. Under the spawner's lock it takes the next instance number and writes the phase
-//! run folder in `.zaf/phases/` in the format [`derive_standing`] reads (the `task` file last, so
+//! [`start`] reads the task and, under the spawner's lock, gathers its facts as the tick does
+//! ([`gather_one`]) and passes them through the tick's own gate ([`may_start`], which asks the
+//! scheduling core where the ticket sits): it refuses, in the gate's words, unless the ticket is
+//! in the lane at `action` and the action is not getting nowhere. A run that raised a question
+//! still open waits on it, and so does a ticket whose epic is unsigned or questioned; a ticket the
+//! tick skips (one that is not a task of an epic, or cannot be read) is refused or failed in the
+//! words the tick names it by ([`Skip`]). It then
+//! releases the task's claim when the instance holding it has ended ([`release_orphaned`]), as
+//! the tick does, takes the next instance number and writes the phase run folder in
+//! `.zaf/phases/` through [`record::open`], which documents the folder (the `task` file last, so
 //! its time is the start). The caller then starts the launcher on that folder and returns at
 //! once; [`Started`] holds what it needs.
 //!
 //! [`launch_of`] reads that folder back for the launcher: the action, the task, its size and the
 //! instance the action runs as. The launcher is the entry point #439 and #440 extend.
 //!
-//! [`end`] is the launcher's first step once its child has exited: it records the exit code in the
-//! run folder's `exit` file ([`record_exit`]), and only then runs what follows, the post-phase hook
-//! and the tick's ask (#439, #440). The code is [`exit_code`]: the child's own, or `128 + n` for a
+//! [`end`] is the launcher's first step once its child has exited: it records the head the phase
+//! left in the run folder's `head-end` and the exit code in its `exit` file ([`record_exit`]), last,
+//! and only then runs what follows, the post-phase hook and the tick's ask (#439, #440). The code is [`exit_code`]: the child's own, or `128 + n` for a
 //! signal `n`. It is a recorded act kept beside the launch record, never a stored queue.
+//!
+//! [`open_inline`] opens the run folder of a `zaf`-kind action the tick runs in its own process,
+//! so an inline run leaves the record a launched phase does, once the gate lets it under the same
+//! lock: a second tick that read the same lane finds the run there, running, and runs nothing.
+//!
+//! A model action [`start`] lets through must also find a free slot under the lock: the slots in
+//! use are the project's planning and challenger launches and its live model runs, counted as the
+//! tick counts them, so two starts that both read a free slot cannot both take it.
 
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use super::{SpawnError, lock, slug};
-use crate::app::actions::{
-    ActionName, ListedPhase, PHASES_DIR, Standing, derive_standing, gather_standing_facts, parse,
-    resolve,
-};
+use super::{Released, SpawnError, lock, release_orphaned};
+use crate::app::actions::{ActionKind, ActionName, ListedPhase, PHASES_DIR, parse, resolve};
+use crate::app::schedule::gather::{Skip, gather_one, model_runs};
+use crate::app::schedule::record;
+use crate::app::schedule::tick::{Refusal, may_start};
+use crate::domain::schedule::HeadEnd;
 use crate::domain::{DEFAULT_TASK_TYPE, Instance, InstanceNumber, RoleName, TaskSize, TicketId};
 use crate::manifest::Manifest;
 use crate::ports::{Board, Forge, Holder, PortError};
 
-/// The file of a phase run folder that names the size the action runs at (`ZAF_SIZE`).
-pub const SIZE_FILE: &str = "size";
-/// The file of a phase run folder that names the instance the action runs as (`ZAF_INSTANCE`).
-pub const INSTANCE_FILE: &str = "instance";
-/// The file of a phase run folder that holds the task's number; written last.
-pub const TASK_FILE: &str = "task";
-/// The file of a phase run folder that holds the action's name.
-pub const ACTION_FILE: &str = "action";
-/// The file of a phase run folder that holds the pull request's head when it started.
-pub const HEAD_FILE: &str = "head";
-/// The file of a phase run folder that holds the action's process, as a holder.
-pub const PID_FILE: &str = "pid";
-/// The file of a phase run folder that holds the process's exit code, written once it has ended.
-pub const EXIT_FILE: &str = "exit";
-/// The file of a phase run folder that holds what the action's `zaf do` printed (#550).
-pub const OUTPUT_FILE: &str = "output";
+pub use crate::app::schedule::record::{
+    ACTION_FILE, EXIT_FILE, HEAD_FILE, INSTANCE_FILE, OUTPUT_FILE, PID_FILE, POST_PHASE_LOG,
+    SIZE_FILE, TASK_FILE, record_exit, record_pid,
+};
 
 /// Why a phase was not started.
 #[derive(Debug, thiserror::Error)]
@@ -76,6 +79,8 @@ pub struct Started {
     pub run_dir: PathBuf,
     /// The instance the action runs as, `<action> instance <n> on #<epic>`.
     pub instance: String,
+    /// The task's claim, released before the start because the instance holding it had ended.
+    pub released: Vec<Released>,
 }
 
 /// What a launcher reads back from a phase run folder.
@@ -109,14 +114,24 @@ pub struct Ports<'a> {
     pub alive: &'a dyn Fn(&Holder) -> bool,
 }
 
-/// Checks that `action` is the current phase of `task` and that none of its phases runs, takes
-/// the next instance number and writes the phase run folder. Nothing is started.
+/// Checks, through the tick's gate, that `action` may start on `task` now, releases the task's
+/// claim when the instance holding it has ended, takes the next instance number and writes the
+/// phase run folder. Nothing is started.
 ///
-/// The current phase is the standing's `Ready` action, or the `on-fail` action of a `Failed` wait.
-/// The check, the folder and `launch` all run under the spawner's lock, so two starts never both
-/// pass. `launch` starts the launcher on the folder and returns its process, which is recorded as
-/// the run's `pid` before the lock is let go: the run reads as running from the moment it is
-/// written, and the launcher replaces the record with the action's own process.
+/// The gate is [`may_start`]: the ticket is in the lane at `action`, no phase of it runs, nothing
+/// holds it waiting (its epic, a question, a ticket it depends on, the checks at its head), its
+/// wait has not failed with no `on-fail`, and `action` is not getting nowhere. A refusal is
+/// [`PhaseError::Refused`] in the gate's words. A ticket the tick skips is refused or failed in the
+/// words the tick names it by ([`Skip`]): one that is not a task of an epic is refused, `#4 cannot
+/// start: it is not a task of an epic`, and one something about which cannot be read (its pull
+/// request record included) fails, `#4 cannot be read: <why>`. A model action also needs a free
+/// slot: with the project's planning and challenger launches and its live model runs already
+/// filling `[spawn] slots` it is refused, `#4 cannot start implement: every slot is in use (1 of
+/// 1)`. The check, the release, the folder and `launch` all run under the spawner's lock, so two
+/// starts never both pass, and two model starts never both take the last slot. `launch` starts
+/// the launcher on the folder and returns its process, which is recorded as the run's `pid`
+/// before the lock is let go: the run reads as running from the moment it is written, and the
+/// launcher replaces the record with the action's own process.
 pub fn start(
     ports: &Ports<'_>,
     task: TicketId,
@@ -124,9 +139,6 @@ pub fn start(
     launch: &dyn Fn(&Started) -> Result<Holder, String>,
 ) -> Result<Started, PhaseError> {
     let ticket = ports.board.task(task)?;
-    let epic = ticket
-        .epic
-        .ok_or_else(|| PhaseError::Refused(format!("{task} is not a task of an epic")))?;
     let size = ticket
         .template()
         .map_err(|error| PhaseError::Refused(format!("{task} is not a task: {error}")))?
@@ -135,104 +147,82 @@ pub fn start(
         .kind
         .as_ref()
         .map_or(DEFAULT_TASK_TYPE, |kind| kind.as_str());
-    let names = ports.manifest.phase_list(task_type).ok_or_else(|| {
-        PhaseError::Refused(format!("[phases] has no list for the type {task_type}"))
-    })?;
-    let list = listed(ports.root, ports.home, names)?;
+    if ports.manifest.phase_list(task_type).is_none() {
+        return Err(PhaseError::Refused(format!(
+            "[phases] has no list for the type {task_type}"
+        )));
+    }
 
     let _held = lock(ports.state_dir)?;
-    let facts = gather_standing_facts(
-        ports.forge,
-        ports.root,
-        task,
-        SystemTime::now(),
-        ports.alive,
-    )
-    .map_err(|error| PhaseError::Failed(error.to_string()))?;
-    let standing = derive_standing(&list, &facts);
-    check_current(&standing, task, action)?;
+    let action_name = ActionName::from(action);
+    // A ticket the tick skips is refused, or fails, in the words the tick skips it with.
+    let (facts, beside) = match gather_one(ports, task) {
+        Ok(Some(gathered)) => gathered,
+        Ok(None) => return Err(PhaseError::Refused(Refusal::NotOpen.reason(task, action))),
+        Err(Skip::CannotRun(reason)) => {
+            return Err(PhaseError::Refused(format!(
+                "{task} cannot start: {reason}"
+            )));
+        }
+        Err(Skip::Unread(reason)) => {
+            return Err(PhaseError::Failed(format!(
+                "{task} cannot be read: {reason}"
+            )));
+        }
+    };
+    let kind = may_start(&facts, &beside, &action_name, SystemTime::now())
+        .map_err(|refusal| PhaseError::Refused(refusal.reason(task, action)))?;
+
+    let (launches, runs) = super::state::derive(ports.state_dir, ports.alive)?;
+    if kind == ActionKind::Model {
+        let slots = usize::try_from(ports.manifest.spawn.slots).unwrap_or(usize::MAX);
+        let in_use = launches
+            .running()
+            .saturating_add(model_runs(ports).map_err(PhaseError::Failed)?);
+        if in_use >= slots {
+            return Err(PhaseError::Refused(format!(
+                "{task} cannot start {action}: every slot is in use ({in_use} of {slots})"
+            )));
+        }
+    }
+    let released = release_orphaned(ports.board, ports.state_dir, &runs, ports.alive, Some(task))?;
 
     let mut state = super::state::load(ports.state_dir)?;
     let number = state.next_instance;
     let instance = Instance {
         role: RoleName::from(action),
-        epic,
+        epic: beside.epic,
         number: InstanceNumber::from(number),
     };
     state.next_instance = number.saturating_add(1);
     super::save(ports.state_dir, &state)?;
 
-    let run_dir =
-        ports
-            .state_dir
-            .join(PHASES_DIR)
-            .join(format!("{}-task-{}", slug(&instance), task.get()));
-    let head = facts
-        .pull
-        .as_ref()
-        .and_then(|pull| pull.head.clone())
-        .unwrap_or_default();
-    let write = |name: &str, text: &str| -> Result<(), PhaseError> {
-        let path = run_dir.join(name);
-        std::fs::write(&path, text).map_err(|source| {
-            PhaseError::Failed(format!("cannot write {}: {source}", path.display()))
-        })
-    };
-    std::fs::create_dir_all(&run_dir).map_err(|source| {
-        PhaseError::Failed(format!("cannot make {}: {source}", run_dir.display()))
-    })?;
-    write(ACTION_FILE, action)?;
-    write(HEAD_FILE, &head)?;
-    write(SIZE_FILE, size.name())?;
-    write(INSTANCE_FILE, &instance.to_string())?;
-    // Last: its time is when the run started.
-    write(TASK_FILE, &task.get().to_string())?;
+    let head = facts.head().cloned();
+    let run_dir = record::open(
+        &ports.state_dir.join(PHASES_DIR),
+        &record::Opening {
+            task,
+            action: &action_name,
+            head: head.as_ref(),
+            size,
+            instance: &instance,
+            inline: None,
+        },
+    )
+    .map_err(PhaseError::Failed)?;
     let started = Started {
         run_dir,
         instance: instance.to_string(),
+        released,
     };
     let holder = launch(&started).map_err(PhaseError::Failed)?;
     record_pid(&started.run_dir, &holder).map_err(PhaseError::Failed)?;
     Ok(started)
 }
 
-/// Refuses unless `action` is the phase `standing` calls for.
-fn check_current(standing: &Standing, task: TicketId, action: &str) -> Result<(), PhaseError> {
-    match standing {
-        Standing::Running { action: running } => Err(PhaseError::Refused(format!(
-            "{task}'s phase {running} already runs"
-        ))),
-        Standing::Ready { action: ready, .. } if ready.as_str() == action => Ok(()),
-        Standing::Failed {
-            on_fail: Some(next),
-            ..
-        } if next.as_str() == action => Ok(()),
-        other => Err(PhaseError::Refused(format!(
-            "{action} is not {task}'s current phase: {}",
-            describe(other)
-        ))),
-    }
-}
-
-/// The standing in a few words, for a refusal.
-fn describe(standing: &Standing) -> String {
-    match standing {
-        Standing::Running { action } => format!("{action} runs"),
-        Standing::Ready { action, .. } => format!("{action} is ready"),
-        Standing::Waiting { action } => format!("{action} waits"),
-        Standing::Failed {
-            action,
-            on_fail: Some(next),
-            ..
-        } => format!("{action} failed, {next} is next"),
-        Standing::Failed { action, .. } => format!("{action} failed and names no on-fail action"),
-        Standing::Done => "every phase is done".to_owned(),
-    }
-}
-
 /// The task's phase list with what each action declares. An action that cannot be found or read,
 /// or that declares no kind, cannot be a phase.
-pub(super) fn listed(
+pub fn listed(
     root: &Path,
     home: &Path,
     names: &[ActionName],
@@ -287,18 +277,6 @@ pub fn launch_of(run_dir: &Path) -> Result<Launch, String> {
     })
 }
 
-/// Records a process in the run folder as its `pid`, as a holder. The file is replaced whole, so a
-/// reader sees the old record or the new one, never half of either. The staging name carries the
-/// writer's process id: the verb and the holder both record, and a shared name would let one
-/// rename the other's file away.
-pub fn record_pid(run_dir: &Path, holder: &Holder) -> Result<(), String> {
-    let path = run_dir.join(PID_FILE);
-    let staging = run_dir.join(format!("{PID_FILE}.{}.new", std::process::id()));
-    std::fs::write(&staging, holder.to_string())
-        .and_then(|()| std::fs::rename(&staging, &path))
-        .map_err(|source| format!("cannot write {}: {source}", path.display()))
-}
-
 /// The exit code to record for a process that ended: its own `code`, or the shell's `128 + n` when
 /// signal `n` killed it, so a phase killed by SIGTERM records `143`.
 pub fn exit_code(code: Option<i32>, signal: Option<i32>) -> i32 {
@@ -308,19 +286,6 @@ pub fn exit_code(code: Option<i32>, signal: Option<i32>) -> i32 {
         (None, None) => 255,
     }
 }
-
-/// Records `code` in the run folder as its `exit` file: the decimal code and a newline. It is
-/// staged whole and renamed into place, so a reader sees no file or the whole of it, never half.
-pub fn record_exit(run_dir: &Path, code: i32) -> Result<(), String> {
-    let path = run_dir.join(EXIT_FILE);
-    let staging = run_dir.join(format!("{EXIT_FILE}.new"));
-    std::fs::write(&staging, format!("{code}\n"))
-        .and_then(|()| std::fs::rename(&staging, &path))
-        .map_err(|source| format!("cannot write {}: {source}", path.display()))
-}
-
-/// The file of a phase run folder that holds what a failed `post-phase` hook said.
-pub const POST_PHASE_LOG: &str = "post-phase.log";
 
 /// What the `post-phase` hook gets on stdin (ruling 21): one JSON object naming the task, the
 /// phase's action and the exit code the launcher recorded, as
@@ -333,21 +298,103 @@ pub fn post_phase_input(task: TicketId, action: &ActionName, code: i32) -> Strin
     )
 }
 
-/// Logs a failed `post-phase` hook in the run folder, as its `post-phase.log`. It is all the
+/// Logs a failed `post-phase` hook in the run folder, in its `post-phase.log`. It is all the
 /// failure changes: the exit code and the standing are not touched.
 pub fn record_hook_failure(run_dir: &Path, text: &str) -> Result<(), String> {
+    log_after_phase(run_dir, text)
+}
+
+/// Appends `text` to the run folder's `post-phase.log`, what went wrong once the phase had ended:
+/// a failed `post-phase` hook, a tick that could not be asked for. The launcher has no stderr
+/// anyone reads, and the run folder outlives it.
+pub fn log_after_phase(run_dir: &Path, text: &str) -> Result<(), String> {
     let path = run_dir.join(POST_PHASE_LOG);
-    std::fs::write(&path, text)
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut file| std::io::Write::write_all(&mut file, text.as_bytes()))
         .map_err(|source| format!("cannot write {}: {source}", path.display()))
 }
 
-/// What a launcher does when its child has ended with `code`: records the exit first, then runs
-/// `after`, the steps that follow (post-phase, the tick's ask). A record that fails is returned,
-/// and `after` still runs, since a failed write must not swallow the phase's end.
-pub fn end(run_dir: &Path, code: i32, after: &dyn Fn()) -> Result<(), String> {
-    let recorded = record_exit(run_dir, code);
-    after();
-    recorded
+/// What a launcher does when its child has ended with `code`, having left `head_end`: records the
+/// head it left, then the exit, then runs `after`, the steps that follow (post-phase, the tick's
+/// ask); see [`record::end`]. A record that fails is returned, and `after` still runs, since a
+/// failed write must not swallow the phase's end.
+pub fn end(run_dir: &Path, code: i32, head_end: &HeadEnd, after: &dyn Fn()) -> Result<(), String> {
+    record::end(run_dir, code, head_end, after)
+}
+
+/// Opens the run folder of a `zaf`-kind action the tick runs inline for `task` (docs/zaf-actions.md
+/// §5.1), once the gate lets it. Under the spawner's lock it gathers the ticket again
+/// ([`gather_one`]) and asks [`may_start`], so a tick that read the lane before another tick's run
+/// of the same action began finds that run there, running, and runs nothing. It then takes the
+/// next instance number, as [`start`] does, and opens the folder with no `pid`, since the run is a
+/// step of the tick's own process, `this`, which the folder's `inline` mark names: the run reads as
+/// running from its first moment until its `exit` is written. Returns the folder, which
+/// [`record::end`] ends once the action has run.
+///
+/// A ticket the gate holds, one no longer in the lane at `action`, one whose action is not of the
+/// `zaf` kind, and one that cannot be read now are [`PhaseError::Refused`], in the gate's words: the
+/// action is not run, and the next tick places the ticket again. A folder that cannot be written is
+/// [`PhaseError::Failed`].
+pub fn open_inline(
+    ports: &Ports<'_>,
+    task: TicketId,
+    action: &ActionName,
+    this: &Holder,
+) -> Result<PathBuf, PhaseError> {
+    let _held = lock(ports.state_dir)?;
+    let (facts, beside) = match gather_one(ports, task) {
+        Ok(Some(gathered)) => gathered,
+        Ok(None) => {
+            return Err(PhaseError::Refused(
+                Refusal::NotOpen.reason(task, action.as_str()),
+            ));
+        }
+        Err(Skip::CannotRun(reason)) => {
+            return Err(PhaseError::Refused(format!(
+                "{task} cannot start: {reason}"
+            )));
+        }
+        Err(Skip::Unread(reason)) => {
+            return Err(PhaseError::Refused(format!(
+                "{task} cannot be read: {reason}"
+            )));
+        }
+    };
+    match may_start(&facts, &beside, action, SystemTime::now()) {
+        Ok(ActionKind::Zaf) => {}
+        Ok(_) => {
+            return Err(PhaseError::Refused(format!(
+                "{action} is not a zaf-kind action of {task}"
+            )));
+        }
+        Err(refusal) => {
+            return Err(PhaseError::Refused(refusal.reason(task, action.as_str())));
+        }
+    }
+    let mut state = super::state::load(ports.state_dir)?;
+    let number = state.next_instance;
+    let instance = Instance {
+        role: RoleName::from(action.as_str()),
+        epic: beside.epic,
+        number: InstanceNumber::from(number),
+    };
+    state.next_instance = number.saturating_add(1);
+    super::save(ports.state_dir, &state)?;
+    record::open(
+        &ports.state_dir.join(PHASES_DIR),
+        &record::Opening {
+            task,
+            action,
+            head: facts.head(),
+            size: facts.size,
+            instance: &instance,
+            inline: Some(this),
+        },
+    )
+    .map_err(PhaseError::Failed)
 }
 
 #[cfg(test)]

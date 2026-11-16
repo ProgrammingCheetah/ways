@@ -1,79 +1,39 @@
-//! Step 6 of the tick: start at most one model, the longest waiting that fits
+//! Step 6 of the tick: start at most one model, the heaviest that fits
 //! (docs/zaf-actions.md §5.1).
 //!
-//! The items are each task's `Ready` model phase, each `Failed` wait that declares an
-//! `on-fail`, whose model action is the phase to start, at the size of the task (the #425
-//! ruling), and each epic launch, planning or the challenger, charged XS (#419, #427), its
-//! weight how long its stage has waited ([`EpicCandidate::since`]).
-//! [`plan`] orders them by weight, how long each has been ready (`since`, the earliest
-//! first, #421 rulings 19 and 20), and returns the first that [`Budget::fits`] accepts at its
-//! size, with `units` its [`Budget::cost`] (#421 ruling 14). An item passed for
-//! [`Fit::NoBudget`] or [`Fit::NoFreeSlot`] keeps its weight: nothing is stored, so the next
-//! tick orders it by the same `since` and it comes first again once it fits. One that has been
-//! ready for [`STARVE_AFTER`] and still does not fit is starved (the starvation rule of #419,
-//! #421 ruling 20): no other model phase starts while it is, so the budget frees up for it.
+//! The items are the lane entries the tick hands in, each a ticket in the lane at a model action
+//! the gate let through ([`crate::app::schedule::tick::may_start`]): its model phase, or the
+//! `on-fail` of its failed wait, at the size of the ticket (the #425 ruling); and each epic
+//! launch, planning or the challenger, charged XS (#419, #427), its weight how long its stage has
+//! waited ([`EpicCandidate::since`]). [`plan`] returns the heaviest item that [`Budget::fits`]
+//! accepts at its size, with `units` its [`Budget::cost`] (#421 ruling 14): a phase weighs its
+//! lane entry's weight, its age plus its priority's worth
+//! ([`crate::domain::schedule::weight`]), and an epic launch its age alone. An item passed for
+//! [`Fit::NoBudget`] or [`Fit::NoFreeSlot`] keeps its place: nothing is stored, so the next tick
+//! weighs it again and it comes first again once it fits. Starvation stays on raw age (the
+//! starvation rule of #419, #421 ruling 20): one that has been ready for [`STARVE_AFTER`] and
+//! still does not fit is starved, and nothing ready after it starts while it is, whatever its
+//! priority, so the budget frees up for it and a stream of prioritised tickets never starves a big
+//! old one.
 //!
-//! [`plan`] is pure: the caller hands in the standings, what the fit rule reads of the machine
+//! [`plan`] is pure: the caller hands in the entries, what the fit rule reads of the machine
 //! ([`InUse`]) and the budget. [`start_planned`] hands the planned phase to a `start` the caller
 //! gives, which launches it detached (`zaf spawn phase`) and never waits for it, and records it
 //! in [`TickOutcome::started`]. A wait, a `zaf`-kind action and a failed wait with no `on-fail`
-//! are other steps' ([`super::inline`], [`super::question`]).
+//! are other steps' ([`super::inline`], [`super::waits`], [`crate::app::schedule::ask`]).
 
 use std::time::{Duration, SystemTime};
 
-use super::inline::TickTask;
 use super::outcome::{Started, TickOutcome};
 use super::tick::EpicCandidate;
-use crate::app::actions::{ActionKind, ActionName, ListedPhase, Standing, derive_standing};
+use crate::app::actions::ActionName;
+use crate::domain::schedule::{LaneEntry, Weight, weight};
 use crate::domain::{Budget, Fit, MEBIBYTES_PER_UNIT, RoleName, TaskSize, TicketId, Units};
 
 /// How long a model phase may be ready, passed over, before it holds the budget: 30 minutes,
 /// the starvation rule of #419. A constant and not a setting, since the budget it holds is the
 /// machine's.
 pub const STARVE_AFTER: Duration = Duration::from_secs(30 * 60);
-
-/// One task as the plan reads it: its size, its type's phase list and where it stands.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TaskStanding {
-    /// The task.
-    pub task: TicketId,
-    /// Its size, from its ticket: what a model phase of it costs.
-    pub size: TaskSize,
-    /// Its type's phase list, which says the kind of each action.
-    pub list: Vec<ListedPhase>,
-    /// Where it stands this tick.
-    pub standing: Standing,
-}
-
-impl TaskStanding {
-    /// The standing of `task`, derived from its list and facts, at `size`.
-    pub fn of(task: &TickTask, size: TaskSize) -> Self {
-        Self {
-            task: task.task,
-            size,
-            list: task.list.clone(),
-            standing: derive_standing(&task.list, &task.facts),
-        }
-    }
-
-    /// The model action the task may start and how long it has waited: its `Ready` action when
-    /// that is model-kind, or the `on-fail` of its failed wait.
-    pub(super) fn model_item(&self) -> Option<(ActionName, SystemTime)> {
-        match &self.standing {
-            Standing::Ready { action, since } => self
-                .list
-                .iter()
-                .any(|phase| phase.action == *action && phase.kind == ActionKind::Model)
-                .then(|| (action.clone(), *since)),
-            Standing::Failed {
-                on_fail: Some(on_fail),
-                since,
-                ..
-            } => Some((on_fail.clone(), *since)),
-            _ => None,
-        }
-    }
-}
 
 /// What the fit rule reads of the machine and the project on this tick, besides the budget:
 /// the time of the tick, the live use of #472, whether an E is live, and the project's running
@@ -159,30 +119,32 @@ fn whole_units(cost: Units) -> u32 {
 }
 
 /// The model to start this tick, if any,
-/// `plan(standings, epics, in_use, budget) -> Option<PlannedModel>`.
+/// `plan(entries, epics, in_use, budget) -> Option<PlannedModel>`.
 ///
-/// The `Ready` model phases, the failed waits with an `on-fail` and the epic launches are one
-/// order (the ruling on #427): each weighed by how long it has waited, the earliest `since`
-/// first, an epic's being how long its stage has waited. Items with the same `since` keep the
-/// order of `standings`, then of `epics`. The first for which [`Budget::fits`] is [`Fit::Fits`]
-/// at its size, that of its task or [`EPIC_SIZE`], is returned with `units` its cost at that
-/// size; none when nothing fits. An item that does not fit and has been ready [`STARVE_AFTER`]
-/// or more before `in_use.now` is starved: the walk stops there and returns none, so no smaller
-/// item starts until it fits. A younger one that does not fit is passed.
+/// The lane entries at a model action and the epic launches are one order (the ruling on #427).
+/// The walk goes by raw age, the earliest `since` first, an epic's being how long its stage has
+/// waited; items with the same `since` keep the order of `entries`, then of `epics`. Each item
+/// for which [`Budget::fits`] is [`Fit::Fits`] at its size, that of its task or [`EPIC_SIZE`], is a
+/// candidate; one that does not fit and has been ready [`STARVE_AFTER`] or more before
+/// `in_use.now` is starved, and the walk stops there, so nothing ready after it starts until it
+/// fits. A younger one that does not fit is passed. Of the candidates, the heaviest is returned,
+/// with `units` its cost at its size: a phase weighs its entry's [`LaneEntry::weight`], age plus
+/// priority, and an epic launch its age at `in_use.now`; of equal weight, the earlier in the walk.
+/// None when no item is a candidate. With no priority anywhere, the heaviest is the first that
+/// fits, as before priority.
 pub fn plan(
-    standings: &[TaskStanding],
+    entries: &[LaneEntry],
     epics: &[EpicCandidate],
     in_use: &InUse,
     budget: &Budget,
 ) -> Option<PlannedModel> {
-    let phases = standings.iter().filter_map(|standing| {
-        let (action, since) = standing.model_item()?;
+    let phases = entries.iter().map(|entry| {
         let model = PlannedModel::Phase {
-            task: standing.task,
-            action,
-            units: whole_units(budget.cost(standing.size)),
+            task: entry.ticket,
+            action: entry.next.clone(),
+            units: whole_units(budget.cost(entry.size)),
         };
-        Some((since, standing.size, model))
+        (entry.since, entry.size, entry.weight, model)
     });
     let launches = epics.iter().map(|candidate| {
         let model = PlannedModel::Epic {
@@ -190,11 +152,14 @@ pub fn plan(
             role: candidate.role.clone(),
             units: whole_units(budget.cost(EPIC_SIZE)),
         };
-        (candidate.since, EPIC_SIZE, model)
+        let weight = weight(candidate.since, None, in_use.now);
+        (candidate.since, EPIC_SIZE, weight, model)
     });
-    let mut items: Vec<(SystemTime, TaskSize, PlannedModel)> = phases.chain(launches).collect();
-    items.sort_by_key(|(since, _, _)| *since);
-    for (since, size, model) in items {
+    let mut items: Vec<(SystemTime, TaskSize, Weight, PlannedModel)> =
+        phases.chain(launches).collect();
+    items.sort_by_key(|(since, _, _, _)| *since);
+    let mut best: Option<(Weight, PlannedModel)> = None;
+    for (since, size, weight, model) in items {
         let fit = budget.fits(
             in_use.units,
             in_use.e_live,
@@ -203,13 +168,14 @@ pub fn plan(
             in_use.slots,
         );
         if fit == Fit::Fits {
-            return Some(model);
-        }
-        if starved(since, in_use.now) {
-            return None;
+            if best.as_ref().is_none_or(|(heaviest, _)| weight > *heaviest) {
+                best = Some((weight, model));
+            }
+        } else if starved(since, in_use.now) {
+            break;
         }
     }
-    None
+    best.map(|(_, model)| model)
 }
 
 /// Whether an item ready since `since` is starved at `now`: ready [`STARVE_AFTER`] or more. A
@@ -224,13 +190,13 @@ fn starved(since: SystemTime, now: SystemTime) -> bool {
 /// none, with `start` never called, when nothing fits. A failed launch is `start`'s error, and
 /// nothing is recorded as started.
 pub fn start_planned<E>(
-    standings: &[TaskStanding],
+    entries: &[LaneEntry],
     epics: &[EpicCandidate],
     in_use: &InUse,
     budget: &Budget,
     start: &mut dyn FnMut(&PlannedModel) -> Result<(), E>,
 ) -> Result<Option<Started>, E> {
-    let Some(planned) = plan(standings, epics, in_use, budget) else {
+    let Some(planned) = plan(entries, epics, in_use, budget) else {
         return Ok(None);
     };
     start(&planned)?;
@@ -240,14 +206,14 @@ pub fn start_planned<E>(
 /// The outcome of a tick that did step 6 alone: [`TickOutcome::started`] filled, the rest empty
 /// for the steps that fill them.
 pub fn start_outcome<E>(
-    standings: &[TaskStanding],
+    entries: &[LaneEntry],
     epics: &[EpicCandidate],
     in_use: &InUse,
     budget: &Budget,
     start: &mut dyn FnMut(&PlannedModel) -> Result<(), E>,
 ) -> Result<TickOutcome, E> {
     Ok(TickOutcome {
-        started: start_planned(standings, epics, in_use, budget, start)?,
+        started: start_planned(entries, epics, in_use, budget, start)?,
         ..TickOutcome::default()
     })
 }

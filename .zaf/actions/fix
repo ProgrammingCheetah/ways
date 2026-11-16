@@ -1,5 +1,5 @@
 #!/bin/sh
-# zaf description: phase fix, started only by a wait that failed: run the programmer on the fix brief, then publish the slice again with `slice-pr`
+# zaf description: phase fix, started by a phase that failed on something a programmer answers (a red check, a must-fix, a merge whose base conflicts, a ruled question): run the programmer on the fix brief, whose `Why this run` says which, then publish the slice again with `slice-pr`
 # zaf 1: refused: the argument is not <task>, or a step refused (the slice or the pull request was refused)
 # zaf 2: a backend failed (a verb or a step failed, or the programmer exited non-zero)
 # zaf mode: 755
@@ -32,9 +32,11 @@ pack=$(printf '%s\n' "$brief" | awk 'NR == 1')
 workspace=$ZAF_ROOT/.zaf/workspaces/$ZAF_SLICE
 
 # The programmer runs in its own profile, as [roles.programmer] says, a fresh one on the pack and
-# on the findings of the last check at the pull request's head.
+# on the findings of the last check at the pull request's head. The pack's `Why this run` names
+# the phase that failed and how (a conflicted merge names its paths), and every ruling since the
+# last model run.
 CLAUDE_CONFIG_DIR="$ZAF_ROOT/.zaf/profiles/lean" claude -p \
-    "Task #$task, fix round. Pack: $pack. Workspace: $workspace. Findings: zaf check pr:$ZAF_PR:$task --status --more" \
+    "Task #$task, fix round: the pack's Why this run says what failed. Pack: $pack. Workspace: $workspace. Findings: zaf check pr:$ZAF_PR:$task --status --more" \
     --model sonnet --effort high --add-dir "$ZAF_ROOT" || exit 2
 
 zaf do slice-pr "$task" || stop $?

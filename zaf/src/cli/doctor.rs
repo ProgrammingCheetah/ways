@@ -5,9 +5,11 @@ use std::io;
 use super::Cli;
 use super::exit::{self, OK, REFUSED};
 
+use crate::adapters::process;
 use crate::app::doctor::{
-    BackendCheck, CommandOutput, Commands, Report, board_checks, doctor, forge_checks,
+    BackendCheck, CommandOutput, Commands, Report, board_checks, doctor, forge_checks, hub,
 };
+use crate::app::hub::lan_address;
 use crate::composition::{Composition, CompositionError, zaf_home};
 use crate::manifest::CommandLine;
 use crate::ports::{GateVerdict, Shell};
@@ -80,8 +82,14 @@ fn quote(text: &str) -> String {
 
 /// Fills `report`'s board and forge checks by asking the project's backends; shared by
 /// `zaf doctor` and the doctor run `zaf setup` ends with. A manifest with no `[forge]` asks no
-/// forge.
+/// forge. It asks the hub service's unit too, which never fails the report.
 pub(super) fn add_backend_checks(report: &mut Report, composition: &Composition) {
+    report.hub = Some(hub::check(
+        zaf_home().as_deref(),
+        &ShellCommands::new(composition.shell()),
+        lan_address(),
+        &process::alive,
+    ));
     report.board = match composition.board() {
         Ok(board) => board_checks(board.as_ref()),
         Err(error) => vec![unbuilt(&error)],

@@ -11,7 +11,9 @@
 //! A resumed phase's pack ([`brief_for_phase`] with a [`PhaseView`]) gains, after the rulings,
 //! `## Diff` (the recorded pull request's change against its base), `## Findings` (the review
 //! comments made at its current head and its failed checks) and `## Hand-off` (the comment the
-//! exiting model left); a task with no recorded pull request gets today's pack.
+//! exiting model left); a task with no recorded pull request gets today's pack. An `on-fail`
+//! phase's pack ([`brief_for_run`]) also gains, straight after the ticket, `## Why this run`
+//! ([`WhyThisRun`]): the phase that failed and how, and every ruling since the last model run.
 //! It is written to `.zaf/runs/<instance slug>/brief-<task>.md`, the slug being
 //! [`Instance::slug_of`] of the instance's name.
 
@@ -26,8 +28,10 @@ use crate::domain::{Instance, PageId, TaskTemplate, Ticket, TicketId};
 use crate::ports::{Board, Design, NewQuestion, Page, PortError};
 
 mod phase;
+mod why;
 
 pub use phase::PhaseView;
+pub use why::{FailedRun, Ruling, WHY_HEADING, WhyThisRun, why_this_run};
 
 /// The interface help page every brief ends with.
 pub const INTERFACE_PAGE: &str = include_str!("../../../assets/interface.md");
@@ -145,7 +149,7 @@ pub enum BriefActionsError {
 
 /// Builds the task's pack with no `## Actions` section, writes it and returns where, with its size.
 pub fn brief(query: &BriefQuery<'_>, ports: &BriefPorts<'_>) -> Result<Brief, BriefError> {
-    build(query, ports, &[], None)
+    build(query, ports, &[], None, None)
 }
 
 /// Builds the task's pack, writes it and returns where, with its size.
@@ -171,6 +175,19 @@ pub fn brief_for_phase(
     view: ActionsView<'_>,
     phase: Option<&PhaseView<'_>>,
 ) -> Result<Brief, BriefActionsError> {
+    brief_for_run(query, ports, view, phase, None)
+}
+
+/// [`brief_for_phase`] for an `on-fail` run: `why`, the rendered `## Why this run`
+/// ([`WhyThisRun::render`]), stands straight after the ticket. With `None` it is
+/// [`brief_for_phase`]'s pack, byte for byte.
+pub fn brief_for_run(
+    query: &BriefQuery<'_>,
+    ports: &BriefPorts<'_>,
+    view: ActionsView<'_>,
+    phase: Option<&PhaseView<'_>>,
+    why: Option<&str>,
+) -> Result<Brief, BriefActionsError> {
     // No machine home: the machine tier is pointed at the project's own state folder, whose
     // `actions/` is the project tier. Every name then resolves to the project, so none is listed
     // from the machine.
@@ -178,7 +195,7 @@ pub fn brief_for_phase(
     let home = view.home.unwrap_or(&project_state);
     let actions = list_actions(Some(view.project_root), home, view.caller)
         .map_err(BriefActionsError::Actions)?;
-    Ok(build(query, ports, &actions, phase)?)
+    Ok(build(query, ports, &actions, phase, why)?)
 }
 
 fn build(
@@ -186,6 +203,7 @@ fn build(
     ports: &BriefPorts<'_>,
     actions: &[ListedAction],
     phase: Option<&PhaseView<'_>>,
+    why: Option<&str>,
 ) -> Result<Brief, BriefError> {
     if !is_path_segment(query.instance) {
         return Err(BriefError::Instance(query.instance.to_owned()));
@@ -211,6 +229,7 @@ fn build(
         pages: &pages,
         actions,
         resumed: resumed.as_deref(),
+        why,
     };
     let text = render(query, ports, &parts).expect("writing to a String cannot fail");
 
@@ -339,6 +358,8 @@ struct Parts<'a> {
     actions: &'a [ListedAction],
     /// The resumed phase's sections, when the task has a recorded pull request.
     resumed: Option<&'a str>,
+    /// An `on-fail` run's `## Why this run`, rendered.
+    why: Option<&'a str>,
 }
 
 fn render(
@@ -353,6 +374,7 @@ fn render(
         pages,
         actions,
         resumed,
+        why,
     } = *parts;
     let mut text = String::new();
     writeln!(text, "# Brief: {} {}\n", ticket.id, ticket.title)?;
@@ -363,6 +385,10 @@ fn render(
             text,
             "The body does not follow the task template, so no pages or paths are read from it.\n"
         )?;
+    }
+
+    if let Some(why) = why {
+        write!(text, "{why}")?;
     }
 
     writeln!(text, "## Rulings\n")?;

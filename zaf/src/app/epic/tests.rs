@@ -172,6 +172,23 @@ fn show_lists_the_epics_tasks_closed_ones_too_in_id_order() {
 }
 
 #[test]
+fn show_more_adds_the_epics_body_and_the_json_does_not() {
+    let board = board();
+    board.set_body(
+        TicketId::from(EPIC),
+        "Goal: one ticket shape.\n\nDesign: zaf §3.\n",
+    );
+    let view = show(&board, TicketId::from(EPIC)).expect("shows");
+    assert_eq!(view.render(), "#10 unsigned 0 of 0  tickets");
+    assert_eq!(
+        view.render_more(),
+        "#10 unsigned 0 of 0  tickets\n\nGoal: one ticket shape.\n\nDesign: zaf §3."
+    );
+    let printed = serde_json::to_value(&view).expect("serializes");
+    assert!(printed.get("body").is_none(), "{printed}");
+}
+
+#[test]
 fn show_refuses_a_ticket_that_is_no_open_epic() {
     let board = board();
     let refused = show(&board, TicketId::from(99));

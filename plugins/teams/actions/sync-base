@@ -1,0 +1,44 @@
+#!/bin/sh
+# zaf description: bring the base into the task's slice for its programmer, as a merge that conflicted asks: fetch the base and merge it into the workspace with `merge-base --keep`; a clean merge says so, a conflicted one stays in the workspace with its paths named, to resolve and commit; uncommitted work rides along in the merge, and nothing is pushed
+# zaf 1: conflicted: the merge is the workspace's working copy, with conflicts in the paths the log names; resolve them, run the checks and commit, and the fix round publishes it
+# zaf 2: a backend failed or the call was refused (the argument is not <task>, the slice is not open, the workspace has unresolved conflicts, jj is missing or the fetch failed); the workspace is unchanged
+# zaf mode: 750
+# zaf group: team, release, implement, fix
+# zaf target: task
+# zaf phases: build, check, publish, review, land
+
+# The task as a bare number; zaf has already read it as one.
+task=${1#\#}
+# zaf sets ZAF_SLICE and ZAF_BASE on a `target: task` run; a hand-written call has neither.
+if [ "$#" -ne 1 ] || [ -z "$ZAF_ROOT" ] || [ -z "$ZAF_SLICE" ] || [ -z "$ZAF_BASE" ]; then
+    echo "usage: sync-base <task>, run by zaf with ZAF_ROOT, ZAF_SLICE and ZAF_BASE set" >&2
+    exit 2
+fi
+case $task in
+    "" | *[!0-9]*)
+        echo "task $1 is not an issue number" >&2
+        exit 2
+        ;;
+esac
+
+cd "$ZAF_ROOT" || exit 2
+
+# `merge-base` makes every check (the slice is open on this base, the remote, the fetch, a base
+# that lags) and, with `--keep`, leaves a conflicted merge in the workspace rather than throwing
+# it away, as it does for the merge phase. `--more` brings its whole log back, the paths with it.
+# 125, a step that never ran, is a backend that failed.
+status=0
+log=$(zaf do --more merge-base "$ZAF_SLICE" "$ZAF_BASE" --keep 2>&1) || status=$?
+printf '%s\n' "$log"
+case $status in
+    0)
+        exit 0
+        ;;
+    1)
+        echo "next: edit the conflicted paths in $ZAF_ROOT/.zaf/workspaces/$ZAF_SLICE until no conflict marker is left, run zaf check $task, then commit the merge" >&2
+        exit 1
+        ;;
+    *)
+        exit 2
+        ;;
+esac

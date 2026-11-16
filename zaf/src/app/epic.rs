@@ -14,8 +14,8 @@ use std::time::SystemTime;
 use super::spawn::SpawnError;
 use super::spawn::runs::{self, Run};
 use crate::domain::{
-    BodyHash, Epic, EpicStage, EpicTask, GroupName, Signature, Standing, TicketId, TicketState,
-    TicketTitle, TicketType,
+    BodyHash, Epic, EpicStage, EpicTask, GroupName, Signature, Standing, TicketBody, TicketId,
+    TicketState, TicketTitle, TicketType,
 };
 use crate::ports::{Board, Holder, PortError};
 
@@ -146,6 +146,9 @@ pub struct EpicView {
     pub epic: EpicLine,
     /// Its tasks, closed ones too, in id order.
     pub tasks: Vec<TaskLine>,
+    /// Its body as it reads now, which `--more` prints under the lines; never in the JSON.
+    #[serde(skip)]
+    pub body: TicketBody,
 }
 
 impl EpicView {
@@ -154,6 +157,12 @@ impl EpicView {
         let mut lines = vec![self.epic.render()];
         lines.extend(self.tasks.iter().map(|task| format!("  {}", task.render())));
         lines.join("\n")
+    }
+
+    /// [`Self::render`], then a blank line and the epic's body: what `zaf epic show --more` prints,
+    /// so a reader needs no tool of the board's own to read the epic.
+    pub fn render_more(&self) -> String {
+        format!("{}\n\n{}", self.render(), self.body.as_str().trim_end())
     }
 }
 
@@ -169,6 +178,7 @@ pub fn show(board: &dyn Board, id: TicketId) -> Result<EpicView, EpicError> {
     Ok(EpicView {
         epic: EpicLine::from(&epic),
         tasks,
+        body: epic.body,
     })
 }
 

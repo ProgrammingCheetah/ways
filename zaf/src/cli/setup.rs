@@ -147,6 +147,7 @@ pub fn run(cli: &Cli) -> u8 {
             return exit::BACKEND;
         }
     };
+    super::join_the_list(Some(composition.root()), zaf_home.as_deref());
     add_backend_checks(&mut report.doctor, &composition);
     if let Some(profiles) = report
         .profiles

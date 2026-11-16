@@ -8,7 +8,8 @@ use std::time::SystemTime;
 
 use super::PortError;
 use crate::domain::{
-    Epic, Instance, NewTask, Signature, Standing, Ticket, TicketId, TicketState, TicketType,
+    Epic, Instance, NewTask, OpenTicket, Signature, Standing, StandingAt, Ticket, TicketId,
+    TicketState, TicketType,
 };
 
 /// What a claim did.
@@ -154,6 +155,20 @@ pub trait Board {
         }
     }
 
+    /// Where one issue stands as a blocker and when it closed, from the one read
+    /// [`Board::standing`] makes (see [`StandingAt`]): the time the scheduler counts a ticket
+    /// ready from once its last dependency is done.
+    ///
+    /// Interface: `Board::standing_at(number) -> Result<StandingAt, PortError>`.
+    ///
+    /// A board that does not override this answers [`Board::standing`] with no time.
+    fn standing_at(&self, number: TicketId) -> Result<StandingAt, PortError> {
+        Ok(StandingAt {
+            standing: self.standing(number)?,
+            closed_at: None,
+        })
+    }
+
     /// Every open epic, in id order, with its tasks (open and closed, in id order), its body,
     /// its latest signature and whether the challenger's report is on it: everything its
     /// [`stage`](Epic::stage) is derived from.
@@ -219,6 +234,36 @@ pub trait Board {
     /// Tasks labelled `ready`, in issue order.
     fn ready(&self) -> Result<Vec<Ticket>, PortError>;
 
+    /// The open tasks in the state `blocked`, in issue order, each with its body. A closed task is
+    /// not listed, whatever its state. The tick no longer reads it: its label sync reads every
+    /// open task ([`Board::open_tickets`]).
+    ///
+    /// Interface: `Board::blocked() -> Result<Vec<Ticket>, PortError>`.
+    ///
+    /// A board that cannot list them answers [`PortError::Rejected`] unless it overrides this.
+    fn blocked(&self) -> Result<Vec<Ticket>, PortError> {
+        Err(PortError::Rejected(
+            "this board cannot list its blocked tasks".to_owned(),
+        ))
+    }
+
+    /// Every open task that is not done, whatever its state (`ready`, `claimed`, `blocked`,
+    /// `question`, or none), in issue order, each with what [`Board::ready`] gives of it and its
+    /// state: what the scheduler places. A task labelled `done` is not listed though its issue
+    /// stays open, and a closed task is not listed, whatever its state; an epic and a question
+    /// ticket are no tasks. Each comes with what its `priority/<n>` labels say (an unknown or
+    /// doubled one is ignored and says why, never an error) and when its issue opened, as
+    /// [`OpenTicket`].
+    ///
+    /// Interface: `Board::open_tickets() -> Result<Vec<OpenTicket>, PortError>`.
+    ///
+    /// A board that cannot list them answers [`PortError::Rejected`] unless it overrides this.
+    fn open_tickets(&self) -> Result<Vec<OpenTicket>, PortError> {
+        Err(PortError::Rejected(
+            "this board cannot list its open tasks".to_owned(),
+        ))
+    }
+
     /// One ticket by number.
     fn task(&self, number: TicketId) -> Result<Ticket, PortError>;
 
@@ -238,7 +283,9 @@ pub trait Board {
     /// A task the instance does not hold is left as it is and the call succeeds.
     fn release(&self, task: TicketId, instance: &Instance) -> Result<(), PortError>;
 
-    /// Sets a task's state label, replacing the one it had.
+    /// Sets a task's state label, replacing the one it had. `done` also closes the issue, as
+    /// completed, when it is open: a done task then reads as done whichever is read, its label or
+    /// how its issue closed, and an open issue labelled `done` still reads as done.
     fn set_state(&self, task: TicketId, label: TicketState) -> Result<(), PortError>;
 
     /// Adds a comment to an issue.
@@ -250,6 +297,14 @@ pub trait Board {
     /// The open question tickets, in issue order: issues labelled `question` that are not tasks.
     /// A task waiting on a question carries the label too, and is not one.
     fn questions(&self) -> Result<Vec<Ticket>, PortError>;
+
+    /// The open questions raised as doors, the one-way decisions (`zaf board question --door`), in
+    /// issue order; a subset of [`Board::questions`].
+    ///
+    /// A board that cannot tell answers none, which shows every question as a two-way one.
+    fn open_doors(&self) -> Result<Vec<TicketId>, PortError> {
+        Ok(Vec::new())
+    }
 
     /// Every question ticket raised on `task` (see [`NewQuestion::raised_on`]), open or ruled,
     /// oldest first, each with its ruling text when one was recorded.

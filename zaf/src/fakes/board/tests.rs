@@ -113,3 +113,58 @@ fn only_open_question_tickets_are_listed() {
         "add_question labels it"
     );
 }
+
+#[test]
+fn open_tickets_lists_open_tasks_in_any_state_but_done_in_number_order() {
+    let board = FakeBoard::default();
+    for (number, state) in [
+        (5, Some(TicketState::Question)),
+        (2, Some(TicketState::Ready)),
+        (3, Some(TicketState::Blocked)),
+        (4, Some(TicketState::Done)),
+        (6, None),
+        (7, Some(TicketState::Claimed)),
+    ] {
+        board.add_ticket(Ticket {
+            state,
+            ..ticket(number)
+        });
+    }
+    board.close(TicketId::from(7));
+    board.add_epic(TicketId::from(1), "the epic");
+    board.add_question(Ticket {
+        state: None,
+        ..ticket(8)
+    });
+    let listed: Vec<TicketId> = board
+        .open_tickets()
+        .expect("open tickets")
+        .iter()
+        .map(|open| open.ticket.id)
+        .collect();
+    assert_eq!(listed, [2, 3, 5, 6].map(TicketId::from));
+}
+
+#[test]
+fn only_open_blocked_tasks_are_listed_in_number_order() {
+    let board = FakeBoard::default();
+    for (number, state) in [
+        (5, TicketState::Blocked),
+        (2, TicketState::Ready),
+        (3, TicketState::Blocked),
+        (4, TicketState::Blocked),
+    ] {
+        board.add_ticket(Ticket {
+            state: Some(state),
+            ..ticket(number)
+        });
+    }
+    board.close(TicketId::from(4));
+    let listed: Vec<TicketId> = board
+        .blocked()
+        .expect("blocked")
+        .iter()
+        .map(|ticket| ticket.id)
+        .collect();
+    assert_eq!(listed, [TicketId::from(3), TicketId::from(5)]);
+}

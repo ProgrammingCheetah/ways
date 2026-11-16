@@ -36,6 +36,9 @@ const LABEL_IDS: &[(&str, u64)] = &[
     ("type/Bug", 22),
     ("not planned", 31),
     ("group:core", 41),
+    ("priority/1", 51),
+    ("priority/2", 52),
+    ("priority/high", 59),
 ];
 
 fn label_id(name: &str) -> u64 {
@@ -507,6 +510,155 @@ fn ready_lists_open_ready_tasks_in_number_order_with_their_epics() {
             "GET {API}/issues?state=open&type=issues&labels=task,state%2Fready&page=1&limit=50"
         )
     );
+}
+
+#[test]
+fn blocked_lists_open_blocked_tasks_in_number_order_with_their_bodies() {
+    let fake = FakeCurl::new();
+    let listed = json!([
+        issue_with_body(9, &["task", "state/blocked"], "open", "Blocked by: #5"),
+        issue(6, &["task", "state/blocked"], "open"),
+        // What Forgejo lists when a filter label is missing from the repository.
+        issue(7, &["task", "state/ready"], "open"),
+    ]);
+    fake.on(
+        &format!("GET {API}/issues?state=open&type=issues&labels=*"),
+        200,
+        &listed,
+    );
+    blocks(&fake, 6, Some(1));
+    blocks(&fake, 9, Some(1));
+    let tickets = fake.board().blocked().expect("blocked");
+    let numbers: Vec<TicketId> = tickets.iter().map(|ticket| ticket.id).collect();
+    assert_eq!(numbers, [TicketId::from(6), TicketId::from(9)]);
+    assert_eq!(tickets[1].state, Some(TicketState::Blocked));
+    assert_eq!(tickets[1].body.as_str(), "Blocked by: #5");
+    assert_eq!(tickets[1].epic, Some(TicketId::from(1)));
+    assert_eq!(
+        fake.asked()[0],
+        format!(
+            "GET {API}/issues?state=open&type=issues&labels=task,state%2Fblocked&page=1&limit=50"
+        )
+    );
+}
+
+#[test]
+fn open_tickets_lists_every_open_task_but_a_done_one_in_number_order_with_its_epic() {
+    let fake = FakeCurl::new();
+    let listed = json!([
+        issue(9, &["task", "state/question"], "open"),
+        issue_with_body(6, &["task", "state/blocked"], "open", "Blocked by: #5"),
+        issue(4, &["task", "state/done"], "open"),
+        issue(5, &["task"], "open"),
+        // What Forgejo lists when the filter label is missing from the repository.
+        issue(8, &["question"], "open"),
+    ]);
+    fake.on(
+        &format!("GET {API}/issues?state=open&type=issues&labels=*"),
+        200,
+        &listed,
+    );
+    for number in [5, 6, 9] {
+        blocks(&fake, number, Some(1));
+    }
+    let tickets =
+        crate::domain::OpenTicket::tickets(fake.board().open_tickets().expect("open tickets"));
+    let read: Vec<(u64, Option<TicketState>)> = tickets
+        .iter()
+        .map(|ticket| (ticket.id.get(), ticket.state))
+        .collect();
+    assert_eq!(
+        read,
+        [
+            (5, None),
+            (6, Some(TicketState::Blocked)),
+            (9, Some(TicketState::Question)),
+        ]
+    );
+    assert_eq!(tickets[1].body.as_str(), "Blocked by: #5");
+    assert!(
+        tickets
+            .iter()
+            .all(|ticket| ticket.epic == Some(TicketId::from(1)))
+    );
+    let asked = fake.asked();
+    assert_eq!(
+        asked[0],
+        format!("GET {API}/issues?state=open&type=issues&labels=task&page=1&limit=50")
+    );
+    // The list, then each task's epic as `ready` reads it; none for the done one.
+    assert_eq!(asked.len(), 4, "{asked:?}");
+}
+
+#[test]
+fn open_tickets_reads_the_priority_label_and_when_each_opened() {
+    let fake = FakeCurl::new();
+    let mut first = issue(3, &["task", "priority/1"], "open");
+    first["created_at"] = json!("2026-11-12T03:00:00-07:00");
+    let listed = json!([
+        first,
+        issue(5, &["task", "priority/high"], "open"),
+        issue(6, &["task", "priority/1", "priority/2"], "open"),
+        issue(7, &["task"], "open"),
+    ]);
+    fake.on(
+        &format!("GET {API}/issues?state=open&type=issues&labels=*"),
+        200,
+        &listed,
+    );
+    for number in [3, 5, 6, 7] {
+        blocks(&fake, number, Some(1));
+    }
+    let open = fake.board().open_tickets().expect("open tickets");
+    let read: Vec<(u64, Result<Option<u8>, String>)> = open
+        .iter()
+        .map(|open| {
+            (
+                open.ticket.id.get(),
+                open.priority
+                    .clone()
+                    .map(|priority| priority.map(crate::domain::schedule::Priority::level))
+                    .map_err(|ignored| ignored.to_string()),
+            )
+        })
+        .collect();
+    assert_eq!(
+        read,
+        [
+            (3, Ok(Some(1))),
+            (
+                5,
+                Err(
+                    "the label `priority/high` is not priority/1, priority/2 or priority/3"
+                        .to_owned()
+                )
+            ),
+            (
+                6,
+                Err("it carries more than one priority label (priority/1, priority/2)".to_owned())
+            ),
+            (7, Ok(None)),
+        ]
+    );
+    assert_eq!(open[0].opened_at, Some(at(1_794_477_600)));
+    assert_eq!(open[1].opened_at, None);
+}
+
+#[test]
+fn a_closed_issue_says_when_it_closed() {
+    let fake = FakeCurl::new();
+    let mut closed = issue(8, &["task", "state/done"], "closed");
+    closed["closed_at"] = json!("2026-11-12T10:00:00Z");
+    fake.on(&format!("GET {API}/issues/8"), 200, &closed);
+    let mut open = issue(3, &["task"], "open");
+    open["closed_at"] = json!("2026-11-12T10:00:00Z");
+    fake.on(&format!("GET {API}/issues/3"), 200, &open);
+    let board = fake.board();
+    let done = board.standing_at(TicketId::from(8)).expect("reads");
+    assert_eq!(done.standing, crate::domain::Standing::Done);
+    assert_eq!(done.closed_at, Some(at(1_794_477_600)));
+    let reopened = board.standing_at(TicketId::from(3)).expect("reads");
+    assert_eq!(reopened.closed_at, None, "an open issue has no close time");
 }
 
 #[test]

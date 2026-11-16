@@ -47,6 +47,7 @@ fn outcome(result: RunResult, exit: u8, meaning: Option<&str>) -> RunOutcome {
         log: Some(PathBuf::from(
             "/proj/.zaf/logs/20261105T101500Z_nodes-check.log",
         )),
+        on_terminal: false,
     }
 }
 

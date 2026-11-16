@@ -1,6 +1,6 @@
 #!/bin/sh
-# zaf description: publish a task's slice: `commit` what is left (skipped when nothing is), `push`, then `pr-open` titled `<title> (#<task>)`, handing back the pull request number
-# zaf 1: refused: the arguments are not <task>, or a step refused (the slice is not open, the remote has work the slice lacks, or the forge refused)
+# zaf description: publish a task's slice: `commit` what is left (skipped when nothing is), refuse a slice with no change against its base, `push`, then `pr-open` titled `<title> (#<task>)`, handing back the pull request number
+# zaf 1: refused: the arguments are not <task>, nothing to publish (the slice has no change against its base, or still holds a conflict a `sync-base` merge left, so nothing is pushed and no pull request opened), or a step refused (the slice is not open, the remote has work the slice lacks, or the forge refused)
 # zaf 2: a backend failed (jj or gh is missing or refused)
 # zaf mode: 750
 # zaf group: team, release, implement, fix
@@ -24,11 +24,33 @@ esac
 title="$ZAF_TASK_TITLE (#$task)"
 dir=$ZAF_ROOT/.zaf/workspaces/$ZAF_SLICE
 
+# A merge `sync-base` left with conflicts is published only once they are resolved: the forge
+# would get conflict markers, and jj refuses to push them anyway. The paths say where.
+conflicted=$(cd "$dir" && jj --no-pager --color=never log --no-graph \
+    -r "(bookmarks(exact:\"$ZAF_BASE\")..@) & conflicts()" -T 'commit_id ++ "\n"') || exit 2
+if [ -n "$conflicted" ]; then
+    echo "nothing to publish: $ZAF_SLICE still has conflicts; resolve them first:" >&2
+    (cd "$dir" && jj --no-pager --color=never resolve --list \
+        -r "latest((bookmarks(exact:\"$ZAF_BASE\")..@) & conflicts())") >&2
+    exit 1
+fi
+
 # What is left is the working copy's own change: jj snapshots the files on disk first. `commit`
 # refuses an empty one, so an empty one is skipped here rather than told from a real refusal.
 empty=$(cd "$dir" && jj --no-pager --color=never log --no-graph -r @ -T empty) || exit 2
 if [ "$empty" != "true" ]; then
     zaf do commit "$ZAF_SLICE" "$title" || exit $?
+fi
+
+# A slice that changes nothing against its base has nothing to publish: an empty pull request would
+# read as work done. Its own commits are those reachable from the working copy and not from the
+# base, so a base that moved on since the slice opened does not count as a change; a commit that
+# changes no file (an empty one, a clean merge) is none either.
+changed=$(cd "$dir" && jj --no-pager --color=never log --no-graph \
+    -r "(bookmarks(exact:\"$ZAF_BASE\")..@) ~ empty()" -T 'commit_id ++ "\n"') || exit 2
+if [ -z "$changed" ]; then
+    echo "nothing to publish: $ZAF_SLICE has no change against $ZAF_BASE" >&2
+    exit 1
 fi
 
 zaf do push "$ZAF_SLICE" || exit $?

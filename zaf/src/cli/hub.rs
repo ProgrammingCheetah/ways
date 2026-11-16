@@ -17,15 +17,23 @@ use std::time::{Duration, SystemTime};
 use super::exit::{self, BACKEND, OK, REFUSED};
 use super::{Cli, HubAction, Verb};
 use crate::adapters::process;
+use crate::app::actions::SliceRecords;
 use crate::app::check::Target;
 use crate::app::guard;
+use crate::app::hub::guard::Guard;
+use crate::app::hub::link as hub_link;
+use crate::app::hub::lock::{HubLock, LockError, claim};
 use crate::app::hub::{
-    HubError, HubInputs, Mark, PROGRAMMER, Report, TEAM, ToolCall, Watch, draw, gather,
-    lan_address, record, task_in_workspace,
+    HubError, HubInputs, Liveness, Mark, PROGRAMMER, Places, Report, Snapshot, TEAM, ToolCall,
+    Watch, Watched, draw, gather, lan_address, lan_url, record, task_in_workspace,
 };
+use crate::app::projects::Projects;
 use crate::app::report::PriceTable;
 use crate::app::report::ledger::{LEDGER_FILE, Ledger, LedgerRow};
-use crate::app::{actions::SliceRecords, spawn};
+use crate::app::schedule::gather::gather_for;
+use crate::app::schedule::request;
+use crate::app::schedule::shadow;
+use crate::app::spawn::watch::Watches;
 use crate::composition::{Composition, zaf_home};
 use crate::domain::TicketId;
 
@@ -41,12 +49,17 @@ const POLL: Duration = Duration::from_millis(250);
 const DEFAULT_WIDTH: usize = 100;
 
 mod dashboard;
+mod service;
+pub mod tick;
+pub mod watch;
 
-/// Runs `zaf hub`, `zaf hub --port <n>` or `zaf hub report`.
-pub fn run(cli: &Cli, action: Option<&HubAction>, port: Option<u16>) -> u8 {
+/// Runs `zaf hub`, `zaf hub --port <n>`, `zaf hub report` or `zaf hub service …`.
+pub fn run(cli: &Cli, action: Option<&HubAction>, port: Option<u16>, read_only: bool) -> u8 {
     match action {
         Some(HubAction::Report) => hook(),
-        None => show(cli, port),
+        Some(HubAction::Link) => link(&cli.verb.path()),
+        Some(HubAction::Service { action }) => service::run(action, &cli.verb.path()),
+        None => show(cli, port, read_only),
     }
 }
 
@@ -96,6 +109,32 @@ pub fn leave_tool_report(payload: &str, here: Option<&Path>, home: Option<&Path>
             what: call.word().to_owned(),
         },
     );
+}
+
+// The link.
+
+/// `zaf hub link`: asks the running hub for its control link and prints it. Inside an instance, with
+/// no hub running, or with a hub that gives none, it prints no key and exits 1.
+fn link(path: &str) -> u8 {
+    let Some(home) = zaf_home() else {
+        eprintln!("zaf {path}: this machine has no zaf home, so no hub runs");
+        return REFUSED;
+    };
+    let me = hub_link::judge_over(home.clone())(std::process::id());
+    match hub_link::fetch(&home, &me) {
+        Ok(link) => {
+            println!("{link}");
+            OK
+        }
+        Err(error @ hub_link::LinkError::Io(_)) => {
+            eprintln!("zaf {path}: {error}");
+            BACKEND
+        }
+        Err(error) => {
+            eprintln!("zaf {path}: {error}");
+            REFUSED
+        }
+    }
 }
 
 // The reports the verbs leave.
@@ -190,7 +229,11 @@ fn worker_of(instance: Option<&str>) -> String {
 }
 
 /// Leaves the report for `verb`, which exited with `code`, in the state folder; true when it left
-/// one. A failure to write is dropped.
+/// one. A failure to write is dropped. The same event asks the scheduler that runs for the project
+/// for a tick ([`asker_of`]), so what it changed is acted on at once; with no scheduler nothing is
+/// asked. A request that cannot be written is one line on stderr, `zaf <verb>: the running
+/// scheduler (…) was not asked for a tick for <who>: <why>; its timer picks the change up at its
+/// next tick`: what the verb did stands, and its exit is its own.
 pub fn leave_report_in(
     state_dir: &Path,
     verb: &Verb,
@@ -210,7 +253,28 @@ pub fn leave_report_in(
             what: event.what.to_owned(),
         },
     );
+    let who = asker_of(verb, &event);
+    if let Err(not_asked) = request::ask(state_dir, &who, now, &process::alive) {
+        eprintln!("zaf {}: {}", verb.path(), not_asked.left_to_the_timer(&who));
+    }
     true
+}
+
+/// Who an event's request for a tick names: `ruling #45`, `question on #7`, else what happened and
+/// the task, `claimed #7`.
+pub fn asker_of(verb: &Verb, event: &Event) -> String {
+    match verb {
+        Verb::Board {
+            action: super::BoardAction::Ruling { question, .. },
+        } => format!("ruling {question}"),
+        Verb::Board {
+            action: super::BoardAction::Question { on, .. },
+        } => format!("question on {on}"),
+        _ => match event.task {
+            Some(task) => format!("{} {task}", event.what),
+            None => event.what.to_owned(),
+        },
+    }
 }
 
 /// Called once a verb has run, with its exit code. Outside a project there is nowhere to report.
@@ -254,7 +318,25 @@ pub fn serve<G, W>(
     pace: Option<&mut dyn Pace>,
 ) -> Result<(), String>
 where
-    G: FnMut(SystemTime) -> Result<crate::app::hub::Snapshot, HubError>,
+    G: FnMut(SystemTime) -> Result<Snapshot, HubError>,
+    W: Write,
+{
+    serve_live(out, gather, |_| Ok(()), state_dir, width, pace)
+}
+
+/// [`serve`], with `live` bringing the snapshot's slots and claims up to the process table before
+/// each redraw that is not a report's, so an instance that ended is not drawn as running.
+pub fn serve_live<G, L, W>(
+    out: &mut W,
+    gather: G,
+    live: L,
+    state_dir: &Path,
+    width: usize,
+    pace: Option<&mut dyn Pace>,
+) -> Result<(), String>
+where
+    G: FnMut(SystemTime) -> Result<Snapshot, HubError>,
+    L: FnMut(&mut Snapshot) -> Result<(), HubError>,
     W: Write,
 {
     let io = |error: std::io::Error| error.to_string();
@@ -267,7 +349,7 @@ where
             .map_err(io)?;
         return out.flush().map_err(io);
     };
-    let (mut watch, frame) = Watch::start(gather, pace.now(), Mark::read(state_dir), width)
+    let (mut watch, frame) = Watch::start(gather, live, pace.now(), Mark::read(state_dir), width)
         .map_err(|error| error.to_string())?;
     paint(out, &frame).map_err(io)?;
     while pace.wait() {
@@ -288,12 +370,52 @@ fn paint(out: &mut impl Write, frame: &str) -> std::io::Result<()> {
 }
 
 /// `zaf hub`, or `zaf hub --port <n>` to serve the frame as a page.
-fn show(cli: &Cli, port: Option<u16>) -> u8 {
+fn show(cli: &Cli, port: Option<u16>, read_only: bool) -> u8 {
     let path = cli.verb.path();
-    // The port is taken first: one in use is refused before anything is read.
+    let home = zaf_home();
+    // A hub already serving on this machine is named before the port is tried, since its port
+    // would only say "in use". The terminal frame has no port and asks nothing of the lock.
+    if let (Some(home), Some(_)) = (home.as_deref(), port)
+        && let Some(first) = HubLock::held(home, &process::alive)
+    {
+        refuse_second(&path, &first);
+        return REFUSED;
+    }
+    // The port is taken next: one in use is refused before anything is read.
     let dashboard = match port.map(|port| dashboard::bind(port, &path)).transpose() {
         Ok(dashboard) => dashboard,
         Err(code) => return code,
+    };
+    // The key is made once the page is to be served, before anything is read or served: a hub that
+    // cannot get one from the system serves no controls, and so does not start.
+    let guard = match dashboard
+        .as_ref()
+        .map(|_| Guard::start(read_only))
+        .transpose()
+    {
+        Ok(guard) => guard,
+        Err(error) => {
+            eprintln!(
+                "zaf {path}: cannot make the hub's key from the system's random source: {error}"
+            );
+            return BACKEND;
+        }
+    };
+    // The lock names the port the socket got, which is a free one for port 0. It is given up
+    // when the hub ends; a hub that is killed leaves a stale one, which the next start takes over.
+    let lock = match take_lock(
+        home.as_deref(),
+        dashboard.as_ref().map(crate::app::hub::Dashboard::port),
+    ) {
+        Ok(lock) => lock,
+        Err(LockError::Held(first)) => {
+            refuse_second(&path, &first);
+            return REFUSED;
+        }
+        Err(error) => {
+            eprintln!("zaf {path}: {error}");
+            return BACKEND;
+        }
     };
     let composition = match Composition::discover_here() {
         Ok(composition) => composition,
@@ -325,17 +447,32 @@ fn show(cli: &Cli, port: Option<u16>) -> u8 {
         .unwrap_or_default();
     let project = composition.manifest().project.name.to_string();
     let slots_total = composition.manifest().spawn.slots;
+    let refresh = |snapshot: &mut Snapshot| {
+        let read = Liveness::read(&state_dir, slots_total, &snapshot.claims, &process::alive)?;
+        snapshot.apply(&read);
+        Ok(())
+    };
     let gatherer = |now: SystemTime| {
-        let running =
-            spawn::derive(&state_dir, &process::alive).map_or(0, |(state, _)| state.running());
         let ledger = ledger_rows(&composition);
+        // Where the core places each ticket, as the tick gathers them; a gather that fails leaves
+        // the labels' word.
+        let places: Option<Places> =
+            gather_for(&composition, board.as_ref())
+                .ok()
+                .flatten()
+                .map(|gathered| {
+                    shadow::places(&gathered, now)
+                        .into_iter()
+                        .map(|placed| (placed.ticket, placed.place))
+                        .collect()
+                });
         gather(&HubInputs {
             board: board.as_ref(),
             forge: forge.as_ref(),
             vcs: vcs.as_ref(),
             records: &records,
             state_dir: &state_dir,
-            slots_free: slots_total.saturating_sub(u32::try_from(running).unwrap_or(u32::MAX)),
+            alive: &process::alive,
             slots_total,
             ledger: &ledger,
             project: &project,
@@ -343,28 +480,71 @@ fn show(cli: &Cli, port: Option<u16>) -> u8 {
             prices: &prices,
             models: &models,
             now,
+            places: places.as_ref(),
         })
     };
     let mut out = std::io::stdout().lock();
     let live = out.is_terminal();
-    let outcome = if let Some(dashboard) = dashboard {
-        dashboard::serve(
+    // The watches the page starts: they end with this value, which lives as long as the hub runs.
+    let watches = Watches::new();
+    let outcome = if let (Some(dashboard), Some(guard)) = (dashboard, guard) {
+        // Only a terminal is handed the key. A hub started by the service, or with its output
+        // piped, writes to a journal or a file, which must never hold it.
+        let serving = dashboard::Serving {
+            address: lan_address(),
+            guard,
+            controls: dashboard::controls(home.clone(), watches.handle()),
+            show_link: live,
+            // Only a hub that holds the lock answers `zaf hub link`: the socket is the lock's.
+            link_home: lock.as_ref().and(home.clone()),
+        };
+        // Every listed project, and this one even when the list does not have it yet.
+        let mut listed = || {
+            let mut folders: Vec<std::path::PathBuf> = home
+                .as_deref()
+                .map(Projects::read)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|entry| !entry.missing)
+                .map(|entry| entry.folder)
+                .collect();
+            if !folders.iter().any(|folder| folder == composition.root()) {
+                folders.push(composition.root().to_owned());
+            }
+            folders.iter().map(|folder| Watched::of(folder)).collect()
+        };
+        dashboard::serve_watching(
             &mut out,
             dashboard,
-            lan_address(),
+            serving,
+            dashboard::machine_reader(home.clone()),
             gatherer,
             &state_dir,
             &mut dashboard::Forever,
+            &mut listed,
+            &process::alive,
         )
     } else if live {
         let mut terminal = Terminal::enter();
         let width = terminal.width();
-        let outcome = serve(&mut out, gatherer, &state_dir, width, Some(&mut terminal));
+        let outcome = serve_live(
+            &mut out,
+            gatherer,
+            refresh,
+            &state_dir,
+            width,
+            Some(&mut terminal),
+        );
         drop(terminal);
         outcome
     } else {
         serve(&mut out, gatherer, &state_dir, DEFAULT_WIDTH, None)
     };
+    // Every watch ends before the hub gives up its own lock.
+    drop(watches);
+    if let (Some(lock), Some(home)) = (&lock, home.as_deref()) {
+        lock.release(home);
+    }
     match outcome {
         Ok(()) => OK,
         Err(message) => {
@@ -372,6 +552,24 @@ fn show(cli: &Cli, port: Option<u16>) -> u8 {
             BACKEND
         }
     }
+}
+
+/// The lock for a served hub on `port`; none for the terminal frame, and none where there is
+/// no zaf home or no way to read this process, which leaves the hub unlocked as before.
+fn take_lock(home: Option<&Path>, port: Option<u16>) -> Result<Option<HubLock>, LockError> {
+    let (Some(home), Some(me)) = (home, process::this()) else {
+        return Ok(None);
+    };
+    claim(home, port, &me, &process::alive)
+}
+
+/// Says where the hub that already serves is, on stderr.
+fn refuse_second(path: &str, first: &HubLock) {
+    eprintln!(
+        "zaf {path}: a hub is already serving at {} (pid {})",
+        lan_url(lan_address(), first.port),
+        first.pid
+    );
 }
 
 /// This machine's ledger, brought up to date from the project's transcripts. A ledger that

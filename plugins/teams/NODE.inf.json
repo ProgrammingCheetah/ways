@@ -31,7 +31,7 @@
     },
     {
       "name": "actions/",
-      "role": "the 17 standard actions a project copies into its `.zaf/actions/`, taken from ways' own",
+      "role": "the 20 standard actions a project copies into its `.zaf/actions/`, taken from ways' own; `design` and `review-epic` start the Designer; `merge` names `fix` as its on-fail for a base that conflicts, and `sync-base` is the programmer's way to bring the base in",
       "node": false
     },
     {

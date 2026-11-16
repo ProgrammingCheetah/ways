@@ -7,6 +7,11 @@
 //! is removed rather than left to whatever the caller put there. The slice and the title come from
 //! the board and the branch patterns through [`crate::app::slice::resolve`], the pull request from
 //! the record `slice-pr` left ([`SliceRecords`]). A board that cannot answer starts nothing.
+//!
+//! `ZAF_VERSION` is the caller's, passed through, but when the run has a version
+//! ([`SliceContext::version`]) the body's `ZAF_VERSION` is that one, so a `zaf do` in the body
+//! names the same slice as the run did. A tick hands its own `--version` that way, whatever its
+//! environment holds; a run with no version leaves the caller's value as it was.
 
 use std::fmt;
 use std::process::Command;
@@ -17,6 +22,10 @@ use crate::app::slice::{SliceQuery, resolve};
 use crate::domain::TicketId;
 use crate::manifest::BranchesSection;
 use crate::ports::{Board, Forge, Vcs};
+
+/// The release the branches build toward, for branch patterns and `[env]` values that hold
+/// `{version}`.
+pub const VERSION_VAR: &str = "ZAF_VERSION";
 
 /// The integration branch, from `ZAF_VERSION` and the branch pattern.
 pub const BASE_VAR: &str = "ZAF_BASE";
@@ -50,7 +59,8 @@ pub struct SliceContext<'a> {
     pub vcs: Result<&'a dyn Vcs, String>,
     /// The manifest's `[branches]`.
     pub branches: &'a BranchesSection,
-    /// `ZAF_VERSION`: the release the branches build toward; `None` when unset or blank.
+    /// The release the branches build toward: the caller's `ZAF_VERSION`, or the tick's own
+    /// `--version`; `None` when unset or blank. The body gets it as `ZAF_VERSION`.
     pub version: Option<&'a str>,
 }
 
@@ -76,7 +86,8 @@ impl fmt::Debug for SliceContext<'_> {
     }
 }
 
-/// What a run sets last: each variable with its value, or `None` for one that is removed.
+/// What a run sets last: each variable with its value, or `None` for one that is removed. A
+/// variable not listed is left as the caller had it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SliceEnv(Vec<(&'static str, Option<String>)>);
 
@@ -86,7 +97,12 @@ impl SliceEnv {
     /// start, in the words of its `NOT_RUN` line.
     pub(super) fn for_run(request: &RunRequest<'_>, target_task: bool) -> Result<Self, String> {
         let context = request.slice.as_ref();
-        let mut vars = Vec::with_capacity(1 + TASK_VARS.len());
+        let mut vars = Vec::with_capacity(2 + TASK_VARS.len());
+        // The version the run names its branches by, for the `zaf do` calls of its body. With
+        // none, the caller's `ZAF_VERSION` is not listed, so it stays as it was.
+        if let Some(version) = context.and_then(|context| context.version) {
+            vars.push((VERSION_VAR, Some(version.to_owned())));
+        }
         if !target_task {
             vars.push((BASE_VAR, base_of(context)));
             vars.extend(TASK_VARS.map(|var| (var, None)));
@@ -109,9 +125,14 @@ impl SliceEnv {
         };
         let target = resolve(*board, context.branches, &query)
             .map_err(|error| format!("cannot name the slice of {task}: {error}"))?;
-        let pr = request
-            .project_root
-            .and_then(|root| SliceRecords::new(root).pr(task));
+        // A pull request record that cannot be read stops the body: with `ZAF_PR` unset it would
+        // act as if the task had none, and open a second.
+        let pr = match request.project_root {
+            Some(root) => SliceRecords::new(root)
+                .pr(task)
+                .map_err(|error| format!("cannot read {task}'s pull request record: {error}"))?,
+            None => None,
+        };
         vars.push((BASE_VAR, Some(target.base.as_ref().to_owned())));
         vars.push((SLICE_VAR, Some(target.slice.as_ref().to_owned())));
         vars.push((PR_VAR, pr.map(|pr| pr.get().to_string())));

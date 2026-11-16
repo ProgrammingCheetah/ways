@@ -4,7 +4,7 @@
 //! Every tick ends here, idle ones too. The hook gets the tick's [`TickOutcome`] as one JSON
 //! object on stdin, [`input`]:
 //!
-//! `{"started": {"task": <n>, "action": "<name>", "units": <u>} | null, "waits": [{"task": <n>, "action": "<name>"}], "ran": [{"task": <n>, "action": "<name>", "exit": <code>}], "questions": [<n>], "idle": <bool>}`
+//! `{"started": {"task": <n>, "action": "<name>", "units": <u>} | null, "waits": [{"task": <n>, "action": "<name>"}], "ran": [{"task": <n>, "action": "<name>", "exit": <code>}], "questions": [<n>], "asked": [{"task": <n>, "question": <n>, "cause": "<why>"}], "idle": <bool>}`
 //!
 //! There is no exit code of the model, because the tick never waits for it. A hook that fails is
 //! reported through `log` and changes nothing: [`run`] gives back nothing for the tick to act on,

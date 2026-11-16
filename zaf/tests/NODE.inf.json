@@ -42,7 +42,7 @@
     },
     {
       "name": "common/",
-      "role": "shared Project harness, jj helper, the fake curl scene (Curl) and path_with_zaf, which puts the built zaf on PATH for actions that call zaf",
+      "role": "shared Project harness (command_of runs a copy of the binary), jj helper, the fake curl scene (Curl), path_with_zaf, which puts the built zaf on PATH for actions that call zaf, Running, a long-lived zaf whose output is gathered as it comes, killed when dropped, and scheduler_up, the scheduler lock held by the test's own process",
       "node": false
     },
     {
@@ -57,7 +57,22 @@
     },
     {
       "name": "spawn_phase.rs",
-      "role": "spawn phase: the caller does not wait, the run sees ZAF_RUN, ZAF_SIZE and ZAF_INSTANCE, a non-current or running phase is refused, a started phase reads Running",
+      "role": "spawn phase: the caller does not wait, the run sees ZAF_RUN, ZAF_SIZE and ZAF_INSTANCE, a non-current or running phase is refused, a started phase reads Running, two starts never go one over the slots; the launcher records the head the phase left (empty with no pull request, none when unreadable) before the exit, a question asked inside the run is recorded in it, and the phase's end asks the running scheduler for a tick, or ticks itself with none",
+      "node": false
+    },
+    {
+      "name": "spawn_placement.rs",
+      "role": "the JSON dry run's `placement`: each open ticket with a phase list placed by the core (in the lane, waiting on a dependency); the plain-text dry run unchanged and reading nothing for it",
+      "node": false
+    },
+    {
+      "name": "spawn_trace.rs",
+      "role": "the trace: a real tick appends where every ticket sits and prints each move and a count (--more every ticket), a dry run writes none, lines past 14 days are dropped, an unwritable trace warns and the tick succeeds, a tick that cannot gather leaves an error line, and a scheduler's tick that cannot read the facts keeps its last placement and starts nothing; `zaf spawn trace` oldest first, one ticket, --since, no file exits 0",
+      "node": false
+    },
+    {
+      "name": "spawn_watch.rs",
+      "role": "the scheduler (`spawn --watch`): ticks at once and when asked, never on the timer here; one lock, a second scheduler named and refused, a dead one's line taken over; `--once` and the verbs ask it, and a ruling or a signature that cannot ask still stands and says so; a new binary restarted into as the same pid, one that does not run named and kept out; SIGINT and SIGTERM end it after its tick with the lock released",
       "node": false
     },
     {

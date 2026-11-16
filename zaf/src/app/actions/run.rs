@@ -5,6 +5,11 @@
 //! past its time bound is killed with all its children, nested runs included. What comes back
 //! says whether the body ran: [`RunResult::NotRun`] and exit 125 mean it never did, so a caller
 //! never reads a refusal as a declared code.
+//!
+//! An action that declares `terminal: yes` keeps the caller's terminal instead ([`StdioPlan`]):
+//! its stdin, stdout and stderr are zaf's, it stays in zaf's process group so the terminal lets it
+//! read, its log holds one line saying so, and only a bound it declares itself applies. It runs
+//! only when the caller has a terminal ([`Terminal`]), never as a hook.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -72,6 +77,12 @@ const LOGS_DIR: &str = "logs";
 /// How often the run looks at the child.
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
+/// Why a `terminal: yes` action does not run for a caller with no terminal.
+pub const NO_TERMINAL: &str = "it needs a terminal, and this run has none";
+
+/// Why a `terminal: yes` file does not run as a hook.
+pub const HOOK_HAS_NO_TERMINAL: &str = "it needs a terminal, and a hook runs with no one there";
+
 /// How many times a start is tried while the file is held open for writing.
 const BUSY_TRIES: u32 = 5;
 
@@ -88,6 +99,68 @@ pub enum RunResult {
     Fail,
     /// The body never ran.
     NotRun,
+}
+
+/// Whether the caller has a terminal: zaf's own stdin and stdout are both one. The CLI tells it, so
+/// a test can say either without a real terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Terminal {
+    /// zaf's stdin and stdout are a terminal: someone may be there to answer.
+    Present,
+    /// One of them is not, as in a model's shell, a pipe or a detached launch: no one can answer.
+    Absent,
+}
+
+/// What a run is for: the file is found by its own rules, and only an action may take the
+/// terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunsAs {
+    /// An action a caller named.
+    Action,
+    /// A hook, run on its event with no one there.
+    Hook,
+}
+
+/// Where a body's stdin, stdout and stderr go, and what follows from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StdioPlan {
+    /// The log takes stdout and stderr and stdin is empty, or holds what a hook is told. The body
+    /// leads a process group of its own, so a kill takes all it started, and the manifest's bound
+    /// applies when the file declares none.
+    Logged,
+    /// The body keeps zaf's stdin, stdout and stderr and stays in zaf's process group, the one the
+    /// terminal lets read. Its log holds one line saying it ran here, and only a bound the file
+    /// declares applies: a person at the terminal takes the time they take.
+    OnTerminal,
+}
+
+impl StdioPlan {
+    /// The minutes the run may take, none for no bound: what the file declares, else the
+    /// manifest's `default` for a logged run, else none.
+    pub fn time_bound(self, declared: Option<u64>, default: u64) -> Option<u64> {
+        match self {
+            Self::Logged => Some(declared.unwrap_or(default)),
+            Self::OnTerminal => declared,
+        }
+    }
+}
+
+/// The plan for a body whose file declares `metadata`, run as `runs_as` for a caller with or
+/// without a terminal. A file without `terminal: yes` is logged; one with it is on the terminal, or refused
+/// with the words of the `NOT_RUN` line when the run is a hook or the caller has no terminal.
+pub fn stdio_plan(
+    metadata: &ActionMetadata,
+    runs_as: RunsAs,
+    terminal: Terminal,
+) -> Result<StdioPlan, &'static str> {
+    if !metadata.terminal {
+        return Ok(StdioPlan::Logged);
+    }
+    match (runs_as, terminal) {
+        (RunsAs::Hook, _) => Err(HOOK_HAS_NO_TERMINAL),
+        (RunsAs::Action, Terminal::Absent) => Err(NO_TERMINAL),
+        (RunsAs::Action, Terminal::Present) => Ok(StdioPlan::OnTerminal),
+    }
 }
 
 /// Where a call sits among the calls above it.
@@ -206,6 +279,33 @@ pub struct RunRequest<'a> {
     /// The manifest's `[env]` with its placeholders filled: set on the body on top of the
     /// inherited environment, a name here replacing an inherited one. Empty outside a project.
     pub env: BTreeMap<String, String>,
+    /// Whether the caller has a terminal: a `terminal: yes` action runs only when it does.
+    pub terminal: Terminal,
+    /// The phase run folder the run is a step of, set on the body as `ZAF_RUN` so a question it
+    /// raises is recorded in that run, and who is told the body's process once it has started;
+    /// `None` keeps whatever the caller's environment holds.
+    pub run: Option<RunStep<'a>>,
+}
+
+/// The phase run folder a run is a step of (the tick's inline run of a `zaf`-kind action), and who
+/// is told the body's process id as soon as the body has started, before the run waits on it: the
+/// tick records it, so the run reads as running while its body lives, whatever becomes of the
+/// tick.
+#[derive(Clone, Copy)]
+pub struct RunStep<'a> {
+    /// The run folder, set on the body as `ZAF_RUN`.
+    pub dir: &'a Path,
+    /// Told the body's process id once it has started.
+    pub started: &'a dyn Fn(u32),
+}
+
+impl std::fmt::Debug for RunStep<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RunStep")
+            .field("dir", &self.dir)
+            .finish_non_exhaustive()
+    }
 }
 
 /// One minute of a time bound.
@@ -229,6 +329,9 @@ pub struct RunOutcome {
     pub seconds: f64,
     /// The log; `None` for a body that never ran.
     pub log: Option<PathBuf>,
+    /// Whether the body ran on the terminal: what it wrote went there and never to the log, so a
+    /// `FAIL` quotes no lines of it.
+    pub on_terminal: bool,
 }
 
 impl RunOutcome {
@@ -242,6 +345,7 @@ impl RunOutcome {
             meaning: Some(reason),
             seconds: 0.0,
             log: None,
+            on_terminal: false,
         }
     }
 
@@ -284,6 +388,8 @@ pub struct ListedAction {
     pub description: String,
     /// Its declared kind; none for a file without valid metadata or without a `kind`.
     pub kind: Option<ActionKind>,
+    /// Whether it declares `terminal: yes`; false for a file without valid metadata.
+    pub terminal: bool,
 }
 
 /// The file a name resolves to; outside a project only the machine's tier exists. With `only`,
@@ -332,6 +438,7 @@ pub fn list_actions(
             let metadata = read_metadata(&found.path);
             may_read(caller, &metadata).then(|| ListedAction {
                 kind: metadata.as_ref().ok().and_then(|metadata| metadata.kind),
+                terminal: metadata.as_ref().is_ok_and(|metadata| metadata.terminal),
                 description: metadata.map_or_else(
                     |reason| format!("invalid metadata: {reason}"),
                     |metadata| metadata.description,
@@ -372,7 +479,10 @@ pub fn read_action(
 pub fn run_action(request: &RunRequest<'_>) -> RunOutcome {
     forget_records(
         request,
-        keep_hand_back(request, run_body(request, find_action_of, None)),
+        keep_hand_back(
+            request,
+            run_body(request, find_action_of, RunsAs::Action, None),
+        ),
     )
 }
 
@@ -380,7 +490,8 @@ pub fn run_action(request: &RunRequest<'_>) -> RunOutcome {
 /// project's file, else the machine's, under the modes, the log and the time bound of an action,
 /// with no slice and no phase. The one way a hook runs, since `zaf do` refuses its name. The log
 /// ends with a line that holds the exit code, so the log alone says how the hook ended. A hook
-/// leaves no slice record to keep or forget.
+/// leaves no slice record to keep or forget, and a file that declares `terminal: yes` is refused,
+/// whatever `request.terminal` says: a hook runs with no one there.
 pub fn run_hook(request: &RunRequest<'_>) -> RunOutcome {
     run_hook_with_input(request, None)
 }
@@ -388,7 +499,7 @@ pub fn run_hook(request: &RunRequest<'_>) -> RunOutcome {
 /// [`run_hook`] with `input` on the hook's stdin, for a hook that is told something (`post-phase`
 /// gets the phase's outcome). A hook that does not read it is no error.
 pub fn run_hook_with_input(request: &RunRequest<'_>, input: Option<&str>) -> RunOutcome {
-    let outcome = run_body(request, find_hook_of, input);
+    let outcome = run_body(request, find_hook_of, RunsAs::Hook, input);
     if let Some(log) = &outcome.log {
         let line = match outcome.result {
             RunResult::Ok | RunResult::Fail => {
@@ -432,9 +543,14 @@ fn find_action_of(request: &RunRequest<'_>) -> Result<Option<Resolved>, ResolveE
 }
 
 /// The run itself: the body from start to end, nothing kept of it.
-fn run_body(request: &RunRequest<'_>, lookup: Lookup, input: Option<&str>) -> RunOutcome {
+fn run_body(
+    request: &RunRequest<'_>,
+    lookup: Lookup,
+    runs_as: RunsAs,
+    input: Option<&str>,
+) -> RunOutcome {
     let started_at = Instant::now();
-    let started = match start(request, lookup, input) {
+    let started = match start(request, lookup, runs_as, input) {
         Ok(started) => started,
         Err(refused) => return RunOutcome::not_run(request.name, refused.tier, refused.reason),
     };
@@ -444,18 +560,26 @@ fn run_body(request: &RunRequest<'_>, lookup: Lookup, input: Option<&str>) -> Ru
         metadata,
         log,
         limit_minutes,
+        plan,
     } = started;
     if let Some(outer) = &request.nesting.outer_log {
         write_path_into(outer, request.name, &log);
     }
-    let bound = request.minute.saturating_mul(saturated(limit_minutes));
-    let ended = wait(&mut child, started_at, bound);
+    let bound = limit_minutes.map(|minutes| request.minute.saturating_mul(saturated(minutes)));
+    let ended = {
+        // Held while the body has the terminal, and only then: zaf outlives a Ctrl-C to report.
+        let _keys = (plan == StdioPlan::OnTerminal).then(TerminalKeysIgnored::new);
+        wait(&mut child, started_at, bound, plan)
+    };
     let (result, exit, meaning) = match ended {
         Ended::Exited(status) => judge(status, &metadata),
         Ended::TimedOut => (
             RunResult::Fail,
             TIMEOUT_EXIT,
-            Some(format!("timed out after {limit_minutes} min")),
+            Some(format!(
+                "timed out after {} min",
+                limit_minutes.unwrap_or_default()
+            )),
         ),
         Ended::Lost(error) => (
             RunResult::Fail,
@@ -471,6 +595,7 @@ fn run_body(request: &RunRequest<'_>, lookup: Lookup, input: Option<&str>) -> Ru
         meaning,
         seconds: started_at.elapsed().as_secs_f64(),
         log: Some(log),
+        on_terminal: plan == StdioPlan::OnTerminal,
     }
 }
 
@@ -499,7 +624,9 @@ struct Started {
     tier: Tier,
     metadata: ActionMetadata,
     log: PathBuf,
-    limit_minutes: u64,
+    /// The bound in minutes; none for a body on the terminal that declares none.
+    limit_minutes: Option<u64>,
+    plan: StdioPlan,
 }
 
 /// Why a body never ran, or a file was not shown.
@@ -519,10 +646,11 @@ impl Refused {
 }
 
 /// Everything up to a running body: the guard, the file, what it shadows, its metadata, its mode,
-/// the log, the start.
+/// the terminal it needs, the log, the start.
 fn start(
     request: &RunRequest<'_>,
     lookup: Lookup,
+    runs_as: RunsAs,
     input: Option<&str>,
 ) -> Result<Started, Refused> {
     let RunRequest { name, nesting, .. } = request;
@@ -564,6 +692,10 @@ fn start(
             found.path.display()
         )));
     }
+    // Before the board is read and before a log exists: a body that needs a terminal starts
+    // nothing where there is none, and leaves nothing behind.
+    let plan = stdio_plan(&metadata, runs_as, request.terminal)
+        .map_err(|reason| refused(reason.to_owned()))?;
     // Before a log exists, like the next: a task in the wrong phase, or one whose phase cannot be
     // read, starts nothing and leaves nothing behind.
     check_phase(request, &metadata).map_err(refused)?;
@@ -572,18 +704,28 @@ fn start(
     // A hook's name has a slash, which no log's name may.
     let (log, log_file) = open_log(&logs_dir(request), &name.replace(['/', '\\'], "_"))
         .map_err(|error| refused(format!("cannot open a log: {error}")))?;
-    let child =
-        spawn_body(request, &found.path, &log, log_file, &slice_env, input).map_err(|error| {
-            // Nothing ran, so nothing is left to read: no empty log beside the real ones.
-            let _ = fs::remove_file(&log);
-            refused(format!("cannot start {}: {error}", found.path.display()))
-        })?;
+    let body = Body {
+        file: &found.path,
+        log: &log,
+        log_file,
+        plan,
+        input,
+    };
+    let child = spawn_body(request, body, &slice_env).map_err(|error| {
+        // Nothing ran, so nothing is left to read: no empty log beside the real ones.
+        let _ = fs::remove_file(&log);
+        refused(format!("cannot start {}: {error}", found.path.display()))
+    })?;
+    if let Some(step) = request.run {
+        (step.started)(child.id());
+    }
     Ok(Started {
         child,
         tier: found.tier,
-        limit_minutes: metadata.timeout.unwrap_or(request.timeout_minutes),
+        limit_minutes: plan.time_bound(metadata.timeout, request.timeout_minutes),
         metadata,
         log,
+        plan,
     })
 }
 
@@ -753,17 +895,38 @@ fn open_log(dir: &Path, name: &str) -> io::Result<(PathBuf, File)> {
     }
 }
 
-/// Starts the file in a process group of its own, its output in the log and nothing on stdin, bar
-/// the `input` a hook is told: no one can answer a prompt whose question went to a file.
-fn spawn_body(
-    request: &RunRequest<'_>,
-    file: &Path,
-    log: &Path,
+/// The file a run starts and where its stdio goes.
+struct Body<'a> {
+    /// The action's file.
+    file: &'a Path,
+    /// Its log.
+    log: &'a Path,
+    /// The log, open for appending.
     log_file: File,
-    slice_env: &SliceEnv,
-    input: Option<&str>,
-) -> io::Result<Child> {
+    /// Where its stdio goes.
+    plan: StdioPlan,
+    /// What a hook is told on stdin.
+    input: Option<&'a str>,
+}
+
+/// The one line the log of a body on the terminal holds, above the paths of any nested runs.
+fn on_terminal_line(name: &str) -> String {
+    format!("zaf: {name} ran on the terminal; its output went there and is not kept here\n")
+}
+
+/// Starts the file. A logged body runs in a process group of its own, its output in the log and
+/// nothing on stdin, bar the `input` a hook is told: no one can answer a prompt whose question went
+/// to a file. A body on the terminal keeps zaf's stdin, stdout and stderr and zaf's process group,
+/// the one the terminal lets read, and its log gets the one line that says so.
+fn spawn_body(request: &RunRequest<'_>, body: Body<'_>, slice_env: &SliceEnv) -> io::Result<Child> {
     let RunRequest { name, nesting, .. } = request;
+    let Body {
+        file,
+        log,
+        mut log_file,
+        plan,
+        input,
+    } = body;
     let mut command = Command::new(file);
     command.args(request.args).current_dir(request.cwd);
     // Before every zaf variable, so nothing in the table can stand in for one.
@@ -773,19 +936,35 @@ fn spawn_body(
         .env(ACTION_VAR, name)
         .env(DEPTH_VAR, nesting.above.to_string())
         .env(CHAIN_VAR, chain_with(nesting, name))
-        .env(LOG_VAR, log)
-        .stdin(if input.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::from(log_file.try_clone()?))
-        .stderr(Stdio::from(log_file))
-        .process_group(0);
+        .env(LOG_VAR, log);
+    match plan {
+        StdioPlan::Logged => {
+            command
+                .stdin(if input.is_some() {
+                    Stdio::piped()
+                } else {
+                    Stdio::null()
+                })
+                .stdout(Stdio::from(log_file.try_clone()?))
+                .stderr(Stdio::from(log_file))
+                .process_group(0);
+        }
+        // A hook is never on the terminal, so there is no `input` to tell.
+        StdioPlan::OnTerminal => {
+            log_file.write_all(on_terminal_line(name).as_bytes())?;
+            command
+                .stdin(Stdio::inherit())
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit());
+        }
+    }
     match request.project_root {
         Some(root) => command.env(ROOT_VAR, root),
         None => command.env_remove(ROOT_VAR),
     };
+    if let Some(run) = request.run {
+        command.env(crate::ports::RUN_VAR, run.dir);
+    }
     // Last, so nothing the caller or an earlier line set can stand in for these.
     slice_env.apply(&mut command);
     let mut tries = 1;
@@ -839,9 +1018,10 @@ enum Ended {
     Lost(io::Error),
 }
 
-/// Waits for the body until the bound, measured from `from`; past it, kills all it started.
-fn wait(child: &mut Child, from: Instant, bound: Duration) -> Ended {
-    let deadline = from.checked_add(bound);
+/// Waits for the body until the bound, measured from `from`, or for as long as it runs with no
+/// bound; past it, kills all it started.
+fn wait(child: &mut Child, from: Instant, bound: Option<Duration>, plan: StdioPlan) -> Ended {
+    let deadline = bound.and_then(|bound| from.checked_add(bound));
     let ended = loop {
         match child.try_wait() {
             Ok(Some(status)) => return Ended::Exited(status),
@@ -853,10 +1033,45 @@ fn wait(child: &mut Child, from: Instant, bound: Duration) -> Ended {
         }
         thread::sleep(POLL_INTERVAL);
     };
-    kill_all_under(child.id());
+    kill_all_under(child.id(), plan);
     let _ = child.kill();
     let _ = child.wait();
     ended
+}
+
+/// While it lives, zaf ignores the terminal's interrupt and quit keys, as `system(3)` does while a
+/// command runs. Both go to every process in the terminal's foreground group, zaf and a body on the
+/// terminal alike, so without this a Ctrl-C meant for the body would end zaf, the shell would take
+/// the terminal back, and the body would be left without one. The body was started before, with the
+/// dispositions zaf had, so it takes the keys as it means to. Dropped, those dispositions are back.
+struct TerminalKeysIgnored {
+    /// What zaf did on an interrupt and on a quit before, when it could be changed.
+    before: [(libc::c_int, Option<libc::sighandler_t>); 2],
+}
+
+impl TerminalKeysIgnored {
+    fn new() -> Self {
+        let before = [libc::SIGINT, libc::SIGQUIT].map(|signal| {
+            // SAFETY: `SIG_IGN` runs no code of zaf's on a signal, so no handler can break an
+            // invariant; the call only changes how this process takes `signal`, and the answer is
+            // the disposition to put back, or `SIG_ERR` when nothing changed.
+            let old = unsafe { libc::signal(signal, libc::SIG_IGN) };
+            (signal, (old != libc::SIG_ERR).then_some(old))
+        });
+        Self { before }
+    }
+}
+
+impl Drop for TerminalKeysIgnored {
+    fn drop(&mut self) {
+        for (signal, old) in self.before {
+            if let Some(old) = old {
+                // SAFETY: `old` is the disposition `signal` returned for this signal, so putting it
+                // back restores what zaf had: the default, or ignoring it.
+                unsafe { libc::signal(signal, old) };
+            }
+        }
+    }
 }
 
 /// The code a finished body passes on, the result, and what the code means. A body killed by
@@ -887,52 +1102,83 @@ fn judge(status: ExitStatus, metadata: &ActionMetadata) -> (RunResult, u8, Optio
 }
 
 /// Kills the body's process group and the groups of the nested runs under it, each of which
-/// is its own: a nested `zaf do` dying does not take its body along.
-fn kill_all_under(leader: u32) {
-    for group in groups_under(leader) {
+/// is its own: a nested `zaf do` dying does not take its body along. A body on the terminal leads
+/// no group, it shares zaf's, so its processes there are killed one by one and the group never is.
+fn kill_all_under(leader: u32, plan: StdioPlan) {
+    let doomed = doomed_under(leader, plan == StdioPlan::Logged);
+    let targets = doomed
+        .groups
+        .iter()
+        .map(|group| format!("-{group}"))
+        .chain(doomed.pids.iter().map(ToString::to_string));
+    for target in targets {
         let _ = Command::new("kill")
             .arg("-KILL")
             .arg("--")
-            .arg(format!("-{group}"))
+            .arg(target)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
+            .process_group(0)
             .status();
     }
 }
 
-/// `leader`'s group and every group holding a descendant of it, from one reading of the
-/// process table. Without a table only the leader's group is known, and that is still killed.
-fn groups_under(leader: u32) -> BTreeSet<u32> {
-    let mut groups = BTreeSet::from([leader]);
+/// What a kill under a body takes.
+#[derive(Debug)]
+struct Doomed {
+    /// Whole groups: the body's own when it leads one, and every other group a descendant is in.
+    groups: BTreeSet<u32>,
+    /// The descendants in zaf's own group, killed one by one: only a body on the terminal has any.
+    pids: BTreeSet<u32>,
+}
+
+/// `leader`'s group when it `leads` one, every group holding a descendant of it but zaf's own, and
+/// the descendants in zaf's own group, from one reading of the process table. Without a table only
+/// the leader's group is known, and that is still killed.
+fn doomed_under(leader: u32, leads: bool) -> Doomed {
+    let mut groups = BTreeSet::new();
+    if leads {
+        groups.insert(leader);
+    }
     let Ok(output) = Command::new("ps")
         .args(["-A", "-o", "pid=", "-o", "ppid=", "-o", "pgid="])
         .stdin(Stdio::null())
         .stderr(Stdio::null())
+        .process_group(0)
         .output()
     else {
-        return groups;
+        return Doomed {
+            groups,
+            pids: BTreeSet::new(),
+        };
     };
     let table = process_table(&String::from_utf8_lossy(&output.stdout));
+    // The run's own group is the caller's: a kill sent there would end zaf, never the body, so it
+    // is never one of the groups, and its members are found only as descendants.
+    let me = std::process::id();
+    let own = table.iter().find(|row| row.0 == me).map(|row| row.2);
     let mut pids = BTreeSet::from([leader]);
     loop {
         let known = pids.len() + groups.len();
         for &(pid, parent, group) in &table {
             if pids.contains(&parent) || groups.contains(&group) {
                 pids.insert(pid);
-                groups.insert(group);
+                if Some(group) != own {
+                    groups.insert(group);
+                }
             }
         }
         if pids.len() + groups.len() == known {
             break;
         }
     }
-    // The run's own group is the caller's: a kill sent there would end zaf, never the body.
-    let me = std::process::id();
-    if let Some(&(_, _, own)) = table.iter().find(|row| row.0 == me) {
-        groups.remove(&own);
-    }
-    groups
+    let pids = table
+        .iter()
+        .filter(|&&(pid, _, group)| pid != me && Some(group) == own && pids.contains(&pid))
+        .map(|row| row.0)
+        .collect();
+    Doomed { groups, pids }
 }
 
 /// The rows of `ps`: pid, parent and group.

@@ -10,6 +10,10 @@ pub(super) const ISSUE_FIELDS: &str = "number,title,body,labels,parent,state,com
 /// The fields a list of tickets asks for: [`ISSUE_FIELDS`] less what a list has no use for.
 pub(super) const TICKET_LIST_FIELDS: &str = "number,title,body,labels,parent,issueType";
 
+/// The fields the list of open tasks asks for: [`TICKET_LIST_FIELDS`] and when each opened, which
+/// the scheduler counts a never-started ticket ready from.
+pub(super) const OPEN_TICKET_FIELDS: &str = "number,title,body,labels,parent,issueType,createdAt";
+
 /// An issue as `gh issue view --json` prints it.
 #[derive(Debug, Clone, Deserialize)]
 pub struct IssueRow {
@@ -33,10 +37,13 @@ pub struct IssueRow {
     /// The issue's type; `null` when it has none, absent from a read that did not ask.
     #[serde(default, rename = "issueType")]
     pub issue_type: Option<NameRow>,
+    /// When it was opened, RFC 3339; absent from a read that did not ask.
+    #[serde(default, rename = "createdAt")]
+    pub created_at: Option<String>,
 }
 
-/// The fields a blocker's standing is read from.
-pub(super) const STANDING_FIELDS: &str = "number,state,stateReason,labels,url";
+/// The fields a blocker's standing is read from, and when it closed.
+pub(super) const STANDING_FIELDS: &str = "number,state,stateReason,labels,url,closedAt";
 
 /// An issue read only for where it stands as a blocker.
 #[derive(Debug, Clone, Deserialize)]
@@ -53,6 +60,9 @@ pub(super) struct StandingRow {
     /// Holds `/pull/` for a pull request.
     #[serde(default)]
     pub url: String,
+    /// When it closed, RFC 3339; null while it is open.
+    #[serde(default, rename = "closedAt")]
+    pub closed_at: Option<String>,
 }
 
 /// A label, or anything else read only by name.

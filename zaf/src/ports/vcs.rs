@@ -19,10 +19,9 @@ text_newtype! {
     BaseName
 }
 
-text_newtype! {
-    /// The id the VCS gave a commit.
-    CommitId
-}
+/// The id the VCS gave a commit, now the domain's (the scheduling core keys facts on the pull
+/// request's head); kept here so `crate::ports::CommitId` still names it.
+pub use crate::domain::CommitId;
 
 /// Lines added and removed in one file.
 #[derive(Debug, Clone, PartialEq, Eq)]

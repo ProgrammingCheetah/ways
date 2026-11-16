@@ -170,6 +170,36 @@ fn an_unknown_hook_event_is_named() {
     assert!(!text.contains("unknown hook event"), "{text}");
 }
 
+/// An action may declare `terminal: yes` and pass; a hook that does is invalid, since a run refuses
+/// it: a hook runs with no one at the terminal.
+#[test]
+fn a_terminal_hook_is_named() {
+    let project = project();
+    let actions = project_actions(&project);
+    let terminal = ["description: talk", "1: failed", "terminal: yes"];
+    put(&actions, "talk", &terminal, true);
+    put(&actions.join("hooks"), "pre-tick", &terminal, true);
+
+    let (code, text) = doctor(&project);
+
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        text.contains("action talk (project): ok, mode 755"),
+        "{text}"
+    );
+    assert!(
+        text.contains("action hooks/pre-tick (project): invalid"),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "{}: `terminal: yes` on a hook: it needs a terminal, and a hook runs with no one there",
+            actions.join("hooks/pre-tick").display()
+        )),
+        "{text}"
+    );
+}
+
 #[test]
 fn doctor_fails_on_a_declared_125() {
     let project = project();

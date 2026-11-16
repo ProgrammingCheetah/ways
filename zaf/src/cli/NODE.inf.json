@@ -26,7 +26,7 @@
     },
     {
       "name": "board.rs",
-      "role": "board actions",
+      "role": "board actions; a question asked inside a phase run (ZAF_RUN) of its own task is recorded in the run folder's `questions`",
       "node": false
     },
     {
@@ -46,7 +46,7 @@
     },
     {
       "name": "epic.rs",
-      "role": "zaf epic list|sign: one line per open epic, or `signed #<n> sha256:<hex>`; exit 1 inside an instance or for no open epic",
+      "role": "zaf epic list|sign: one line per open epic, or `signed #<n> sha256:<hex>`; exit 1 inside an instance or for no open epic; a signature that cannot ask the running scheduler for a tick stays signed and says so in one line on stderr",
       "node": false
     },
     {
@@ -70,18 +70,33 @@
       "node": false
     },
     {
+      "name": "scheduler.rs",
+      "role": "`spawn --watch`: the scheduler that stays up; takes scheduler.lock (a second one names the first and exits 1), catches SIGINT and SIGTERM, and runs app/schedule/scheduler.rs with this process as its Host: requests, the timer, the binary look and exec, the lock-held wait, the start, restart and stop lines",
+      "node": false
+    },
+    {
       "name": "slice.rs",
       "role": "slice actions plus helpers changes shares",
       "node": false
     },
     {
       "name": "spawn.rs",
-      "role": "one tick: the phase steps 3 to 6 first, on the phased tasks, with the machine's budget, then the planning and challenger launches joined in parallel threads; --dry-run; the tick's zaf-kind runner and its wait and model-phase starter (zaf spawn phase, never waiting for the phase)",
+      "role": "one tick: the phase steps 3 to 6 first, on the phased tasks, with the machine's budget, then the planning and challenger launches joined in parallel threads; --dry-run, whose --json carries the core's `placement`; a real tick appends its trace line (where each ticket sits, what it did, what moved) and prints each move and a count, --json gaining `moved` and `tickets`; the tick's zaf-kind runner, whose run leaves a phase run folder opened through the gate again (NOT_RUN 125 when refused), and its wait and model-phase starter (zaf spawn phase, never waiting for the phase); `--once` asks a running scheduler instead of ticking; one_tick is the tick the scheduler runs, naming who asked and keeping the placement in its cache",
       "node": false
     },
     {
       "name": "spawn_phase.rs",
-      "role": "`spawn phase` (starts a detached launcher, returns at once) and the hidden `spawn phase-run` launcher that runs the action and waits",
+      "role": "`spawn phase` (starts a detached launcher, returns at once) and the hidden `spawn phase-run` launcher that runs the action, waits, then records the head it left (`head-end`) and its exit, then asks for a tick: a request to the running scheduler, else `spawn --once --no-wait`",
+      "node": false
+    },
+    {
+      "name": "spawn_stop.rs",
+      "role": "`spawn stop <task>`: ends the instance running the task and every process of its group (terminate, then kill after a grace) and releases its claim; exit 1 when none runs",
+      "node": false
+    },
+    {
+      "name": "spawn_trace.rs",
+      "role": "`spawn trace [<ticket>] [--since <when>]`: the moves of the trace, oldest first, with the date when they cross a day; --more adds what each tick did; read-only, no lock; no trace yet says so and exits 0",
       "node": false
     },
     {

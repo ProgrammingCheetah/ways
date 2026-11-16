@@ -10,7 +10,8 @@ use std::time::SystemTime;
 use super::GhCommand;
 use super::command::{GraphqlValue, number_from_url};
 use super::rows::{
-    ISSUE_FIELDS, IssueRow, NameRow, STANDING_FIELDS, StandingRow, TICKET_LIST_FIELDS,
+    ISSUE_FIELDS, IssueRow, NameRow, OPEN_TICKET_FIELDS, STANDING_FIELDS, StandingRow,
+    TICKET_LIST_FIELDS,
 };
 use super::state::{LabelState, ProjectRef, ProjectState, StateStore};
 use crate::adapters::issues::{
@@ -21,9 +22,10 @@ use crate::adapters::notes::{
     EpicNotes, LeaseNote, RULING_MARKER, SIGNATURE_TEXT, held_by, live_claim, marked,
     recorded_ruling, release_line, report_marker, signature_marker, unmarked,
 };
+use crate::domain::schedule::Priority;
 use crate::domain::{
-    Epic, EpicTask, Instance, NewTask, Signature, Standing, Ticket, TicketId, TicketState,
-    TicketType,
+    Epic, EpicTask, Instance, NewTask, OpenTicket, Signature, Standing, StandingAt, Ticket,
+    TicketId, TicketState, TicketType,
 };
 use crate::manifest::RepoName;
 use crate::ports::{Board, ClaimOutcome, ClaimRecord, IssueTypes, NewQuestion, PortError};
@@ -131,6 +133,18 @@ impl<S: StateStore> GithubBoard<S> {
         Ok(rows
             .iter()
             .map(|row| row.ticket(self.gh.repo(), states.get(&row.number).copied()))
+            .collect())
+    }
+
+    /// The open issues labelled `task` in `state`, in issue order, each read in that state.
+    fn open_tasks_in(&self, state: TicketState) -> Result<Vec<Ticket>, PortError> {
+        let mut rows =
+            self.store
+                .in_state(&self.gh, state, Some(TASK_LABEL), TICKET_LIST_FIELDS)?;
+        rows.sort_by_key(|row| row.number);
+        Ok(rows
+            .iter()
+            .map(|row| row.ticket(self.gh.repo(), Some(state)))
             .collect())
     }
 
@@ -390,37 +404,82 @@ impl<S: StateStore> Board for GithubBoard<S> {
     /// One `gh issue view`: an issue that is not there, or is a pull request, is missing;
     /// else `done` by its label, closed without it, or open.
     fn standing(&self, number: TicketId) -> Result<Standing, PortError> {
+        self.standing_at(number).map(|at| at.standing)
+    }
+
+    /// The same `gh issue view`, its `closedAt` read too once the issue is closed.
+    fn standing_at(&self, number: TicketId) -> Result<StandingAt, PortError> {
+        let missing = StandingAt {
+            standing: Standing::Missing,
+            closed_at: None,
+        };
         let number = number.get().to_string();
         let viewed: Result<StandingRow, PortError> =
             self.gh
                 .json(&["issue", "view", &number, "--json", STANDING_FIELDS]);
         let row = match viewed {
             Ok(row) => row,
-            Err(PortError::NotFound(_)) => return Ok(Standing::Missing),
+            Err(PortError::NotFound(_)) => return Ok(missing),
             Err(error) => return Err(error),
         };
         if row.url.contains(PULL_PATH) {
-            return Ok(Standing::Missing);
+            return Ok(missing);
         }
         let states = self.store.states(&self.gh, row.number, &row.labels)?;
-        Ok(standing_of(
-            &row.state,
-            row.state_reason.as_deref(),
-            states.contains(&TicketState::Done),
-        ))
+        let closed_at = (row.state != OPEN)
+            .then_some(row.closed_at.as_deref())
+            .flatten()
+            .and_then(|at| humantime::parse_rfc3339(at).ok());
+        Ok(StandingAt {
+            standing: standing_of(
+                &row.state,
+                row.state_reason.as_deref(),
+                states.contains(&TicketState::Done),
+            ),
+            closed_at,
+        })
     }
 
     fn ready(&self) -> Result<Vec<Ticket>, PortError> {
-        let mut rows = self.store.in_state(
-            &self.gh,
-            TicketState::Ready,
-            Some(TASK_LABEL),
-            TICKET_LIST_FIELDS,
-        )?;
+        self.open_tasks_in(TicketState::Ready)
+    }
+
+    /// One list, as `ready` reads it: the open tasks in `blocked`, with their bodies.
+    fn blocked(&self) -> Result<Vec<Ticket>, PortError> {
+        self.open_tasks_in(TicketState::Blocked)
+    }
+
+    /// One list of the open issues labelled `task`, with their bodies, parents and the time each
+    /// opened, then their states at once, as `questions` reads them: no more call with labels, one
+    /// on a Project. A task in `done` is not listed. Each carries its `priority/<n>` label, a label
+    /// on the issue whichever board keeps the states.
+    fn open_tickets(&self) -> Result<Vec<OpenTicket>, PortError> {
+        let mut rows: Vec<IssueRow> = self.gh.json(&[
+            "issue",
+            "list",
+            "--label",
+            TASK_LABEL,
+            "--state",
+            "open",
+            "--limit",
+            LIST_LIMIT,
+            "--json",
+            OPEN_TICKET_FIELDS,
+        ])?;
         rows.sort_by_key(|row| row.number);
+        let tickets = self.tickets(&rows)?;
         Ok(rows
             .iter()
-            .map(|row| row.ticket(self.gh.repo(), Some(TicketState::Ready)))
+            .zip(tickets)
+            .filter(|(_, ticket)| ticket.state != Some(TicketState::Done))
+            .map(|(row, ticket)| OpenTicket {
+                ticket,
+                priority: Priority::from_labels(row.labels.iter().map(|label| label.name.as_str())),
+                opened_at: row
+                    .created_at
+                    .as_deref()
+                    .and_then(|at| humantime::parse_rfc3339(at).ok()),
+            })
             .collect())
     }
 
@@ -502,7 +561,15 @@ impl<S: StateStore> Board for GithubBoard<S> {
             .into_iter()
             .filter(|present| *present != label)
             .collect();
-        self.change(&row, Some(label), &others)
+        self.change(&row, Some(label), &others)?;
+        // Done closes the issue too, as completed: its standing then says done on every read.
+        if label == TicketState::Done && row.state == OPEN {
+            let number = task.get().to_string();
+            self.gh
+                .text(&["issue", "close", &number, "--reason", "completed"])
+                .map(drop)?;
+        }
+        Ok(())
     }
 
     fn comment(&self, issue: TicketId, body: &str) -> Result<(), PortError> {
@@ -540,6 +607,26 @@ impl<S: StateStore> Board for GithubBoard<S> {
         rows.retain(|row| !row.has_label(TASK_LABEL));
         rows.sort_by_key(|row| row.number);
         self.tickets(&rows)
+    }
+
+    fn open_doors(&self) -> Result<Vec<TicketId>, PortError> {
+        let mut rows: Vec<IssueRow> = self.gh.json(&[
+            "issue",
+            "list",
+            "--label",
+            QUESTION_LABEL,
+            "--label",
+            DOOR_LABEL,
+            "--state",
+            "open",
+            "--limit",
+            LIST_LIMIT,
+            "--json",
+            TICKET_LIST_FIELDS,
+        ])?;
+        rows.retain(|row| !row.has_label(TASK_LABEL));
+        rows.sort_by_key(|row| row.number);
+        Ok(rows.iter().map(|row| TicketId::from(row.number)).collect())
     }
 
     /// Lists the `question` issues, open and closed, whose body says `Raised on #<task>`,

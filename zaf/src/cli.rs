@@ -7,6 +7,7 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
+use crate::app::projects::Projects;
 use crate::app::setup::ensure_homes;
 use crate::composition::Composition;
 use crate::domain::{DEFAULT_TASK_TYPE, TicketId};
@@ -29,10 +30,13 @@ pub mod hub;
 pub mod profile;
 pub mod progress;
 pub mod report;
+pub mod scheduler;
 pub mod setup;
 pub mod slice;
 pub mod spawn;
 pub mod spawn_phase;
+pub mod spawn_stop;
+pub mod spawn_trace;
 pub mod status;
 pub mod update;
 
@@ -119,7 +123,7 @@ pub enum Verb {
         /// What to start; none runs the tick.
         #[command(subcommand)]
         action: Option<SpawnAction>,
-        /// One tick, then exit.
+        /// One tick, then exit; while a scheduler runs (`--watch`), ask it for the tick instead.
         #[arg(long)]
         once: bool,
         /// The milestone's version the launched instances build (`ZAF_VERSION`).
@@ -128,11 +132,13 @@ pub enum Verb {
         /// Plan the tick and print each launch's command line; launch nothing, write nothing.
         #[arg(long)]
         dry_run: bool,
-        /// With `--once`: exit 0 at once, doing nothing, when another tick holds `spawn.lock`.
+        /// With `--once` and no scheduler running: exit 0 at once, doing nothing, when another
+        /// tick holds `spawn.lock`.
         #[arg(long, requires = "once")]
         no_wait: bool,
-        /// Tick in the foreground each `[spawn] tick_minutes` until stopped; a failed tick is
-        /// logged and the loop goes on. Each tick is `--once --no-wait`.
+        /// Run the project's scheduler in the foreground until SIGINT or SIGTERM: one tick at a
+        /// time, at once, whenever asked and each `[spawn] tick_minutes`; it holds
+        /// `.zaf/scheduler.lock` and starts again as a new zaf binary once one is installed.
         #[arg(long, conflicts_with_all = ["once", "dry_run"])]
         watch: bool,
     },
@@ -163,9 +169,14 @@ pub enum Verb {
         #[command(subcommand)]
         action: Option<HubAction>,
         /// Serve the frame as a web page on every interface at this port, for anyone on the
-        /// LAN, and redraw it when a report arrives; 0 takes a free port. GET only, no login.
+        /// LAN, and redraw it when a report arrives; 0 takes a free port. Reading needs no login;
+        /// a control needs the key the hub makes at start.
         #[arg(long, value_name = "PORT")]
         port: Option<u16>,
+        /// Serve the page with every control refused, whatever key comes with it, and the state
+        /// telling the page there are no controls.
+        #[arg(long, requires = "port")]
+        read_only: bool,
     },
     /// A model's phases on a task: declare them, then report each change.
     Progress {
@@ -250,7 +261,8 @@ pub enum ForgeAction {
 pub enum EpicAction {
     /// List the open epics, each with its stage and its tasks done.
     List,
-    /// Show one open epic and its tasks, closed ones too, each with its state and group.
+    /// Show one open epic and its tasks, closed ones too, each with its state and group; with
+    /// `--more`, the epic's body under them.
     Show {
         /// The epic.
         epic: TicketId,
@@ -300,12 +312,33 @@ pub enum SpawnAction {
         /// The phase action: the task's current one.
         action: String,
     },
+    /// End the instance running a task, with every process of its group, and release the task's
+    /// claim, so a later tick can start it again.
+    Stop {
+        /// The task.
+        task: TicketId,
+    },
+    /// Print where the tickets moved, tick by tick and oldest first, from the trace each real tick
+    /// leaves in `.zaf/ticks.jsonl`; `--more` adds what each tick did. It only reads.
+    Trace {
+        /// Only this ticket's moves.
+        ticket: Option<TicketId>,
+        /// Only the ticks from this time on: an RFC 3339 time (`2026-11-12T17:00:00Z`), or a span
+        /// back from now such as `2h` or `3d`.
+        #[arg(long, value_parser = since_arg)]
+        since: Option<std::time::SystemTime>,
+    },
     /// The launcher `phase` starts: runs the action of a phase run folder and waits on it.
     #[command(hide = true)]
     PhaseRun {
         /// The phase run folder.
         run_folder: PathBuf,
     },
+}
+
+/// A `--since` of `zaf spawn trace`, read now ([`crate::app::schedule::trace::listing::since`]).
+fn since_arg(text: &str) -> Result<std::time::SystemTime, String> {
+    crate::app::schedule::trace::listing::since(text, std::time::SystemTime::now())
 }
 
 /// `zaf hub …`.
@@ -315,6 +348,30 @@ pub enum HubAction {
     /// Leave a report of the tool call on stdin: the profiles' `PostToolUse` hook. Prints
     /// nothing and exits 0 whatever it is given.
     Report,
+    /// Print the link that carries the running hub's key, from a terminal outside any instance:
+    /// exit 1 inside an instance, or when no hub runs.
+    Link,
+    /// Run the hub as a systemd user service: it starts with the session on a fixed port and
+    /// restarts when it stops.
+    Service {
+        /// What to do with the service.
+        #[command(subcommand)]
+        action: ServiceAction,
+    },
+}
+
+/// `zaf hub service …`.
+#[derive(Debug, clap::Subcommand, strum::IntoStaticStr)]
+#[strum(serialize_all = "kebab-case")]
+pub enum ServiceAction {
+    /// Write the unit, enable it and start it; a unit already there is replaced. Linux only.
+    Install {
+        /// The port the hub serves; 7777 when none is given.
+        #[arg(long, value_name = "PORT")]
+        port: Option<u16>,
+    },
+    /// Stop the service, disable it and delete the unit; none installed is no failure.
+    Remove,
 }
 
 /// `zaf board …`.
@@ -436,6 +493,14 @@ impl Verb {
     /// The verb as typed, with its action for verbs that take one (`board claim`).
     pub fn path(&self) -> String {
         let verb: &'static str = self.into();
+        if let Self::Hub {
+            action: Some(HubAction::Service { action }),
+            ..
+        } = self
+        {
+            let action: &'static str = action.into();
+            return format!("{verb} service {action}");
+        }
         let action: Option<&'static str> = match self {
             Self::Board { action } => Some(action.into()),
             Self::Slice { action } => Some(action.into()),
@@ -505,6 +570,18 @@ pub fn first_run_at(here: &Path, home: Option<&Path>) {
         }
         Err(error) => eprintln!("zaf: cannot make the zaf homes: {error}"),
     }
+    join_the_list(root.as_deref(), home);
+}
+
+/// Puts the project at `root` on the zaf home's list of projects: the first verb to run from
+/// its root does it, and a project already on the list is left as it is. Outside a project, or
+/// with no zaf home, there is nothing to add. A failure is reported and the verb still runs.
+pub fn join_the_list(root: Option<&Path>, home: Option<&Path>) {
+    if let (Some(root), Some(home)) = (root, home)
+        && let Err(error) = Projects::add(home, root)
+    {
+        eprintln!("zaf: cannot add the project to the list in the zaf home: {error}");
+    }
 }
 
 /// The project root for `here`: the one discovery finds, else, when a manifest is broken, the
@@ -549,6 +626,14 @@ fn run_verb(cli: &Cli) -> u8 {
             ..
         } => spawn_phase::run(cli, *task, action),
         Verb::Spawn {
+            action: Some(SpawnAction::Stop { task }),
+            ..
+        } => spawn_stop::run(cli, *task),
+        Verb::Spawn {
+            action: Some(SpawnAction::Trace { ticket, since }),
+            ..
+        } => spawn_trace::run(cli, *ticket, *since),
+        Verb::Spawn {
             action: Some(SpawnAction::PhaseRun { run_folder }),
             ..
         } => spawn_phase::launcher(cli, run_folder),
@@ -568,7 +653,11 @@ fn run_verb(cli: &Cli) -> u8 {
         }
         Verb::Profile { action } => profile::run(cli, action),
         Verb::Do(args) => do_action::run(cli, args),
-        Verb::Hub { action, port } => hub::run(cli, action.as_ref(), *port),
+        Verb::Hub {
+            action,
+            port,
+            read_only,
+        } => hub::run(cli, action.as_ref(), *port, *read_only),
         Verb::Progress { action } => progress::run(cli, action),
         Verb::Update { check } => update::run(cli, *check),
         Verb::Epic { action } => epic::run(cli, action),

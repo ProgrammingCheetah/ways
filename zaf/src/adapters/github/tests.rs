@@ -243,6 +243,137 @@ fn ready_lists_ready_tasks_in_issue_order() {
 }
 
 #[test]
+fn blocked_lists_open_blocked_tasks_with_their_bodies_in_one_call() {
+    let fake = FakeGh::new();
+    let listed = format!(
+        "[{},{}]",
+        issue_with_body(9, &["task", "blocked"], &[], "OPEN", "Blocked by: #5, #6"),
+        issue(3, &["task", "blocked"], &[], "OPEN")
+    );
+    fake.on("issue list *", &listed);
+    let tickets = fake.board().blocked().expect("blocked");
+    let numbers: Vec<TicketId> = tickets.iter().map(|ticket| ticket.id).collect();
+    assert_eq!(numbers, [TicketId::from(3), TicketId::from(9)]);
+    assert_eq!(tickets[1].state, Some(TicketState::Blocked));
+    assert_eq!(tickets[1].body.as_str(), "Blocked by: #5, #6");
+    let expected_call = argv(&[
+        "issue",
+        "list",
+        "--label",
+        "task",
+        "--label",
+        "blocked",
+        "--state",
+        "open",
+        "--limit",
+        "1000",
+        "--json",
+        "number,title,body,labels,parent,issueType",
+        "--repo",
+        REPO,
+    ]);
+    assert_eq!(fake.calls(), [expected_call]);
+}
+
+#[test]
+fn open_tickets_lists_every_open_task_but_a_done_one_in_one_call() {
+    let fake = FakeGh::new();
+    let listed = format!(
+        "[{},{},{},{},{}]",
+        issue(9, &["task", "question"], &[], "OPEN"),
+        issue_with_body(3, &["task", "blocked"], &[], "OPEN", "Blocked by: #5"),
+        issue(4, &["task", "done"], &[], "OPEN"),
+        issue(5, &["task"], &[], "OPEN"),
+        issue(6, &["task", "claimed"], &[], "OPEN")
+    );
+    fake.on("issue list *", &listed);
+    let tickets =
+        crate::domain::OpenTicket::tickets(fake.board().open_tickets().expect("open tickets"));
+    let numbers: Vec<u64> = tickets.iter().map(|ticket| ticket.id.get()).collect();
+    assert_eq!(numbers, [3, 5, 6, 9]);
+    let states: Vec<Option<TicketState>> = tickets.iter().map(|ticket| ticket.state).collect();
+    assert_eq!(
+        states,
+        [
+            Some(TicketState::Blocked),
+            None,
+            Some(TicketState::Claimed),
+            Some(TicketState::Question),
+        ]
+    );
+    assert_eq!(tickets[0].body.as_str(), "Blocked by: #5");
+    let expected_call = argv(&[
+        "issue",
+        "list",
+        "--label",
+        "task",
+        "--state",
+        "open",
+        "--limit",
+        "1000",
+        "--json",
+        "number,title,body,labels,parent,issueType,createdAt",
+        "--repo",
+        REPO,
+    ]);
+    assert_eq!(fake.calls(), [expected_call]);
+}
+
+#[test]
+fn open_tickets_reads_the_priority_label_and_when_each_opened() {
+    let fake = FakeGh::new();
+    let opened = |text: String, at: &str| {
+        text.replace("\"labels\"", &format!("\"createdAt\":\"{at}\",\"labels\""))
+    };
+    let listed = format!(
+        "[{},{},{},{}]",
+        opened(
+            issue(3, &["task", "priority/1"], &[], "OPEN"),
+            "2026-11-12T08:00:00Z"
+        ),
+        issue(5, &["task", "priority/7"], &[], "OPEN"),
+        issue(6, &["task", "priority/2", "priority/3"], &[], "OPEN"),
+        issue(7, &["task", "ready"], &[], "OPEN"),
+    );
+    fake.on("issue list *", &listed);
+    let open = fake.board().open_tickets().expect("open tickets");
+    let read: Vec<(u64, Result<Option<u8>, String>)> = open
+        .iter()
+        .map(|open| {
+            (
+                open.ticket.id.get(),
+                open.priority
+                    .clone()
+                    .map(|priority| priority.map(crate::domain::schedule::Priority::level))
+                    .map_err(|ignored| ignored.to_string()),
+            )
+        })
+        .collect();
+    assert_eq!(
+        read,
+        [
+            (3, Ok(Some(1))),
+            (
+                5,
+                Err(
+                    "the label `priority/7` is not priority/1, priority/2 or priority/3".to_owned()
+                )
+            ),
+            (
+                6,
+                Err("it carries more than one priority label (priority/2, priority/3)".to_owned())
+            ),
+            (7, Ok(None)),
+        ]
+    );
+    assert_eq!(
+        open[0].opened_at,
+        humantime::parse_rfc3339("2026-11-12T08:00:00Z").ok()
+    );
+    assert_eq!(open[1].opened_at, None, "no createdAt, no time");
+}
+
+#[test]
 fn a_ticket_reads_its_issue_type() {
     let fake = FakeGh::new();
     let typed = issue(3, &["task", "ready"], &[], "OPEN").replace(
@@ -338,6 +469,28 @@ fn closed_for(number: u64, reason: &str) -> String {
 }
 
 #[test]
+fn a_closed_issue_says_when_it_closed() {
+    use crate::domain::Standing;
+
+    let fake = FakeGh::new();
+    let closed = closed_for(8, "COMPLETED").replace(
+        "\"labels\"",
+        "\"closedAt\":\"2026-11-12T09:30:00Z\",\"labels\"",
+    );
+    fake.on("issue view 8 *", &closed)
+        .on("issue view 3 *", &standing(3, &["task"], "OPEN", "issues"));
+    let board = fake.board();
+    let done = board.standing_at(TicketId::from(8)).expect("reads");
+    assert_eq!(done.standing, Standing::Done);
+    assert_eq!(
+        done.closed_at,
+        humantime::parse_rfc3339("2026-11-12T09:30:00Z").ok()
+    );
+    let open = board.standing_at(TicketId::from(3)).expect("reads");
+    assert_eq!((open.standing, open.closed_at), (Standing::Open, None));
+}
+
+#[test]
 fn issue_state_tells_open_done_closed_and_missing_apart() {
     use crate::domain::Standing;
 
@@ -403,7 +556,7 @@ fn issue_state_tells_open_done_closed_and_missing_apart() {
             "view",
             number,
             "--json",
-            "number,state,stateReason,labels,url",
+            "number,state,stateReason,labels,url,closedAt",
             "--repo",
             REPO,
         ])
@@ -635,7 +788,8 @@ fn label_replaces_the_state_label_and_an_existing_one_is_quiet() {
         &issue(2, &["task", "claimed"], &[], "OPEN"),
     )
     .on("issue view 4 *", &issue(4, &["task", "done"], &[], "OPEN"))
-    .on("issue edit *", "");
+    .on("issue edit *", "")
+    .on("issue close *", "");
     let board = fake.board();
     board
         .set_state(TicketId::from(2), TicketState::Done)
@@ -654,7 +808,22 @@ fn label_replaces_the_state_label_and_an_existing_one_is_quiet() {
         "--repo",
         REPO,
     ]);
-    assert_eq!(fake.calls(), [view("2"), expected_edit, view("4")]);
+    // Done closes each open issue as completed, the one already labelled so too.
+    let close = |number: &str| {
+        argv(&[
+            "issue",
+            "close",
+            number,
+            "--reason",
+            "completed",
+            "--repo",
+            REPO,
+        ])
+    };
+    assert_eq!(
+        fake.calls(),
+        [view("2"), expected_edit, close("2"), view("4"), close("4")]
+    );
 }
 
 #[test]

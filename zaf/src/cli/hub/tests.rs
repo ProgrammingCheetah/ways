@@ -319,6 +319,7 @@ fn snapshot(epic: u64) -> Snapshot {
             number: epic,
             tickets: vec![TicketRow {
                 number: 7,
+                title: "A task".to_owned(),
                 who: "sonnet programmer".to_owned(),
                 phase: Phase::Build,
                 word: "testing".to_owned(),
@@ -327,6 +328,7 @@ fn snapshot(epic: u64) -> Snapshot {
             }],
             ..EpicRow::default()
         }],
+        ..Snapshot::default()
     }
 }
 
@@ -546,5 +548,53 @@ fn a_failing_board_leaves_the_last_frame_up() {
         calls.get(),
         2,
         "tried once for the report, not at every look"
+    );
+}
+
+#[test]
+fn an_event_that_counts_asks_the_running_scheduler_for_a_tick() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let request_file = dir.path().join(crate::app::schedule::request::REQUEST_FILE);
+    // No scheduler: the report is left, and nobody is asked.
+    assert!(leave_report_in(
+        dir.path(),
+        &verb(&["board", "ruling", "45", "Yes."]),
+        OK,
+        None,
+        at(1)
+    ));
+    assert!(!request_file.exists());
+
+    // A scheduler runs: this test's own process, which is alive, holds its lock.
+    let me = process::this().expect("this process");
+    let (lock, _) =
+        crate::app::schedule::lock::SchedulerLock::take(dir.path(), &me, "0.3.1", "0.4.0", at(1))
+            .expect("the lock");
+    for args in [
+        &["board", "ruling", "45", "Yes."][..],
+        &["board", "question", "7", "Which way?"],
+        &["board", "claim", "7"],
+        &["slice", "merge", "7"],
+    ] {
+        assert!(leave_report_in(dir.path(), &verb(args), OK, None, at(2)));
+    }
+    // A refused verb changed nothing, and asks for nothing.
+    assert!(!leave_report_in(
+        dir.path(),
+        &verb(&["board", "claim", "8"]),
+        REFUSED,
+        None,
+        at(3)
+    ));
+    lock.release();
+
+    let asked: Vec<String> = std::fs::read_to_string(&request_file)
+        .expect("the requests")
+        .lines()
+        .map(|line| line.split_once(' ').expect("a time and who").1.to_owned())
+        .collect();
+    assert_eq!(
+        asked,
+        ["ruling #45", "question on #7", "claimed #7", "merged #7"]
     );
 }

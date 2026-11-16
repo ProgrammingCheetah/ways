@@ -12,10 +12,22 @@
 //! environment holds tokens; nothing it finds is written anywhere. Each instance also reads
 //! the resident memory of its processes, summed: `VmRSS` of `/proc/<pid>/status` on Linux,
 //! else `ps -o rss=`; a process whose memory cannot be read adds nothing.
+//!
+//! The machine read counts every live process carrying [`RUN_VAR`], which is what the budget
+//! charges: an orphaned grandchild of an ended run still uses memory, and one of size E still
+//! holds the one E. What `zaf status` shows ([`displayed`]) leaves out a run whose folder says it
+//! has ended (an `exit` recorded, or the process its `pid` file names gone), whatever still
+//! carries its [`RUN_VAR`]. Neither holds a slot: the slots come from the phase run folders.
+//!
+//! The scheduler catches SIGINT and SIGTERM ([`catch_stop`]) so it can end between two ticks: a
+//! signal is only recorded, and [`stop_signal`] reads it. Across its restart it holds both back
+//! ([`hold_stop`]) and starts the new image with [`exec`], which keeps them held and pending, so a
+//! stop that lands then is let through ([`let_stop_through`]) once the new image catches it.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicI32, Ordering};
 
 use crate::domain::{Mebibytes, TaskSize};
 use crate::ports::{Holder, INSTANCE_VAR, MachineInstance, RUN_VAR, SIZE_VAR};
@@ -36,8 +48,13 @@ const MAX_ANCESTORS: usize = 64;
 /// This process and every process above it, nearest first, each as a holder, up to the
 /// first process (pid 1) or one the OS no longer reports.
 pub fn ancestors() -> Vec<Holder> {
+    ancestors_of(std::process::id())
+}
+
+/// Process `pid` and every process above it, as [`ancestors`] reads this one's. Empty when the
+/// process is gone, which a caller that must not guess reads as unknown.
+pub fn ancestors_of(mut pid: u32) -> Vec<Holder> {
     let mut chain = Vec::new();
-    let mut pid = std::process::id();
     while chain.len() < MAX_ANCESTORS {
         let Some(holder) = holder_of(pid) else {
             break;
@@ -49,6 +66,58 @@ pub fn ancestors() -> Vec<Holder> {
         }
     }
     chain
+}
+
+/// The process and user at the other end of a Unix socket, as the kernel recorded them when it
+/// connected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PeerCredentials {
+    /// The connecting process.
+    pub pid: u32,
+    /// The user it runs as.
+    pub uid: u32,
+}
+
+/// Who connected on `stream`: `SO_PEERCRED` on Linux. Elsewhere, and when the kernel does not say,
+/// none; a caller that needs to know who asks treats none as a refusal.
+#[cfg(target_os = "linux")]
+pub fn peer_of(stream: &std::os::unix::net::UnixStream) -> Option<PeerCredentials> {
+    use std::os::fd::AsRawFd;
+    let mut cred = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut size = libc::socklen_t::try_from(std::mem::size_of::<libc::ucred>()).ok()?;
+    // SAFETY: `cred` and `size` live for the call and `size` is the size of `cred`.
+    let status = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            std::ptr::from_mut(&mut cred).cast(),
+            &raw mut size,
+        )
+    };
+    if status != 0 {
+        return None;
+    }
+    Some(PeerCredentials {
+        pid: u32::try_from(cred.pid).ok()?,
+        uid: cred.uid,
+    })
+}
+
+/// Who connected on `stream`; this platform does not say.
+#[cfg(not(target_os = "linux"))]
+pub fn peer_of(_stream: &std::os::unix::net::UnixStream) -> Option<PeerCredentials> {
+    None
+}
+
+/// The user this process runs as.
+pub fn effective_uid() -> u32 {
+    // SAFETY: `geteuid` takes no arguments and cannot fail.
+    unsafe { libc::geteuid() }
 }
 
 /// The pid of a process's parent: field 4 of `/proc/<pid>/stat` on Linux, else
@@ -71,6 +140,171 @@ fn parent_of(pid: u32) -> Option<u32> {
 /// Whether the recorded process still runs: the pid exists and started when recorded.
 pub fn alive(holder: &Holder) -> bool {
     start_of(holder.pid).is_some_and(|start| start == holder.start)
+}
+
+/// A signal [`signal`] sends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Signal {
+    /// `SIGTERM`: asks the process to end.
+    Terminate,
+    /// `SIGKILL`: ends it.
+    Kill,
+}
+
+impl Signal {
+    fn number(self) -> libc::c_int {
+        match self {
+            Self::Terminate => libc::SIGTERM,
+            Self::Kill => libc::SIGKILL,
+        }
+    }
+}
+
+/// The stop signal that arrived since [`catch_stop`], by number; 0 while none has.
+static STOP_SIGNAL: AtomicI32 = AtomicI32::new(0);
+
+/// What SIGINT and SIGTERM run once [`catch_stop`] is in place: it records which one arrived and
+/// does nothing else, the one thing a handler may safely do.
+extern "C" fn record_stop(signal: libc::c_int) {
+    STOP_SIGNAL.store(signal, Ordering::SeqCst);
+}
+
+/// From now on SIGINT and SIGTERM end nothing at once: each is recorded, for [`stop_signal`] to
+/// read, and the process ends when it chooses to (the scheduler, between two ticks). A SIGINT this
+/// process was started ignoring (a job put in the background by a shell) stays ignored. An `exec`
+/// puts both back to the default, so a child, which runs a program of its own, never inherits the
+/// handler. An error names the signal that could not be caught.
+pub fn catch_stop() -> Result<(), String> {
+    let handler = record_stop as extern "C" fn(libc::c_int) as libc::sighandler_t;
+    for (signal, name) in [(libc::SIGINT, "SIGINT"), (libc::SIGTERM, "SIGTERM")] {
+        // SAFETY: the handler only stores into an atomic, which is async-signal-safe, and touches
+        // no other state; the call only changes how this process takes `signal`.
+        let before = unsafe { libc::signal(signal, handler) };
+        if before == libc::SIG_ERR {
+            return Err(format!("cannot catch {name}"));
+        }
+        if signal == libc::SIGINT && before == libc::SIG_IGN {
+            // SAFETY: as above; `SIG_IGN` runs no code at all.
+            unsafe { libc::signal(signal, libc::SIG_IGN) };
+        }
+    }
+    Ok(())
+}
+
+/// SIGINT and SIGTERM, the stop signals, as a set.
+fn stop_signals() -> libc::sigset_t {
+    // SAFETY: an all-zero `sigset_t` is a valid value of that plain-data type, and `sigemptyset`
+    // and `sigaddset` only write into the set this function owns, with signals that exist.
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&raw mut set);
+        libc::sigaddset(&raw mut set, libc::SIGINT);
+        libc::sigaddset(&raw mut set, libc::SIGTERM);
+        set
+    }
+}
+
+/// Changes this thread's mask of the stop signals: `how` is `SIG_BLOCK` or `SIG_UNBLOCK`.
+fn mask_stop(how: libc::c_int) -> Result<(), String> {
+    let set = stop_signals();
+    // SAFETY: `pthread_sigmask` only reads `set`, which lives for the call, and changes the
+    // calling thread's mask; the old mask is not asked for.
+    let failed = unsafe { libc::pthread_sigmask(how, &raw const set, std::ptr::null_mut()) };
+    if failed == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "cannot change the mask of SIGINT and SIGTERM: {}",
+            std::io::Error::from_raw_os_error(failed)
+        ))
+    }
+}
+
+/// From now on SIGINT and SIGTERM are held back: one that arrives is kept pending and changes
+/// nothing until [`let_stop_through`]. An [`exec`] keeps both the mask and what is pending, so the
+/// new image gets a stop that landed in between once it lets it through. The scheduler holds them
+/// from before its last look for a stop to its restart; it runs one thread then, whose mask this
+/// is.
+pub fn hold_stop() -> Result<(), String> {
+    mask_stop(libc::SIG_BLOCK)
+}
+
+/// Lets SIGINT and SIGTERM through again, after [`hold_stop`] here or before the `exec` that
+/// started this image: one held back is delivered now, recorded once [`catch_stop`] is in place.
+pub fn let_stop_through() -> Result<(), String> {
+    mask_stop(libc::SIG_UNBLOCK)
+}
+
+/// Starts `program` in place of this process, with `args` after it (its own path is the first
+/// argument), in the same environment: the same pid, so the same start. Unlike `std`'s `exec`,
+/// which clears the signal mask first, it keeps the mask and the signals pending, so a stop held
+/// back ([`hold_stop`]) reaches the new image instead of a handler the exec wipes. Returns only
+/// when it failed, with why.
+pub fn exec(program: &Path, args: &[std::ffi::OsString]) -> std::io::Error {
+    use std::os::unix::ffi::OsStrExt;
+    let nul = || std::io::Error::new(std::io::ErrorKind::InvalidInput, "an argument holds a NUL");
+    let Ok(path) = std::ffi::CString::new(program.as_os_str().as_bytes()) else {
+        return nul();
+    };
+    let mut argv = vec![path.clone()];
+    for arg in args {
+        let Ok(arg) = std::ffi::CString::new(arg.as_bytes()) else {
+            return nul();
+        };
+        argv.push(arg);
+    }
+    let mut pointers: Vec<*const libc::c_char> = argv.iter().map(|arg| arg.as_ptr()).collect();
+    pointers.push(std::ptr::null());
+    // SAFETY: `path` and every pointer of `pointers` point into `CString`s, each ended by a NUL,
+    // that live past the call, and `pointers` ends with the null pointer `execv` looks for. It
+    // returns only when it failed, and changes nothing then.
+    unsafe { libc::execv(path.as_ptr(), pointers.as_ptr()) };
+    std::io::Error::last_os_error()
+}
+
+/// The stop signal that arrived since [`catch_stop`], by name (`SIGINT`, `SIGTERM`); none while
+/// none has.
+pub fn stop_signal() -> Option<&'static str> {
+    match STOP_SIGNAL.load(Ordering::SeqCst) {
+        0 => None,
+        libc::SIGINT => Some("SIGINT"),
+        libc::SIGTERM => Some("SIGTERM"),
+        _ => Some("a signal"),
+    }
+}
+
+/// The process group a live holder belongs to; none when it is not alive, or when the group is
+/// this process's own (or init's), which no verb may signal as a whole.
+pub fn group_of(holder: &Holder) -> Option<u32> {
+    if !alive(holder) {
+        return None;
+    }
+    let pid = libc::pid_t::try_from(holder.pid).ok()?;
+    // SAFETY: `getpgid` and `getpgrp` take and return plain values and touch no memory.
+    let group = unsafe { libc::getpgid(pid) };
+    let own = unsafe { libc::getpgrp() };
+    (group > 1 && group != own)
+        .then(|| u32::try_from(group).ok())
+        .flatten()
+}
+
+/// Sends `signal` to the holder, if it is still the process recorded (a pid the OS has since
+/// handed to another is left alone), and to every process of `group`, read earlier with
+/// [`group_of`]. A process or group already gone is not an error.
+pub fn signal(holder: &Holder, group: Option<u32>, signal: Signal) {
+    if let Some(group) = group.and_then(|group| libc::pid_t::try_from(group).ok())
+        && group > 1
+    {
+        // SAFETY: `killpg` takes plain values; a group that is gone answers `ESRCH`, ignored.
+        unsafe { libc::killpg(group, signal.number()) };
+    }
+    if let Ok(pid) = libc::pid_t::try_from(holder.pid)
+        && pid > 1
+        && alive(holder)
+    {
+        // SAFETY: `kill` takes plain values; a process that is gone answers `ESRCH`, ignored.
+        unsafe { libc::kill(pid, signal.number()) };
+    }
 }
 
 /// When the process started, as the OS reports it; none when there is no such process.
@@ -105,12 +339,42 @@ fn proc_start(stat: &str) -> Option<String> {
 }
 
 /// Every live zaf instance on the machine, from any project, each once: the live processes
-/// whose environment carries [`RUN_VAR`], grouped by it, ordered by run folder.
+/// whose environment carries [`RUN_VAR`], grouped by it, ordered by run folder. A run whose
+/// folder says it has ended is kept while a process still carries it: this is what the budget's
+/// live use and its one-E rule read, and an orphan still uses the machine.
 ///
 /// A process whose environment cannot be read (another user's, or one that exits during
 /// the read) is skipped. Each call reads the process table afresh; nothing is kept.
 pub fn machine() -> Vec<MachineInstance> {
     group(environments(), &resident_kibibytes)
+}
+
+/// The live zaf instances as `zaf status` shows them: the [`machine`] read less the runs whose
+/// folder says they have ended ([`run_ended`]), so an orphan of an ended run is not shown as an
+/// instance. Only for what is shown; the budget reads [`machine`].
+pub fn displayed() -> Vec<MachineInstance> {
+    let mut instances = machine();
+    instances.retain(|instance| !run_ended(&instance.run, &alive));
+    instances
+}
+
+/// The file a run folder records its exit in, a launch's and a phase's alike.
+const EXIT_FILE: &str = "exit";
+
+/// The file a run folder names the run's own process in, a launch's and a phase's alike.
+const PID_FILE: &str = "pid";
+
+/// Whether the run folder `run` says its run has ended: it records an exit, or the process its
+/// `pid` file names is gone (`alive` says). A folder that records neither, or is not there, has
+/// not: a process carrying [`RUN_VAR`] then still counts.
+fn run_ended(run: &Path, alive: &dyn Fn(&Holder) -> bool) -> bool {
+    if run.join(EXIT_FILE).exists() {
+        return true;
+    }
+    std::fs::read_to_string(run.join(PID_FILE))
+        .ok()
+        .and_then(|text| Holder::parse(&text))
+        .is_some_and(|holder| !alive(&holder))
 }
 
 /// The three variables of one process's environment the machine read keeps; every other
@@ -406,6 +670,14 @@ mod tests {
             .collect()
     }
 
+    /// The instances `zaf status` shows whose run folder is under `dir`.
+    fn shown_under(dir: &Path) -> Vec<MachineInstance> {
+        displayed()
+            .into_iter()
+            .filter(|instance| instance.run.starts_with(dir))
+            .collect()
+    }
+
     #[test]
     fn an_instance_and_its_children_count_once() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -490,6 +762,48 @@ mod tests {
         assert!(
             (100..200).contains(&memory),
             "the next read no longer counts the exited process: {memory} MiB"
+        );
+    }
+
+    #[test]
+    fn an_orphan_of_an_ended_run_is_no_instance() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        // Three runs of one project, each with a process still carrying its `ZAF_RUN`: one whose
+        // folder records its exit, one whose recorded process is gone (the orphan's parent),
+        // and one whose recorded process is the live stub itself.
+        let ended = run_in(dir.path(), "bookshelf", "implement-1-task-3");
+        let orphaned = run_in(dir.path(), "bookshelf", "implement-2-task-4");
+        let live = run_in(dir.path(), "bookshelf", "implement-3-task-5");
+        for run in [&ended, &orphaned, &live] {
+            std::fs::create_dir_all(run).expect("run folder");
+        }
+        std::fs::write(ended.join(EXIT_FILE), "0\n").expect("exit");
+        let gone = Holder {
+            pid: u32::MAX - 1,
+            start: "1".to_owned(),
+        };
+        std::fs::write(orphaned.join(PID_FILE), gone.to_string()).expect("pid");
+        let _ended = Stub::start(&[(RUN_VAR, ended.to_str().expect("utf-8"))]);
+        let _orphan = Stub::start(&[(RUN_VAR, orphaned.to_str().expect("utf-8"))]);
+        let running = Stub::start(&[(RUN_VAR, live.to_str().expect("utf-8"))]);
+        let holder = holder_of(running.pid()).expect("the stub's holder");
+        std::fs::write(live.join(PID_FILE), holder.to_string()).expect("pid");
+
+        let shown = shown_under(dir.path());
+
+        let runs: Vec<&Path> = shown
+            .iter()
+            .map(|instance| instance.run.as_path())
+            .collect();
+        assert_eq!(runs, [live.as_path()], "only the live run is shown");
+        // The machine read the budget charges still sees all three.
+        assert_eq!(read_under(dir.path()).len(), 3);
+        assert!(run_ended(&ended, &|_| true));
+        assert!(run_ended(&orphaned, &alive));
+        assert!(!run_ended(&live, &alive));
+        assert!(
+            !run_ended(&dir.path().join("nowhere"), &alive),
+            "no folder, nothing ended"
         );
     }
 
