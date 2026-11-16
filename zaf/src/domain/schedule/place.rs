@@ -1,5 +1,5 @@
-//! Where a ticket sits, from facts alone (R3, R5, R15, R16, R22): [`place()`] for one ticket,
-//! [`Placement::of`] for all of them.
+//! Where a ticket sits, from facts alone (R3, R5, R15, R16, R22, R29, R30): [`place()`] for one
+//! ticket, [`Placement::of`] for all of them.
 //!
 //! A ticket sits in exactly one place, the first of these that holds:
 //!
@@ -8,7 +8,9 @@
 //! 3. **Waiting:** its epic is unsigned or unchallenged, a question is open on it or its epic, a
 //!    dependency is not done, or the checks at its head have not ended (none registered counts as
 //!    not ended), or its current phase awaits something outside. It waits on every one of these
-//!    that holds, as a set.
+//!    that holds, as a set. With none of them, a ticket at its merge ([`super::at_merge`]) waits
+//!    on the ticket fresh from a fix that merges first (R30) and on the integration branch while
+//!    a check is pending at its head (R29), unless the Engineer ruled it through at that head.
 //! 4. **In the lane:** none of the above, with the next action to run and since when.
 //!
 //! Running comes first, so a ticket whose model still works keeps its slot even when a question
@@ -19,7 +21,7 @@ use std::time::SystemTime;
 
 use super::facts::TicketFacts;
 use super::lane::{Lane, LaneEntry, weight};
-use super::phase::{ActionName, PhaseStatus, current_phase};
+use super::phase::{ActionName, CurrentPhase, PhaseEnd, PhaseStatus, current_phase};
 use crate::domain::{CommitId, Standing, TicketId};
 
 /// A live phase run: the ticket holds its slot until the run's end is recorded.
@@ -45,6 +47,12 @@ pub enum WaitingOn {
     Ticket(TicketId),
     /// The checks at this ticket's head: CI, a review, anything outside.
     Check(TicketId, CommitId),
+    /// The merge of another ticket, which is fresh from a fix and merges first (R30). Not a
+    /// dependency: it ends by itself when that ticket merges or stops being fresh.
+    Merge(TicketId),
+    /// The checks at this commit, the integration branch's head: the last merge is still being
+    /// checked there (R29).
+    Base(CommitId),
 }
 
 /// Where one ticket sits.
@@ -68,6 +76,10 @@ pub enum Place {
 }
 
 /// Where the ticket of `facts` sits at `now`, the first place that holds (see the module).
+///
+/// A ticket at its merge reads [`TicketFacts::merging`] for the two waits of the merge: the
+/// caller fills it for all the tickets at once ([`super::order_merges`]), and left at its default
+/// it holds nothing back.
 ///
 /// `now` is only a fallback for `since`, for a ticket whose readiness no fact times. Placement
 /// never reads a state label, never reads a claim and never reads getting nowhere
@@ -112,20 +124,36 @@ pub fn place(facts: &TicketFacts, now: SystemTime) -> Place {
     if let PhaseStatus::Awaiting(waiting_on) = &current.status {
         waits.insert(waiting_on.clone());
     }
+    // The merge's own waits hold only a ticket that would otherwise be in the lane at its merge.
+    let merges_next =
+        current.phase.ends.contains(&PhaseEnd::Merged) && current.next() == &current.phase.name;
+    if waits.is_empty() && merges_next {
+        let first = facts.merging.first.filter(|first| *first != facts.ticket);
+        waits.extend(first.map(WaitingOn::Merge));
+        // A ruled question on the wait at this very head is the way through it (R19).
+        let base = facts.merging.base.awaited();
+        let base = base.filter(|head| facts.merging.ruled_at.as_ref() != Some(*head));
+        waits.extend(base.cloned().map(WaitingOn::Base));
+    }
     if !waits.is_empty() {
         return Place::Waiting(waits);
     }
+    Place::InLane {
+        next: current.next().clone(),
+        since: ready_since(&current, facts).unwrap_or(now),
+    }
+}
+
+/// Since when a ticket whose current phase is `current` is ready for its next run, as far as a
+/// fact times it: when the phase failed, or else when the phase before it ended, or else when the
+/// ticket became ready for its first phase. It is the `since` of its place in the lane, and the
+/// clock of a ticket held at its merge by the integration branch ([`super::base_clock`]).
+pub(super) fn ready_since(current: &CurrentPhase<'_>, facts: &TicketFacts) -> Option<SystemTime> {
     let failed_at = match &current.status {
         PhaseStatus::Failed(failure) => failure.at,
         PhaseStatus::Done | PhaseStatus::Open | PhaseStatus::Awaiting(_) => None,
     };
-    Place::InLane {
-        next: current.next().clone(),
-        since: failed_at
-            .or(current.previous)
-            .or(facts.ready_since)
-            .unwrap_or(now),
-    }
+    failed_at.or(current.previous).or(facts.ready_since)
 }
 
 /// Every ticket in its one place: the running ones by ticket, the waiting ones under each thing

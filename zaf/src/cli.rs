@@ -410,12 +410,20 @@ pub enum BoardAction {
         #[arg(long)]
         door: bool,
     },
-    /// Record the Engineer's ruling on a question.
+    // The verb as typed: zaf board ruling <question> '<answer>' [--as-written]
+    /// Record the Engineer's ruling on a question; an empty answer, or one with a gap a shell left, is refused.
+    ///
+    /// A gap is two or more spaces in a row inside a line: what a shell leaves where it ate
+    /// text in backticks or after `$` inside double quotes. Such an answer exits 1 and nothing
+    /// is written: quote the answer in single quotes, or pass --as-written.
     Ruling {
         /// The question.
         question: TicketId,
-        /// The ruling.
+        /// The ruling; in single quotes, so the shell leaves it as typed.
         text: String,
+        /// Send the ruling exactly as it is, gaps included; an empty one is still refused.
+        #[arg(long)]
+        as_written: bool,
     },
     /// Mark a task done once its work has landed: in land, or when its recorded pull request has merged.
     Done {

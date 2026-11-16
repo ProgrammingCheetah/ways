@@ -112,6 +112,10 @@ pub struct Ports<'a> {
     pub state_dir: &'a Path,
     /// Whether a recorded process still runs.
     pub alive: &'a dyn Fn(&Holder) -> bool,
+    /// The release the tickets build toward, which names the integration branch whose checks a
+    /// merge waits on (`[branches] integration`); none when the caller has none, and then no
+    /// branch is read.
+    pub version: Option<&'a str>,
 }
 
 /// Checks, through the tick's gate, that `action` may start on `task` now, releases the task's

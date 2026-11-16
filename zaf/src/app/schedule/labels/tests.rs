@@ -168,6 +168,7 @@ impl Scene {
             home: &self.home,
             state_dir: &self.state_dir,
             alive: &|_: &Holder| false,
+            version: None,
         };
         gather(&ports).expect("the board reads")
     }

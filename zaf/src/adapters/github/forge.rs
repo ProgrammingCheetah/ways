@@ -10,15 +10,15 @@ use serde::Deserialize;
 
 use super::GhCommand;
 use super::rows::{
-    CheckRow, ConversationCommentRow, FileRow, LineCommentRow, PrStateRow, PrTimesRow, ReviewRow,
-    UserRow,
+    BranchHeadRow, CheckRow, CheckRunsPage, ConversationCommentRow, FileRow, LineCommentRow,
+    PrStateRow, PrTimesRow, ReviewRow, UserRow,
 };
 use crate::adapters::notes::{HANDOFF_MARKER, marked, unmarked};
 use crate::domain::Location;
 use crate::ports::{
-    Author, Check, CheckBucket, CheckLink, CheckLog, CheckName, CheckRun, CheckState, CommitId,
-    Forge, JobId, MergeOutcome, MergeStrategy, NewPullRequest, Opened, PortError, PrNumber,
-    PullRequest, ReviewComment, RuleId, ScanningAlert,
+    Author, BranchChecks, BranchName, Check, CheckBucket, CheckLink, CheckLog, CheckName, CheckRun,
+    CheckState, CommitId, Forge, JobId, MergeOutcome, MergeStrategy, NewPullRequest, Opened,
+    PortError, PrNumber, PullRequest, ReviewComment, RuleId, ScanningAlert,
 };
 
 /// The author shown for a comment whose account was deleted, as GitHub shows it.
@@ -28,6 +28,8 @@ const NO_CHECKS: &str = "no checks reported";
 /// What gh's refusal says, in any case, when the merge may go through if tried again: another
 /// merge moved the base, or GitHub is still working out whether it merges.
 const NOT_YET: &[&str] = &["base branch was modified", "not mergeable"];
+/// What gh's failure says when the REST API has no such thing: a branch that does not exist.
+const NOT_FOUND: &str = "HTTP 404";
 /// What separates an Actions job's id from the rest of a check's link.
 const JOB_SEGMENT: &str = "/job/";
 /// The jq program that prints one tab-separated line per check: bucket, name and link.
@@ -54,15 +56,20 @@ const ZERO_TIME: &str = "0001-01-01T00:00:00Z";
 /// The time gh gave for `what` on a pull request; a time gh left out, or printed as the zero
 /// time or in a form that does not parse, is an error naming the pull request.
 fn time_of(pr: PrNumber, what: &str, text: Option<&str>) -> Result<SystemTime, PortError> {
+    time_on(&format!("pull request {pr}"), what, text)
+}
+
+/// [`time_of`] for whatever `of` names (`pull request #7`, `branch feature/v1`).
+fn time_on(of: &str, what: &str, text: Option<&str>) -> Result<SystemTime, PortError> {
     let text = text.filter(|text| !text.is_empty() && *text != ZERO_TIME);
     let Some(text) = text else {
         return Err(PortError::Backend(format!(
-            "pull request {pr}: gh gave no time for {what}"
+            "{of}: gh gave no time for {what}"
         )));
     };
     humantime::parse_rfc3339(text).map_err(|error| {
         PortError::Backend(format!(
-            "pull request {pr}: gh printed a bad time `{text}` for {what}: {error}"
+            "{of}: gh printed a bad time `{text}` for {what}: {error}"
         ))
     })
 }
@@ -142,6 +149,60 @@ impl Forge for GithubForge {
                 })
             })
             .collect()
+    }
+
+    /// The branch is read for the commit it is at (`gh api repos/{repo}/branches/{branch}`), then
+    /// that commit's check runs (`commits/{sha}/check-runs`, the latest run of each name), put in
+    /// gh's buckets as `pr checks` puts a pull request's. A branch GitHub answers 404 for is no
+    /// head. Commit statuses posted outside check runs are not read.
+    fn branch_checks(&self, branch: &BranchName) -> Result<BranchChecks, PortError> {
+        let endpoint = format!("branches/{branch}");
+        let row: BranchHeadRow = match self.gh.api_text(&endpoint, &[]) {
+            Ok(text) => serde_json::from_str(&text).map_err(|error| {
+                PortError::Backend(format!("branch {branch}: gh printed no commit: {error}"))
+            })?,
+            Err(PortError::Backend(message)) if message.contains(NOT_FOUND) => {
+                return Ok(BranchChecks {
+                    head: None,
+                    checks: Vec::new(),
+                });
+            }
+            Err(error) => return Err(error),
+        };
+        let head = row.commit.sha;
+        let text = self.gh.api_text(
+            &format!("commits/{head}/check-runs"),
+            &["--paginate", "--slurp"],
+        )?;
+        let pages: Vec<CheckRunsPage> = serde_json::from_str(&text).map_err(|error| {
+            PortError::Backend(format!(
+                "branch {branch}: gh printed no check runs: {error}"
+            ))
+        })?;
+        let of = format!("branch {branch}");
+        let checks = pages
+            .into_iter()
+            .flat_map(|page| page.check_runs)
+            .map(|row| {
+                let state = row.bucket().state();
+                let finished_at = match state {
+                    CheckState::Pending => None,
+                    CheckState::Passed | CheckState::Failed => {
+                        let what = format!("the finish of check `{}`", row.name);
+                        Some(time_on(&of, &what, row.completed_at.as_deref())?)
+                    }
+                };
+                Ok(Check {
+                    name: CheckName::from(row.name),
+                    state,
+                    finished_at,
+                })
+            })
+            .collect::<Result<Vec<Check>, PortError>>()?;
+        Ok(BranchChecks {
+            head: Some(CommitId::from(head)),
+            checks,
+        })
     }
 
     fn pull_request(&self, pr: PrNumber) -> Result<PullRequest, PortError> {

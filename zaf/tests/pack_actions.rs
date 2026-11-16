@@ -156,10 +156,7 @@ fn merge_starts_fix_and_sync_base_is_the_programmers() {
 
     let merge = read("merge").metadata;
     assert_eq!(merge.on_fail.as_ref().map(AsRef::as_ref), Some("fix"));
-    assert_eq!(
-        merge.codes.keys().copied().collect::<Vec<_>>(),
-        [1, 2, 3, 4]
-    );
+    assert_eq!(merge.codes.keys().copied().collect::<Vec<_>>(), [1, 2, 4]);
     assert!(
         merge.codes[&1].starts_with("conflicted"),
         "{:?}",

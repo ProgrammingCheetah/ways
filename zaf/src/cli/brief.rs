@@ -173,6 +173,7 @@ fn why_section(composition: &Composition, board: &dyn Board, task: TicketId) -> 
         Some(Ok(home)) => home,
         _ => root.join(STATE_DIR),
     };
+    let version = std::env::var(VERSION_VAR).ok();
     let ports = Ports {
         board,
         forge: forge.as_ref(),
@@ -181,6 +182,7 @@ fn why_section(composition: &Composition, board: &dyn Board, task: TicketId) -> 
         home: &home,
         state_dir: &state_dir,
         alive: &process::alive,
+        version: version.as_deref(),
     };
     match why_this_run(&ports, task) {
         Ok(why) => why.render(),

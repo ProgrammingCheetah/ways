@@ -3,6 +3,7 @@ use std::time::{Duration, SystemTime};
 
 use super::*;
 use crate::app::actions::{ActionKind, ListedPhase, PhaseEnd};
+use crate::app::schedule::gather::Base;
 use crate::app::schedule::tick::support;
 use crate::app::spawn::runs;
 use crate::app::spawn::tick::PlannedLaunch;
@@ -1128,4 +1129,223 @@ fn a_lock_that_cannot_be_taken_raises_nothing_and_says_why() {
     assert!(matches!(error, AskError::Lock(_)), "{error:?}");
     assert!(error.to_string().starts_with("cannot write "), "{error}");
     assert!(asked(&board).is_empty(), "nothing raised");
+}
+
+// A red integration branch (R29).
+
+/// The integration branch `feature/v1` at `head` with `checks`, as a gather read it.
+fn base_at(head: &str, checks: Vec<CheckFact>) -> Base {
+    Base {
+        branch: crate::ports::BranchName::from("feature/v1"),
+        facts: crate::domain::schedule::BaseFacts {
+            head: Some(CommitId::from(head)),
+            checks,
+        },
+    }
+}
+
+/// Task #7 waiting on its checks, gathered over `base`, under the signed epic #1 of a board.
+fn over_base(base: Option<Base>) -> (FakeBoard, Gathered) {
+    let board = FakeBoard::default();
+    board.add_signed_epic(id(1), "Epic");
+    let mut gathered = gathered_of(vec![awaiting_checks(HEAD_A, Vec::new(), Vec::new())]);
+    gathered.base = base;
+    (board, gathered)
+}
+
+#[test]
+fn a_red_integration_branch_raises_one_question_on_the_epic() {
+    let red = vec![
+        check("ci / test", CheckResult::Failed(time(T0))),
+        check("ci / lint", CheckResult::Passed(time(T0))),
+        check("ci / build", CheckResult::Failed(time(T0))),
+    ];
+    let (board, gathered) = over_base(Some(base_at(HEAD_B, red)));
+    let raised = asks_at(&board, &gathered, T0);
+    assert_eq!(raised.len(), 1, "{raised:?}");
+    assert_eq!(raised[0].task, id(1), "on the epic");
+    assert_eq!(raised[0].cause, "feature/v1 is red at fed9876");
+    assert_eq!(
+        asked(&board),
+        [(
+            Some(id(1)),
+            format!(
+                "The integration branch feature/v1 is red: the checks ci / test, ci / build \
+                 have failed at fed9876. The tickets of epic #1 merge into it, so they wait on \
+                 this question. File a fix, or rule to carry on: once this is ruled they go on, \
+                 merges included, though the branch is still red at that commit. Red base: \
+                 feature/v1 at {HEAD_B}."
+            )
+        )]
+    );
+    // The same red head, at the next tick: the question is open, and no second one is raised.
+    assert!(asks_at(&board, &gathered, T0 + HOUR).is_empty());
+    assert_eq!(asked(&board).len(), 1);
+}
+
+#[test]
+fn a_ruled_red_head_is_not_asked_again_and_a_new_red_head_is() {
+    let red = |head: &str| {
+        Some(base_at(
+            head,
+            vec![check("ci", CheckResult::Failed(time(T0)))],
+        ))
+    };
+    let (board, mut gathered) = over_base(red(HEAD_B));
+    assert_eq!(asks_at(&board, &gathered, T0).len(), 1);
+    rule_all(&board);
+    // Ruled: work goes on though the branch is still red there.
+    assert!(asks_at(&board, &gathered, T0 + HOUR).is_empty());
+    assert!(board.questions().expect("lists").is_empty());
+    // A merge moved the branch and it is red again: a new head, a new question.
+    gathered.base = red("0123456789abcdef");
+    let raised = asks_at(&board, &gathered, T0 + HOUR + 1);
+    assert_eq!(raised.len(), 1, "{raised:?}");
+    assert_eq!(raised[0].cause, "feature/v1 is red at 0123456");
+}
+
+#[test]
+fn a_branch_that_is_green_pending_or_unknown_raises_nothing() {
+    for checks in [
+        Vec::new(),
+        vec![check("ci", CheckResult::Passed(time(T0)))],
+        vec![check("ci", CheckResult::Pending)],
+    ] {
+        let (board, gathered) = over_base(Some(base_at(HEAD_B, checks.clone())));
+        assert!(asks_at(&board, &gathered, T0).is_empty(), "{checks:?}");
+    }
+    let (board, gathered) = over_base(None);
+    assert!(asks_at(&board, &gathered, T0).is_empty(), "not read");
+    // Failed checks with no head are an unknown branch: nothing to name.
+    let mut headless = base_at(HEAD_B, vec![check("ci", CheckResult::Failed(time(T0)))]);
+    headless.facts.head = None;
+    let (board, gathered) = over_base(Some(headless));
+    assert!(asks_at(&board, &gathered, T0).is_empty());
+}
+
+#[test]
+fn a_red_branch_is_asked_once_for_each_epic_with_a_ticket_not_done() {
+    let board = FakeBoard::default();
+    for epic in [1, 2, 3] {
+        board.add_signed_epic(id(epic), "Epic");
+    }
+    let mut second = awaiting_checks(HEAD_A, Vec::new(), Vec::new());
+    second.ticket = id(8);
+    let mut merged = awaiting_checks(HEAD_A, Vec::new(), Vec::new());
+    merged.ticket = id(9);
+    if let Some(pull) = merged.pull.as_mut() {
+        pull.merged_at = Some(time(T0));
+    }
+    let mut gathered = gathered_of(vec![
+        awaiting_checks(HEAD_A, Vec::new(), Vec::new()),
+        second,
+        merged,
+    ]);
+    for (ticket, epic) in [(8, 2), (9, 3)] {
+        if let Some(beside) = gathered.beside.get_mut(&id(ticket)) {
+            beside.epic = id(epic);
+        }
+    }
+    gathered.base = Some(base_at(
+        HEAD_B,
+        vec![check("ci", CheckResult::Failed(time(T0)))],
+    ));
+    let raised = asks_at(&board, &gathered, T0);
+    let on: Vec<TicketId> = raised.iter().map(|asked| asked.task).collect();
+    assert_eq!(on, [id(1), id(2)], "epic #3 has only a merged ticket");
+    assert!(
+        asked(&board)[0].1.contains("the check ci has failed at"),
+        "{:?}",
+        asked(&board)
+    );
+}
+
+// An overdue wait on the integration branch's checks (R29, R19).
+
+/// Task #7 on a board, green and with its pull request open since [`T0`], so its merge is next,
+/// over the branch `feature/v1` at [`HEAD_B`] with `ci / test` still pending there.
+fn held_at_its_merge() -> (FakeBoard, Gathered) {
+    let board = board_with(&[7]);
+    let list = vec![
+        listed("implement", ActionKind::Model, PhaseEnd::PrOpen, None),
+        listed("merge", ActionKind::Zaf, PhaseEnd::Merged, None),
+    ];
+    let pull = PullFacts {
+        opened_at: time(T0),
+        merged_at: None,
+        head: Some(CommitId::from(HEAD_A)),
+        changes_a_file: true,
+        checks: Vec::new(),
+        reviews: Vec::new(),
+    };
+    let base = base_at(HEAD_B, vec![check("ci / test", CheckResult::Pending)]);
+    let mut facts = support::facts(7, &list, TaskSize::S, time(T0), Some(pull), Vec::new());
+    facts.merging.base = base.facts.clone();
+    let mut gathered = support::gathered(vec![(facts, list)]);
+    gathered.base = Some(base);
+    (board, gathered)
+}
+
+#[test]
+fn a_merge_held_two_hours_by_the_integration_branch_raises_a_question_on_the_ticket() {
+    let (board, gathered) = held_at_its_merge();
+    assert_eq!(
+        place(&gathered.tickets[0], time(T0 + 2 * HOUR)),
+        Place::Waiting(BTreeSet::from([WaitingOn::Base(CommitId::from(HEAD_B))]))
+    );
+    assert!(
+        asks_at(&board, &gathered, T0 + 2 * HOUR - 1).is_empty(),
+        "not before the deadline"
+    );
+    let raised = asks_at(&board, &gathered, T0 + 2 * HOUR);
+    assert_eq!(raised.len(), 1, "{raised:?}");
+    assert_eq!(raised[0].task, id(7), "on the ticket that waits");
+    assert_eq!(
+        raised[0].cause,
+        "the integration branch's checks at fed9876 are still pending after 2 h at its merge"
+    );
+    assert_eq!(
+        asked(&board),
+        [(
+            Some(id(7)),
+            format!(
+                "The checks ci / test of the integration branch feature/v1 are still pending \
+                 at fed9876, and #7 has waited 2 h to merge (since 2027-01-15T08:00:00Z): the \
+                 runner may be down. Its merge waits until they end there; once this is ruled \
+                 it merges at that commit without them. Base deadline: {HEAD_B}."
+            )
+        )]
+    );
+}
+
+#[test]
+fn an_overdue_base_wait_is_not_asked_twice_nor_again_once_ruled() {
+    let (board, gathered) = held_at_its_merge();
+    assert_eq!(asks_at(&board, &gathered, T0 + 2 * HOUR).len(), 1);
+    // Still open at the next tick: the same ticket and head raise nothing.
+    assert!(asks_at(&board, &gathered, T0 + 3 * HOUR).is_empty());
+    assert_eq!(asked(&board).len(), 1);
+    // Ruled: not asked again at that head, even gathered before the ruling was read.
+    rule_all(&board);
+    assert!(asks_at(&board, &gathered, T0 + 4 * HOUR).is_empty());
+    assert!(board.questions().expect("lists").is_empty());
+}
+
+#[test]
+fn a_new_head_of_the_branch_is_a_new_base_deadline() {
+    let (board, mut gathered) = held_at_its_merge();
+    assert_eq!(asks_at(&board, &gathered, T0 + 2 * HOUR).len(), 1);
+    rule_all(&board);
+    let moved = base_at(HEAD_A, vec![check("ci / test", CheckResult::Pending)]);
+    gathered.tickets[0].merging.base = moved.facts.clone();
+    gathered.base = Some(moved);
+    let raised = asks_at(&board, &gathered, T0 + 5 * HOUR);
+    assert_eq!(raised.len(), 1, "{raised:?}");
+    assert!(
+        asked(&board)[0]
+            .1
+            .ends_with(&format!("Base deadline: {HEAD_A}.")),
+        "{:?}",
+        asked(&board)
+    );
 }

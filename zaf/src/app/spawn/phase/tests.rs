@@ -131,6 +131,7 @@ impl Inline {
             home: &self.home,
             state_dir: &self.state_dir,
             alive,
+            version: None,
         };
         open_inline(&ports, TicketId::from(7), &ActionName::from("merge"), this)
     }

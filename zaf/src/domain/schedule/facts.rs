@@ -4,6 +4,8 @@
 //! Every field is a fact, never a state label: nothing here can say `blocked` or `question`, so a
 //! label nothing clears can never hold a ticket (R3, R5). A [`RunRecord`] is one phase run folder
 //! read; its [`Report`] is what the run left behind, the facts a phase hands up (R13).
+//! [`MergeFacts`] is what a ticket's merge reads beyond the ticket itself: the integration
+//! branch's checks ([`BaseFacts`], R29) and the ticket that merges before it (R30).
 
 use std::collections::BTreeSet;
 use std::time::SystemTime;
@@ -256,6 +258,72 @@ impl PullFacts {
     }
 }
 
+/// What the forge says of the integration branch a ticket's pull request merges into (R29): the
+/// commit it is at and the checks there. With no head it is unknown (the branch was not read, the
+/// read failed, or the forge has no such branch), and an unknown base holds nothing back.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BaseFacts {
+    /// The commit the branch is at on the forge; none when unknown.
+    pub head: Option<CommitId>,
+    /// The checks at that commit, in the forge's order; none when unknown, or when none
+    /// registered there.
+    pub checks: Vec<CheckFact>,
+}
+
+impl BaseFacts {
+    /// The head a merge waits on: the branch's head while at least one check there is pending and
+    /// none has failed. None otherwise: unknown, no check at all (nothing says one will come),
+    /// every check ended, or a check failed there, since a held merge could never land the fix
+    /// (the caller asks the Engineer about a red branch instead).
+    #[must_use]
+    pub fn awaited(&self) -> Option<&CommitId> {
+        let head = self.head.as_ref()?;
+        let pending = self
+            .checks
+            .iter()
+            .any(|check| check.result == CheckResult::Pending);
+        (pending && self.failed_checks().is_empty()).then_some(head)
+    }
+
+    /// The checks at the head that are still pending, in the forge's order.
+    #[must_use]
+    pub fn pending_checks(&self) -> Vec<CheckName> {
+        self.named(|result| result == CheckResult::Pending)
+    }
+
+    /// The checks at the head that failed, in the forge's order.
+    #[must_use]
+    pub fn failed_checks(&self) -> Vec<CheckName> {
+        self.named(|result| matches!(result, CheckResult::Failed(_)))
+    }
+
+    /// The names of the checks whose result `wanted` picks, in the forge's order.
+    fn named(&self, wanted: impl Fn(CheckResult) -> bool) -> Vec<CheckName> {
+        self.checks
+            .iter()
+            .filter(|check| wanted(check.result))
+            .map(|check| check.name.clone())
+            .collect()
+    }
+}
+
+/// What a ticket's merge reads beyond the ticket itself (R29, R30). The default holds nothing
+/// back: an unknown base, no ticket to merge first, and no ruling.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MergeFacts {
+    /// The integration branch as the forge reports it.
+    pub base: BaseFacts,
+    /// The ticket fresh from a fix that merges before this one ([`super::order_merges`] works it
+    /// out across the tickets and writes it here); none when no other ticket is, or when this
+    /// ticket is the one that goes first.
+    pub first: Option<TicketId>,
+    /// The head of the integration branch the Engineer ruled this ticket through: the question
+    /// its overdue wait on the checks there raised is ruled ([`super::overdue`]), so those checks
+    /// no longer hold it at that commit. None when no such question is ruled; a head the branch
+    /// has left lets nothing through.
+    pub ruled_at: Option<CommitId>,
+}
+
 /// What the core reads of the ticket's epic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EpicFacts {
@@ -315,6 +383,9 @@ pub struct TicketFacts {
     /// When it became ready for its first phase, when the caller knows; none falls back to the
     /// time handed in, as the tick of today does for a ticket never started.
     pub ready_since: Option<SystemTime>,
+    /// What its merge waits on beyond the ticket itself: the integration branch's checks and the
+    /// ticket that merges first.
+    pub merging: MergeFacts,
 }
 
 impl TicketFacts {

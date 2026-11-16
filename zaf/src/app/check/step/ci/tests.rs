@@ -47,6 +47,13 @@ impl Forge for ScriptedForge {
         Ok(answer)
     }
 
+    fn branch_checks(
+        &self,
+        branch: &crate::ports::BranchName,
+    ) -> Result<crate::ports::BranchChecks, PortError> {
+        self.inner.branch_checks(branch)
+    }
+
     fn review_comments(&self, pr: PrNumber) -> Result<Vec<ReviewComment>, PortError> {
         self.inner.review_comments(pr)
     }

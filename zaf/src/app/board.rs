@@ -223,9 +223,9 @@ pub enum DoneOutcome {
 /// `zaf board done`: marks a task `done` once its work has landed.
 ///
 /// In `land` the label is set, which takes `ready` and `claimed` off. Outside `land` it is set
-/// only when the pull request recorded for the task has merged: `slice-merge` merges the base in
-/// first, which moves the head and so takes the task out of `land` before it merges. A task
-/// already `done` is left alone. Every other case, an open pull request and a task with no
+/// only when the pull request recorded for the task has merged: the work has landed, whatever
+/// took the task out of `land` since (a head that moved, a run that stopped before the mark). A
+/// task already `done` is left alone. Every other case, an open pull request and a task with no
 /// recorded one included, is [`BoardError::NotInLand`], and a read that fails is an error:
 /// either way nothing is changed.
 pub fn done(

@@ -1,7 +1,7 @@
 #!/bin/sh
-# zaf description: open a slice's jj workspace and same-named bookmark at the base, handing back the workspace path
+# zaf description: open a slice's jj workspace and same-named bookmark at the base, handing back the workspace path; a new slice is cut from a fetched base: the remote the base tracks is fetched first and a lagging local base moved up to it, never back, and a repository without that remote opens on the local base
 # zaf 1: refused: the slice is open on another base, its directory is not a slice workspace, the base bookmark is unknown, or the slice name leaves the workspaces directory
-# zaf 2: a backend failed (jj is missing or refused)
+# zaf 2: a backend failed (jj is missing or refused, or the fetch failed)
 # zaf mode: 750
 # zaf group: team, release, implement, fix
 slice=$1
@@ -61,6 +61,42 @@ found=$(root_jj log --no-graph -r "$base_revset" -T 'commit_id ++ "\n"') || exit
 if [ -z "$found" ]; then
     echo "unknown base bookmark $base" >&2
     exit 1
+fi
+
+# Whether a revset names no commit. A jj that fails ends the run: the answer would be a guess.
+none() {
+    if ! ids=$(root_jj log --no-graph -r "$1" -T 'commit_id ++ "\n"'); then
+        exit 2
+    fi
+    [ -z "$ids" ]
+}
+
+# The remote the base bookmark tracks; origin when it tracks none, as `merge-base` finds it.
+remote=origin
+if ! tracked=$(root_jj bookmark list --tracked -T 'remote ++ "\n"' "exact:\"$base\""); then
+    exit 2
+fi
+for name in $tracked; do
+    if [ "$name" != "git" ]; then
+        remote=$name
+        break
+    fi
+done
+
+# A slice is cut from the base as the remote has it: a local base that lacks merges already on
+# the remote would start the slice behind them. A repository where that remote is not configured
+# has nothing to fetch, and the slice opens on the local base.
+if ! remotes=$(root_jj git remote list); then
+    exit 2
+fi
+if printf '%s\n' "$remotes" | awk -v remote="$remote" '$1 == remote { found = 1 } END { exit !found }'; then
+    root_jj git fetch --remote "$remote" || exit 2
+    remote_base="remote_bookmarks(exact:\"$base\", exact:\"$remote\")"
+    # Bring the local bookmark up to the remote's when it is behind; never move it backwards or
+    # sideways. A base never pushed has no remote revision and stays where it is.
+    if ! none "$remote_base" && none "$base_revset ~ ::$remote_base"; then
+        root_jj bookmark set "$base" -r "$remote_base" || exit 2
+    fi
 fi
 
 found=$(root_jj log --no-graph -r "$slice_revset" -T 'commit_id ++ "\n"') || exit 2

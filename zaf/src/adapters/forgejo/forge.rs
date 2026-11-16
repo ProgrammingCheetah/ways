@@ -2,7 +2,8 @@
 //!
 //! Pull requests, their reviews and the hand-off comment are read and written over the REST API
 //! through [`ForgejoApi`]. A check is a commit status of the pull request's head: Forgejo Actions
-//! posts one per job, and a context's latest status is where that check stands. Forgejo has no
+//! posts one per job, and a context's latest status is where that check stands; a branch's checks
+//! are the statuses of the commit the branch is at. Forgejo has no
 //! code scanning, so a pull request has no scanning alerts, and no API for a job's log, so a
 //! failed check's log is its link. The hand-off is the GitHub forge's comment, written and read
 //! by the same shared code.
@@ -15,15 +16,15 @@ use serde_json::json;
 use super::access::{self, Write};
 use super::api::{ForgejoApi, Method};
 use super::rows::{
-    ChangedFileRow, CommentRow, PullRow, ReviewCommentRow, ReviewRow, StatusRow, UserRow,
-    parse_time,
+    BranchHeadRow, ChangedFileRow, CommentRow, PullRow, ReviewCommentRow, ReviewRow, StatusRow,
+    UserRow, parse_time,
 };
 use crate::adapters::notes::{HANDOFF_MARKER, marked, unmarked};
 use crate::domain::Location;
 use crate::ports::{
-    AccessCheck, Author, Check, CheckBucket, CheckLink, CheckLog, CheckName, CheckRun, CheckState,
-    CommitId, Forge, MergeOutcome, MergeStrategy, NewPullRequest, Opened, PortError, PrNumber,
-    PullRequest, ReviewComment, ScanningAlert,
+    AccessCheck, Author, BranchChecks, BranchName, Check, CheckBucket, CheckLink, CheckLog,
+    CheckName, CheckRun, CheckState, CommitId, Forge, MergeOutcome, MergeStrategy, NewPullRequest,
+    Opened, PortError, PrNumber, PullRequest, ReviewComment, ScanningAlert,
 };
 
 /// The author shown for a comment whose account was deleted.
@@ -104,17 +105,40 @@ impl ForgejoForge {
     }
 }
 
-/// The bucket a commit status falls in: `warning` blocks nothing, `error` is a failure.
-fn bucket(pr: PrNumber, row: &StatusRow) -> Result<CheckBucket, PortError> {
+/// The bucket a commit status of `of` (`pull request #7`, `branch feature/v1`) falls in:
+/// `warning` blocks nothing, `error` is a failure.
+fn bucket(of: &str, row: &StatusRow) -> Result<CheckBucket, PortError> {
     match row.status.as_str() {
         "pending" => Ok(CheckBucket::Pending),
         "success" | "warning" => Ok(CheckBucket::Pass),
         "failure" | "error" => Ok(CheckBucket::Fail),
         other => Err(PortError::Backend(format!(
-            "pull request {pr}: Forgejo gave check `{}` the unknown status `{other}`",
+            "{of}: Forgejo gave check `{}` the unknown status `{other}`",
             row.context
         ))),
     }
+}
+
+/// A commit status of `of` as a check: where it stands, finished at the time it was posted.
+fn check_of(of: &str, row: StatusRow) -> Result<Check, PortError> {
+    let state = bucket(of, &row)?.state();
+    let finished_at = match state {
+        CheckState::Pending => None,
+        CheckState::Passed | CheckState::Failed => {
+            let what = format!("the finish of check `{}`", row.context);
+            Some(time_of(of, &what, row.created_at.as_deref())?)
+        }
+    };
+    Ok(Check {
+        name: CheckName::from(row.context),
+        state,
+        finished_at,
+    })
+}
+
+/// A pull request as an error names it: `pull request #7`.
+fn pull_request(pr: PrNumber) -> String {
+    format!("pull request {pr}")
 }
 
 /// A status's link as a person opens it: a path (`/owner/repo/actions/runs/4/jobs/0`) is put
@@ -134,18 +158,18 @@ fn author(user: Option<UserRow>) -> Author {
     user.map_or_else(|| Author::from(GHOST), |user| Author::from(user.login))
 }
 
-/// The time Forgejo gave for `what` on a pull request; one it left out, printed as the zero
-/// time or in a form that does not read is an error naming the pull request.
-fn time_of(pr: PrNumber, what: &str, text: Option<&str>) -> Result<SystemTime, PortError> {
+/// The time Forgejo gave for `what` on `of` (`pull request #7`, `branch feature/v1`); one it left
+/// out, printed as the zero time or in a form that does not read is an error naming `of`.
+fn time_of(of: &str, what: &str, text: Option<&str>) -> Result<SystemTime, PortError> {
     let text = text.filter(|text| !text.is_empty() && *text != ZERO_TIME);
     let Some(text) = text else {
         return Err(PortError::Backend(format!(
-            "pull request {pr}: Forgejo gave no time for {what}"
+            "{of}: Forgejo gave no time for {what}"
         )));
     };
     parse_time(text).ok_or_else(|| {
         PortError::Backend(format!(
-            "pull request {pr}: Forgejo printed a bad time `{text}` for {what}"
+            "{of}: Forgejo printed a bad time `{text}` for {what}"
         ))
     })
 }
@@ -154,24 +178,41 @@ impl Forge for ForgejoForge {
     /// The latest status of each context at the head, finished at the time it was posted.
     fn checks(&self, pr: PrNumber) -> Result<Vec<Check>, PortError> {
         let head = self.head_of(pr)?;
+        let of = pull_request(pr);
         self.statuses(&head)?
             .into_iter()
-            .map(|row| {
-                let state = bucket(pr, &row)?.state();
-                let finished_at = match state {
-                    CheckState::Pending => None,
-                    CheckState::Passed | CheckState::Failed => {
-                        let what = format!("the finish of check `{}`", row.context);
-                        Some(time_of(pr, &what, row.created_at.as_deref())?)
-                    }
-                };
-                Ok(Check {
-                    name: CheckName::from(row.context),
-                    state,
-                    finished_at,
-                })
-            })
+            .map(|row| check_of(&of, row))
             .collect()
+    }
+
+    /// The branch is read for the commit it is at (`GET branches/{branch}`), then the latest
+    /// status of each context at that commit, as a pull request's head is read. A branch Forgejo
+    /// answers 404 for is no head.
+    fn branch_checks(&self, branch: &BranchName) -> Result<BranchChecks, PortError> {
+        let endpoint = format!("branches/{}", branch.as_str());
+        let row: BranchHeadRow = match self.api.get(&endpoint) {
+            Ok(row) => row,
+            Err(PortError::NotFound(_)) => {
+                return Ok(BranchChecks {
+                    head: None,
+                    checks: Vec::new(),
+                });
+            }
+            Err(error) => return Err(error),
+        };
+        let of = format!("branch {branch}");
+        let Some(head) = row.sha().map(str::to_owned) else {
+            return Err(PortError::Backend(format!("{of}: Forgejo gave no commit")));
+        };
+        let checks = self
+            .statuses(&head)?
+            .into_iter()
+            .map(|row| check_of(&of, row))
+            .collect::<Result<Vec<Check>, PortError>>()?;
+        Ok(BranchChecks {
+            head: Some(CommitId::from(head)),
+            checks,
+        })
     }
 
     /// Each posted review's body, then each of its line comments, oldest first; a draft review
@@ -200,7 +241,11 @@ impl Forge for ForgejoForge {
                             .commit_id
                             .filter(|id| !id.is_empty())
                             .map(CommitId::from),
-                        posted_at: time_of(pr, "a comment's posting", line.created_at.as_deref())?,
+                        posted_at: time_of(
+                            &pull_request(pr),
+                            "a comment's posting",
+                            line.created_at.as_deref(),
+                        )?,
                     });
                 }
             }
@@ -215,7 +260,11 @@ impl Forge for ForgejoForge {
                     .commit_id
                     .filter(|id| !id.is_empty())
                     .map(CommitId::from),
-                posted_at: time_of(pr, "a review's posting", review.submitted_at.as_deref())?,
+                posted_at: time_of(
+                    &pull_request(pr),
+                    "a review's posting",
+                    review.submitted_at.as_deref(),
+                )?,
             });
         }
         comments.sort_by_key(|comment| comment.posted_at);
@@ -224,9 +273,13 @@ impl Forge for ForgejoForge {
 
     fn pull_request(&self, pr: PrNumber) -> Result<PullRequest, PortError> {
         let row = self.pull(pr)?;
-        let opened_at = time_of(pr, "its opening", row.created_at.as_deref())?;
+        let opened_at = time_of(&pull_request(pr), "its opening", row.created_at.as_deref())?;
         let merged_at = if row.merged {
-            Some(time_of(pr, "its merge", row.merged_at.as_deref())?)
+            Some(time_of(
+                &pull_request(pr),
+                "its merge",
+                row.merged_at.as_deref(),
+            )?)
         } else {
             None
         };
@@ -376,7 +429,7 @@ impl Forge for ForgejoForge {
             .into_iter()
             .map(|row| {
                 Ok(CheckRun {
-                    bucket: bucket(pr, &row)?,
+                    bucket: bucket(&pull_request(pr), &row)?,
                     link: row
                         .target_url
                         .as_deref()

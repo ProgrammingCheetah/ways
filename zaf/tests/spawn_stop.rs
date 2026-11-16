@@ -116,6 +116,7 @@ fn place_of(root: &Path) -> Place {
         priority: None,
         ruled: Vec::new(),
         ready_since: None,
+        merging: Default::default(),
     };
     place(&facts, SystemTime::now())
 }

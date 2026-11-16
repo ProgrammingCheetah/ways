@@ -182,6 +182,30 @@ pub(super) struct BranchRow {
     pub repo_id: Option<u64>,
 }
 
+/// A branch as `GET /repos/{owner}/{repo}/branches/{branch}` prints it: only the commit it is at.
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct BranchHeadRow {
+    #[serde(default)]
+    pub commit: Option<BranchCommitRow>,
+}
+
+impl BranchHeadRow {
+    /// The commit the branch is at, when Forgejo says.
+    pub fn sha(&self) -> Option<&str> {
+        self.commit
+            .as_ref()
+            .map(|commit| commit.id.as_str())
+            .filter(|id| !id.is_empty())
+    }
+}
+
+/// The commit a branch is at.
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct BranchCommitRow {
+    #[serde(default, deserialize_with = "or_default")]
+    pub id: String,
+}
+
 /// A commit status as `GET /repos/{owner}/{repo}/commits/{ref}/statuses` prints it: one row per
 /// post, so a context's latest row is where it stands.
 #[derive(Debug, Clone, Deserialize)]

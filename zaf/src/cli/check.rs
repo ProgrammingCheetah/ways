@@ -611,6 +611,13 @@ HOME = "/overridden"
             self.0.checks(pr)
         }
 
+        fn branch_checks(
+            &self,
+            branch: &crate::ports::BranchName,
+        ) -> Result<crate::ports::BranchChecks, PortError> {
+            self.0.branch_checks(branch)
+        }
+
         fn review_comments(
             &self,
             pr: PrNumber,

@@ -64,6 +64,61 @@ fn ready_lists_tasks_terse_and_as_json() {
 }
 
 #[test]
+fn a_ruling_with_a_gap_is_refused_and_the_board_is_not_written() {
+    let project = project();
+    let eaten = "I agree on everything, except the name.  makes the rule seem like a living entity. Make it  instead.";
+    let (code, stdout, stderr) = outcome(&project.zaf(&["board", "ruling", "7", eaten]));
+    assert_eq!(code, 1, "a refusal: {stderr}");
+    assert_eq!(stdout, "");
+    assert!(
+        stderr.ends_with(
+        "zaf board ruling: the answer has a gap at column 40 (\"…except the name.  makes the rule s…\"): \
+         a shell eats text in backticks and after $ inside double quotes; nothing was written\n\
+         zaf board ruling: quote the answer in single quotes, or pass --as-written to send it exactly as it is\n"),
+        "{stderr}"
+    );
+    assert_eq!(
+        project.gh_calls(),
+        Vec::<String>::new(),
+        "the board was not asked"
+    );
+}
+
+#[test]
+fn an_empty_ruling_is_refused_even_as_written() {
+    let project = project();
+    for args in [
+        &["board", "ruling", "7", ""][..],
+        &["board", "ruling", "7", "  \n ", "--as-written"][..],
+    ] {
+        let (code, _, stderr) = outcome(&project.zaf(args));
+        assert_eq!(code, 1, "a refusal: {stderr}");
+        assert!(
+            stderr.ends_with("zaf board ruling: the answer is empty; nothing was written\n"),
+            "{stderr}"
+        );
+    }
+    assert_eq!(
+        project.gh_calls(),
+        Vec::<String>::new(),
+        "the board was not asked"
+    );
+}
+
+#[test]
+fn a_ruling_with_a_gap_is_sent_as_written_when_asked() {
+    let project = project();
+    let gapped = "Title only.  Author later.";
+    let (code, stdout, stderr) =
+        outcome(&project.zaf(&["board", "ruling", "7", gapped, "--as-written"]));
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout, "#7 ruled\n");
+    let calls = project.gh_calls();
+    assert!(calls.iter().any(|call| call.contains(gapped)), "{calls:?}");
+    assert!(calls.iter().any(|call| call.starts_with("issue close 7")));
+}
+
+#[test]
 fn claim_exits_by_outcome() {
     let mut project = project();
     let (code, _, stderr) = outcome(&project.zaf(&["board", "claim", "2"]));

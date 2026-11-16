@@ -2,7 +2,8 @@
 //! do` on a throwaway jj repository with a bare remote, it fetches and merges the base as it
 //! stands on the remote into a slice. Up to date and merged exit 0, a conflict exits 1 with the
 //! paths in the log, and uncommitted work or a failed fetch exits 2; the last two leave the
-//! slice as it was.
+//! slice as it was. With `--probe` nothing is merged: it answers whether the base merges cleanly
+//! (0) or conflicts (1, the paths in the log), and the slice is as it was either way.
 
 mod common;
 
@@ -367,4 +368,108 @@ fn merge_base_refuses_with_2_what_it_cannot_use() {
         let (code, text) = merge_with(&project, args);
         assert_eq!(code, 2, "{args:?}: {text}");
     }
+}
+
+fn probe(project: &Project) -> (i32, String) {
+    merge_with(project, &[SLICE, BASE, "--probe"])
+}
+
+/// The commits the root repository can see, hidden ones left out: a trial merge that was kept
+/// would be one more.
+fn visible_commits(project: &Project) -> usize {
+    jj(
+        &project.root,
+        &[
+            "--ignore-working-copy",
+            "log",
+            "--no-graph",
+            "-r",
+            "all()",
+            "-T",
+            r#"commit_id ++ "\n""#,
+        ],
+    )
+    .lines()
+    .count()
+}
+
+#[test]
+fn probe_on_a_clean_base_leaves_the_slice_untouched_and_exits_0() {
+    let project = project();
+
+    // Nothing to merge: the slice is at the base.
+    let before = state(&project);
+    let (code, text) = probe(&project);
+    assert_eq!(code, 0, "{text}");
+    assert_eq!(state(&project), before);
+
+    // The base moved on elsewhere, in a file the slice does not touch.
+    commit_in_slice(&project, "slice.txt", "s\n");
+    let before = state(&project);
+    advance_base_elsewhere(&project, "elsewhere.txt", "e\n");
+    let pushed = remote_base(&project);
+
+    let (code, text) = probe(&project);
+
+    assert_eq!(code, 0, "{text}");
+    assert_eq!(state(&project), before);
+    assert!(!slice_dir(&project).join("elsewhere.txt").exists());
+    // The fetch happened and the lagging local base moved up, as in a merge.
+    assert_eq!(bookmark_at(&project, BASE), pushed);
+    // The trial merge is gone: a second probe leaves as many commits as the first did.
+    let commits = visible_commits(&project);
+    let (code, text) = probe(&project);
+    assert_eq!(code, 0, "{text}");
+    assert_eq!(state(&project), before);
+    assert_eq!(visible_commits(&project), commits);
+    let merges = jj(
+        &project.root,
+        &[
+            "--ignore-working-copy",
+            "log",
+            "--no-graph",
+            "-r",
+            "merges()",
+            "-T",
+            "commit_id",
+        ],
+    );
+    assert_eq!(merges, "", "a merge commit was kept");
+}
+
+#[test]
+fn probe_on_a_conflicting_base_exits_1_names_the_paths_and_leaves_the_slice_untouched() {
+    let project = project();
+    commit_in_slice(&project, "notes.txt", "one\nslice\nthree\n");
+    let before = state(&project);
+    advance_base(&project, "notes.txt", "one\nbase\nthree\n");
+
+    let (code, text) = probe(&project);
+
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        text.contains(&format!("the merge of {BASE} into {SLICE} conflicts in:")),
+        "{text}"
+    );
+    assert!(text.contains("notes.txt"), "{text}");
+    assert_eq!(state(&project), before);
+    assert_eq!(before.2.trim(), "true");
+
+    // A second probe conflicts the same way.
+    let (code, text) = probe(&project);
+    assert_eq!(code, 1, "{text}");
+    assert_eq!(state(&project), before);
+}
+
+#[test]
+fn probe_with_uncommitted_work_exits_2() {
+    let project = project();
+    write(&slice_dir(&project), "wip.txt", "wip\n");
+    advance_base(&project, "base-1.txt", "1\n");
+
+    let (code, text) = probe(&project);
+
+    assert_eq!(code, 2, "{text}");
+    assert!(text.contains("uncommitted"), "{text}");
+    assert!(slice_dir(&project).join("wip.txt").is_file());
 }

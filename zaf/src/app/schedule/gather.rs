@@ -29,7 +29,14 @@
 //!
 //! [`gather`] also counts the slots the live model runs hold, from the phase run folders
 //! themselves ([`model_runs`]), so a live run holds its slot even when the rest of its ticket
-//! cannot be read. It keeps what it listed for the tick's label sync ([`super::labels`]): every
+//! cannot be read. Once per gather it reads the integration branch's checks
+//! ([`Forge::branch_checks`], for the branch [`integration_branch`] names) and hands them to every
+//! ticket, then lets the core order the merges of the tickets that share that branch
+//! ([`order_merges`]): what a ticket at its merge
+//! waits on beyond itself (R29, R30). A branch read that fails fails nothing: the base is unknown,
+//! which holds no merge back, and the failure is named in [`Gathered::warnings`]. A ticket the
+//! branch would hold is also asked whether a ruled question lets it through at that head
+//! ([`ruled_through`]). It keeps what it listed for the tick's label sync ([`super::labels`]): every
 //! open ticket with its label and the open questions by the issue each was raised on; and, for the
 //! trace's count, the done tasks of the open epics whose type has a phase list. Nothing here
 //! writes, and nothing here decides.
@@ -37,21 +44,33 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, UNIX_EPOCH};
 
-use super::ask::marked_run;
-use super::record;
+use super::ask::{base_deadline_marker, marked_run};
+use super::{lock, record};
 use crate::adapters::process;
-use crate::app::actions::{ActionKind, ListedPhase, SliceRecords, live_phases, parse, resolve};
+use crate::app::actions::{
+    ActionKind, ListedPhase, SliceRecords, VERSION_VAR, live_phases, parse, resolve,
+};
 use crate::app::spawn::blockers::blockers;
 use crate::app::spawn::phase::{Ports, listed};
 use crate::composition::{Composition, STATE_DIR, zaf_home};
 use crate::domain::schedule::{
-    ActionName, CheckFact, CheckResult, Dependency, EpicFacts, NOWHERE_LIMIT, Phase, PullFacts,
-    ReviewFact, RuledMarker, TicketFacts,
+    ActionName, BaseFacts, CheckFact, CheckResult, Dependency, EpicFacts, MergeFacts,
+    NOWHERE_LIMIT, Phase, PullFacts, ReviewFact, RuledMarker, TicketFacts, at_merge, order_merges,
 };
 use crate::domain::{
-    DEFAULT_TASK_TYPE, Epic, EpicTask, OpenTicket, Standing, StandingAt, Ticket, TicketId,
+    CommitId, DEFAULT_TASK_TYPE, Epic, EpicTask, OpenTicket, Standing, StandingAt, Ticket, TicketId,
 };
-use crate::ports::{Board, CheckState, Forge, PortError, PrNumber};
+use crate::manifest::BranchesSection;
+use crate::ports::{Board, BranchName, Check, CheckState, Forge, PortError, PrNumber};
+
+/// The placeholder for the release version in a branch pattern.
+const VERSION_PLACEHOLDER: &str = "{version}";
+
+/// The placeholder for the epic in a branch pattern.
+const EPIC_PLACEHOLDER: &str = "{epic}";
+
+/// The placeholder for the task in a branch pattern.
+const TASK_PLACEHOLDER: &str = "{task}";
 
 /// Why a ticket that names no epic is skipped by the tick and refused by `zaf spawn phase`: it has
 /// no signature to run under, so it does not run.
@@ -83,8 +102,21 @@ pub struct Gathered {
     /// ([`crate::domain::schedule::unchallenged`]).
     pub epics: Vec<Epic>,
     /// What was read but ignored, in words, for the tick to print: a gathered ticket's priority
-    /// labels that name no level, or more than one.
+    /// labels that name no level, or more than one; an integration branch whose checks could not
+    /// be read; and a ticket held by that branch whose ruled questions could not be read.
     pub warnings: Vec<String>,
+    /// The integration branch and what the forge says of it, as every ticket's facts carry it;
+    /// none when no version names the branch, no ticket was gathered, or the read failed.
+    pub base: Option<Base>,
+}
+
+/// The integration branch of a gather, and what the forge says of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Base {
+    /// The branch.
+    pub branch: BranchName,
+    /// The commit it is at and the checks there; unknown when the forge has no such branch.
+    pub facts: BaseFacts,
 }
 
 impl Default for Gathered {
@@ -100,6 +132,7 @@ impl Default for Gathered {
             done: BTreeSet::new(),
             epics: Vec::new(),
             warnings: Vec::new(),
+            base: None,
         }
     }
 }
@@ -211,17 +244,140 @@ pub fn gather(ports: &Ports<'_>) -> Result<Gathered, PortError> {
     gathered
         .unreadable
         .sort_by_key(|unreadable| unreadable.ticket);
+    let (base, warnings) = merging(ports, &mut gathered.tickets);
+    gathered.base = base;
+    gathered.warnings.extend(warnings);
     gathered.open = OpenTicket::tickets(open);
     Ok(gathered)
+}
+
+/// The integration branch every ticket of `version` merges into: `[branches] integration` with
+/// `{version}` filled. None when the pattern needs a version and there is none, when it names the
+/// task or the epic (then there is no one branch), or when the name cannot be handed to a forge.
+pub fn integration_branch(branches: &BranchesSection, version: Option<&str>) -> Option<BranchName> {
+    let pattern = branches.integration.as_ref();
+    let name = if pattern.contains(VERSION_PLACEHOLDER) {
+        pattern.replace(
+            VERSION_PLACEHOLDER,
+            version.filter(|version| !version.is_empty())?,
+        )
+    } else {
+        pattern.to_owned()
+    };
+    let branch = BranchName::from(name);
+    (!branch.as_str().contains('{') && branch.is_usable()).then_some(branch)
+}
+
+/// Fills what the merge of each of `tickets` reads beyond the ticket itself
+/// ([`MergeFacts`]): the integration branch's checks, read once ([`Forge::branch_checks`]) and
+/// handed to every ticket, and the order of the merges among the tickets of one integration
+/// branch ([`order_by_branch`]). Gives the branch as read; none with no ticket, or no branch to
+/// name ([`integration_branch`]). Each ticket the branch would hold also learns whether the
+/// Engineer ruled it through at that head ([`ruled_through`]). A branch read that fails leaves
+/// every base unknown, and a ticket whose ruled questions cannot be read stays held; each is a
+/// warning, in words, beside what was read. The merges are ordered either way.
+fn merging(ports: &Ports<'_>, tickets: &mut [TicketFacts]) -> (Option<Base>, Vec<String>) {
+    order_by_branch(&ports.manifest.branches, tickets);
+    if tickets.is_empty() {
+        return (None, Vec::new());
+    }
+    let Some(branch) = integration_branch(&ports.manifest.branches, ports.version) else {
+        return (None, Vec::new());
+    };
+    let facts = match read_base(ports.forge, &branch) {
+        Ok(facts) => facts,
+        Err(reason) => {
+            let warning = format!(
+                "the checks of the integration branch {branch} were not read, so no merge waits \
+                 on them: {reason}"
+            );
+            return (None, vec![warning]);
+        }
+    };
+    let mut warnings = Vec::new();
+    for ticket in tickets {
+        ticket.merging.base = facts.clone();
+        match ruled_through(ports.board, ticket) {
+            Ok(ruled_at) => ticket.merging.ruled_at = ruled_at,
+            Err(error) => warnings.push(format!(
+                "{}: its ruled questions were not read, so it still waits on the integration \
+                 branch {branch}: {error}",
+                ticket.ticket
+            )),
+        }
+    }
+    (Some(Base { branch, facts }), warnings)
+}
+
+/// The head of the integration branch `facts`'s ticket is ruled through, if it is: the branch's
+/// checks would hold its merge ([`at_merge`], [`BaseFacts::awaited`]) and a ruled question on the
+/// ticket ends with the marker of that head ([`base_deadline_marker`]). The ticket's questions
+/// are read only for a ticket the branch would hold, so most gathers read none.
+fn ruled_through(board: &dyn Board, facts: &TicketFacts) -> Result<Option<CommitId>, PortError> {
+    let Some(head) = facts.merging.base.awaited().filter(|_| at_merge(facts)) else {
+        return Ok(None);
+    };
+    let marker = base_deadline_marker(head);
+    let ruled = board
+        .questions_on(facts.ticket)?
+        .iter()
+        .filter(|(_, ruling)| ruling.is_some())
+        .any(|(question, _)| {
+            crate::ports::NewQuestion::text_of(question)
+                .trim()
+                .ends_with(&marker)
+        });
+    Ok(ruled.then(|| head.clone()))
+}
+
+/// Orders the merges of `tickets` ([`order_merges`]) among those that share an integration
+/// branch, and leaves the tickets in ticket order: all of them under the usual pattern, which
+/// names the version alone; the tickets of each epic apart under one that names `{epic}`; and
+/// none under one that names `{task}`, where every ticket has a branch of its own.
+fn order_by_branch(branches: &BranchesSection, tickets: &mut [TicketFacts]) {
+    let pattern = branches.integration.as_ref();
+    if pattern.contains(TASK_PLACEHOLDER) {
+        return;
+    }
+    if !pattern.contains(EPIC_PLACEHOLDER) {
+        order_merges(tickets);
+        return;
+    }
+    let epic_of = |facts: &TicketFacts| facts.epic.map(|epic| epic.id);
+    tickets.sort_by_key(|facts| (epic_of(facts), facts.ticket));
+    for of_one_epic in tickets.chunk_by_mut(|one, other| epic_of(one) == epic_of(other)) {
+        order_merges(of_one_epic);
+    }
+    tickets.sort_by_key(|facts| facts.ticket);
+}
+
+/// The forge's facts about `branch`, as the core reads them: the commit it is at and the checks
+/// there. A branch the forge does not have is unknown. A finished check with no time is an
+/// error, never a guess.
+pub fn read_base(forge: &dyn Forge, branch: &BranchName) -> Result<BaseFacts, String> {
+    let read = forge
+        .branch_checks(branch)
+        .map_err(|error| error.to_string())?;
+    let Some(head) = read.head else {
+        return Ok(BaseFacts::default());
+    };
+    Ok(BaseFacts {
+        head: Some(head),
+        checks: check_facts(read.checks)?,
+    })
 }
 
 /// [`gather`] for the project `composition` loads, over `board`, as the tick gathers it: its
 /// manifest, its forge, its root, its state folder, the zaf home's actions and this machine's
 /// process table. None with no `[phases]`, where nothing is placed. A forge that cannot be built,
-/// or a read every ticket needs that fails, is the error, in words.
+/// or a read every ticket needs that fails, is the error, in words. `version` names the
+/// integration branch; with none, it is the one this process was started under (`ZAF_VERSION`),
+/// or else the one the project's running scheduler ticks for, so `zaf status` and the hub place a
+/// ticket as the tick does.
 pub fn gather_for(
     composition: &Composition,
     board: &dyn Board,
+    version: Option<&str>,
 ) -> Result<Option<Gathered>, String> {
     let manifest = composition.manifest();
     if manifest.phases.is_empty() {
@@ -235,6 +391,11 @@ pub fn gather_for(
         Some(Ok(home)) => home,
         _ => root.join(STATE_DIR),
     };
+    let version = version
+        .map(str::to_owned)
+        .or_else(|| std::env::var(VERSION_VAR).ok())
+        .filter(|version| !version.is_empty())
+        .or_else(|| lock::running(&state_dir, &process::alive).map(|holding| holding.version));
     let ports = Ports {
         board,
         forge: forge.as_ref(),
@@ -243,6 +404,7 @@ pub fn gather_for(
         home: &home,
         state_dir: &state_dir,
         alive: &process::alive,
+        version: version.as_deref(),
     };
     gather(&ports).map(Some).map_err(|error| error.to_string())
 }
@@ -252,6 +414,11 @@ pub fn gather_for(
 /// list). The open tickets, the open epics and the open questions are read as for every ticket.
 /// A ticket the tick would skip is the [`Skip`] the tick names it by: one that cannot run, or
 /// one something about which fails to read, the lists every ticket shares included.
+///
+/// A ticket at its merge ([`at_merge`]) is placed with what the other tickets say, as the tick
+/// places it: the other open tickets are then read too, those that cannot be read left out, and
+/// the integration branch's checks, a read that fails leaving the base unknown. Any other ticket
+/// reads nothing more.
 pub fn gather_one(
     ports: &Ports<'_>,
     task: TicketId,
@@ -262,7 +429,23 @@ pub fn gather_one(
         return Ok(None);
     };
     let shared = shared(ports.board).map_err(unread)?;
-    read_ticket(ports, &shared, &mut BTreeMap::new(), ticket)
+    let mut standings = BTreeMap::new();
+    let Some((facts, beside)) = read_ticket(ports, &shared, &mut standings, ticket)? else {
+        return Ok(None);
+    };
+    if !at_merge(&facts) {
+        return Ok(Some((facts, beside)));
+    }
+    let mut tickets = vec![facts];
+    for other in open.iter().filter(|open| open.ticket.id != task) {
+        if let Ok(Some((facts, _))) = read_ticket(ports, &shared, &mut standings, other) {
+            tickets.push(facts);
+        }
+    }
+    // A base that cannot be read is unknown, which holds nothing back, as in the tick.
+    let _ = merging(ports, &mut tickets);
+    let at = tickets.iter().position(|facts| facts.ticket == task);
+    Ok(at.map(|at| (tickets.swap_remove(at), beside)))
 }
 
 /// The slots the project's live phase runs hold, read from the phase run folders themselves
@@ -452,6 +635,8 @@ fn read_ticket(
         priority: open.priority.clone().ok().flatten(),
         ruled,
         ready_since: open.opened_at.max(last_done),
+        // Filled for all the tickets at once, when every one is read ([`merging`]).
+        merging: MergeFacts::default(),
     };
     let beside = Beside {
         list,
@@ -503,21 +688,7 @@ pub fn read_pull(forge: &dyn Forge, pr: PrNumber) -> Result<PullFacts, String> {
         .map_err(failed)?
         .map(crate::domain::CommitId::from);
     let changes_a_file = forge.last_changed_file(pr).map_err(failed)?.is_some();
-    let mut checks = Vec::new();
-    for check in forge.checks(pr).map_err(failed)? {
-        let result = match (check.state, check.finished_at) {
-            (CheckState::Pending, _) => CheckResult::Pending,
-            (CheckState::Passed, Some(at)) => CheckResult::Passed(at),
-            (CheckState::Failed, Some(at)) => CheckResult::Failed(at),
-            (CheckState::Passed | CheckState::Failed, None) => {
-                return Err(format!("check {} finished with no time", check.name));
-            }
-        };
-        checks.push(CheckFact {
-            name: check.name,
-            result,
-        });
-    }
+    let checks = check_facts(forge.checks(pr).map_err(failed)?)?;
     let reviews = forge
         .review_comments(pr)
         .map_err(failed)?
@@ -535,6 +706,28 @@ pub fn read_pull(forge: &dyn Forge, pr: PrNumber) -> Result<PullFacts, String> {
         checks,
         reviews,
     })
+}
+
+/// The forge's checks as the core reads them, in the forge's order. A finished check with no
+/// time is an error, never a guess.
+fn check_facts(checks: Vec<Check>) -> Result<Vec<CheckFact>, String> {
+    checks
+        .into_iter()
+        .map(|check| {
+            let result = match (check.state, check.finished_at) {
+                (CheckState::Pending, _) => CheckResult::Pending,
+                (CheckState::Passed, Some(at)) => CheckResult::Passed(at),
+                (CheckState::Failed, Some(at)) => CheckResult::Failed(at),
+                (CheckState::Passed | CheckState::Failed, None) => {
+                    return Err(format!("check {} finished with no time", check.name));
+                }
+            };
+            Ok(CheckFact {
+                name: check.name,
+                result,
+            })
+        })
+        .collect()
 }
 
 /// The markers of the ruled questions on `task` that name one of `actions`: the start of the last

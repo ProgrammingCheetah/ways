@@ -10,6 +10,7 @@
 //!    {"ticket": 7, "place": "running", "phase": "implement", "head": null, "started_at": "<time>"},
 //!    {"ticket": 8, "place": "waiting", "on": [{"epic": 2}, {"question": 30}, {"ticket": 25},
 //!                                            {"check": {"ticket": 8, "head": "<commit>"}}]},
+//!    {"ticket": 12, "place": "waiting", "on": [{"merge": 11}, {"base": {"head": "<commit>"}}]},
 //!    {"ticket": 9, "place": "lane", "next": "review", "since": "<time>", "weight": 3600},
 //!    {"ticket": 10, "place": "done"}],
 //!  "unreadable": [{"ticket": 11, "reason": "<why>"}]}
@@ -121,6 +122,8 @@ fn waiting_json(waiting_on: &WaitingOn) -> Value {
         WaitingOn::Check(ticket, head) => {
             json!({ "check": { "ticket": ticket.get(), "head": head.as_str() } })
         }
+        WaitingOn::Merge(ticket) => json!({ "merge": ticket.get() }),
+        WaitingOn::Base(head) => json!({ "base": { "head": head.as_str() } }),
     }
 }
 

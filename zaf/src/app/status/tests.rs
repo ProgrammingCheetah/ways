@@ -724,7 +724,7 @@ fn a_cut_question_title_ends_with_an_ellipsis_and_more_prints_it_whole() {
     assert!(more.contains("Proposed answer: keep the header."), "{more}");
     assert!(more.contains("  raised on #4\n"), "{more}");
     assert!(
-        more.contains("  rule it: zaf board ruling 20 \"<answer>\"\n"),
+        more.contains("  rule it: zaf board ruling 20 '<answer>'\n"),
         "{more}"
     );
     assert_eq!(status.question_details[0].text, text);
@@ -896,5 +896,84 @@ fn status_shows_the_lane_and_what_each_ticket_waits_on() {
         !labelled.render(true).contains("waiting"),
         "{}",
         labelled.render(true)
+    );
+}
+
+#[test]
+fn status_prints_the_waits_of_a_merge_as_it_prints_the_others() {
+    use crate::app::actions::{ActionKind, ActionName, ListedPhase, PhaseEnd};
+    use crate::app::schedule::tick::support::{facts, gathered};
+    use crate::domain::schedule::{BaseFacts, CheckFact, CheckName, CheckResult, PullFacts};
+    use crate::domain::{CommitId, TaskSize};
+    use std::time::{Duration, SystemTime};
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let board = FakeBoard::default();
+    for number in [3, 5] {
+        board.add_ticket(ticket(
+            number,
+            &format!("Task {number}"),
+            TicketState::Ready,
+        ));
+    }
+    let listed = |action: &str, kind: ActionKind, ends: PhaseEnd| ListedPhase {
+        action: ActionName::from(action),
+        kind,
+        ends,
+        on_fail: None,
+    };
+    let list = vec![
+        listed("implement", ActionKind::Model, PhaseEnd::PrOpen),
+        listed("merge", ActionKind::Zaf, PhaseEnd::Merged),
+    ];
+    let since = SystemTime::UNIX_EPOCH + Duration::from_secs(10);
+    // Each has its pull request open, so its merge is next.
+    let merging = |task: u64| {
+        let pull = PullFacts {
+            opened_at: since,
+            merged_at: None,
+            head: Some(CommitId::from("h1")),
+            changes_a_file: true,
+            checks: Vec::new(),
+            reviews: Vec::new(),
+        };
+        facts(task, &list, TaskSize::S, since, Some(pull), Vec::new())
+    };
+    // #3 waits for #12, fresh from a fix, to merge; #5 on the integration branch's checks.
+    let mut after_a_fix = merging(3);
+    after_a_fix.merging.first = Some(TicketId::from(12));
+    let mut over_a_busy_base = merging(5);
+    over_a_busy_base.merging.base = BaseFacts {
+        head: Some(CommitId::from("a1b2c3d4e5f60718")),
+        checks: vec![CheckFact {
+            name: CheckName::from("ci"),
+            result: CheckResult::Pending,
+        }],
+    };
+    let mut placed = gathered(vec![
+        (after_a_fix, list.clone()),
+        (over_a_busy_base, list.clone()),
+    ]);
+    placed.open = OpenTicket::tickets(board.open_tickets().expect("the open tickets read"));
+
+    let screen = status(&board, &state_dir, 2, &none_alive)
+        .expect("reads")
+        .with_placement(&placed, since + Duration::from_secs(60));
+
+    let more = screen.render(true);
+    assert!(
+        more.contains(
+            "waiting   2 (#3 #5)\n  #3 waiting(merge of #12)\n  #5 waiting(base a1b2c3d)\n"
+        ),
+        "{more}"
+    );
+    let json: serde_json::Value = serde_json::from_str(&screen.to_json()).expect("json");
+    assert_eq!(
+        json["waiting"],
+        serde_json::json!([
+            {"task": 3, "on": "waiting(merge of #12)"},
+            {"task": 5, "on": "waiting(base a1b2c3d)"},
+        ])
     );
 }

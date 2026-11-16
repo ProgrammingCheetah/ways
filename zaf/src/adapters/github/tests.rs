@@ -13,8 +13,9 @@ use crate::domain::{
 };
 use crate::manifest::RepoName;
 use crate::ports::{
-    Author, Board, Check, CheckName, CheckState, ClaimOutcome, ClaimRecord, CommitId, Forge,
-    NewQuestion, PortError, PrNumber, QUESTION_TITLE_LIMIT, ReviewComment, RuleId, ScanningAlert,
+    Author, Board, BranchName, Check, CheckName, CheckState, ClaimOutcome, ClaimRecord, CommitId,
+    Forge, NewQuestion, PortError, PrNumber, QUESTION_TITLE_LIMIT, ReviewComment, RuleId,
+    ScanningAlert,
 };
 
 const REPO: &str = "example/tracker";
@@ -1426,6 +1427,117 @@ fn checks_map_gh_buckets_and_none_reported_is_empty() {
         REPO,
     ]);
     assert_eq!(fake.calls()[0], expected_call);
+}
+
+#[test]
+fn a_branchs_checks_are_the_check_runs_of_the_commit_it_is_at() {
+    let fake = FakeGh::new();
+    let runs = r#"[{"total_count":6,"check_runs":[
+        {"name":"ci","status":"completed","conclusion":"success","completed_at":"2027-01-15T08:00:00Z"},
+        {"name":"lint","status":"completed","conclusion":"failure","completed_at":"2027-01-15T08:01:00Z"},
+        {"name":"scan","status":"in_progress","conclusion":null,"completed_at":null},
+        {"name":"docs","status":"completed","conclusion":"skipped","completed_at":"2027-01-15T08:02:00Z"}
+    ]},{"total_count":6,"check_runs":[
+        {"name":"bench","status":"completed","conclusion":"cancelled","completed_at":"2027-01-15T08:03:00Z"},
+        {"name":"deploy","status":"queued","conclusion":null,"completed_at":null}
+    ]}]"#;
+    fake.on(
+        &format!("api repos/{REPO}/branches/feature/v1"),
+        r#"{"name":"feature/v1","commit":{"sha":"abc123"}}"#,
+    )
+    .on(
+        &format!("api repos/{REPO}/commits/abc123/check-runs *"),
+        runs,
+    );
+    let check = |name: &str, state: CheckState, finished_at: Option<&str>| Check {
+        name: CheckName::from(name),
+        state,
+        finished_at: finished_at.map(time),
+    };
+    let read = fake
+        .forge()
+        .branch_checks(&BranchName::from("feature/v1"))
+        .expect("the branch reads");
+    assert_eq!(read.head, Some(CommitId::from("abc123")));
+    assert_eq!(
+        read.checks,
+        [
+            check("ci", CheckState::Passed, Some("2027-01-15T08:00:00Z")),
+            check("lint", CheckState::Failed, Some("2027-01-15T08:01:00Z")),
+            check("scan", CheckState::Pending, None),
+            check("docs", CheckState::Passed, Some("2027-01-15T08:02:00Z")),
+            check("bench", CheckState::Failed, Some("2027-01-15T08:03:00Z")),
+            check("deploy", CheckState::Pending, None),
+        ]
+    );
+    assert_eq!(
+        fake.calls(),
+        [
+            argv(&["api", &format!("repos/{REPO}/branches/feature/v1")]),
+            argv(&[
+                "api",
+                &format!("repos/{REPO}/commits/abc123/check-runs"),
+                "--paginate",
+                "--slurp",
+            ]),
+        ]
+    );
+}
+
+#[test]
+fn a_branch_github_does_not_have_is_no_head_and_one_with_no_run_no_check() {
+    let fake = FakeGh::new();
+    fake.fail_on(
+        &format!("api repos/{REPO}/branches/feature/v2"),
+        "gh: Branch not found (HTTP 404)",
+    )
+    .on(
+        &format!("api repos/{REPO}/branches/feature/v1"),
+        r#"{"commit":{"sha":"abc123"}}"#,
+    )
+    .on(
+        &format!("api repos/{REPO}/commits/abc123/check-runs *"),
+        r#"[{"total_count":0,"check_runs":[]}]"#,
+    )
+    .fail_on(&format!("api repos/{REPO}/branches/feature/v3"), "HTTP 502");
+    let forge = fake.forge();
+    let missing = forge
+        .branch_checks(&BranchName::from("feature/v2"))
+        .expect("no branch is no error");
+    assert_eq!((missing.head, missing.checks), (None, Vec::new()));
+    let quiet = forge
+        .branch_checks(&BranchName::from("feature/v1"))
+        .expect("the branch reads");
+    assert_eq!(
+        (quiet.head, quiet.checks),
+        (Some(CommitId::from("abc123")), Vec::new())
+    );
+    let error = forge
+        .branch_checks(&BranchName::from("feature/v3"))
+        .expect_err("a failed read");
+    assert!(matches!(error, PortError::Backend(_)), "{error:?}");
+}
+
+#[test]
+fn a_finished_branch_check_with_no_time_is_an_error_naming_the_branch() {
+    let fake = FakeGh::new();
+    fake.on(
+        &format!("api repos/{REPO}/branches/feature/v1"),
+        r#"{"commit":{"sha":"abc123"}}"#,
+    )
+    .on(
+        &format!("api repos/{REPO}/commits/abc123/check-runs *"),
+        r#"[{"check_runs":[{"name":"ci","status":"completed","conclusion":"failure"}]}]"#,
+    );
+    let error = fake
+        .forge()
+        .branch_checks(&BranchName::from("feature/v1"))
+        .expect_err("no time");
+    assert!(
+        matches!(&error, PortError::Backend(message)
+            if message.contains("branch feature/v1") && message.contains("check `ci`")),
+        "{error:?}"
+    );
 }
 
 /// A time as the forge prints it.
