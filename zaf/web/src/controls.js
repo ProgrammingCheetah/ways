@@ -58,12 +58,15 @@ export async function control(route, body) {
   try {
     reply = await response.json();
   } catch {
-    // Not JSON: the status below says what went wrong.
+    // Not JSON: a refusal's status says what went wrong, and a success is not taken as one.
   }
   if (!response.ok) {
     throw new Error(reply?.refused ?? `the hub answered ${response.status}`);
   }
-  return reply ?? {};
+  if (reply === null || typeof reply !== 'object') {
+    throw new Error(`the hub answered ${response.status} with no JSON: the control may not have run`);
+  }
+  return reply;
 }
 
 /**

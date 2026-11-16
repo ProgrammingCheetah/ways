@@ -9,7 +9,8 @@
 //! machine state as JSON (the hub's JSON interface, docs/zaf-actions.md §5). A method other than
 //! GET is refused 405 and changes nothing, but for `POST /api/<control>`: it is a control, which
 //! the [`Guard`] admits only with the key the hub made at start, before the request is given any
-//! work, and refuses 403 otherwise. It is the standard library's [`TcpListener`] with a thread for
+//! work, and refuses 403 otherwise. A body nobody read is taken off the socket after the answer
+//! ([`drain`]), so a refusal is not lost to a reset. It is the standard library's [`TcpListener`] with a thread for
 //! each connection, so zaf gains no dependency. The page loads nothing from outside the server.
 //!
 //! The server holds the last frame. What reads the board when a report arrives is the caller's,
@@ -18,7 +19,7 @@
 //! once for the requests that arrive while it runs.
 
 use std::io::{self, Read, Write};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -49,6 +50,12 @@ const HEAD_DEADLINE: Duration = Duration::from_secs(5);
 
 /// The most bytes a control's body may take.
 const MAX_BODY: usize = 4 * 1024;
+
+/// The most bytes of a body nobody read that are taken off the socket once the answer is written.
+const MAX_DRAIN: usize = 64 * 1024;
+
+/// How long that may take.
+const DRAIN_DEADLINE: Duration = Duration::from_secs(2);
 
 /// How long a write may wait for a client that does not read.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -370,7 +377,7 @@ fn refuse(mut stream: TcpStream) -> io::Result<()> {
 fn serve(mut stream: TcpStream, shared: &Shared) -> io::Result<()> {
     let asked = Instant::now();
     stream.set_write_timeout(Some(WRITE_TIMEOUT))?;
-    let request = match read_head(&mut stream) {
+    let mut request = match read_head(&mut stream) {
         Head::Request(request) => request,
         Head::Malformed => return respond(&mut stream, "400 Bad Request", &[], "bad request\n"),
         Head::TooLarge => {
@@ -383,18 +390,62 @@ fn serve(mut stream: TcpStream, shared: &Shared) -> io::Result<()> {
         }
         Head::Gone => return Ok(()),
     };
+    let answered = answer(&mut stream, shared, &mut request, asked);
+    drain(&mut stream, &request);
+    answered
+}
+
+/// Takes what is left of the body the request declared off the socket and throws it away, once
+/// the answer is written. A request refused before its body was read (no key, no such route, not a
+/// GET) would otherwise be closed with bytes unread, or before they arrive, and the system then
+/// resets the connection, which can cost the client the answer. Nothing here reads the bytes'
+/// meaning. Bounded by [`MAX_DRAIN`] and [`DRAIN_DEADLINE`]; the client has the whole answer first,
+/// since the writing side is closed before the wait.
+fn drain(stream: &mut TcpStream, request: &Request) {
+    let mut left = request
+        .content_length
+        .unwrap_or(0)
+        .saturating_sub(request.body.len())
+        .min(MAX_DRAIN);
+    if left == 0 || stream.shutdown(Shutdown::Write).is_err() {
+        return;
+    }
+    let started = Instant::now();
+    let mut chunk = [0_u8; 1024];
+    while left > 0 {
+        let Some(wait) = DRAIN_DEADLINE.checked_sub(started.elapsed()) else {
+            return;
+        };
+        if stream.set_read_timeout(Some(wait)).is_err() {
+            return;
+        }
+        let want = chunk.len().min(left);
+        match stream.read(&mut chunk[..want]) {
+            Ok(0) | Err(_) => return,
+            Ok(read) => left -= read,
+        }
+    }
+}
+
+/// Answers `request`; the body it declared is read only by a control the guard admitted.
+fn answer(
+    stream: &mut TcpStream,
+    shared: &Shared,
+    request: &mut Request,
+    asked: Instant,
+) -> io::Result<()> {
     // The method comes first: whatever is asked of whatever path, only GET is answered, and
     // nothing is changed by the refusal; a control is the one POST, and the guard comes before
     // any of its work.
     if request.method != "GET" {
         if request.method == "POST" && is_control(&request.path) {
-            return control(&mut stream, shared, &request);
+            return control(stream, shared, request);
         }
         let allow = [("Allow", "GET")];
         return if is_api(&request.path) {
-            respond_refused(&mut stream, "405 Method Not Allowed", &allow, "GET only")
+            respond_refused(stream, "405 Method Not Allowed", &allow, "GET only")
         } else {
-            respond(&mut stream, "405 Method Not Allowed", &allow, "GET only\n")
+            respond(stream, "405 Method Not Allowed", &allow, "GET only\n")
         };
     }
     match request.path.as_str() {
@@ -406,17 +457,17 @@ fn serve(mut stream: TcpStream, shared: &Shared) -> io::Result<()> {
                     .find_map(|pair| pair.strip_prefix("since="))
                     .and_then(|value| value.parse().ok())
             });
-            stream_events(&mut stream, &shared.subscribe(since))
+            stream_events(stream, &shared.subscribe(since))
         }
-        "/api/events" => stream_changes(&mut stream, &shared.watch()),
+        "/api/events" => stream_changes(stream, &shared.watch()),
         "/api/state" => match shared.machine_state(asked) {
-            Ok(body) => respond_as(&mut stream, "200 OK", JSON, &[], body.as_bytes()),
-            Err(reason) => respond_refused(&mut stream, "503 Service Unavailable", &[], &reason),
+            Ok(body) => respond_as(stream, "200 OK", JSON, &[], body.as_bytes()),
+            Err(reason) => respond_refused(stream, "503 Service Unavailable", &[], &reason),
         },
-        path if is_api(path) => respond_refused(&mut stream, "404 Not Found", &[], "not found"),
+        path if is_api(path) => respond_refused(stream, "404 Not Found", &[], "not found"),
         path => match assets::find(path) {
-            Some(asset) => respond_asset(&mut stream, &asset),
-            None => respond(&mut stream, "404 Not Found", &[], "not found\n"),
+            Some(asset) => respond_asset(stream, &asset),
+            None => respond(stream, "404 Not Found", &[], "not found\n"),
         },
     }
 }
@@ -441,7 +492,7 @@ fn is_control(path: &str) -> bool {
 /// Answers a `POST` to a control. The guard is asked first, with nothing read of the body and no
 /// route looked up: a missing or wrong key is 403 and changes nothing, for a route that exists and
 /// for one that does not alike.
-fn control(stream: &mut TcpStream, shared: &Shared, request: &Request) -> io::Result<()> {
+fn control(stream: &mut TcpStream, shared: &Shared, request: &mut Request) -> io::Result<()> {
     if let Err(refusal) = shared.guard.admit(request.key.as_deref()) {
         return respond_refused(stream, "403 Forbidden", &[], &refusal.to_string());
     }
@@ -462,10 +513,11 @@ fn control(stream: &mut TcpStream, shared: &Shared, request: &Request) -> io::Re
 
 /// The body of a control's request: `Content-Length` bytes, of which the head's read may already
 /// hold some, read within the head's deadline. A body with no length, or one past [`MAX_BODY`], is
-/// refused, and so is one that does not arrive.
+/// refused, and so is one that does not arrive. What is read is kept on the request, so
+/// [`drain`] knows how much of the body is still to come.
 fn read_body(
     stream: &mut TcpStream,
-    request: &Request,
+    request: &mut Request,
 ) -> Result<Vec<u8>, (&'static str, &'static str)> {
     let Some(length) = request.content_length else {
         return Err(("411 Length Required", "a control needs a Content-Length"));
@@ -474,8 +526,7 @@ fn read_body(
         return Err(("413 Payload Too Large", "the body is too large"));
     }
     let late = ("408 Request Timeout", "the body did not arrive");
-    let mut body = request.body.clone();
-    body.truncate(length);
+    let body = &mut request.body;
     let started = Instant::now();
     let mut chunk = [0_u8; 1024];
     while body.len() < length {
@@ -487,7 +538,7 @@ fn read_body(
             Ok(read) => body.extend_from_slice(&chunk[..read]),
         }
     }
-    Ok(body)
+    Ok(body[..length].to_vec())
 }
 
 /// The refusal of the JSON interface: an object with one field, `refused`, in plain words.

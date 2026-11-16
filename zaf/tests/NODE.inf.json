@@ -1,6 +1,6 @@
 {
   "path": "zaf/tests",
-  "charted": "2026-11-15",
+  "charted": "2026-11-16",
   "short": "binary-level integration tests with a fake gh and a fake curl",
   "is": "Integration tests that run the built zaf binary in a temp project against a scripted fake gh or fake curl and, for slices, a throwaway jj repository with a bare remote; the ways_*.rs crates run the ways repository's own actions through `zaf do`, and the pack_*.rs crates check the teams pack's files. Three crates read no binary: architecture.rs holds the layers to their imports, board_contract.rs checks every Board backend the same way, and forge_contract.rs takes one pull request through the Forgejo forge on a real instance.",
   "type": "code",
@@ -93,6 +93,16 @@
     {
       "name": "hub_dashboard.rs",
       "role": "zaf hub --port <n>: a port that is taken is refused by name",
+      "node": false
+    },
+    {
+      "name": "hub_tick.rs",
+      "role": "POST /api/tick through the built binary: a project with one ready task and a fake runner has it started, and the answer names it",
+      "node": false
+    },
+    {
+      "name": "hub_watch.rs",
+      "role": "POST /api/watch through the built binary: the watch's first tick starts the ready task while the hub holds the scheduler lock, and a stop ends the watch",
       "node": false
     },
     {

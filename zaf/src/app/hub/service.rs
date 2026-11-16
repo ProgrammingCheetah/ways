@@ -91,7 +91,7 @@ impl Unit {
             quote(&self.exe),
             self.port
         ));
-        text.push_str(&format!("WorkingDirectory={}\n", quote(&self.project)));
+        text.push_str(&format!("WorkingDirectory={}\n", setting(&self.project)));
         if let Some(home) = &self.zaf_home {
             text.push_str(&format!(
                 "Environment={}\n",
@@ -103,8 +103,15 @@ impl Unit {
     }
 }
 
-/// A path as systemd reads it in a command or a setting: quoted when it holds a space or a
-/// character systemd gives a meaning, with `%` and `$` doubled.
+/// A path as systemd reads it as a whole setting (`WorkingDirectory=`): the rest of the line,
+/// which it neither unquotes nor reads a `$` in, so only `%` is doubled. Quoted, it would not be
+/// an absolute path and the unit would be refused.
+fn setting(path: &Path) -> String {
+    path.to_string_lossy().replace('%', "%%")
+}
+
+/// A path as systemd reads it in a command line (`ExecStart=`): quoted when it holds a space or
+/// a character systemd gives a meaning, with `%` and `$` doubled.
 fn quote(path: &Path) -> String {
     let text = path.to_string_lossy().replace('%', "%%").replace('$', "$$");
     let plain = text
@@ -136,7 +143,8 @@ pub struct Installed {
 }
 
 /// Writes `unit` in `dir` and enables and starts it. A unit already there is replaced and its
-/// running hub stopped first, so the new one starts with the new port.
+/// running hub stopped first, so the new one starts with the new port; a stop that fails is the
+/// error, since the old hub may still serve the old port.
 pub fn install(
     dir: &Path,
     unit: &Unit,
@@ -152,8 +160,9 @@ pub fn install(
     fs::write(&path, unit.render()).map_err(io)?;
     run(systemctl, &["daemon-reload"])?;
     if replaced {
-        // A unit that was not running is no failure of the install.
-        let _ = systemctl.user(&["stop", UNIT_NAME]);
+        // The unit is loaded by now, so stopping one that was not running succeeds: a failure
+        // here is a hub that did not stop.
+        run(systemctl, &["stop", UNIT_NAME])?;
     }
     run(systemctl, &["enable", UNIT_NAME])?;
     run(systemctl, &["start", UNIT_NAME])?;
@@ -172,10 +181,21 @@ pub enum Removed {
 /// Stops and disables the unit in `dir` and deletes it; none installed is no failure. A stop or
 /// a disable that fails still leaves the file deleted, since a unit that cannot be stopped is
 /// no reason to keep it, and the failure is the error.
+///
+/// A unit file already gone (deleted by hand) may have left its hub running and its unit
+/// enabled, so the manager is still asked to stop and disable it. It refuses both for a unit it
+/// does not know, which is [`Removed::Absent`]; a stop it carries out is [`Removed::Gone`].
 pub fn remove(dir: &Path, systemctl: &dyn Systemctl) -> Result<Removed, ServiceError> {
     let path = unit_path(dir);
     if !path.exists() {
-        return Ok(Removed::Absent(path));
+        let stopped = systemctl.user(&["stop", UNIT_NAME]).is_ok();
+        let _ = systemctl.user(&["disable", UNIT_NAME]);
+        let _ = systemctl.user(&["daemon-reload"]);
+        return Ok(if stopped {
+            Removed::Gone(path)
+        } else {
+            Removed::Absent(path)
+        });
     }
     let stopped = run(systemctl, &["stop", UNIT_NAME]);
     let disabled = run(systemctl, &["disable", UNIT_NAME]);

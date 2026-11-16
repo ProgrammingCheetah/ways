@@ -1,6 +1,6 @@
 {
   "path": "zaf/src/app",
-  "charted": "2026-11-15",
+  "charted": "2026-11-16",
   "short": "use cases, one per verb",
   "is": "Twenty-two use-case modules, one per verb or concern (verify lives in check, `zaf do` in actions, the scheduler's edge in schedule, the zaf home's project list in projects), each taking a query or command over port traits and returning a flat result, the larger ones split into submodules.",
   "type": "code",
@@ -108,8 +108,8 @@
     },
     {
       "name": "hub/",
-      "role": "gather.rs and state.rs (the board, ledger, slots, phases and last reports into a Snapshot; one project's whole state as JSON), draw.rs (the frame as text, pure), watch.rs (the terminal wait, redrawn when a report arrives, never on a timer), dashboard.rs (the frame as an HTML page on the LAN), service.rs (the systemd user service), lock.rs (one serving hub a machine), reports.rs (`.zaf/hub/reports`, one line per report), hook.rs (what the profiles' PostToolUse hook reports), phases.rs (the phases a model declares and reports with `zaf progress`), live.rs (the process table: running launches, free slots, claims of ended instances)",
-      "node": false
+      "role": "what gathers the state, draws the frame, serves the page on the LAN and admits its keyed controls",
+      "node": true
     },
     {
       "name": "init.rs",
@@ -153,8 +153,8 @@
     },
     {
       "name": "schedule/",
-      "role": "ask.rs (tick step 5: every question the scheduler raises, getting nowhere, a failed wait with no on-fail, an overdue check wait, a dead dependency, a cycle, an unchallenged epic, each ending with a marker read back from the board, so no cause has two open questions and a ruling resets what it should; each raised under spawn.lock once the open questions are read again under it, so two ticks that overlap raise it once), record.rs (the run folder: task, action, head, size, instance, pid or the inline mark of the tick that runs it, output, questions, head-end, exit last), gather.rs (open tickets with a phase list into TicketFacts and what the tick reads beside them, the priority label and ready_since from the board, an ignored priority label a warning, adjacent model actions folded, an unreadable ticket named and skipped; gather_one for `zaf spawn phase`, gather_for for the dry run, status and the hub), tick.rs (may_start, the one gate the tick and `zaf spawn phase` both pass, asking the core's place; the held lines; tick steps 3 to 6 over the lane, slots from the live model runs; the placement handed back for the scheduler's cache; tick/support.rs the steps' test helpers), shadow.rs (the dry run's `placement`, a lane ticket with its weight), labels.rs (tick step 2's label sync: question, blocked and stale-to-ready set from the place, never over a claim or done, written only when it differs; the unblocked and labelled lines; read for the dry run, sync for the tick, a failed write named and the rest goes on), trace.rs (the tick's trace line, its short places, the moves against the last line, the count line with the open epics' done tasks, the 14-day cut; listing.rs what `zaf spawn trace` prints), ticks.rs (`.zaf/ticks.jsonl` under `.zaf/ticks.lock`: append, cut, read, the last tick's time from the file's end), scheduler.rs (the loop: one tick at a time for who asked, the timer, restart only between ticks with no request waiting, stop on a signal; Memory, the placement kept as a cache), lock.rs (`.zaf/scheduler.lock` held with flock for life, its one line naming the holder; running() for readers, which never lock), request.rs (`.zaf/tick.request`: ask() appends a line only while a scheduler runs; Requests reads each complete line once on a size-and-mtime mark, empties past 16 KiB, lets go of what it served), binary.rs (the running image's identity against the start path, settle over two looks, `--version` with a deadline, exec with the same arguments), each with a tests.rs",
-      "node": false
+      "role": "the edge modules schedule.rs names, one file each",
+      "node": true
     },
     {
       "name": "setup.rs",

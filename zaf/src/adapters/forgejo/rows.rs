@@ -272,7 +272,7 @@ pub(super) fn parse_time(text: &str) -> Option<SystemTime> {
     }
     let split = text.len().checked_sub(6)?;
     let (local, offset) = (text.get(..split)?, text.get(split..)?);
-    let (sign, hours_minutes) = offset.split_at(1);
+    let (sign, hours_minutes) = (offset.get(..1)?, offset.get(1..)?);
     let (hours, minutes) = hours_minutes.split_once(':')?;
     let seconds = (hours.parse::<u64>().ok()? * 60 + minutes.parse::<u64>().ok()?) * 60;
     let as_utc = humantime::parse_rfc3339(&format!("{local}Z")).ok()?;

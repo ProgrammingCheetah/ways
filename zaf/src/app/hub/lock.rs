@@ -4,13 +4,15 @@
 //! The lock is the file [`LOCK_FILE`] in the zaf home. It names the serving process, as a
 //! [`Holder`] (its pid and start time, so a pid the OS has handed to another process reads as
 //! dead), and the port it serves. A second start finds it held by a live process and is refused
-//! with the first hub's port; a lock whose process is dead is taken over. The terminal frame
+//! with the first hub's port; a lock whose process is dead is taken over. Starts take turns under
+//! an OS lock on [`GUARD_FILE`], and the lock is written whole and renamed into place, so it is
+//! never seen empty and never removed by a start that read an older one. The terminal frame
 //! (`zaf hub` with no port) never reads or writes it.
 //!
 //! Whether a process lives is the caller's to say, as in the spawner, so this module reads the
 //! process table through no adapter.
 
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -19,8 +21,9 @@ use crate::ports::Holder;
 /// The lock's file name in the zaf home.
 pub const LOCK_FILE: &str = "hub.lock";
 
-/// How many times a start retries after it loses a race for the file.
-const ATTEMPTS: usize = 5;
+/// The file every start locks while it reads and replaces [`LOCK_FILE`]; it holds nothing and
+/// stays in the zaf home.
+const GUARD_FILE: &str = "hub.lock.guard";
 
 /// A serving hub: its process and the port it serves.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,35 +87,36 @@ impl HubLock {
             port,
             start: me.start.clone(),
         };
-        for _ in 0..ATTEMPTS {
-            match OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(mut file) => {
-                    file.write_all(mine.render().as_bytes()).map_err(io)?;
-                    return Ok(mine);
-                }
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(io(error)),
-            }
-            let text = match fs::read_to_string(&path) {
-                Ok(text) => text,
-                // Gone since the open: try to create it again.
-                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-                Err(error) => return Err(io(error)),
-            };
-            if let Some(lock) = Self::parse(&text).filter(|lock| alive(&lock.holder())) {
-                return Err(LockError::Held(lock));
-            }
-            // A stale lock goes only if it is still the one read, so a start that took it over
-            // a moment ago keeps its own.
-            if fs::read_to_string(&path).is_ok_and(|now| now == text) {
-                match fs::remove_file(&path) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(io(error)),
+        // Every start reads and replaces the lock under the guard, so no two judge the same lock
+        // stale and no start removes one another took a moment ago.
+        let guard = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(home.join(GUARD_FILE))
+            .map_err(io)?;
+        guard.lock().map_err(io)?;
+        match fs::read_to_string(&path) {
+            Ok(text) => {
+                if let Some(lock) = Self::parse(&text).filter(|lock| alive(&lock.holder())) {
+                    return Err(LockError::Held(lock));
                 }
             }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(io(error)),
         }
-        Err(io(io::Error::other("the lock kept changing hands")))
+        // Written whole beside the lock, then renamed over it: a reader finds the old lock or the
+        // new one, never an empty file it would take for stale.
+        let temp = home.join(format!("{LOCK_FILE}.{}.tmp", std::process::id()));
+        File::create(&temp)
+            .and_then(|mut file| file.write_all(mine.render().as_bytes()))
+            .and_then(|()| fs::rename(&temp, &path))
+            .map_err(|error| {
+                let _ = fs::remove_file(&temp);
+                io(error)
+            })?;
+        Ok(mine)
+        // The guard is released when `guard` drops, after the rename.
     }
 
     /// Gives the lock up, when it is still this process's. A lock that has since passed to

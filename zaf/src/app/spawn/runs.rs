@@ -183,7 +183,8 @@ fn write(path: &Path, text: &str) -> Result<(), SpawnError> {
 }
 
 /// Creates a launch's run folder with its record and `holder` (the tick) in `pid`, and
-/// returns the folder. A folder already there is an error: an instance number is used once.
+/// returns the folder. A folder already there is an error: an instance number is used once. A
+/// folder that cannot be filled is removed again.
 pub fn reserve(
     state_dir: &Path,
     planned: &PlannedLaunch,
@@ -206,9 +207,22 @@ pub fn reserve(
         reserved_at: at.to_owned(),
         started_at: None,
     };
-    write_record(&dir, &record)?;
-    write(&dir.join(HOLDER_FILE), &format!("{holder}\n"))?;
+    if let Err(error) = write_record(&dir, &record)
+        .and_then(|()| write(&dir.join(HOLDER_FILE), &format!("{holder}\n")))
+    {
+        unreserve(&dir);
+        return Err(error);
+    }
     Ok(dir)
+}
+
+/// Takes back a reservation whose launch never started: removes its run folder, so it holds no
+/// slot and is not read as lost. A folder that cannot be removed gets `lost` as its exit, which
+/// frees the slot too.
+pub fn unreserve(dir: &Path) {
+    if std::fs::remove_dir_all(dir).is_err() {
+        let _ = finish(dir, LOST);
+    }
 }
 
 fn write_record(dir: &Path, record: &LaunchRecord) -> Result<(), SpawnError> {

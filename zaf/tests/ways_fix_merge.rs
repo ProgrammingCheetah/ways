@@ -368,25 +368,7 @@ impl Scene {
         let root_text = root.to_string_lossy().into_owned();
         let deadline = Instant::now() + PATIENCE;
         loop {
-            let busy: Vec<String> = fs::read_dir("/proc")
-                .expect("the process table")
-                .flatten()
-                .filter(|entry| {
-                    entry
-                        .file_name()
-                        .to_str()
-                        .is_some_and(|name| name.chars().all(|c| c.is_ascii_digit()))
-                })
-                .filter_map(|entry| {
-                    let dir = entry.path();
-                    let cwd = fs::read_link(dir.join("cwd")).ok();
-                    let cmdline = fs::read(dir.join("cmdline")).ok()?;
-                    let cmdline = String::from_utf8_lossy(&cmdline).replace('\0', " ");
-                    let here = cwd.is_some_and(|cwd| cwd.starts_with(&root))
-                        || cmdline.contains(&root_text);
-                    here.then_some(cmdline)
-                })
-                .collect();
+            let busy = working_in(&root, &root_text);
             if busy.is_empty() {
                 return;
             }
@@ -917,4 +899,39 @@ fn a_ruling_on_a_review_question_reaches_the_fix_once_and_the_review_applies_aga
     let (code, _, stderr) = outcome(&scene.project.zaf(&["spawn", "phase", "2", "fix"]));
     assert_eq!(code, 1, "{stderr}");
     assert!(stderr.contains("review is ready"), "{stderr}");
+}
+
+/// The command lines of the processes that work in `root`: those that run in it or name it.
+/// Linux reads `/proc`; elsewhere `ps` gives the command lines only, so a process that runs in
+/// the project without naming it is not seen.
+fn working_in(root: &Path, root_text: &str) -> Vec<String> {
+    if !Path::new("/proc/self/cmdline").exists() {
+        let table = std::process::Command::new("ps")
+            .args(["-axo", "command="])
+            .output()
+            .expect("the process table");
+        return String::from_utf8_lossy(&table.stdout)
+            .lines()
+            .filter(|line| line.contains(root_text))
+            .map(str::to_owned)
+            .collect();
+    }
+    fs::read_dir("/proc")
+        .expect("the process table")
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.chars().all(|c| c.is_ascii_digit()))
+        })
+        .filter_map(|entry| {
+            let dir = entry.path();
+            let cwd = fs::read_link(dir.join("cwd")).ok();
+            let cmdline = fs::read(dir.join("cmdline")).ok()?;
+            let cmdline = String::from_utf8_lossy(&cmdline).replace('\0', " ");
+            let here = cwd.is_some_and(|cwd| cwd.starts_with(root)) || cmdline.contains(root_text);
+            here.then_some(cmdline)
+        })
+        .collect()
 }

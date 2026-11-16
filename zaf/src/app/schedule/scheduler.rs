@@ -13,7 +13,7 @@
 //!    returns; and no request is lost, since none is held in memory then. The stop signals are
 //!    held back from before the last look for one through the restart, which keeps them pending:
 //!    one that lands then stops the new image as soon as it catches them, or this one when the
-//!    restart failed.
+//!    restart failed, before it takes a request.
 //! 3. The requests that arrived since the last look are taken ([`super::request`]), and the timer
 //!    asks too once `[spawn] tick_minutes` have passed since the last tick ended. Nothing asked:
 //!    the loop pauses (about a second) and looks again.
@@ -220,9 +220,16 @@ pub fn run(host: &mut dyn Host, interval: Duration, first: Vec<String>) -> Ended
                     }
                     host.say(&format!("restarting as {version}"));
                     let why = host.restart();
-                    // Still this image: a stop that came meanwhile ends the loop at its next look.
+                    // Still this image: a stop that came meanwhile is recorded now and ends the
+                    // loop here, before a request is taken or a tick runs.
                     host.let_stop_through();
                     host.warn(&format!("{why}; this image goes on"));
+                    if let Some(signal) = host.stop() {
+                        return Ended::Stopped {
+                            signal,
+                            unserved: pending,
+                        };
+                    }
                 }
                 Found::Refused(why) => host.warn(&why),
             }

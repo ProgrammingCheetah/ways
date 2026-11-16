@@ -517,3 +517,74 @@ fn base_up_refuses_with_1_what_it_cannot_use() {
     assert_eq!(pushes(&project), Vec::<String>::new());
     assert_eq!(remote_ref(&project, BRANCH), branch);
 }
+
+#[test]
+fn base_up_refuses_a_conflicted_local_branch() {
+    // The branch moved here, unpushed, and on the remote too: the fetch leaves the local
+    // bookmark naming both commits, whichever comes first.
+    let project = project();
+    let root = &project.root;
+    jj(root, &["new", &format!("bookmarks(exact:\"{BRANCH}\")")]);
+    write(root, "local.txt", "local\n");
+    jj(root, &["commit", "-m", "Local only"]);
+    jj(root, &["bookmark", "set", BRANCH, "-r", "@-"]);
+    push_elsewhere(&project, BRANCH, "remote.txt", "remote\n");
+    push_elsewhere(&project, BASE, "merged.txt", "merged\n");
+    let remote = remote_ref(&project, BRANCH).expect("the branch");
+    watch_pushes(&project);
+
+    let (code, _, text) = base_up(&project);
+
+    assert_eq!(code, 1, "{text}");
+    assert!(text.contains("is conflicted; settle it first"), "{text}");
+    assert_eq!(remote_ref(&project, BRANCH).as_deref(), Some(&*remote));
+    assert_eq!(pushes(&project), Vec::<String>::new(), "{text}");
+}
+
+#[test]
+fn base_up_leaves_the_files_of_a_working_copy_the_remote_rewrote() {
+    // The working copy stands on the branch's commit, which a forced push elsewhere replaces:
+    // the fetch drops the old commit, and the files on disk stay as they were all the same.
+    let project = project();
+    let root = &project.root;
+    push_on_branch(&project, "branch.txt", "as pushed\n");
+    jj(root, &["new", &format!("bookmarks(exact:\"{BRANCH}\")")]);
+    write(root, "scratch.txt", "the Engineer's\n");
+    let other = elsewhere(&project);
+    run(
+        &other,
+        "git",
+        &["checkout", "-q", "-B", BRANCH, &format!("origin/{BRANCH}")],
+    );
+    write(&other, "branch.txt", "rewritten\n");
+    run(
+        &other,
+        "git",
+        &[
+            "-c",
+            "user.name=Other",
+            "-c",
+            "user.email=other@example.com",
+            "commit",
+            "-qam",
+            "Rewritten elsewhere",
+            "--amend",
+        ],
+    );
+    run(&other, "git", &["push", "-qf", "origin", BRANCH]);
+    let rewritten = remote_ref(&project, BRANCH).expect("the branch");
+
+    let (code, log, text) = base_up(&project);
+
+    assert_eq!(code, 0, "{text}");
+    assert_eq!(last_line(&log), rewritten, "{log}");
+    assert!(text.contains("jj workspace update-stale"), "{text}");
+    assert_eq!(
+        fs::read_to_string(root.join("branch.txt")).expect("the file"),
+        "as pushed\n"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("scratch.txt")).expect("the file"),
+        "the Engineer's\n"
+    );
+}

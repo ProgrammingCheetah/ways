@@ -9,6 +9,7 @@
 use std::path::Path;
 
 use super::Answer;
+use super::project::listed;
 use crate::app::projects::Projects;
 
 /// What a body that is not a drop is told.
@@ -26,11 +27,11 @@ pub(super) fn run(home: Option<&Path>, body: &[u8]) -> Answer {
     };
     // The entry is read now, not trusted from an earlier state, so a folder that came back since the
     // page was drawn is present and stays.
-    let Some(entry) = Projects::read(home)
-        .into_iter()
-        .find(|entry| entry.folder == Path::new(&project))
-    else {
-        return Answer::refused("404 Not Found", &format!("{project} is not on the list"));
+    // The folder is matched as the list keeps it (symlinks resolved when it exists) or as given,
+    // as every other control finds its project.
+    let entry = match listed(home, Path::new(&project)) {
+        Ok(entry) => entry,
+        Err(refusal) => return Answer::refused(refusal.status, &refusal.why),
     };
     if !entry.missing {
         return Answer::refused(

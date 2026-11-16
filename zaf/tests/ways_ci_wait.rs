@@ -510,6 +510,40 @@ fn ci_wait_starts_over_when_the_head_moves() {
 }
 
 #[test]
+fn ci_wait_gives_a_new_head_its_own_grace() {
+    // The old head's checks took longer than the grace (2 seconds) to settle, and a push moved
+    // the head meanwhile. The new head shows no checks yet: that is its own first moment, not a
+    // pull request with none, so the wait goes on and reads the failure that registers next.
+    let none = "no checks reported on the 'feature/v1-1-2' branch\n";
+    let pending = check("pending", "zaf / test", &link(102));
+    let passed = check("pass", "zaf / test", &link(102));
+    let failed = check("fail", "zaf / test", &link(103));
+    let (mut project, _dir) = project_with_bin(
+        &[OLD_HEAD, OLD_HEAD, OLD_HEAD, HEAD],
+        &[
+            (8, &pending, ""),
+            (8, &pending, ""),
+            (0, &passed, ""),
+            (1, "", none),
+            (1, &failed, ""),
+        ],
+    );
+    project
+        .env("CI_WAIT_INTERVAL", "1")
+        .env("CI_WAIT_GRACE", "2");
+
+    let (code, log, said) = wait(&project, &["7"]);
+
+    assert_eq!(code, 1, "{log}{said}");
+    assert!(!log.contains("reports no checks"), "{log}");
+    assert_eq!(
+        handed_back(&log),
+        format!("failed: zaf / test (fail) {}", link(103)),
+        "{log}"
+    );
+}
+
+#[test]
 fn ci_wait_waits_within_the_grace_for_checks_to_register() {
     // A fresh push shows no checks for a moment; within the grace (90 seconds) that is no pass.
     let none = "no checks reported on the 'feature/v1-1-2' branch\n";

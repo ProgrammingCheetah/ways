@@ -234,3 +234,45 @@ fn workspace_drop_refuses_a_name_that_leaves_the_workspaces_directory() {
         "a refused drop removed it"
     );
 }
+
+#[test]
+fn workspace_drop_refuses_a_directory_that_holds_other_slices() {
+    // `feature` is the parent of two slices, not a slice: dropping it would remove them both.
+    let project = project();
+    open(&project, SLICE);
+    open(&project, SIBLING);
+
+    let (code, text) = drop_slice(&project, "feature");
+
+    assert_eq!(code, 1, "{text}");
+    assert!(text.contains("is not a slice workspace"), "{text}");
+    for slice in [SLICE, SIBLING] {
+        assert!(
+            workspace_dir(&project, slice).join(".jj").is_dir(),
+            "{slice}"
+        );
+        assert!(workspaces(&project.root).contains(slice), "{slice}");
+    }
+}
+
+#[test]
+fn workspace_drop_refuses_a_path_through_a_symbolic_link() {
+    // A part of the slice's path is a link out of the workspaces directory: the removal would
+    // land in the folder it names.
+    let project = project();
+    let outside = project.temp.path().join("outside");
+    fs::create_dir_all(outside.join("victim/.jj")).expect("outside directory");
+    write(&outside, "victim/keep.txt", "not a slice\n");
+    let workspaces_dir = project.root.join(".zaf/workspaces");
+    fs::create_dir_all(&workspaces_dir).expect("workspaces directory");
+    std::os::unix::fs::symlink(&outside, workspaces_dir.join("link")).expect("link");
+
+    for name in ["link/victim", "link"] {
+        let (code, text) = drop_slice(&project, name);
+        assert_eq!(code, 1, "{name}: {text}");
+        assert!(text.contains("symbolic link"), "{name}: {text}");
+    }
+
+    assert!(outside.join("victim/keep.txt").is_file(), "it was removed");
+    assert!(workspaces_dir.join("link").is_symlink());
+}

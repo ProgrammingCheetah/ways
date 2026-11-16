@@ -69,7 +69,11 @@ function hub({ controls = true, projects = [project], reply = {} } = {}) {
       }
       posts.push({ url, init, body: JSON.parse(init.body) });
       const made = reply[url] ?? { status: 200, body: {} };
-      return { ok: made.status < 400, status: made.status, json: async () => made.body };
+      const json = async () => {
+        if (made.unreadable) throw new SyntaxError('Unexpected end of JSON input');
+        return made.body;
+      };
+      return { ok: made.status < 400, status: made.status, json };
     }),
   );
   return posts;
@@ -230,6 +234,17 @@ describe('the control buttons', () => {
     const alert = await within(card).findByRole('alert');
     expect(alert.textContent).toBe('#22 has no live instance; nothing was changed');
     expect(card.textContent).not.toContain(KEY);
+  });
+
+  it('unreadable success shown as a failure', async () => {
+    hub({ reply: { '/api/stop': { status: 200, unreadable: true } } });
+    open();
+    render(App);
+    const card = await section();
+    await fireEvent.click(within(card).getByTestId('stop'));
+    const alert = await within(card).findByRole('alert');
+    expect(alert.textContent).toBe('the hub answered 200 with no JSON: the control may not have run');
+    expect(card.textContent).not.toContain('#22 stopped');
   });
 
   it('read-only hides controls', async () => {

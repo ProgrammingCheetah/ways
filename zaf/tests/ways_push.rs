@@ -290,3 +290,32 @@ fn push_refuses_a_slice_without_a_workspace_or_a_name_that_leaves_the_directory(
     }
     assert_eq!(remote_target(&project, SLICE), None);
 }
+
+#[test]
+fn push_publishes_to_the_push_remote_a_commit_another_remote_has() {
+    // A second remote holds the slice's bookmark at the latest commit; origin, where a plain
+    // push goes, has none of it. The other remote's copy is not origin's.
+    let project = project();
+    let temp = project.temp.path().to_owned();
+    run(&temp, "git", &["init", "-q", "--bare", "mirror.git"]);
+    let mirror = temp.join("mirror.git");
+    jj(
+        &project.root,
+        &["git", "remote", "add", "mirror", &mirror.to_string_lossy()],
+    );
+    let made = commit_by_hand(&project, "first.txt");
+    let dir = workspace(&project);
+    jj(&dir, &["bookmark", "set", SLICE, "-r", "@-"]);
+    jj(&dir, &["bookmark", "track", &format!("{SLICE}@mirror")]);
+    jj(
+        &dir,
+        &["git", "push", "--remote", "mirror", "--bookmark", SLICE],
+    );
+    assert_eq!(remote_target(&project, SLICE), None);
+
+    let (code, text) = push(&project, SLICE);
+
+    assert_eq!(code, 0, "{text}");
+    assert_eq!(remote_target(&project, SLICE), Some(made.clone()));
+    assert_eq!(text.lines().last(), Some(made.as_str()), "{text}");
+}

@@ -124,6 +124,32 @@ fn a_start_names_what_was_left_and_empties_the_file() {
 }
 
 #[test]
+fn the_mark_of_an_emptied_file_is_taken_under_its_lock() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    let path = dir.path().join(REQUEST_FILE);
+    append(dir.path(), &request(1, "ruling #45")).expect("appended");
+    let mut requests = Requests {
+        path: path.clone(),
+        read: 0,
+        mark: Mark::default(),
+    };
+
+    let (read, failed) = requests.empty();
+
+    assert_eq!(failed, None);
+    assert_eq!(whos(&read), ["ruling #45"]);
+    // Emptying leaves the mark of the empty file: nothing after it looks at the file again, so
+    // a request that lands as soon as the lock is let go is past the mark.
+    assert_eq!(requests.mark, Mark::read(&path));
+    assert_eq!(requests.mark.len, 0);
+    append(dir.path(), &request(2, "sign #1")).expect("appended");
+    assert_eq!(
+        whos(&requests.look().expect("a look").requests),
+        ["sign #1"]
+    );
+}
+
+#[test]
 fn past_the_bound_the_file_is_emptied_and_nothing_is_lost() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     let (mut requests, _) = Requests::start(dir.path()).expect("started");

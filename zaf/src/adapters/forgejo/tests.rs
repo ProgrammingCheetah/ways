@@ -334,6 +334,19 @@ fn the_token_and_the_body_go_to_curl_on_stdin_never_on_its_command_line() {
 }
 
 #[test]
+fn curl_never_reads_the_users_curlrc() {
+    let fake = FakeCurl::new();
+    fake.on(&format!("GET {API}/issues/3"), 200, &issue(3, &[], "open"));
+    fake.board().standing(TicketId::from(3)).expect("a read");
+    let calls = fake.calls();
+    assert!(!calls.is_empty());
+    for call in &calls {
+        // curl honours `--disable` only as its first argument.
+        assert_eq!(call.argv.first().map(String::as_str), Some("--disable"));
+    }
+}
+
+#[test]
 fn a_404_is_not_found_and_another_refusal_a_backend_error_with_forgejos_message() {
     let fake = FakeCurl::new();
     fake.on(
@@ -476,6 +489,13 @@ fn times_read_in_utc_and_with_the_instances_offset() {
     assert_eq!(parse_time("2026-11-12T03:35:26-07:00"), Some(utc));
     assert_eq!(parse_time("2026-11-12T12:35:26+02:00"), Some(utc));
     assert_eq!(parse_time("yesterday"), None);
+}
+
+#[test]
+fn a_time_whose_offset_opens_with_a_wide_character_does_not_read() {
+    // Six bytes of offset whose first character is two: no sign to split off.
+    assert_eq!(parse_time("2026-11-12T10:35:26é7:00"), None);
+    assert_eq!(parse_time("é7:00"), None);
 }
 
 // The board.
@@ -978,6 +998,65 @@ fn a_filed_task_creates_the_labels_it_lacks_and_its_epic_depends_on_it() {
     assert_eq!(
         fake.bodies(&format!("POST {API}/issues/5/dependencies")),
         [json!({ "owner": "example", "repo": "tracker", "index": 9 })]
+    );
+}
+
+fn export_task() -> NewTask {
+    NewTask {
+        epic: TicketId::from(5),
+        title: "export".into(),
+        body: "Goal: export".into(),
+        state: TicketState::Ready,
+        group: None,
+        kind: TicketType::from("Task"),
+    }
+}
+
+#[test]
+fn a_task_its_epic_cannot_depend_on_is_closed_and_the_filing_fails() {
+    let fake = FakeCurl::new();
+    fake.on(
+        &format!("GET {API}/labels?*"),
+        200,
+        &labels(&["task", "state/ready", "type/Task"]),
+    );
+    fake.on(&format!("POST {API}/issues"), 201, &issue(9, &[], "open"));
+    fake.on(
+        &format!("POST {API}/issues/5/dependencies"),
+        500,
+        &json!({ "message": "boom" }),
+    );
+    fake.on(
+        &format!("PATCH {API}/issues/9"),
+        201,
+        &issue(9, &[], "closed"),
+    );
+    let filed = fake.board().file_task(&export_task());
+    assert!(
+        matches!(&filed, Err(PortError::Backend(message)) if message.contains("dependencies") && !message.contains("left open")),
+        "{filed:?}"
+    );
+    assert_eq!(
+        fake.bodies(&format!("PATCH {API}/issues/9")),
+        [json!({ "state": "closed" })]
+    );
+}
+
+#[test]
+fn a_task_left_open_under_no_epic_is_named() {
+    let fake = FakeCurl::new();
+    fake.on(
+        &format!("GET {API}/labels?*"),
+        200,
+        &labels(&["task", "state/ready", "type/Task"]),
+    );
+    fake.on(&format!("POST {API}/issues"), 201, &issue(9, &[], "open"));
+    fake.unreachable(&format!("POST {API}/issues/5/dependencies"));
+    fake.unreachable(&format!("PATCH {API}/issues/9"));
+    let filed = fake.board().file_task(&export_task());
+    assert!(
+        matches!(&filed, Err(PortError::Backend(message)) if message.contains("#9 is left open under no epic")),
+        "{filed:?}"
     );
 }
 

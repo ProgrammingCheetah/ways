@@ -136,6 +136,31 @@ fn a_half_written_line_is_dropped_and_the_next_line_stays_whole() {
 }
 
 #[test]
+fn a_last_line_cut_inside_a_character_fails_no_later_append_or_read() {
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    append(dir.path(), &entry(AT, vec![lane(7, "implement")]), time(AT));
+    let path = dir.path().join(TICKS_FILE);
+    let mut bytes = std::fs::read(&path).expect("the trace");
+    // A crash mid-line, in the middle of a two-byte character.
+    bytes.extend_from_slice(b"{\"at\":\"2026-11-12T17:16:00Z\",\"note\":\"caf\xc3");
+    std::fs::write(&path, bytes).expect("a crash mid-character");
+
+    let appended = append(
+        dir.path(),
+        &entry(AT + 300, vec![lane(7, "review")]),
+        time(AT + 300),
+    );
+
+    assert_eq!(appended.failed, None);
+    assert_eq!(appended.line.moved.len(), 1, "moved against the first line");
+    let recorded = read(dir.path()).expect("reads").expect("a trace");
+    assert_eq!(
+        recorded.iter().map(|line| line.at).collect::<Vec<_>>(),
+        [time(AT), time(AT + 300)]
+    );
+}
+
+#[test]
 fn a_trace_that_cannot_be_read_is_named_and_moves_nothing() {
     let dir = tempfile::tempdir().expect("a temporary directory");
     std::fs::create_dir(dir.path().join(TICKS_FILE)).expect("a folder where the file belongs");

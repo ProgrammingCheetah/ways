@@ -331,3 +331,24 @@ fn issue_file_refuses_arguments_it_cannot_use() {
 
     assert_eq!(project.gh_calls(), Vec::<String>::new());
 }
+
+#[test]
+fn issue_file_reads_a_single_quoted_board_repository() {
+    // TOML's literal string: the value between the single quotes, a comment after it left out.
+    let mut project = project();
+    write(
+        &project.root,
+        ".zaf.toml",
+        &MANIFEST.replace(
+            "repo = \"example/tracker\"",
+            "repo = 'example/tracker' # the board",
+        ),
+    );
+    filing(&mut project, "v1");
+    let body = body_file(&project);
+
+    let (code, stdout, stderr) = file(&project, &[EPIC, TITLE, &body]);
+
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert_eq!(project.gh_calls()[0], list_call());
+}

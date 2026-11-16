@@ -59,11 +59,19 @@ cd "$ZAF_ROOT" || exit 2
 
 start=$(date +%s)
 deadline=$((start + minutes * 60))
+# The head the grace is counted for, and when it was first seen: a new head's runs take as long
+# to register as the first one's, so each head gets the whole grace.
+seen=
+since=$start
 while :; do
     head=$(zaf forge head "$pr") || exit 2
     if [ -z "$head" ]; then
         echo "the forge reports no head commit for pull request #$pr" >&2
         exit 2
+    fi
+    if [ "$head" != "$seen" ]; then
+        seen=$head
+        since=$(date +%s)
     fi
 
     # One line per check: its bucket (pass, fail, pending, skipping or cancel), name and link;
@@ -72,7 +80,7 @@ while :; do
 
     now=$(date +%s)
     if [ -z "$checks" ]; then
-        if [ $((now - start)) -ge "$grace" ]; then
+        if [ $((now - since)) -ge "$grace" ]; then
             echo "pull request #$pr reports no checks at $head"
             echo "$head"
             exit 0

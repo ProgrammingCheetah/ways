@@ -541,8 +541,8 @@ fn a_stop_that_lands_during_a_failed_restart_ends_the_loop_at_its_next_look() {
     let mut fake = Fake::new();
     fake.binary = vec![Found::Restart("zaf 9.9.9".to_owned())];
     fake.stop_during_restart = true;
-    // A request at the next look, which the stop must come before.
-    fake = fake.ask_at(2, &["ruling #45"]);
+    // A request at the very next look, which the stop must come before: it is not taken.
+    fake = fake.ask_at(1, &["ruling #45"]);
 
     let ended = run(&mut fake, MINUTE * 60, Vec::new());
 
@@ -554,6 +554,7 @@ fn a_stop_that_lands_during_a_failed_restart_ends_the_loop_at_its_next_look() {
         }
     );
     assert!(fake.ticks().is_empty(), "{:?}", fake.log);
+    assert_eq!(fake.turn, 0, "no request is taken after the stop");
     assert_eq!(
         fake.log,
         [

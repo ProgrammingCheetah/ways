@@ -9,12 +9,13 @@
 //! of [`READ_BOUND`] from the start covers them all: a project whose read fails shows its reason
 //! like any project, and one whose read has not answered by then shows that, so no project holds
 //! the others up. A read that hangs is left on its thread, which ends with the process or when
-//! the read does.
+//! the read does; while it is there ([`Reading`]) no other read of that project starts, so a
+//! project that hangs holds one thread however often the machine is read.
 
-use std::collections::HashMap;
-use std::path::Path;
-use std::sync::Arc;
+use std::collections::{BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 
 use super::{Problem, ProblemKind, ProjectState, gather_project, unreadable};
@@ -96,6 +97,33 @@ pub fn gather_machine_with(
     }
 }
 
+/// The project roots whose read is on a thread now, in this process.
+static READING: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
+
+/// One project's read while it runs: its root is in [`READING`] until this drops, which is when
+/// the read's thread ends, however it ends.
+struct Reading(PathBuf);
+
+impl Reading {
+    /// Marks `root` as being read; none when a read of it is still on its thread.
+    fn begin(root: &Path) -> Option<Self> {
+        READING
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(root.to_owned())
+            .then(|| Self(root.to_owned()))
+    }
+}
+
+impl Drop for Reading {
+    fn drop(&mut self) {
+        READING
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.0);
+    }
+}
+
 /// Every entry's state, in the entries' order.
 fn read_projects(
     entries: &[ProjectEntry],
@@ -112,12 +140,18 @@ fn read_projects(
             states[index] = Some(missing(entry, now));
             continue;
         }
+        let Some(reading) = Reading::begin(&entry.folder) else {
+            failed_to_start.insert(index, "its earlier board read has not ended".to_owned());
+            continue;
+        };
         let sender = sender.clone();
         let reader = Arc::clone(reader);
         let root = entry.folder.clone();
         let started = std::thread::Builder::new()
             .name(format!("hub-read-{}", entry.name))
             .spawn(move || {
+                // Dropped when the thread ends, or with this closure when it never starts.
+                let _reading = reading;
                 // The receiver may be gone by the time a slow read ends: nobody is left to hear it.
                 let _ = sender.send((index, reader(&root, now)));
             });

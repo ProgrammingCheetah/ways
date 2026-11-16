@@ -1497,6 +1497,75 @@ fn required_yarn_denies_its_hatches() {
 }
 
 #[test]
+fn required_npm_denies_its_hatches_and_keeps_what_a_frontend_task_runs() {
+    let npm = manifest("[requires]\nnpm = \"*\"\nnode = \"*\"\n");
+    for (profile, patterns) in denies_of(&npm) {
+        for sub in [
+            "exec",
+            "x",
+            "explore",
+            "init",
+            "create",
+            "innit",
+            "config set",
+            "config edit",
+            "c set",
+            "c edit",
+            "set",
+        ] {
+            for wanted in [
+                format!("npm {sub}"),
+                format!("npm {sub} *"),
+                format!("npm -* {sub}"),
+                format!("npm -* {sub} *"),
+            ] {
+                assert!(patterns.contains(&wanted), "{profile}: {wanted}");
+            }
+        }
+    }
+    assert_denied(
+        &npm,
+        &[
+            "npm exec -- sh x.sh",
+            "npm exec -c 'sh x.sh'",
+            "npm x cowsay",
+            "npm --prefix zaf/web exec sh",
+            "npm explore vite -- sh x.sh",
+            "npm init some-package",
+            "npm create vite",
+            "npm config set script-shell /tmp/x",
+            "npm c set script-shell=/tmp/x",
+            "npm set script-shell=/tmp/x",
+            "npm config edit",
+        ],
+    );
+    for (profile, patterns) in denies_of(&npm) {
+        for line in [
+            "npm ci",
+            "npm install",
+            "npm install --save-dev vitest",
+            "npm run build",
+            "npm run-script build",
+            "npm test",
+            "npm run test -- Controls",
+            "npm --prefix zaf/web run build",
+            "npm config get script-shell",
+            "node x.js",
+        ] {
+            assert!(
+                !patterns
+                    .iter()
+                    .any(|pattern| pattern_matches(pattern, line)),
+                "{profile} denies `{line}`: {patterns:?}"
+            );
+        }
+    }
+    // A gate line that runs npm allows it, so its hatches are denied too.
+    let gated = manifest("[gate]\nfull = \"cd web && npm test\"\n");
+    assert_denied(&gated, &["npm exec sh", "npm --prefix web x cowsay"]);
+}
+
+#[test]
 fn a_tool_not_allowed_adds_no_hatch() {
     let without_yarn = manifest("[requires]\njj = \"*\"\ngh = \"*\"\n");
     for (profile, patterns) in denies_of(&without_yarn) {

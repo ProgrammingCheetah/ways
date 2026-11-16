@@ -17,7 +17,7 @@ const MANIFEST: &str = "[project]\nname = \"demo\"\n[board]\nkind = \"github-iss
 fn a_used_port_exits_1_naming_the_port() {
     let held = TcpListener::bind("0.0.0.0:0").expect("binds");
     let port = held.local_addr().expect("address").port().to_string();
-    let project = Project::new(MANIFEST);
+    let project = project(MANIFEST);
     let (code, stdout, stderr) = outcome(&project.zaf(&["hub", "--port", &port]));
     assert_eq!(code, 1, "{stderr}");
     assert!(stdout.is_empty(), "nothing is served: {stdout}");
@@ -25,6 +25,33 @@ fn a_used_port_exits_1_naming_the_port() {
         stderr.contains(&format!("port {port} is already in use")),
         "{stderr}"
     );
+}
+
+/// A project whose hub reads no transcript of the machine it is tested on: the default Claude
+/// config dir is an empty folder of the test's own, so the ledger's fill finds nothing and takes
+/// no time, whatever the machine holds.
+fn project(manifest: &str) -> Project {
+    let mut project = Project::new(manifest);
+    let config = project.temp.path().join("claude-config");
+    std::fs::create_dir_all(&config).expect("config dir");
+    project.env("CLAUDE_CONFIG_DIR", config.to_str().expect("utf-8"));
+    project
+}
+
+/// Waits until the hub has stopped writing under the project and its zaf home: the ledger is
+/// there (the hub makes it once its URL is out) and nothing has changed for a moment.
+fn settle(project: &Project) {
+    let read = || (files_under(&project.root), files_under(&project.home));
+    let mut before = read();
+    for _ in 0..100 {
+        std::thread::sleep(Duration::from_millis(200));
+        let now = read();
+        if now == before && project.home.join("ledger.db").exists() {
+            return;
+        }
+        before = now;
+    }
+    panic!("the hub never settled");
 }
 
 /// One request to the hub at `port` on the loopback: the whole answer.
@@ -41,10 +68,10 @@ fn http(port: u16, request: &str) -> String {
 
 #[test]
 fn api_state_holds_every_project() {
-    let mut first = Project::new(MANIFEST);
+    let mut first = project(MANIFEST);
     // The board of the project the hub runs in is empty.
     first.on("issue list *", "[]");
-    let mut second = Project::new(&MANIFEST.replace("demo", "other"));
+    let mut second = project(&MANIFEST.replace("demo", "other"));
     // Both share the first's zaf home, and so its list of projects.
     second.env("ZAF_HOME", &first.home.to_string_lossy());
     outcome(&first.zaf(&["status"]));
@@ -145,7 +172,7 @@ fn holds_a_key(text: &str) -> bool {
 
 #[test]
 fn a_control_with_no_key_or_a_wrong_one_is_refused_and_changes_nothing() {
-    let mut project = Project::new(MANIFEST);
+    let mut project = project(MANIFEST);
     let (hub, port) = serve(&mut project, &[]);
     // Reading is open, and the hub has settled whatever it writes when it reads.
     let state = http(
@@ -153,6 +180,7 @@ fn a_control_with_no_key_or_a_wrong_one_is_refused_and_changes_nothing() {
         "GET /api/state HTTP/1.1\r\nHost: zaf\r\nConnection: close\r\n\r\n",
     );
     assert!(state.contains("\"controls\":true"), "{state}");
+    settle(&project);
     let before = (files_under(&project.root), files_under(&project.home));
     for control in ["/api/tick", "/api/answer", "/api/watch", "/api/nothing"] {
         for key in [None, Some("wrong"), Some("")] {
@@ -179,7 +207,7 @@ fn a_control_with_no_key_or_a_wrong_one_is_refused_and_changes_nothing() {
 
 #[test]
 fn read_only_refuses_every_control_and_says_so() {
-    let mut project = Project::new(MANIFEST);
+    let mut project = project(MANIFEST);
     let (_hub, port) = serve(&mut project, &["--read-only"]);
     let state = http(
         port,
@@ -204,7 +232,7 @@ fn read_only_refuses_every_control_and_says_so() {
 
 #[test]
 fn read_only_is_for_a_served_page() {
-    let project = Project::new(MANIFEST);
+    let project = project(MANIFEST);
     let (code, _, stderr) = outcome(&project.zaf(&["hub", "--read-only"]));
     assert_eq!(
         code, 2,
@@ -214,7 +242,7 @@ fn read_only_is_for_a_served_page() {
 
 #[test]
 fn a_hub_run_leaves_no_key_in_a_file() {
-    let mut project = Project::new(MANIFEST);
+    let mut project = project(MANIFEST);
     let (hub, port) = serve(&mut project, &[]);
     for request in [
         "GET / HTTP/1.1\r\nHost: zaf\r\nConnection: close\r\n\r\n",
@@ -240,7 +268,7 @@ fn a_hub_run_leaves_no_key_in_a_file() {
 
 #[test]
 fn a_port_is_not_taken_with_the_hook() {
-    let project = Project::new(MANIFEST);
+    let project = project(MANIFEST);
     let (code, _, stderr) = outcome(&project.zaf(&["hub", "report", "--port", "0"]));
     assert_eq!(code, 2, "the report verb has no port: {stderr}");
 }

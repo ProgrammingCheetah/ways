@@ -78,8 +78,8 @@ pub struct PeerCredentials {
     pub uid: u32,
 }
 
-/// Who connected on `stream`: `SO_PEERCRED` on Linux. Elsewhere, and when the kernel does not say,
-/// none; a caller that needs to know who asks treats none as a refusal.
+/// Who connected on `stream`: `SO_PEERCRED` on Linux. On a platform that has no such read, and
+/// when the kernel does not say, none; a caller that needs to know who asks treats none as a refusal.
 #[cfg(target_os = "linux")]
 pub fn peer_of(stream: &std::os::unix::net::UnixStream) -> Option<PeerCredentials> {
     use std::os::fd::AsRawFd;
@@ -108,8 +108,42 @@ pub fn peer_of(stream: &std::os::unix::net::UnixStream) -> Option<PeerCredential
     })
 }
 
+/// Who connected on `stream`, on macOS: the user from `getpeereid` (`LOCAL_PEERCRED` underneath)
+/// and the process from `LOCAL_PEERPID`, an option at level `SOL_LOCAL`. None when the kernel does
+/// not say, as on Linux.
+#[cfg(target_os = "macos")]
+pub fn peer_of(stream: &std::os::unix::net::UnixStream) -> Option<PeerCredentials> {
+    use std::os::fd::AsRawFd;
+    let fd = stream.as_raw_fd();
+    let mut uid: libc::uid_t = 0;
+    let mut gid: libc::gid_t = 0;
+    // SAFETY: `uid` and `gid` live for the call, which only writes into them.
+    if unsafe { libc::getpeereid(fd, &raw mut uid, &raw mut gid) } != 0 {
+        return None;
+    }
+    let mut pid: libc::pid_t = 0;
+    let mut size = libc::socklen_t::try_from(std::mem::size_of::<libc::pid_t>()).ok()?;
+    // SAFETY: `pid` and `size` live for the call and `size` is the size of `pid`.
+    let status = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            std::ptr::from_mut(&mut pid).cast(),
+            &raw mut size,
+        )
+    };
+    if status != 0 {
+        return None;
+    }
+    Some(PeerCredentials {
+        pid: u32::try_from(pid).ok().filter(|pid| *pid > 0)?,
+        uid,
+    })
+}
+
 /// Who connected on `stream`; this platform does not say.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn peer_of(_stream: &std::os::unix::net::UnixStream) -> Option<PeerCredentials> {
     None
 }
@@ -314,15 +348,27 @@ fn start_of(pid: u32) -> Option<String> {
         return proc_start(&stat);
     }
     let output = Command::new("ps")
-        .args(["-o", "lstart=", "-p", &pid.to_string()])
+        // Two `-o`: BSD's ps reads everything after a `=` as that column's header, commas included.
+        .args(["-o", "stat=", "-o", "lstart=", "-p", &pid.to_string()])
         .env("LC_ALL", "C")
         .env("TZ", "UTC")
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
         .ok()?;
-    let start = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    (output.status.success() && !start.is_empty()).then_some(start)
+    if !output.status.success() {
+        return None;
+    }
+    ps_start(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// The start of a `ps -o stat= -o lstart=` line: its state word, then the start. A zombie (a state
+/// that opens with `Z`) has exited, though `ps` still prints when it started, and has no start,
+/// as on Linux ([`proc_start`]).
+fn ps_start(line: &str) -> Option<String> {
+    let (state, start) = line.trim().split_once(char::is_whitespace)?;
+    let start = start.trim();
+    (!state.starts_with('Z') && !start.is_empty()).then(|| start.to_owned())
 }
 
 /// Field 22 of a `/proc/<pid>/stat` line, counted after the command name, which may hold
@@ -447,7 +493,9 @@ fn kept_of_ps_line(line: &[u8]) -> Option<(u32, Kept)> {
     Some((pid, kept))
 }
 
-/// The name of a `NAME=value` word, a name being capitals, digits and `_`, not led by a digit.
+/// The name of a `NAME=value` word, a name being letters of either case, digits and `_`, not led
+/// by a digit: a lowercase name (`api_token=...`) ends the entry before it as a capital one does,
+/// so its value is never taken for the rest of a kept one.
 fn assigned_name(word: &[u8]) -> Option<&str> {
     let split = word.iter().position(|byte| *byte == b'=')?;
     let name = &word[..split];
@@ -455,7 +503,7 @@ fn assigned_name(word: &[u8]) -> Option<&str> {
     let valid = !first.is_ascii_digit()
         && name
             .iter()
-            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || *byte == b'_');
+            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_');
     valid.then(|| std::str::from_utf8(name).ok()).flatten()
 }
 
@@ -965,6 +1013,15 @@ mod tests {
     }
 
     #[test]
+    fn a_lowercase_variable_ends_the_entry_before_it() {
+        let line =
+            b"4242 claude ZAF_RUN=/p/.zaf/runs/x api_token=secret http_proxy=http://h ZAF_SIZE=S";
+        let (_, kept) = kept_of_ps_line(line).expect("a line");
+        assert_eq!(kept.run.as_deref(), Some("/p/.zaf/runs/x"));
+        assert_eq!(kept.size.as_deref(), Some("S"));
+    }
+
+    #[test]
     fn a_process_without_a_run_is_no_instance() {
         let kept = Kept {
             instance: Some("team instance 1 on #2".to_owned()),
@@ -1023,6 +1080,18 @@ mod tests {
         let stat =
             "4242 (a (b) c) S 1 4242 4242 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 987654 1000 10";
         assert_eq!(proc_start(stat).as_deref(), Some("987654"));
+    }
+
+    #[test]
+    fn a_zombie_in_a_ps_line_has_no_start() {
+        assert_eq!(
+            ps_start("S+   Mon Nov 16 01:02:03 2026\n").as_deref(),
+            Some("Mon Nov 16 01:02:03 2026")
+        );
+        assert_eq!(ps_start("Z    Mon Nov 16 01:02:03 2026\n"), None);
+        assert_eq!(ps_start("Z+   Mon Nov 16 01:02:03 2026\n"), None);
+        assert_eq!(ps_start(""), None);
+        assert_eq!(ps_start("S\n"), None);
     }
 
     #[test]

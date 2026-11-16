@@ -1,6 +1,6 @@
 {
   "path": "zaf/src/cli",
-  "charted": "2026-11-15",
+  "charted": "2026-11-16",
   "short": "verb modules and shared exit codes",
   "is": "One module per verb that runs the app use case, prints terse, --json or --more output, and maps the outcome to the shared exit codes.",
   "type": "code",
@@ -86,13 +86,13 @@
     },
     {
       "name": "hub.rs",
-      "role": "`zaf hub` and `zaf hub report`, and the reports the other verbs leave; in a terminal it waits and redraws on a new report",
+      "role": "`zaf hub`, `zaf hub report` and `zaf hub link`, and the reports the other verbs leave; in a terminal it waits and redraws on a new report",
       "node": false
     },
     {
       "name": "hub/",
-      "role": "dashboard.rs (`zaf hub --port <n>`: the loop that feeds the LAN page) and service.rs (`zaf hub service install | remove`), each with tests; tests.rs",
-      "node": false
+      "role": "the loop that feeds the LAN page, the service verbs, and the tick and watch the page's controls run",
+      "node": true
     },
     {
       "name": "profile.rs",
@@ -171,7 +171,7 @@
     }
   ],
   "notes": [
-    "Verbs: board (ready, claim, report, handoff, question, ruling), ask, brief, check, verify, changes, slice (open, pr, merge, drop), spawn (phase, stop, trace), asklog, status, report, guard, doctor, setup, profile init, do, hub (report, service install|remove), progress (plan, at), update, epic (list, show, sign), forge (open, merge, checks, head, log)",
+    "Verbs: board (ready, claim, report, handoff, question, ruling), ask, brief, check, verify, changes, slice (open, pr, merge, drop), spawn (phase, stop, trace), asklog, status, report, guard, doctor, setup, profile init, do, hub (report, link, service install|remove), progress (plan, at), update, epic (list, show, sign), forge (open, merge, checks, head, log)",
     "`init` is not a verb: `setup` asks the manifest questions through app/init.rs",
     "check.rs names adapters directly (SystemShell, gate RUNS_DIR), the only non-test place outside composition.rs that does"
   ]

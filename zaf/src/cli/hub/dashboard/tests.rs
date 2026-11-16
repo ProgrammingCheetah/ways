@@ -213,14 +213,68 @@ fn a_read_only_hub_prints_no_link() {
     assert!(!out.contains("key"), "{out}");
 }
 
-fn serving(address: Ipv4Addr, show_link: bool, read_only: bool) -> Serving {
+fn serving<'a>(address: Ipv4Addr, show_link: bool, read_only: bool) -> Serving<'a> {
     Serving {
         address: IpAddr::V4(address),
         guard: Guard::start(read_only).expect("a key"),
         controls: Controls::default(),
         show_link,
         link_home: None,
+        fill: None,
     }
+}
+
+/// An output a test can read while the hub still writes to it.
+#[derive(Clone, Default)]
+struct SharedOut(std::rc::Rc<std::cell::RefCell<Vec<u8>>>);
+
+impl Write for SharedOut {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.borrow_mut().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Serves for no look at all with a fill that answers `more`; returns whether the URL was out
+/// when the fill ran, and how many frames were gathered.
+fn filled(more: bool) -> (bool, usize) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = SharedOut::default();
+    let seen = out.clone();
+    let url_first = Cell::new(false);
+    let fill = || {
+        url_first.set(String::from_utf8_lossy(&seen.0.borrow()).contains("http://"));
+        more
+    };
+    let gathers = Cell::new(0);
+    serve(
+        &mut out.clone(),
+        dashboard_on_a_free_port(),
+        Serving {
+            fill: Some(&fill),
+            ..serving(Ipv4Addr::LOCALHOST, false, false)
+        },
+        no_state(),
+        |_| {
+            gathers.set(gathers.get() + 1);
+            Ok(snapshot(103))
+        },
+        dir.path(),
+        &mut Idle(1),
+    )
+    .expect("serves");
+    (url_first.get(), gathers.get())
+}
+
+#[test]
+fn the_url_is_printed_before_the_ledger_is_filled() {
+    // A fill that found more is one more frame; one that found nothing reads no board again.
+    assert_eq!(filled(true), (true, 2));
+    assert_eq!(filled(false), (true, 1));
 }
 
 #[test]

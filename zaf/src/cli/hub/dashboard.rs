@@ -70,7 +70,7 @@ pub fn controls(home: Option<PathBuf>, watches: WatchHandle) -> Controls {
 
 /// What the page is served with besides its frames: where the LAN reaches it, the guard that
 /// admits its controls and the controls it runs.
-pub struct Serving {
+pub struct Serving<'a> {
     /// The address of this machine that the LAN reaches it by.
     pub address: IpAddr,
     /// The hub's key, and whether it serves controls.
@@ -82,6 +82,10 @@ pub struct Serving {
     pub show_link: bool,
     /// The zaf home whose `hub.sock` this hub answers `zaf hub link` on; none leaves no socket.
     pub link_home: Option<PathBuf>,
+    /// What is left to read once the page is up and its URL printed, because it may take long:
+    /// the ledger's fill from the transcripts. It says whether a frame would now show more, which
+    /// is when one more is gathered and published.
+    pub fill: Option<&'a dyn Fn() -> bool>,
 }
 
 /// Serves `dashboard` until `pace` says to stop: the first frame from `gather`, then one more for
@@ -92,7 +96,7 @@ pub struct Serving {
 pub fn serve<G, W>(
     out: &mut W,
     dashboard: Dashboard,
-    serving: Serving,
+    serving: Serving<'_>,
     state: Arc<StateReader>,
     gather: G,
     state_dir: &Path,
@@ -119,11 +123,14 @@ where
 /// starts and instance that ends in the projects `listed` names (read again at every look, so a
 /// project that joins is watched). The look reads their reports files and run folders against
 /// `alive`; it reads no board and no network.
+///
+/// The URL is printed before `serving.fill` runs, so a ledger that takes long to fill holds
+/// neither the page nor whoever waits for the URL.
 #[allow(clippy::too_many_arguments)]
 pub fn serve_watching<G, W>(
     out: &mut W,
     dashboard: Dashboard,
-    serving: Serving,
+    serving: Serving<'_>,
     state: Arc<StateReader>,
     mut gather: G,
     state_dir: &Path,
@@ -158,6 +165,12 @@ where
         writeln!(out, "controls: {link}").map_err(io)?;
     }
     out.flush().map_err(io)?;
+    // A board that fails here leaves the first frame, as it does at any report.
+    if serving.fill.is_some_and(|fill| fill())
+        && let Ok(snapshot) = gather(pace.now())
+    {
+        page.publish(&draw(&snapshot, width));
+    }
     let outcome = watch(
         pace,
         &mut gather,

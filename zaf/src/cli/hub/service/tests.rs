@@ -11,12 +11,18 @@ use crate::cli::{Cli, HubAction, Verb};
 struct FakeSystemctl {
     calls: RefCell<Vec<String>>,
     fail_on: Option<&'static str>,
+    /// The manager knows no such unit: it refuses to stop or disable it.
+    unknown: bool,
 }
 
 impl Systemctl for FakeSystemctl {
     fn user(&self, args: &[&str]) -> Result<(), String> {
         self.calls.borrow_mut().push(args.join(" "));
-        if self.fail_on == args.first().copied() {
+        let verb = args.first().copied();
+        if self.unknown && matches!(verb, Some("stop" | "disable")) {
+            return Err("Unit zaf-hub.service not loaded.".to_owned());
+        }
+        if self.fail_on == verb {
             return Err("it refused".to_owned());
         }
         Ok(())
@@ -155,10 +161,54 @@ fn remove_undoes() {
 fn remove_when_absent() {
     let dir = tempfile::tempdir().expect("tempdir");
     let host = host(&dir, "linux");
-    let run = run_on(&["remove"], &host, &FakeSystemctl::default());
+    let fake = FakeSystemctl {
+        unknown: true,
+        ..FakeSystemctl::default()
+    };
+    let run = run_on(&["remove"], &host, &fake);
     assert_eq!(run.code, 0, "{}", run.err);
     assert!(run.out.contains("no hub service installed"), "{}", run.out);
-    assert!(run.calls.is_empty(), "{:?}", run.calls);
+}
+
+#[test]
+fn remove_stops_a_unit_whose_file_is_gone() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let host = host(&dir, "linux");
+    run_on(&["install"], &host, &FakeSystemctl::default());
+    // The file was deleted by hand: the hub still runs and the unit is still enabled.
+    std::fs::remove_file(unit_in(&host)).expect("deleted");
+
+    let run = run_on(&["remove"], &host, &FakeSystemctl::default());
+    assert_eq!(run.code, 0, "{}", run.err);
+    assert!(run.out.contains("removed"), "{}", run.out);
+    assert_eq!(
+        run.calls,
+        [
+            format!("stop {UNIT_NAME}"),
+            format!("disable {UNIT_NAME}"),
+            "daemon-reload".to_owned(),
+        ]
+    );
+}
+
+#[test]
+fn a_replacement_whose_stop_fails_is_no_install() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let host = host(&dir, "linux");
+    run_on(
+        &["install", "--port", "9100"],
+        &host,
+        &FakeSystemctl::default(),
+    );
+
+    let fake = FakeSystemctl {
+        fail_on: Some("stop"),
+        ..FakeSystemctl::default()
+    };
+    let run = run_on(&["install"], &host, &fake);
+    assert_eq!(run.code, 2);
+    assert!(run.err.contains("systemctl --user stop"), "{}", run.err);
+    assert!(!run.calls.iter().any(|call| call.starts_with("start")));
 }
 
 #[test]

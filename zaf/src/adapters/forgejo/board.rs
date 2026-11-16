@@ -266,7 +266,8 @@ impl Board for ForgejoBoard {
 
     /// Opens the issue with the labels `task`, `state/<state>`, `type/<Type>` and
     /// `group:<name>` (each created when the repository lacks it), then makes the epic depend
-    /// on it.
+    /// on it. When the epic cannot be made to depend on it the issue is closed and the call
+    /// fails, so filing again opens no second task beside an orphan.
     fn file_task(&self, task: &NewTask) -> Result<TicketId, PortError> {
         let mut repo = RepoLabels::read(&self.api)?;
         let mut specs = vec![
@@ -288,8 +289,25 @@ impl Board for ForgejoBoard {
         let (owner, name) = self.api.owner_and_name()?;
         let dependency = json!({ "owner": owner, "repo": name, "index": opened.number });
         let endpoint = format!("issues/{}/dependencies", task.epic.get());
-        self.api
-            .send::<serde_json::Value>(Method::Post, &endpoint, Some(&dependency))?;
+        let linked = self
+            .api
+            .send::<serde_json::Value>(Method::Post, &endpoint, Some(&dependency));
+        if let Err(error) = linked {
+            // No epic depends on the issue, so a retry would not find it and would file it
+            // again: it is closed, and named when even that fails.
+            let closed = self.api.send::<serde_json::Value>(
+                Method::Patch,
+                &format!("issues/{}", opened.number),
+                Some(&json!({ "state": "closed" })),
+            );
+            return Err(match closed {
+                Ok(_) => error,
+                Err(_) => PortError::Backend(format!(
+                    "{error}; #{} is left open under no epic: close it before filing again",
+                    opened.number
+                )),
+            });
+        }
         Ok(TicketId::from(opened.number))
     }
 

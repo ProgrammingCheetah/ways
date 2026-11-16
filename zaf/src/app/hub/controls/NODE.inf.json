@@ -1,0 +1,61 @@
+{
+  "path": "zaf/src/app/hub/controls",
+  "charted": "2026-11-16",
+  "short": "the hub's keyed control routes",
+  "is": "One module per `POST /api/<control>`: each takes a JSON body naming a project of the zaf home's list, calls the app function the matching verb calls from that project's root, and answers what happened or the refusal with its reason.",
+  "type": "code",
+  "tags": [
+    "category:source",
+    "hub",
+    "http"
+  ],
+  "conventions": [
+    "No body is read before the guard admits the request, and no project off the zaf home's list is ever reached",
+    "Status codes are shared: 200 done, 400 a body that is not that, 404 a project the list does not hold, 409 a refusal of the state (nothing changed), 500 a backend that failed",
+    "A control answers what the verb's --json says, plus plain words"
+  ],
+  "entry_points": [
+    "../controls.rs"
+  ],
+  "fs": [
+    {
+      "name": "answer.rs",
+      "role": "`POST /api/answer`: the Engineer's ruling on an open question, as `zaf board ruling`",
+      "node": false
+    },
+    {
+      "name": "drop.rs",
+      "role": "`POST /api/drop`: takes a project off the list only when its entry reads missing (503 with no zaf home); needs only the home, so it is always built",
+      "node": false
+    },
+    {
+      "name": "project.rs",
+      "role": "what tick and watch share: the listed project a body names and the version it runs for, given or remembered on its entry",
+      "node": false
+    },
+    {
+      "name": "stop.rs",
+      "role": "`POST /api/stop`: ends a task's running instance and releases its claim, as `zaf spawn stop`",
+      "node": false
+    },
+    {
+      "name": "tests.rs",
+      "role": "stop, tick, drop and answer over the dashboard's socket, end to end: the guard, the project, what the control does",
+      "node": false
+    },
+    {
+      "name": "tick.rs",
+      "role": "`POST /api/tick`: one spawner tick through the Ticker the hub was given, as `zaf spawn --once --no-wait`",
+      "node": false
+    },
+    {
+      "name": "watch.rs",
+      "role": "`POST /api/watch`: starts or stops the project's watch inside the hub (202 for a stop whose tick still runs); a scheduler the hub did not start is never stopped",
+      "node": false
+    }
+  ],
+  "notes": [
+    "The Ticker and the watch's tick are implemented in cli/hub/tick.rs and cli/hub/watch.rs, each a process of its own in the project's root",
+    "drop/, stop/, tick/ and watch/ hold only tests.rs"
+  ]
+}
