@@ -348,7 +348,8 @@ fn start_of(pid: u32) -> Option<String> {
         return proc_start(&stat);
     }
     let output = Command::new("ps")
-        .args(["-o", "stat=,lstart=", "-p", &pid.to_string()])
+        // Two `-o`: BSD's ps reads everything after a `=` as that column's header, commas included.
+        .args(["-o", "stat=", "-o", "lstart=", "-p", &pid.to_string()])
         .env("LC_ALL", "C")
         .env("TZ", "UTC")
         .stdin(Stdio::null())
@@ -361,7 +362,7 @@ fn start_of(pid: u32) -> Option<String> {
     ps_start(&String::from_utf8_lossy(&output.stdout))
 }
 
-/// The start of a `ps -o stat=,lstart=` line: its state word, then the start. A zombie (a state
+/// The start of a `ps -o stat= -o lstart=` line: its state word, then the start. A zombie (a state
 /// that opens with `Z`) has exited, though `ps` still prints when it started, and has no start,
 /// as on Linux ([`proc_start`]).
 fn ps_start(line: &str) -> Option<String> {
