@@ -4,6 +4,10 @@
 //! [`INSTANCE_VAR`], which the spawner sets, in the form the board prints it:
 //! `<role> instance <number> on #<epic>`.
 //!
+//! A `ruling` is checked as typed before the board is asked anything
+//! ([`check_typed_ruling`]): an empty one, or one with a gap a shell left, exits `1` and writes
+//! nothing; `--as-written` sends a gap as it is. The hub's answer ([`rule_in`]) is not checked so.
+//!
 //! A `question` asked inside a phase run (`ZAF_RUN`, which the launcher sets) of the task it is
 //! raised on is also recorded in that run folder's `questions`; one that cannot be recorded exits
 //! `2`, the question open, so asking again records it.
@@ -22,7 +26,9 @@ use crate::app::board::{
 use crate::app::hub::controls::{self, Failure};
 use crate::app::schedule::record;
 use crate::composition::Composition;
-use crate::domain::{Instance, InstanceNumber, NewTask, RoleName, Ticket, TicketId, TicketState};
+use crate::domain::{
+    Instance, InstanceNumber, NewTask, RoleName, Ticket, TicketId, TicketState, check_typed_ruling,
+};
 use crate::ports::{ClaimOutcome, NewQuestion, RUN_VAR};
 
 /// The environment variable naming the instance a verb acts as.
@@ -218,7 +224,20 @@ pub fn run(cli: &Cli, action: &BoardAction) -> u8 {
             }
             if problems.is_empty() { OK } else { REFUSED }
         }),
-        BoardAction::Ruling { question, text } => {
+        BoardAction::Ruling {
+            question,
+            text,
+            as_written,
+        } => {
+            // Only a ruling typed at a shell can have been eaten by one: the hub's answer goes
+            // to `controls::rule` unchecked.
+            if let Err(refusal) = check_typed_ruling(text, *as_written) {
+                eprintln!("zaf {path}: {refusal}");
+                if let Some(way_on) = refusal.way_on() {
+                    eprintln!("zaf {path}: {way_on}");
+                }
+                return REFUSED;
+            }
             let command = RulingCommand {
                 question: *question,
                 ruling: text.clone(),

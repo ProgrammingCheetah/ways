@@ -15,6 +15,7 @@ mod labels;
 mod memory;
 mod profile;
 mod quote;
+mod ruling;
 pub mod schedule;
 mod slot;
 mod task;
@@ -40,6 +41,7 @@ pub use labels::{PageStatus, TicketState};
 pub use memory::{MEBIBYTES_PER_UNIT, Mebibytes, Units};
 pub use profile::Profile;
 pub use quote::Quote;
+pub use ruling::{RulingGap, TypedRulingError, check_typed_ruling, first_gap};
 pub use schedule::{ActionName, CheckName, PhaseEnd};
 pub use slot::{SLOTS_DIR, SlotRecord};
 pub use task::{

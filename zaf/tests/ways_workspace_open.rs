@@ -1,6 +1,8 @@
 //! The ways repository's `workspace-open` action (docs/zaf-actions.md §4, §7): run through `zaf
 //! do` on a throwaway jj repository with a bare remote, it makes a slice's workspace and a
-//! same-named bookmark at the base and hands the path back as the last line of its log.
+//! same-named bookmark at the base and hands the path back as the last line of its log. A new
+//! slice is cut from a fetched base: a local base behind the remote's is moved up first, and a
+//! repository with no remote opens on the local base.
 
 mod common;
 
@@ -138,6 +140,37 @@ fn operation_ids(root: &Path) -> String {
 
 fn workspaces(root: &Path) -> String {
     jj(root, &["--ignore-working-copy", "workspace", "list"])
+}
+
+/// Pushes a commit to the base from a second clone, so the root's local and remote-tracking
+/// base both lag until something fetches. The commit the remote then holds for the base.
+fn advance_base_elsewhere(project: &Project, path: &str, content: &str) -> String {
+    let temp = project.temp.path();
+    let remote = temp.join("remote.git");
+    run(
+        temp,
+        "git",
+        &["clone", "-q", &remote.to_string_lossy(), "other"],
+    );
+    let other = temp.join("other");
+    run(&other, "git", &["checkout", "-q", BASE]);
+    write(&other, path, content);
+    run(&other, "git", &["add", path]);
+    run(
+        &other,
+        "git",
+        &[
+            "-c",
+            "user.name=Other",
+            "-c",
+            "user.email=other@example.com",
+            "commit",
+            "-qm",
+            "Advance the base elsewhere",
+        ],
+    );
+    run(&other, "git", &["push", "-q", "origin", BASE]);
+    run(&remote, "git", &["rev-parse", BASE]).trim().to_owned()
 }
 
 fn workspace_dir(project: &Project, slice: &str) -> PathBuf {
@@ -283,4 +316,73 @@ fn workspace_open_refuses_a_name_that_leaves_the_workspaces_directory() {
     assert!(!escaped.exists());
     assert!(!project.temp.path().join("outside").exists());
     assert!(!project.root.join(".zaf/workspaces").exists());
+}
+
+#[test]
+fn a_slice_opened_after_the_remote_base_moved_carries_the_remotes_commits() {
+    let project = project();
+    let root = &project.root;
+    let before = bookmark_at(root, BASE);
+    let pushed = advance_base_elsewhere(&project, "elsewhere.txt", "e\n");
+    assert_ne!(pushed, before);
+    assert_eq!(bookmark_at(root, BASE), before, "nothing fetched yet");
+
+    let (code, text) = open(&project, SLICE, BASE);
+
+    assert_eq!(code, 0, "{text}");
+    let dir = workspace_dir(&project, SLICE);
+    assert_eq!(handed_back(&text), dir.to_string_lossy(), "{text}");
+    // The local base moved up to the remote's, and the slice starts there.
+    assert_eq!(bookmark_at(root, BASE), pushed);
+    assert_eq!(bookmark_at(root, SLICE), pushed);
+    let parent = jj(&dir, &["log", "--no-graph", "-r", "@-", "-T", "commit_id"]);
+    assert_eq!(parent, pushed);
+    assert!(dir.join("elsewhere.txt").is_file());
+}
+
+#[test]
+fn a_slice_opens_on_a_local_base_that_is_ahead_of_the_remote_and_leaves_it_there() {
+    let project = project();
+    let root = &project.root;
+    // The base moves on locally, unpushed: the remote's base is behind it.
+    let ahead = bookmark_at(root, OTHER_BASE);
+    jj(root, &["bookmark", "set", BASE, "-r", &ahead]);
+    let local = bookmark_at(root, BASE);
+
+    let (code, text) = open(&project, SLICE, BASE);
+
+    assert_eq!(code, 0, "{text}");
+    assert_eq!(bookmark_at(root, BASE), local, "the local base moved");
+    assert_eq!(bookmark_at(root, SLICE), local);
+    assert_eq!(local, ahead);
+    assert!(workspace_dir(&project, SLICE).join("later.txt").is_file());
+}
+
+#[test]
+fn a_repository_with_no_remote_still_opens_a_slice() {
+    let project = project();
+    let root = &project.root;
+    jj(root, &["git", "remote", "remove", "origin"]);
+    let base = bookmark_at(root, BASE);
+
+    let (code, text) = open(&project, SLICE, BASE);
+
+    assert_eq!(code, 0, "{text}");
+    let dir = workspace_dir(&project, SLICE);
+    assert_eq!(handed_back(&text), dir.to_string_lossy(), "{text}");
+    assert_eq!(bookmark_at(root, BASE), base);
+    assert_eq!(bookmark_at(root, SLICE), base);
+    assert!(dir.join("notes.txt").is_file());
+}
+
+#[test]
+fn a_fetch_that_fails_opens_no_slice_and_exits_2() {
+    let project = project();
+    fs::remove_dir_all(project.temp.path().join("remote.git")).expect("remove the remote");
+
+    let (code, text) = open(&project, SLICE, BASE);
+
+    assert_eq!(code, 2, "{text}");
+    assert!(!workspace_dir(&project, SLICE).exists());
+    assert_eq!(bookmark_at(&project.root, SLICE), "");
 }

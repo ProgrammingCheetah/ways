@@ -64,6 +64,7 @@ pub fn run(cli: &Cli, task: TicketId, action: &str) -> u8 {
         Some(Ok(home)) => home,
         _ => root.join(STATE_DIR),
     };
+    let version = std::env::var(VERSION_VAR).ok();
     let ports = Ports {
         board: board.as_ref(),
         forge: forge.as_ref(),
@@ -72,6 +73,7 @@ pub fn run(cli: &Cli, task: TicketId, action: &str) -> u8 {
         home: &home,
         state_dir: &state_dir,
         alive: &process::alive,
+        version: version.as_deref(),
     };
     let launch = |started: &Started| detach(root, &started.run_dir);
     match phase::start(&ports, task, action, &launch) {

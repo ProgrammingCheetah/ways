@@ -276,3 +276,80 @@ fn only_a_planned_epic_with_no_question_has_a_challenge_clock() {
     empty.tasks.clear();
     assert_eq!(unchallenged(&empty, false, late), None, "planning's turn");
 }
+
+/// A ticket green and reviewed at `h1`, at its merge since 32, over an integration branch at
+/// `b1` with `lint` passed and `ci` still pending.
+fn held_by_the_base() -> TicketFacts {
+    use crate::domain::schedule::BaseFacts;
+
+    let mut facts = facts(pack());
+    facts.pull = Some(PullFacts {
+        checks: vec![passed(30)],
+        ..pull("h1", 20)
+    });
+    facts.runs.push(
+        run("review", Some("h1"), 31)
+            .exits(0, 32)
+            .leaves(Some("h1")),
+    );
+    facts.merging.base = BaseFacts {
+        head: Some(commit("b1")),
+        checks: vec![check("lint", CheckResult::Passed(time(31))), pending()],
+    };
+    facts
+}
+
+#[test]
+fn a_merge_held_by_the_integration_branch_is_overdue_after_the_deadline_and_not_before() {
+    let facts = held_by_the_base();
+    let deadline = time(32) + CHECK_DEADLINE;
+    assert_eq!(base_clock(&facts), Some(time(32)), "since its review ended");
+    assert_eq!(
+        place(&facts, deadline),
+        waiting(&[WaitingOn::Base(commit("b1"))])
+    );
+    assert_eq!(overdue(&facts, deadline - Duration::from_secs(1)), None);
+    assert_eq!(
+        overdue(&facts, deadline),
+        Some(OverdueCheck {
+            head: commit("b1"),
+            since: time(32),
+            awaited: Awaited::Base(vec![CheckName::from("ci")]),
+        })
+    );
+}
+
+#[test]
+fn a_merge_held_by_the_integration_branch_has_no_clock_while_a_question_is_open() {
+    let mut facts = held_by_the_base();
+    facts.open_questions.insert(id(61));
+    let late = time(32) + CHECK_DEADLINE * 10;
+    assert_eq!(place(&facts, late), waiting(&[WaitingOn::Question(id(61))]));
+    assert_eq!(overdue(&facts, late), None);
+}
+
+#[test]
+fn a_ruling_at_the_branchs_head_lets_the_ticket_through_and_one_at_another_head_does_not() {
+    let late = time(32) + CHECK_DEADLINE * 10;
+    let mut facts = held_by_the_base();
+    facts.merging.ruled_at = Some(commit("b1"));
+    assert_eq!(place(&facts, late), in_lane("merge", 32));
+    assert_eq!(overdue(&facts, late), None);
+    // The branch moved since the ruling: its new head holds the ticket again.
+    facts.merging.ruled_at = Some(commit("b0"));
+    assert_eq!(
+        place(&facts, late),
+        waiting(&[WaitingOn::Base(commit("b1"))])
+    );
+    assert!(overdue(&facts, late).is_some());
+}
+
+#[test]
+fn a_wait_on_another_tickets_merge_has_no_clock() {
+    let mut facts = held_by_the_base();
+    facts.merging.base = Default::default();
+    facts.merging.first = Some(id(12));
+    let late = time(32) + CHECK_DEADLINE * 10;
+    assert_eq!(place(&facts, late), waiting(&[WaitingOn::Merge(id(12))]));
+    assert_eq!(overdue(&facts, late), None);
+}

@@ -88,12 +88,26 @@ fn each_place_has_its_short_form() {
         "waiting(check a1b2c3d)",
         "a check is named by the first seven characters of its head"
     );
+    assert_eq!(
+        ShortPlace::of(&waiting(&[WaitingOn::Merge(id(12))])).as_str(),
+        "waiting(merge of #12)"
+    );
+    assert_eq!(
+        ShortPlace::of(&waiting(&[WaitingOn::Base(CommitId::from(
+            "a1b2c3d4e5f60718"
+        ))]))
+        .as_str(),
+        "waiting(base a1b2c3d)",
+        "the integration branch is named by the first seven characters of its head"
+    );
     assert_eq!(ShortPlace::unreadable().as_str(), "unreadable");
 }
 
 #[test]
 fn a_ticket_waiting_on_several_things_names_each_in_the_cores_order() {
     let place = waiting(&[
+        WaitingOn::Base(CommitId::from("def")),
+        WaitingOn::Merge(id(12)),
         WaitingOn::Check(id(7), CommitId::from("abc")),
         WaitingOn::Ticket(id(5)),
         WaitingOn::Question(id(45)),
@@ -101,7 +115,7 @@ fn a_ticket_waiting_on_several_things_names_each_in_the_cores_order() {
     ]);
     assert_eq!(
         ShortPlace::of(&place).as_str(),
-        "waiting(epic #1, question #45, ticket #5, check abc)"
+        "waiting(epic #1, question #45, ticket #5, check abc, merge of #12, base def)"
     );
 }
 

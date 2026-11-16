@@ -252,7 +252,7 @@
     },
     {
       "name": "ways_merge_base.rs",
-      "role": "the merge-base action: fetches and merges the base",
+      "role": "the merge-base action: fetches and merges the base, or with --probe only answers whether it merges cleanly",
       "node": false
     },
     {

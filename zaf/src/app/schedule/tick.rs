@@ -11,7 +11,9 @@
 //! ([`Placement::of`]), names each one its epic or a question holds back ([`Held`]), then walks the
 //! lane, lowest ticket first. Each entry the gate lets through goes to the step of its kind: step 3
 //! runs a `zaf`-kind action inline ([`run_zaf_actions`]), step 4 launches a wait
-//! ([`launch_waits`]), step 6 starts at most one model phase ([`start_planned`]). An entry the
+//! ([`launch_waits`]), step 6 starts at most one model phase ([`start_planned`]). Step 3 runs at
+//! most one merge that goes through (R29): once one exited 0 the base has moved, so every other
+//! merge of the lane waits for the next tick ([`run_one_merge`]). An entry the
 //! gate holds is step 5's: a failed wait with no `on-fail` raises its question, and an action
 //! getting nowhere raises one too; neither runs. Step 5 also asks about the waiting tickets and
 //! the open epics ([`waiting_causes`]): an overdue check wait, a dead dependency, a cycle, an
@@ -32,12 +34,12 @@ use super::ask::{Cause, FailedWait, Hold, ask_outcome, hold_of, waiting_causes};
 use super::gather::{Beside, Gathered};
 use crate::app::actions::{ActionKind, ActionName, ListedPhase};
 use crate::app::spawn::inline::run_zaf_actions;
-use crate::app::spawn::outcome::TickOutcome;
+use crate::app::spawn::outcome::{Ran, TickOutcome};
 use crate::app::spawn::start::{InUse, PlannedModel, start_planned};
 use crate::app::spawn::waits::launch_waits;
 use crate::domain::schedule::{
-    Failure, LaneEntry, Phase, PhaseStatus, Place, Placement, RunRecord, TicketFacts, WaitingOn,
-    current_phase, gets_nowhere, latest_counted_run, place,
+    Failure, LaneEntry, Phase, PhaseEnd, PhaseStatus, Place, Placement, RunRecord, TicketFacts,
+    WaitingOn, current_phase, gets_nowhere, latest_counted_run, place,
 };
 use crate::domain::{Budget, TicketId, Units};
 use crate::ports::Board;
@@ -192,7 +194,8 @@ pub fn failed_phase(facts: &TicketFacts) -> Option<FailedPhase<'_>> {
 
 /// What a waiting ticket waits on, in words, the epic and the questions first in the order the
 /// old gate named them: an unsigned epic, a question on the epic, a question on the ticket, an
-/// unchallenged epic; then the tickets it depends on and the checks at its head.
+/// unchallenged epic; then the tickets it depends on, the checks at its head, the ticket that
+/// merges before it and the integration branch's checks.
 fn waiting_words(facts: &TicketFacts, beside: &Beside, on: &BTreeSet<WaitingOn>) -> Vec<String> {
     let mut words: Vec<String> = held_words(facts, beside, on);
     for waiting_on in on {
@@ -201,6 +204,12 @@ fn waiting_words(facts: &TicketFacts, beside: &Beside, on: &BTreeSet<WaitingOn>)
             WaitingOn::Check(_, head) => {
                 words.push(format!("the checks at {head} have not ended"));
             }
+            WaitingOn::Merge(ticket) => {
+                words.push(format!("{ticket} is fresh from a fix and merges first"));
+            }
+            WaitingOn::Base(head) => words.push(format!(
+                "the integration branch's checks at {head} have not ended"
+            )),
             WaitingOn::Epic(_) | WaitingOn::Question(_) => {}
         }
     }
@@ -243,7 +252,8 @@ fn held_words(facts: &TicketFacts, beside: &Beside, on: &BTreeSet<WaitingOn>) ->
     words
 }
 
-/// A ticket its epic or a question holds back, with the reason the tick's block names it by.
+/// A ticket its epic or a question holds back, or a merge the tick left for the next one
+/// ([`PhaseTick::held`]), with the reason the tick's block names it by.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Held {
     /// The ticket.
@@ -321,7 +331,8 @@ pub struct PhaseTick {
     /// What failed: the questions' board, the count of the live model runs, or the model phase's
     /// start. Any of them fails the tick.
     pub failed: Vec<String>,
-    /// The tickets their epic or a question holds back ([`held`]).
+    /// The tickets their epic or a question holds back ([`held`]), then the merges left for the
+    /// next tick because one merged in this one.
     pub held: Vec<Held>,
     /// Where the tick placed every ticket before it acted: what the scheduler keeps between ticks.
     pub placement: Placement,
@@ -378,6 +389,49 @@ pub fn sort_lane(gathered: &Gathered, placement: &Placement, now: SystemTime) ->
     sorted
 }
 
+/// Step 3 with one merge a tick (R29): runs each of `entries` in order ([`run_zaf_actions`]),
+/// but once a merge has exited 0 it runs no other merge: the base just moved, and its checks are
+/// not known until the next gather. An entry is a merge when its action is a phase of its ticket
+/// that ends at `merged`. Each merge left for the next tick is named, as a held ticket is; an
+/// entry that is no merge runs whatever came before, and so does a merge after one that failed,
+/// which moved nothing.
+fn run_one_merge(
+    gathered: &Gathered,
+    entries: &[LaneEntry],
+    run: &mut dyn FnMut(TicketId, &ActionName) -> u8,
+) -> (Vec<Ran>, Vec<Held>) {
+    let merges = |entry: &LaneEntry| {
+        gathered
+            .tickets
+            .iter()
+            .filter(|facts| facts.ticket == entry.ticket)
+            .flat_map(|facts| &facts.phases)
+            .any(|phase| phase.name == entry.next && phase.ends.contains(&PhaseEnd::Merged))
+    };
+    let mut ran = Vec::new();
+    let mut deferred = Vec::new();
+    let mut merged: Option<TicketId> = None;
+    for entry in entries {
+        let a_merge = merges(entry);
+        if let Some(merged) = merged.filter(|_| a_merge) {
+            deferred.push(Held {
+                ticket: entry.ticket,
+                reason: format!(
+                    "{merged} merged in this tick, so its {} waits for the next one",
+                    entry.next
+                ),
+            });
+            continue;
+        }
+        let done = run_zaf_actions(std::slice::from_ref(entry), run);
+        if a_merge && done.iter().any(|ran| ran.exit == 0) {
+            merged = Some(entry.ticket);
+        }
+        ran.extend(done);
+    }
+    (ran, deferred)
+}
+
 /// Runs steps 3 to 6 on `gathered` at `now`, in that order, and merges what each did (see the
 /// module above). Step 5 raises each question under the spawner's lock of `state_dir`
 /// ([`super::ask::ask`]). The model phase is planned against `machine` and the live model runs of
@@ -400,7 +454,9 @@ pub fn tick(
         held: held(gathered, now),
         ..PhaseTick::default()
     };
-    tick.outcome.ran = run_zaf_actions(&sorted.zaf, steps.run);
+    let (ran, deferred) = run_one_merge(gathered, &sorted.zaf, steps.run);
+    tick.outcome.ran = ran;
+    tick.held.extend(deferred);
     tick.outcome.waits = launch_waits(&sorted.waits, steps.launch, steps.log);
     let causes: Vec<Cause> = (sorted.failed_waits.iter().cloned().map(Cause::FailedWait))
         .chain(sorted.nowhere.iter().cloned().map(Cause::Nowhere))

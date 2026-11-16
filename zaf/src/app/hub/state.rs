@@ -321,7 +321,11 @@ pub fn gather_project(root: &Path, now: SystemTime) -> ProjectState {
     let places: Option<Places> = board
         .as_ref()
         .ok()
-        .and_then(|board| gather_for(&composition, board.as_ref()).ok().flatten())
+        .and_then(|board| {
+            gather_for(&composition, board.as_ref(), None)
+                .ok()
+                .flatten()
+        })
         .map(|gathered| {
             shadow::places(&gathered, now)
                 .into_iter()

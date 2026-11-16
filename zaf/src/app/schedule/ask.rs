@@ -10,13 +10,18 @@
 //! - **A failed wait with no `on-fail`** ([`FailedWait`]): the ticket has nowhere to go.
 //! - **An overdue check wait** ([`overdue`]): the ticket has waited on the checks at one head for
 //!   [`CHECK_DEADLINE`](crate::domain::schedule::CHECK_DEADLINE) and they have not ended: none registered, some still pending, or the
-//!   phase awaits something from outside that has not come.
+//!   phase awaits something from outside that has not come. A ticket held at its merge that long
+//!   by the integration branch's pending checks (R29) is asked about the same way.
 //! - **A dead dependency** ([`dead_dependencies`]): a ticket its `Blocked by:` line names is closed
 //!   as not planned, or is no ticket at all. Asked at once.
 //! - **A dependency cycle** ([`cycles`]): waiting tickets that wait on each other. Asked at once,
 //!   once, on the cycle's lowest ticket, naming the whole cycle.
 //! - **An unchallenged epic** ([`unchallenged`]): planned, and not challenged for
 //!   [`CHALLENGE_DEADLINE`](crate::domain::schedule::CHALLENGE_DEADLINE). Asked on the epic.
+//! - **A red integration branch** ([`red_base`], R29): a check failed at the head of the branch
+//!   the tickets merge into. Asked at once, on each epic that has a ticket not done, since the
+//!   question on an epic is what makes its tickets wait: a merge is never held by a red branch
+//!   itself, or the fix could not land.
 //!
 //! A wait on a question or on an unsigned epic has no clock: the Engineer already has it.
 //!
@@ -31,11 +36,16 @@
 //! - a failed wait: `Failed wait: <action> at <head>, <n>.` names the head and the failure's time,
 //!   so a ruling at that head and failure is not asked again; a new head or a new failure is;
 //! - an overdue check wait: `Check deadline: <head>.`, once per head; a new head starts the clock
-//!   again;
+//!   again. One on the integration branch's checks is `Base deadline: <head>.`, once per ticket
+//!   and head of the branch, and its ruling is the way through: the gather reads it
+//!   ([`base_deadline_marker`]) and the branch's checks no longer hold that ticket at that head;
 //! - a dead dependency: `Dead dependency: <ticket>.`, once per ticket and dependency;
 //! - a cycle: `Dependency cycle: <tickets>.`, once per cycle;
 //! - an unchallenged epic: `Challenge deadline: <n>.`, the time its clock started, so once per
-//!   planning.
+//!   planning;
+//! - a red integration branch: `Red base: <branch> at <head>.`, once per epic and head: once
+//!   ruled, work goes on at that head though it is still red, and a new head that is red asks
+//!   again.
 //!
 //! The ruled questions on an issue are read only when a cause other than getting nowhere comes
 //! up for it, once per issue a tick.
@@ -52,7 +62,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use super::gather::Gathered;
+use super::gather::{Base, Gathered};
 use crate::app::actions::ActionName;
 use crate::app::board::{self, BoardError};
 use crate::app::spawn::blockers::{cycles, render_cycle};
@@ -63,7 +73,8 @@ use crate::domain::schedule::{
     Placement, RunRecord, TicketFacts, dead_dependencies, dependency_graph, nowhere, overdue,
     unchallenged,
 };
-use crate::domain::{CommitId, Ticket, TicketId};
+use crate::domain::{CheckName, CommitId, Ticket, TicketId};
+use crate::ports::BranchName;
 use crate::ports::{Board, NewQuestion};
 
 /// What closes a getting-nowhere question: the start of the last run it counted, which a ruling
@@ -281,6 +292,13 @@ fn failed_wait_marker(failed: &FailedWait) -> String {
     )
 }
 
+/// The marker of the question an overdue wait on the integration branch's checks raises on a
+/// ticket: `Base deadline: <head>.`, the branch's head in full. A ruled question on the ticket
+/// that ends with it lets the ticket through at that head; the gather reads it back.
+pub fn base_deadline_marker(head: &CommitId) -> String {
+    format!("Base deadline: {head}.")
+}
+
 /// Why the scheduler asks the Engineer: one cause, one question (see the module above).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Cause {
@@ -297,6 +315,9 @@ pub enum Cause {
         overdue: OverdueCheck,
         /// How long it has waited.
         waited: Duration,
+        /// The integration branch, for a wait on its checks ([`Awaited::Base`]), when the gather
+        /// named it; none for a wait on the ticket's own checks.
+        branch: Option<BranchName>,
     },
     /// A ticket its `Blocked by:` line names can never complete.
     DeadDependency {
@@ -320,6 +341,17 @@ pub enum Cause {
         /// How long it has waited.
         waited: Duration,
     },
+    /// A check failed at the head of the integration branch the epic's tickets merge into (R29).
+    RedBase {
+        /// The epic, which the question is raised on.
+        epic: TicketId,
+        /// The integration branch.
+        branch: BranchName,
+        /// The commit it is at.
+        head: CommitId,
+        /// The checks that failed there, in the forge's order.
+        checks: Vec<CheckName>,
+    },
 }
 
 impl Cause {
@@ -331,6 +363,7 @@ impl Cause {
             Self::OverdueCheck { ticket, .. } | Self::DeadDependency { ticket, .. } => *ticket,
             Self::Cycle { lowest, .. } => *lowest,
             Self::Unchallenged { overdue, .. } => overdue.epic,
+            Self::RedBase { epic, .. } => *epic,
         }
     }
 
@@ -360,13 +393,19 @@ impl Cause {
 
     /// The question's last sentence, which the scheduler reads back to know the question is this
     /// cause's: `Last run: <n>.`, `Failed wait: <action> at <head>, <n>.`, `Check deadline:
-    /// <head>.`, `Dead dependency: <ticket>.`, `Dependency cycle: <tickets>.` or `Challenge
-    /// deadline: <n>.`
+    /// <head>.` (`Base deadline: <head>.` for the integration branch's), `Dead dependency:
+    /// <ticket>.`, `Dependency cycle: <tickets>.`, `Challenge
+    /// deadline: <n>.` or `Red base: <branch> at <head>.`
     pub fn marker(&self) -> String {
         match self {
             Self::Nowhere(hold) => format!("{MARKER}{}.", hold.last_run),
             Self::FailedWait(failed) => failed_wait_marker(failed),
-            Self::OverdueCheck { overdue, .. } => format!("Check deadline: {}.", overdue.head),
+            Self::OverdueCheck { overdue, .. } => match overdue.awaited {
+                Awaited::Base(_) => base_deadline_marker(&overdue.head),
+                Awaited::NoCheck | Awaited::Pending(_) | Awaited::Outside { .. } => {
+                    format!("Check deadline: {}.", overdue.head)
+                }
+            },
             Self::DeadDependency { dead, .. } => {
                 format!("Dead dependency: {}.", dead.dependency)
             }
@@ -374,6 +413,7 @@ impl Cause {
             Self::Unchallenged { overdue, .. } => {
                 format!("Challenge deadline: {}.", stamp(overdue.since))
             }
+            Self::RedBase { branch, head, .. } => format!("Red base: {branch} at {head}."),
         }
     }
 
@@ -383,12 +423,30 @@ impl Cause {
             Self::Nowhere(hold) => nowhere_text(hold),
             Self::FailedWait(failed) => failed_wait_text(failed),
             Self::OverdueCheck {
-                overdue, waited, ..
+                ticket,
+                overdue,
+                waited,
+                branch,
             } => {
                 let at = short(overdue.head.as_str());
                 let hours = hours(*waited);
                 let since = shown(overdue.since);
                 let body = match &overdue.awaited {
+                    Awaited::Base(checks) => format!(
+                        "The checks {} of the integration branch{} are still pending at {at}, \
+                         and {ticket} has waited {hours} h to merge (since {since}): the runner \
+                         may be down. Its merge waits until they end there; once this is ruled \
+                         it merges at that commit without them.",
+                        checks
+                            .iter()
+                            .map(|check| check.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        branch
+                            .as_ref()
+                            .map(|branch| format!(" {branch}"))
+                            .unwrap_or_default(),
+                    ),
                     Awaited::NoCheck => format!(
                         "No check has registered at {at} for {hours} h (since {since}): the \
                          runner may be down, or the workflow's path filter may have skipped this \
@@ -454,13 +512,39 @@ impl Cause {
                 shown(overdue.since),
                 self.marker()
             ),
+            Self::RedBase {
+                epic,
+                branch,
+                head,
+                checks,
+            } => {
+                let (noun, verb) = if checks.len() == 1 {
+                    ("check", "has")
+                } else {
+                    ("checks", "have")
+                };
+                format!(
+                    "The integration branch {branch} is red: the {noun} {} {verb} failed at {}. \
+                     The tickets of epic {epic} merge into it, so they wait on this question. \
+                     File a fix, or rule to carry on: once this is ruled they go on, merges \
+                     included, though the branch is still red at that commit. {}",
+                    checks
+                        .iter()
+                        .map(|check| check.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    short(head.as_str()),
+                    self.marker()
+                )
+            }
         }
     }
 
     /// The cause in a few words, as the tick's output names the question: `merge got nowhere
     /// three times at d962227`, `ci failed at d962227 and names no on-fail`, `no check has
     /// registered at d962227 for 2 h`, `its dependency #9 is closed as not planned`, `its
-    /// dependencies form a cycle: #3 → #5 → #3`, `it has had no challenge for 24 h`.
+    /// dependencies form a cycle: #3 → #5 → #3`, `it has had no challenge for 24 h`,
+    /// `feature/0.4.0 is red at d962227`.
     pub fn line(&self) -> String {
         match self {
             Self::Nowhere(hold) => format!(
@@ -487,6 +571,10 @@ impl Cause {
                     Awaited::Outside { phase, .. } => {
                         format!("{phase} has waited {hours} h at {at}")
                     }
+                    Awaited::Base(_) => format!(
+                        "the integration branch's checks at {at} are still pending after \
+                         {hours} h at its merge"
+                    ),
                 }
             }
             Self::DeadDependency { dead, .. } => {
@@ -497,6 +585,9 @@ impl Cause {
             }
             Self::Unchallenged { waited, .. } => {
                 format!("it has had no challenge for {} h", hours(*waited))
+            }
+            Self::RedBase { branch, head, .. } => {
+                format!("{branch} is red at {}", short(head.as_str()))
             }
         }
     }
@@ -515,7 +606,8 @@ fn listed(tickets: &[TicketId]) -> String {
 /// places the tickets: each waiting ticket's overdue check wait, then each of its dependencies
 /// that is closed as not planned or no ticket, in ticket order; then each cycle among the waiting
 /// tickets' dependencies, its lowest ticket first; then each open epic planned and not challenged
-/// past its deadline that has no open question on it.
+/// past its deadline that has no open question on it; then the red integration branch, once for
+/// each epic ([`red_base`]).
 pub fn waiting_causes(gathered: &Gathered, placement: &Placement, now: SystemTime) -> Vec<Cause> {
     let waiting_tickets: BTreeSet<TicketId> =
         placement.waiting.values().flatten().copied().collect();
@@ -532,6 +624,11 @@ pub fn waiting_causes(gathered: &Gathered, placement: &Placement, now: SystemTim
             causes.push(Cause::OverdueCheck {
                 ticket: facts.ticket,
                 waited: now.duration_since(found.since).unwrap_or_default(),
+                branch: gathered
+                    .base
+                    .as_ref()
+                    .filter(|_| matches!(found.awaited, Awaited::Base(_)))
+                    .map(|base| base.branch.clone()),
                 overdue: found,
             });
         }
@@ -561,7 +658,39 @@ pub fn waiting_causes(gathered: &Gathered, placement: &Placement, now: SystemTim
             });
         }
     }
+    causes.extend(red_base(gathered, placement));
     causes
+}
+
+/// The causes a red integration branch raises: one for each epic that has a gathered ticket
+/// `placement` does not place as done, the lowest epic first, when a check failed at the head of
+/// the branch `gathered` read ([`Gathered::base`]). None when the branch is unknown or no check
+/// failed there. The epic is where the question stops the work: a question open on an epic makes
+/// every ticket of it wait.
+pub fn red_base(gathered: &Gathered, placement: &Placement) -> Vec<Cause> {
+    let Some(Base { branch, facts }) = &gathered.base else {
+        return Vec::new();
+    };
+    let checks = facts.failed_checks();
+    let Some(head) = facts.head.as_ref().filter(|_| !checks.is_empty()) else {
+        return Vec::new();
+    };
+    let epics: BTreeSet<TicketId> = gathered
+        .tickets
+        .iter()
+        .filter(|facts| !placement.done.contains(&facts.ticket))
+        .filter_map(|facts| gathered.beside.get(&facts.ticket))
+        .map(|beside| beside.epic)
+        .collect();
+    epics
+        .into_iter()
+        .map(|epic| Cause::RedBase {
+            epic,
+            branch: branch.clone(),
+            head: head.clone(),
+            checks: checks.clone(),
+        })
+        .collect()
 }
 
 /// Why step 5 stopped.

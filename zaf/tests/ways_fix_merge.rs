@@ -6,8 +6,8 @@
 //! `merge` exits 1 for a conflict only, so the scheduler starts `fix`; the fix brief's `Why this
 //! run` names the paths; `sync-base` leaves the conflicted merge in the workspace with the work
 //! that was there, and pushes nothing; once the fix publishes the merge, the ticket waits for the
-//! checks at the new head, is reviewed there and merged. A merge that only pushed the base and a
-//! merge the forge refused are not failures to fix. A ruling on a question a review raised
+//! checks at the new head, is reviewed there and merged. A base that moved on and merges cleanly
+//! is merged with no new round, and a merge the forge refused is not a failure to fix. A ruling on a question a review raised
 //! reaches the fix once, in its brief, and a fix that finds nothing to change lets the review
 //! apply again.
 
@@ -736,33 +736,36 @@ fn after_the_fix_resolves_the_conflict_the_ticket_is_checked_reviewed_and_merged
 }
 
 #[test]
-fn a_merge_that_only_pushed_the_base_is_not_a_failure_to_fix() {
+fn a_base_that_moved_and_merges_cleanly_is_merged_without_a_new_round() {
     let scene = Scene::published("one\nslice\n");
     scene.advance_base_elsewhere("merged.txt", "merged\n");
     let head = scene.remote_slice();
     scene.green();
 
-    // The review is clean; the merge it leads to brings the base in, pushes it and stops.
+    // The review is clean; the merge it leads to finds the base merges cleanly and lands the
+    // slice at the head that was checked and reviewed.
     scene.spawn_phase("review");
 
     let merges = scene.runs_of("merge");
     assert_eq!(merges.len(), 1, "{:?}", scene.runs());
     assert_eq!(
         read(&merges[0], "exit"),
-        "3\n",
+        "0\n",
         "{}",
         read(&merges[0], "output")
     );
-    let moved = scene.remote_slice();
-    assert_ne!(moved, head);
-    // No fix: the ticket waits on the checks at the head the merge pushed, then is reviewed again.
-    let placed = scene.placement();
-    assert_eq!(placed["place"], "waiting", "{placed}");
-    assert!(placed.to_string().contains(&moved), "{placed}");
-    scene.green();
-    let placed = scene.placement();
-    assert_eq!(placed["next"], "review", "{placed}");
+    // Nothing was pushed, so no check and no review ran a second time, and there is no fix.
+    assert_eq!(scene.remote_slice(), head, "nothing was pushed");
+    assert!(
+        scene.project.gh_calls().contains(&format!(
+            "pr merge 7 --merge --match-head-commit {head} --repo {REPO}"
+        )),
+        "{:?}",
+        scene.project.gh_calls()
+    );
+    assert_eq!(scene.runs_of("review").len(), 1, "{:?}", scene.runs());
     assert!(scene.runs_of("fix").is_empty());
+    assert!(!scene.workspace().exists(), "the workspace is dropped");
 }
 
 #[test]

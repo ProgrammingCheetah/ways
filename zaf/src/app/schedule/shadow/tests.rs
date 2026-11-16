@@ -35,6 +35,7 @@ fn facts(number: u64) -> TicketFacts {
         priority: None,
         ruled: Vec::new(),
         ready_since: Some(time(60)),
+        merging: Default::default(),
     }
 }
 
@@ -163,5 +164,31 @@ fn a_ticket_in_the_lane_carries_its_weight_and_no_other_does() {
     assert_eq!(
         placed_json(&placed[1]),
         json!({"ticket": 10, "place": "done"})
+    );
+}
+
+#[test]
+fn the_waits_of_a_merge_are_written_with_what_each_names() {
+    use crate::domain::CommitId;
+    use crate::domain::schedule::{Place, WaitingOn};
+
+    let placed = Placed {
+        ticket: TicketId::from(12),
+        place: Place::Waiting(
+            [
+                WaitingOn::Base(CommitId::from("b1")),
+                WaitingOn::Merge(TicketId::from(11)),
+            ]
+            .into(),
+        ),
+        weight: None,
+    };
+    assert_eq!(
+        placed_json(&placed),
+        json!({
+            "ticket": 12,
+            "place": "waiting",
+            "on": [{"merge": 11}, {"base": {"head": "b1"}}],
+        })
     );
 }

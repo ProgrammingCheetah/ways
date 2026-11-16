@@ -684,6 +684,24 @@ fn answer_rules_the_question() {
 }
 
 #[test]
+fn answer_with_a_gap_is_recorded_as_typed() {
+    let asked = asked();
+    let (port, key) = asked.serve();
+
+    // No shell stands between the page and the board, so the gap check of the verb is not run.
+    let gapped = "Title only.  Author  later.";
+    let ask = asked.body(asked.question.get(), gapped);
+    let (status, body) = post_answer(port, Some(&key), &ask);
+
+    assert_eq!(status, "HTTP/1.1 200 OK", "{body}");
+    assert_eq!(
+        asked.board.question(asked.question),
+        Some((false, Some(gapped.to_owned())))
+    );
+    assert!(asked.board.is_closed(asked.question));
+}
+
+#[test]
 fn answer_unblocks_the_task() {
     let asked = asked();
     let (port, key) = asked.serve();

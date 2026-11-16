@@ -706,7 +706,7 @@ impl Status {
                 line(format!("  raised on #{on}"));
             }
             line(format!(
-                "  rule it: zaf board ruling {} \"<answer>\"",
+                "  rule it: zaf board ruling {} '<answer>'",
                 question.number.get()
             ));
         }

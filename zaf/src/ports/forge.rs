@@ -233,6 +233,16 @@ pub struct Check {
     pub finished_at: Option<SystemTime>,
 }
 
+/// Where a branch stands on the forge: the commit it is at and the checks there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchChecks {
+    /// The commit the branch is at; none when the forge has no such branch.
+    pub head: Option<CommitId>,
+    /// The checks at that commit, as [`Forge::checks`] gives a pull request's; none with no head,
+    /// or when none registered there.
+    pub checks: Vec<Check>,
+}
+
 /// One review comment on a pull request.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReviewComment {
@@ -277,6 +287,12 @@ pub trait Forge {
     /// The pull request's check runs, each with the time it finished. A finished check the
     /// forge gives no time for is an error naming the pull request, never a guess.
     fn checks(&self, pr: PrNumber) -> Result<Vec<Check>, PortError>;
+
+    /// The commit `branch` is at on the forge and the checks at that commit, each with the time it
+    /// finished: what ran on the branch itself (a push run), whatever pull request brought the
+    /// commit there. A branch the forge does not have is no head and no check, never an error. A
+    /// finished check the forge gives no time for is an error naming the branch.
+    fn branch_checks(&self, branch: &BranchName) -> Result<BranchChecks, PortError>;
 
     /// The pull request's review comments, oldest first, each with its post time. A comment the
     /// forge gives no time for is an error naming the pull request.

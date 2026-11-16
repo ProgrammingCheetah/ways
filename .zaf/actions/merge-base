@@ -1,7 +1,7 @@
 #!/bin/sh
-# zaf description: fetch and merge the base as it stands on the remote into a slice, moving a lagging local base up and never back; up to date is quiet; with `--keep` (what `sync-base` runs for a programmer) the workspace's uncommitted work rides along and a conflicted merge stays in the workspace
-# zaf 1: conflicted: the merge stops on conflicts and the paths are in the log; the slice is unchanged, or with `--keep` the conflicted merge is the workspace's working copy
-# zaf 2: a backend failed or the call was refused (the arguments are not <slice> <base> [--keep], the slice is not open on that base, it has uncommitted work (without `--keep`) or unresolved conflicts, jj is missing or the fetch failed); the slice is unchanged
+# zaf description: fetch and merge the base as it stands on the remote into a slice, moving a lagging local base up and never back; up to date is quiet; with `--keep` (what `sync-base` runs for a programmer) the workspace's uncommitted work rides along and a conflicted merge stays in the workspace; with `--probe` (what `slice-merge` runs) nothing is merged: it answers whether the base merges into the slice cleanly, and the slice is left as it was either way
+# zaf 1: conflicted: the merge stops on conflicts and the paths are in the log; the slice is unchanged, or with `--keep` the conflicted merge is the workspace's working copy; with `--probe` the merge would stop on them
+# zaf 2: a backend failed or the call was refused (the arguments are not <slice> <base> [--keep | --probe], the slice is not open on that base, it has uncommitted work (without `--keep`) or unresolved conflicts, jj is missing or the fetch failed); the slice is unchanged
 # zaf mode: 750
 # zaf group: team, release, implement, fix, merge
 slice=$1
@@ -9,14 +9,17 @@ base=$2
 
 # Exit 1 means conflicted here (docs/zaf-actions.md §3), so every refusal is exit 2.
 keep=no
+probe=no
 if [ "$#" -eq 3 ] && [ "$3" = "--keep" ]; then
     keep=yes
+elif [ "$#" -eq 3 ] && [ "$3" = "--probe" ]; then
+    probe=yes
 elif [ "$#" -ne 2 ]; then
-    echo "usage: merge-base <slice> <base> [--keep], with ZAF_ROOT set" >&2
+    echo "usage: merge-base <slice> <base> [--keep | --probe], with ZAF_ROOT set" >&2
     exit 2
 fi
 if [ -z "$ZAF_ROOT" ]; then
-    echo "usage: merge-base <slice> <base> [--keep], with ZAF_ROOT set" >&2
+    echo "usage: merge-base <slice> <base> [--keep | --probe], with ZAF_ROOT set" >&2
     exit 2
 fi
 
@@ -82,7 +85,8 @@ if [ "$conflicted" = "true" ]; then
 fi
 
 # The merge moves the working copy, so uncommitted work stays out of its way: commit it first.
-# With `--keep` the working copy itself becomes the merge, so the work rides along in it.
+# With `--keep` the working copy itself becomes the merge, so the work rides along in it. A probe
+# tries the merge in the working copy too, so it asks for the same as the plain merge.
 if ! empty=$(jj_run log --no-graph -r @ -T empty); then
     exit 2
 fi
@@ -170,6 +174,10 @@ fi
 
 # The slice has nothing of its own: the base's tip becomes the slice's.
 if none "$slice_revset ~ ::$base_revset"; then
+    # Moving a bookmark forward cannot conflict, and a probe moves nothing.
+    if [ "$probe" = "yes" ]; then
+        exit 0
+    fi
     jj_run bookmark set "$slice" -r "$base_revset" || exit 2
     jj_run new "$slice_revset" || exit 2
     exit 0
@@ -179,9 +187,11 @@ jj_run new "$slice_revset" "$base_revset" -m "Merge $base into $slice" || exit 2
 if ! conflicted=$(jj_run log --no-graph -r @ -T conflict); then
     exit 2
 fi
-if [ "$conflicted" = "true" ]; then
+if [ "$conflicted" = "true" ] || [ "$probe" = "yes" ]; then
     # The slice back as it was, the merge commit thrown away, then the paths, last in the log.
-    if ! paths=$(jj_run resolve --list); then
+    # A probe's merge was only a trial: it is thrown away when it is clean too, and nothing is kept.
+    paths=
+    if [ "$conflicted" = "true" ] && ! paths=$(jj_run resolve --list); then
         exit 2
     fi
     if ! merge_commit=$(jj_run log --no-graph -r @ -T 'commit_id'); then
@@ -189,6 +199,9 @@ if [ "$conflicted" = "true" ]; then
     fi
     jj_run new "$slice_revset" || exit 2
     jj_run abandon "$merge_commit" || exit 2
+    if [ "$conflicted" != "true" ]; then
+        exit 0
+    fi
     echo "the merge of $base into $slice conflicts in:" >&2
     printf '%s\n' "$paths" >&2
     exit 1

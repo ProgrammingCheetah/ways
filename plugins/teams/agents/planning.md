@@ -63,7 +63,7 @@ The environment the verbs read (the spawner sets both; by hand, set them yoursel
 | `zaf do slice-pr <task>` | in `build`, `check` or `review`: commit what is left, publish the branch, open or update its pull request and print its number |
 | `zaf do sync-base <task>` | in `build` to `land`, when a merge's base conflicts (a fix round's `Why this run` says so): fetch the base and merge it into the task's workspace; a clean merge says so, a conflicted one stays in the workspace with its paths named for you to resolve and commit; your uncommitted work rides along, and nothing is pushed |
 | `zaf check pr:<n>:<task>` | run the pull request's review steps, wait for them, print the findings; `--status` reads the last result |
-| `zaf do slice-merge <task>` | in `land`, when the last `zaf check pr` is clean for the pull request's head: merge it, mark the task done, remove the workspace; exit 1 after a base merge that needs a new `zaf check pr` |
+| `zaf do slice-merge <task>` | in `land`, when the last `zaf check pr` is clean for the pull request's head: merge it, mark the task done, remove the workspace; a base that moved and merges cleanly needs no new check, and one that conflicts is exit 1 with the paths named |
 | `zaf do slice-drop <task>` | in `build`, `check` or `done`: drop the task's workspace; the branch stays |
 | `zaf progress plan <task> <phase>… [--role <role>]` | declare the phases you will work through, when you start |
 | `zaf progress at <task> <phase> [--role <role>]` | report the phase you are in, on each change; a phase the plan did not declare is refused |
@@ -94,6 +94,7 @@ Asking well:
 
 - One behaviour per task: the Goal is one sentence with no "and". A ticket is XS, S or M: S expects a pull request under 200 lines, M under 400. Anything larger is a planning defect: split it. L, XL and E are costs of the size table and of a release launch, not ticket sizes.
 - State scope, not files: the capability the task changes, in words, with a file or folder only as a place to start, and what it leaves alone. Order tasks that touch the same area with `Blocked by`.
+- Shared files get one skeleton task: when three or more tasks would each add lines to the same file (a module list, re-exports, a registry, a route table), file one early task that adds every one of those lines with an empty stand-in behind each (a module that compiles and does nothing yet), and put it in the `Blocked by` of each task that fills one in. Tasks built side by side then change only their own files, and their merges do not conflict.
 - Every task names its design pages by id, and the module and interface ids it implements. A task that needs a page or an interface it does not name is a design gap: a question, not a guess.
 - Acceptance is checkable by `zaf check <task>`: named tests, named HTTP outcomes, named UI states.
 - The security trigger is `yes` when the task touches a trigger the project lists; without a list: authentication, authorization, sessions, tokens, secrets and keys, cryptography, untrusted input, trust boundaries, network egress, personal data.

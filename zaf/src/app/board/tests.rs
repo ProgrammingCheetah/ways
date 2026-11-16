@@ -454,7 +454,8 @@ fn board_done_in_land_marks_the_task() {
 #[test]
 fn board_done_after_the_recorded_pr_merged() {
     let scene = Scene::landable();
-    // `slice-merge` merges the base in first, which moves the head: the task has left `land`.
+    // The head moved after the check, so the task has left `land`; its pull request merged all
+    // the same.
     scene.commit();
     let pr = scene
         .records()

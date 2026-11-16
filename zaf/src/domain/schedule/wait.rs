@@ -4,14 +4,18 @@
 //! All are detected here as facts; raising the question is the caller's. A wait on a question or
 //! on an unsigned epic has no clock (the Engineer already has those), so a ticket that also waits
 //! on one is never overdue; and a dependency that can still complete sits in a place that has one
-//! of its own.
+//! of its own. A wait on the integration branch's checks (R29) is overdue as a check wait is,
+//! counted from when the ticket came to stand at its merge ([`base_clock`]): a pending check
+//! carries no time of its own, so on a queue busy for two hours it may ask early, which is better
+//! than a runner that is down holding every merge unheard. The wait on another ticket's merge
+//! (R30) has no clock: each of its ends is the scheduler's own.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, SystemTime};
 
 use super::facts::{CheckName, CheckResult, TicketFacts};
 use super::phase::{ActionName, PhaseEnd, current_phase};
-use super::place::{Place, WaitingOn, place};
+use super::place::{Place, WaitingOn, place, ready_since};
 use crate::domain::{CommitId, Epic, EpicStage, Standing, TicketId};
 
 /// How long a ticket may wait on the checks at one head before a question is raised: 2 hours
@@ -25,9 +29,10 @@ pub const CHALLENGE_DEADLINE: Duration = Duration::from_secs(24 * 60 * 60);
 /// A check wait past its deadline.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OverdueCheck {
-    /// The head whose checks have not ended.
+    /// The head whose checks have not ended: the pull request's, or the integration branch's for
+    /// [`Awaited::Base`].
     pub head: CommitId,
-    /// When the wait's clock started (see [`check_clock`]).
+    /// When the wait's clock started (see [`check_clock`] and [`base_clock`]).
     pub since: SystemTime,
     /// What has not come at the head.
     pub awaited: Awaited,
@@ -49,6 +54,9 @@ pub enum Awaited {
         /// Its end facts that come from outside.
         ends: Vec<PhaseEnd>,
     },
+    /// The head is the integration branch's, not the ticket's: these checks there are still
+    /// pending, in the forge's order, and hold the ticket's merge (R29).
+    Base(Vec<CheckName>),
 }
 
 /// When the clock of a wait on the checks at the head started: the latest of the pull request
@@ -70,11 +78,23 @@ pub fn check_clock(facts: &TicketFacts) -> Option<SystemTime> {
         .max()
 }
 
+/// When the clock of a wait on the integration branch's checks started: since when the ticket has
+/// stood at its merge, which is the `since` it would have in the lane (when its phase failed, or
+/// else when the phase before ended, or else when it became ready). None when every phase ended,
+/// or no fact times it.
+#[must_use]
+pub fn base_clock(facts: &TicketFacts) -> Option<SystemTime> {
+    ready_since(&current_phase(facts)?, facts)
+}
+
 /// The ticket's check wait, when it waits on the checks at its head at `now` and has for
 /// [`CHECK_DEADLINE`] or more by [`check_clock`]: a check that never registered, a runner that
-/// is down. None otherwise: a ticket that is not waiting on a check, and one that also waits on a
-/// question or on its epic, whose wait has no clock (the Engineer already has it; the epic's own
-/// deadline is [`unchallenged`]).
+/// is down. A ticket held at its merge by the integration branch's checks
+/// ([`WaitingOn::Base`]) is overdue the same way, by [`base_clock`], at the branch's head and
+/// with the checks pending there ([`Awaited::Base`]). None otherwise: a ticket that waits on
+/// neither, one that waits only on another ticket's merge, and one that also waits on a question
+/// or on its epic, whose wait has no clock (the Engineer already has it; the epic's own deadline
+/// is [`unchallenged`]).
 #[must_use]
 pub fn overdue(facts: &TicketFacts, now: SystemTime) -> Option<OverdueCheck> {
     let Place::Waiting(waits) = place(facts, now) else {
@@ -86,16 +106,28 @@ pub fn overdue(facts: &TicketFacts, now: SystemTime) -> Option<OverdueCheck> {
     if with_the_engineer {
         return None;
     }
-    let head = waits.into_iter().find_map(|waiting_on| match waiting_on {
+    let own = waits.iter().find_map(|waiting_on| match waiting_on {
         WaitingOn::Check(_, head) => Some(head),
-        WaitingOn::Epic(_) | WaitingOn::Question(_) | WaitingOn::Ticket(_) => None,
-    })?;
-    let since = check_clock(facts)?;
+        _ => None,
+    });
+    let base = waits.iter().find_map(|waiting_on| match waiting_on {
+        WaitingOn::Base(head) => Some(head),
+        _ => None,
+    });
+    let (head, since, awaited) = match (own, base) {
+        (Some(head), _) => (head, check_clock(facts)?, awaited(facts)),
+        (None, Some(head)) => (
+            head,
+            base_clock(facts)?,
+            Awaited::Base(facts.merging.base.pending_checks()),
+        ),
+        (None, None) => return None,
+    };
     let waited = now.duration_since(since).unwrap_or_default();
     (waited >= CHECK_DEADLINE).then(|| OverdueCheck {
-        head,
+        head: head.clone(),
         since,
-        awaited: awaited(facts),
+        awaited,
     })
 }
 

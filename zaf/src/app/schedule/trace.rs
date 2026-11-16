@@ -51,7 +51,7 @@ use crate::app::actions::ActionName;
 use crate::app::spawn::outcome::{Asked, Launched};
 use crate::app::spawn::{PlannedLaunch, Ran, Released, Started, TickOutcome};
 use crate::domain::schedule::{Place, WaitingOn};
-use crate::domain::{TicketId, TicketState};
+use crate::domain::{CommitId, TicketId, TicketState};
 use crate::newtype::text_newtype;
 
 /// How long a line is kept: a tick that writes drops the lines older than this.
@@ -66,13 +66,15 @@ const SHORT_HEAD: usize = 7;
 text_newtype! {
     /// A ticket's place in a few words, as a move names it: `running(implement)`,
     /// `waiting(question #45, ticket #5)`, `waiting(check a1b2c3d)`, `waiting(epic #1)`,
-    /// `lane(implement)`, `done`, or `unreadable` for a ticket the gather could not read.
+    /// `waiting(merge of #12)`, `waiting(base a1b2c3d)`, `lane(implement)`, `done`, or
+    /// `unreadable` for a ticket the gather could not read.
     ShortPlace
 }
 
 impl ShortPlace {
     /// The short form of `place`. A waiting ticket names each thing it waits on, in the core's
-    /// order (epic, question, ticket, check), a check by the first characters of its head.
+    /// order (epic, question, ticket, check, merge, base), a check and the base by the first
+    /// characters of the head.
     pub fn of(place: &Place) -> Self {
         let text = match place {
             Place::Running(run) => format!("running({})", run.phase),
@@ -98,11 +100,15 @@ fn waiting_short(waiting_on: &WaitingOn) -> String {
         WaitingOn::Epic(epic) => format!("epic {epic}"),
         WaitingOn::Question(question) => format!("question {question}"),
         WaitingOn::Ticket(ticket) => format!("ticket {ticket}"),
-        WaitingOn::Check(_, head) => {
-            let short: String = head.as_str().chars().take(SHORT_HEAD).collect();
-            format!("check {short}")
-        }
+        WaitingOn::Check(_, head) => format!("check {}", short_head(head)),
+        WaitingOn::Merge(ticket) => format!("merge of {ticket}"),
+        WaitingOn::Base(head) => format!("base {}", short_head(head)),
     }
+}
+
+/// The first [`SHORT_HEAD`] characters of a head.
+fn short_head(head: &CommitId) -> String {
+    head.as_str().chars().take(SHORT_HEAD).collect()
 }
 
 /// Where each ticket sat, in short, by ticket.

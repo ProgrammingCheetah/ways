@@ -127,12 +127,12 @@
     },
     {
       "name": "schedule.rs",
-      "role": "the scheduling core, pure, read only by the shadow placement so far (app/schedule): where each ticket sits from facts alone (place, Placement), its current phase (an `exit` phase at or before the `pr-open` one not keyed on the head), what a run meant (outcome), getting nowhere, the lane and its weight (a priority/1 to priority/3 label worth three to one hours of age, read from labels by Priority::from_labels), overdue and dead waits, the challenge deadline, and the state label as output; ActionName, PhaseEnd and CheckName live here",
+      "role": "the scheduling core, pure, read only by the shadow placement so far (app/schedule): where each ticket sits from facts alone (place, Placement), its current phase (an `exit` phase at or before the `pr-open` one not keyed on the head), what a run meant (outcome), getting nowhere, the lane and its weight (a priority/1 to priority/3 label worth three to one hours of age, read from labels by Priority::from_labels), the order of merges (a ticket fresh from a fix first, a pending integration branch holds the next), overdue and dead waits, the challenge deadline, and the state label as output; ActionName, PhaseEnd and CheckName live here",
       "node": false
     },
     {
       "name": "schedule/",
-      "role": "facts, phase, outcome, place, lane, wait and label, each with a tests.rs; tests.rs holds the parity table against today's rule table and the eight failures of 2026-11-12",
+      "role": "facts, phase, outcome, place, lane, merge, wait and label, each with a tests.rs; tests.rs holds the parity table against today's rule table and the eight failures of 2026-11-12",
       "node": false
     },
     {

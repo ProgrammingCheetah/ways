@@ -469,16 +469,15 @@ fn show(cli: &Cli, port: Option<u16>, read_only: bool) -> u8 {
         };
         // Where the core places each ticket, as the tick gathers them; a gather that fails leaves
         // the labels' word.
-        let places: Option<Places> =
-            gather_for(&composition, board.as_ref())
-                .ok()
-                .flatten()
-                .map(|gathered| {
-                    shadow::places(&gathered, now)
-                        .into_iter()
-                        .map(|placed| (placed.ticket, placed.place))
-                        .collect()
-                });
+        let places: Option<Places> = gather_for(&composition, board.as_ref(), None)
+            .ok()
+            .flatten()
+            .map(|gathered| {
+                shadow::places(&gathered, now)
+                    .into_iter()
+                    .map(|placed| (placed.ticket, placed.place))
+                    .collect()
+            });
         gather(&HubInputs {
             board: board.as_ref(),
             forge: forge.as_ref(),

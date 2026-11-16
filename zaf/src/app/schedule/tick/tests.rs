@@ -210,6 +210,7 @@ impl Scene {
             home: &self.home,
             state_dir: &self.state_dir,
             alive: &live,
+            version: None,
         }
     }
 
@@ -1890,5 +1891,132 @@ mod fixing {
             Vec::new(),
         );
         assert_eq!(failed_phase(&open), None);
+    }
+}
+
+mod one_merge_a_tick {
+    //! One merge a tick, and the words of a merge's waits (R29, R30).
+
+    use super::*;
+    use crate::domain::CommitId;
+    use crate::domain::schedule::BaseFacts;
+
+    /// Three tasks, each with its pull request open and CI green: `merge` is next for each.
+    fn three_at_their_merge() -> (Scene, Gathered) {
+        let scene = Scene::new();
+        for task in [3, 4, 5] {
+            scene.task(task, "S");
+            scene.open_pr(task, Some(CheckState::Passed));
+        }
+        let gathered = scene.gather();
+        (scene, gathered)
+    }
+
+    /// The tick's steps on `gathered`, `zaf do` exiting as `exit` says for each task.
+    fn run_exiting(
+        board: &dyn Board,
+        gathered: &Gathered,
+        exit: impl Fn(u64) -> u8,
+    ) -> (PhaseTick, Vec<u64>) {
+        let mut ran = Vec::new();
+        let mut run = |task: TicketId, _: &ActionName| {
+            ran.push(task.get());
+            exit(task.get())
+        };
+        let state_dir = tempfile::tempdir().expect("tempdir");
+        let tick = tick(
+            board,
+            state_dir.path(),
+            gathered,
+            now(),
+            &idle(2),
+            &Budget::default(),
+            &mut Steps {
+                run: &mut run,
+                launch: &mut |_: TicketId, _: &ActionName| Ok(()),
+                start: &mut |_: &PlannedModel| Ok(()),
+                log: &mut |_: &str| {},
+            },
+        );
+        (tick, ran)
+    }
+
+    #[test]
+    fn a_tick_runs_one_merge_and_leaves_the_others_for_the_next_tick() {
+        let (scene, gathered) = three_at_their_merge();
+        let (tick, ran) = run_exiting(&scene.board, &gathered, |_| 0);
+        assert_eq!(ran, [3], "the base moved under #4 and #5");
+        assert_eq!(tick.outcome.ran.len(), 1);
+        assert_eq!(
+            lines(&tick.held),
+            [
+                "#4 skipped: #3 merged in this tick, so its merge waits for the next one",
+                "#5 skipped: #3 merged in this tick, so its merge waits for the next one",
+            ]
+        );
+        assert!(tick.failed.is_empty(), "{tick:?}");
+    }
+
+    #[test]
+    fn a_merge_that_failed_moved_nothing_so_the_next_one_runs() {
+        let (scene, gathered) = three_at_their_merge();
+        let (tick, ran) = run_exiting(&scene.board, &gathered, |task| u8::from(task == 3));
+        assert_eq!(ran, [3, 4], "#3 did not merge, #4 did");
+        assert_eq!(
+            lines(&tick.held),
+            ["#5 skipped: #4 merged in this tick, so its merge waits for the next one"]
+        );
+    }
+
+    #[test]
+    fn a_zaf_action_that_is_no_merge_runs_whatever_merged_before_it() {
+        // `tidy` is a zaf action ending at its exit, listed before the merge.
+        let scene = Scene::with_list(r#"["implement", "ci", "tidy", "merge"]"#);
+        scene.action("implement", "model", "pr-open");
+        scene.action("ci", "wait", "ci-done");
+        scene.action("tidy", "zaf", "exit");
+        scene.action("merge", "zaf", "merged");
+        for task in [3, 4] {
+            scene.task(task, "S");
+            scene.open_pr(task, Some(CheckState::Passed));
+        }
+        // #3 has tidied at its head, so its merge is next; #4 has not.
+        scene.phase_run_at(3, "tidy", 40, Some(0), "", "h1");
+        let gathered = scene.gather();
+        assert!(gathered.unreadable.is_empty(), "{:?}", gathered.unreadable);
+        let (tick, ran) = run_exiting(&scene.board, &gathered, |_| 0);
+        assert_eq!(ran, [3, 4]);
+        assert_eq!(
+            tick.outcome
+                .ran
+                .iter()
+                .map(|ran| ran.action.as_str())
+                .collect::<Vec<_>>(),
+            ["merge", "tidy"]
+        );
+        assert!(tick.held.is_empty(), "{:?}", tick.held);
+    }
+
+    #[test]
+    fn the_gate_names_what_a_merge_waits_on() {
+        let (_scene, mut gathered) = three_at_their_merge();
+        let facts = &mut gathered.tickets[0];
+        facts.merging.first = Some(id(12));
+        facts.merging.base = BaseFacts {
+            head: Some(CommitId::from("b1")),
+            checks: vec![crate::domain::schedule::CheckFact {
+                name: CheckName::from("ci"),
+                result: crate::domain::schedule::CheckResult::Pending,
+            }],
+        };
+        let refusal = may_start(facts, &gathered.beside[&id(3)], &name("merge"), now())
+            .expect_err("it waits");
+        assert_eq!(
+            refusal.reason(id(3), "merge"),
+            "merge is not #3's current phase: merge waits: #12 is fresh from a fix and merges \
+             first; the integration branch's checks at b1 have not ended"
+        );
+        // Neither is the epic's or a question's: the tick's block does not name it as skipped.
+        assert!(held(&gathered, now()).is_empty());
     }
 }

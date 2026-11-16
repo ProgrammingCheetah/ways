@@ -5,9 +5,9 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::SystemTime;
 
 use crate::ports::{
-    BaseName, Check, CheckBucket, CheckLink, CheckLog, CheckRun, CommitId, Forge, MergeOutcome,
-    MergeStrategy, NewPullRequest, Opened, PortError, PrNumber, PullRequest, ReviewComment,
-    ScanningAlert, SliceName,
+    BaseName, BranchChecks, BranchName, Check, CheckBucket, CheckLink, CheckLog, CheckRun,
+    CommitId, Forge, MergeOutcome, MergeStrategy, NewPullRequest, Opened, PortError, PrNumber,
+    PullRequest, ReviewComment, ScanningAlert, SliceName,
 };
 
 /// What a pull request is opened from and into.
@@ -48,6 +48,9 @@ struct State {
     handoff_fails: bool,
     merge_refusal: Option<PortError>,
     logs: BTreeMap<CheckLink, CheckLog>,
+    branches: BTreeMap<BranchName, BranchChecks>,
+    branch_reads: usize,
+    branch_checks_fail: bool,
 }
 
 /// A forge held in memory. Arrange reviews with [`FakeForge::set_checks`]
@@ -63,6 +66,28 @@ impl FakeForge {
         let mut state = self.state();
         state.pull_mut(pr)?.checks = checks;
         Ok(())
+    }
+
+    /// Puts `branch` at `head` with `checks` there, as [`Forge::branch_checks`] then reads it; a
+    /// branch never set is one the forge does not have.
+    pub fn set_branch(&self, branch: &str, head: &str, checks: Vec<Check>) {
+        self.state().branches.insert(
+            BranchName::from(branch),
+            BranchChecks {
+                head: Some(CommitId::from(head)),
+                checks,
+            },
+        );
+    }
+
+    /// Makes every [`Forge::branch_checks`] read fail with a backend error.
+    pub fn fail_branch_checks(&self) {
+        self.state().branch_checks_fail = true;
+    }
+
+    /// How many times [`Forge::branch_checks`] was asked.
+    pub fn branch_reads(&self) -> usize {
+        self.state().branch_reads
     }
 
     /// Adds a review comment to a pull request.
@@ -249,6 +274,18 @@ impl Forge for FakeForge {
     fn checks(&self, pr: PrNumber) -> Result<Vec<Check>, PortError> {
         let mut state = self.state();
         Ok(state.pull_mut(pr)?.checks.clone())
+    }
+
+    fn branch_checks(&self, branch: &BranchName) -> Result<BranchChecks, PortError> {
+        let mut state = self.state();
+        state.branch_reads += 1;
+        if state.branch_checks_fail {
+            return Err(PortError::Backend("the forge is down".to_owned()));
+        }
+        Ok(state.branches.get(branch).cloned().unwrap_or(BranchChecks {
+            head: None,
+            checks: Vec::new(),
+        }))
     }
 
     fn review_comments(&self, pr: PrNumber) -> Result<Vec<ReviewComment>, PortError> {

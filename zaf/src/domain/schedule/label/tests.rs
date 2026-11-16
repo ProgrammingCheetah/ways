@@ -36,6 +36,8 @@ fn the_lane_and_other_waits_leave_the_claim_its_own() {
         in_lane("implement", 1),
         waiting(&[WaitingOn::Epic(id(1))]),
         waiting(&[on_check("h1")]),
+        waiting(&[WaitingOn::Merge(id(12))]),
+        waiting(&[WaitingOn::Base(commit("b1"))]),
     ] {
         assert_eq!(label_for(&place, false), TicketState::Ready, "{place:?}");
         assert_eq!(label_for(&place, true), TicketState::Claimed, "{place:?}");

@@ -71,6 +71,7 @@ pub(super) fn facts(phases: Vec<Phase>) -> TicketFacts {
         priority: None,
         ruled: Vec::new(),
         ready_since: Some(time(1)),
+        merging: Default::default(),
     }
 }
 

@@ -124,6 +124,54 @@ pub(super) struct CheckRow {
     pub completed_at: Option<String>,
 }
 
+/// A branch as `repos/{repo}/branches/{branch}` prints it: only the commit it is at.
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct BranchHeadRow {
+    pub commit: BranchCommitRow,
+}
+
+/// The commit a branch is at.
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct BranchCommitRow {
+    pub sha: String,
+}
+
+/// One page of `repos/{repo}/commits/{ref}/check-runs`.
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct CheckRunsPage {
+    #[serde(default)]
+    pub check_runs: Vec<CommitCheckRow>,
+}
+
+/// A check run of a commit as the REST API prints it.
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct CommitCheckRow {
+    pub name: String,
+    /// `completed` once it has finished; `queued`, `in_progress` and the like until then.
+    pub status: String,
+    /// How it finished (`success`, `failure`, `skipped`, ...); none until it has.
+    #[serde(default)]
+    pub conclusion: Option<String>,
+    #[serde(default)]
+    pub completed_at: Option<String>,
+}
+
+impl CommitCheckRow {
+    /// The bucket gh puts such a run in: not completed is pending; `success` passes, `skipped`
+    /// and `neutral` block nothing, `cancelled` is cancelled, and any other conclusion fails.
+    pub fn bucket(&self) -> CheckBucket {
+        if self.status != "completed" {
+            return CheckBucket::Pending;
+        }
+        match self.conclusion.as_deref() {
+            Some("success") => CheckBucket::Pass,
+            Some("skipped" | "neutral") => CheckBucket::Skipping,
+            Some("cancelled") => CheckBucket::Cancel,
+            _ => CheckBucket::Fail,
+        }
+    }
+}
+
 /// A user as the REST API prints it; absent for a deleted account.
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct UserRow {

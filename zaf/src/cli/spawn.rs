@@ -857,6 +857,7 @@ fn phase_tick(
         home: &home,
         state_dir: &state_dir,
         alive: &process::alive,
+        version: Some(version),
     };
     let now = std::time::SystemTime::now();
     let gathered = match schedule_gather::gather(&ports) {
@@ -1069,7 +1070,7 @@ fn dry(
     // that failed while reading them fails the dry run, as it fails the tick; the rest is still
     // printed. A gather that fails sets no label in the tick either.
     let now = std::time::SystemTime::now();
-    let gathered = dry_gather(composition, board.as_ref());
+    let gathered = dry_gather(composition, board.as_ref(), version);
     let labelling = match &gathered {
         Ok(Some(gathered)) => labels::read(board.as_ref(), gathered, now),
         Ok(None) => unplaced_labels(board.as_ref(), &prepared, labels::read),
@@ -1128,8 +1129,12 @@ fn dry(
 /// gathered as the tick gathers them. With no `[phases]` there is nothing to place and nothing is
 /// gathered: none. A forge that cannot be built, or a read every ticket needs that fails, is the
 /// placement's `error`, and fails nothing else.
-fn dry_gather(composition: &Composition, board: &dyn Board) -> Result<Option<Gathered>, String> {
-    schedule_gather::gather_for(composition, board)
+fn dry_gather(
+    composition: &Composition,
+    board: &dyn Board,
+    version: &str,
+) -> Result<Option<Gathered>, String> {
+    schedule_gather::gather_for(composition, board, Some(version))
 }
 
 /// The labels of a project with no `[phases]`, whose tick places nothing: every open task, from
@@ -1387,6 +1392,7 @@ mod tests {
                 priority: None,
                 ruled: Vec::new(),
                 ready_since: Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1)),
+                merging: Default::default(),
             });
             gathered.beside.insert(
                 TicketId::from(*task),

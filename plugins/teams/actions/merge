@@ -1,8 +1,7 @@
 #!/bin/sh
-# zaf description: phase merge: land the task's slice with `slice-merge`, which a clean `zaf check pr` at the head of the pull request lets through; a base that conflicts with the slice starts `fix`, whose programmer brings the base in with `sync-base`
+# zaf description: phase merge: land the task's slice with `slice-merge`, which a clean `zaf check pr` at the head of the pull request lets through; a base that moved on and merges into the slice cleanly asks for no new round, and a base that conflicts with the slice starts `fix`, whose programmer brings the base in with `sync-base`
 # zaf 1: conflicted: the base conflicts with the slice in the paths the log names, and the slice is unchanged; `fix` runs next, and its programmer merges the base with `zaf do sync-base <task>` and resolves them
 # zaf 2: a backend failed (jj, gh or the board failed, or `slice-merge` never ran)
-# zaf 3: the base was merged into the slice and pushed: the head moved, so CI and the review run again on it before the merge
 # zaf 4: refused: the argument is not <task>, or a step refused (the forge refused the merge, or the head moved since the check); the merge runs again, and three at one head ask the Engineer
 # zaf mode: 755
 # zaf target: task
@@ -20,7 +19,7 @@ fi
 cd "$ZAF_ROOT" || exit 2
 
 # `slice-merge` ends with 1 or 2; 125, a step that never ran, is a backend that failed. Its 1 is
-# three things, told apart here by what its log says, so the scheduler starts `fix` only for the
+# two things, told apart here by what its log says, so the scheduler starts `fix` only for the
 # one a programmer can answer: a conflict.
 status=0
 log=$(zaf do --more slice-merge "$1" 2>&1) || status=$?
@@ -43,9 +42,6 @@ case $log in
         echo "the base conflicts with the slice in: $paths" >&2
         echo "fix: bring the base in with zaf do sync-base $task, resolve those paths and commit the merge" >&2
         exit 1
-        ;;
-    *"the base was merged into"*"and pushed"*)
-        exit 3
         ;;
 esac
 exit 4

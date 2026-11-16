@@ -39,7 +39,7 @@ fn screen(composition: &Composition, board: &dyn Board) -> Result<Status, Status
     )?
     .with_machine(&process::displayed())
     .with_budget(spawn.budget());
-    Ok(match gather_for(composition, board) {
+    Ok(match gather_for(composition, board, None) {
         Ok(Some(gathered)) => screen.with_placement(&gathered, std::time::SystemTime::now()),
         Ok(None) => screen,
         Err(error) => {

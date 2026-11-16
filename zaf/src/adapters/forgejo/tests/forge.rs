@@ -683,3 +683,120 @@ fn access_beside_the_board_asks_only_whether_the_token_writes_pull_requests() {
     );
     assert_eq!(tokenless.asked(), Vec::<String>::new());
 }
+
+/// The branch `feature/v1` as Forgejo prints it, at [`SHA`].
+fn integration_branch(fake: &FakeCurl) {
+    fake.on(
+        &format!("GET {API}/branches/feature/v1"),
+        200,
+        &json!({ "name": "feature/v1", "commit": { "id": SHA } }),
+    );
+}
+
+#[test]
+fn a_branchs_checks_are_the_latest_status_of_each_context_at_the_commit_it_is_at() {
+    let fake = FakeCurl::new();
+    integration_branch(&fake);
+    fake.on(
+        &format!("GET {API}/commits/{SHA}/statuses*"),
+        200,
+        &json!([
+            status(1, "ci / test (push)", "pending", ""),
+            status(2, "ci / lint (push)", "failure", ""),
+            status(3, "ci / test (push)", "success", ""),
+            status(4, "ci / build (push)", "pending", ""),
+        ]),
+    );
+    let read = the_forge(&fake)
+        .branch_checks(&BranchName::from("feature/v1"))
+        .expect("the branch reads");
+    assert_eq!(read.head, Some(CommitId::from(SHA)));
+    let checks: Vec<(&str, CheckState, bool)> = read
+        .checks
+        .iter()
+        .map(|check| {
+            (
+                check.name.as_str(),
+                check.state,
+                check.finished_at.is_some(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        checks,
+        [
+            ("ci / build (push)", CheckState::Pending, false),
+            ("ci / lint (push)", CheckState::Failed, true),
+            ("ci / test (push)", CheckState::Passed, true),
+        ]
+    );
+    assert_eq!(read.checks[2].finished_at, Some(at(1_794_478_380)));
+    assert!(
+        fake.asked()
+            .iter()
+            .any(|asked| asked.starts_with(&format!("GET {API}/commits/{SHA}/statuses?page=1"))),
+        "{:?}",
+        fake.asked()
+    );
+}
+
+#[test]
+fn a_branch_with_no_status_has_a_head_and_no_check() {
+    let fake = FakeCurl::new();
+    integration_branch(&fake);
+    fake.on(
+        &format!("GET {API}/commits/{SHA}/statuses*"),
+        200,
+        &json!([]),
+    );
+    let read = the_forge(&fake)
+        .branch_checks(&BranchName::from("feature/v1"))
+        .expect("the branch reads");
+    assert_eq!(read.head, Some(CommitId::from(SHA)));
+    assert_eq!(read.checks, Vec::new());
+}
+
+#[test]
+fn a_branch_forgejo_does_not_have_is_no_head_and_its_statuses_are_not_asked() {
+    let fake = FakeCurl::new();
+    fake.on(
+        &format!("GET {API}/branches/feature/v2"),
+        404,
+        &json!({ "message": "The target couldn't be found." }),
+    );
+    let read = the_forge(&fake)
+        .branch_checks(&BranchName::from("feature/v2"))
+        .expect("no branch is no error");
+    assert_eq!(read.head, None);
+    assert_eq!(read.checks, Vec::new());
+    assert_eq!(fake.asked().len(), 1, "{:?}", fake.asked());
+}
+
+#[test]
+fn a_branch_that_cannot_be_read_or_carries_an_unknown_status_is_a_backend_failure() {
+    let fake = FakeCurl::new();
+    fake.on(
+        &format!("GET {API}/branches/feature/v3"),
+        500,
+        &json!({ "message": "boom" }),
+    );
+    let error = the_forge(&fake)
+        .branch_checks(&BranchName::from("feature/v3"))
+        .expect_err("a failed read");
+    assert!(matches!(error, PortError::Backend(_)), "{error:?}");
+
+    integration_branch(&fake);
+    fake.on(
+        &format!("GET {API}/commits/{SHA}/statuses*"),
+        200,
+        &json!([status(1, "ci", "skipped", "")]),
+    );
+    let error = the_forge(&fake)
+        .branch_checks(&BranchName::from("feature/v1"))
+        .expect_err("unknown status");
+    assert!(
+        matches!(&error, PortError::Backend(message)
+            if message.contains("branch feature/v1") && message.contains("`skipped`")),
+        "{error:?}"
+    );
+}
