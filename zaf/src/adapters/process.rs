@@ -348,15 +348,26 @@ fn start_of(pid: u32) -> Option<String> {
         return proc_start(&stat);
     }
     let output = Command::new("ps")
-        .args(["-o", "lstart=", "-p", &pid.to_string()])
+        .args(["-o", "stat=,lstart=", "-p", &pid.to_string()])
         .env("LC_ALL", "C")
         .env("TZ", "UTC")
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
         .ok()?;
-    let start = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    (output.status.success() && !start.is_empty()).then_some(start)
+    if !output.status.success() {
+        return None;
+    }
+    ps_start(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// The start of a `ps -o stat=,lstart=` line: its state word, then the start. A zombie (a state
+/// that opens with `Z`) has exited, though `ps` still prints when it started, and has no start,
+/// as on Linux ([`proc_start`]).
+fn ps_start(line: &str) -> Option<String> {
+    let (state, start) = line.trim().split_once(char::is_whitespace)?;
+    let start = start.trim();
+    (!state.starts_with('Z') && !start.is_empty()).then(|| start.to_owned())
 }
 
 /// Field 22 of a `/proc/<pid>/stat` line, counted after the command name, which may hold
@@ -1068,6 +1079,18 @@ mod tests {
         let stat =
             "4242 (a (b) c) S 1 4242 4242 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 987654 1000 10";
         assert_eq!(proc_start(stat).as_deref(), Some("987654"));
+    }
+
+    #[test]
+    fn a_zombie_in_a_ps_line_has_no_start() {
+        assert_eq!(
+            ps_start("S+   Mon Nov 16 01:02:03 2026\n").as_deref(),
+            Some("Mon Nov 16 01:02:03 2026")
+        );
+        assert_eq!(ps_start("Z    Mon Nov 16 01:02:03 2026\n"), None);
+        assert_eq!(ps_start("Z+   Mon Nov 16 01:02:03 2026\n"), None);
+        assert_eq!(ps_start(""), None);
+        assert_eq!(ps_start("S\n"), None);
     }
 
     #[test]
