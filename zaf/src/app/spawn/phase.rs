@@ -116,6 +116,8 @@ pub struct Ports<'a> {
     /// merge waits on (`[branches] integration`); none when the caller has none, and then no
     /// branch is read.
     pub version: Option<&'a str>,
+    /// The time of the read, which the gather measures a pull request's age against.
+    pub now: SystemTime,
 }
 
 /// Checks, through the tick's gate, that `action` may start on `task` now, releases the task's

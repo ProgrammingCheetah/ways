@@ -4,9 +4,11 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use super::*;
-use crate::app::schedule::ask::base_deadline_marker;
+use crate::app::schedule::ask::{base_deadline_marker, no_check_marker};
 use crate::domain::schedule::{HeadEnd, PhaseEnd, Place, WaitingOn, place};
-use crate::domain::{CheckName, CommitId, Instance, InstanceNumber, TaskSize, TicketState};
+use crate::domain::{
+    CheckName, CommitId, Instance, InstanceNumber, RepoPath, TaskSize, TicketState,
+};
 use crate::fakes::{FakeBoard, FakeForge, PrRequest};
 use crate::manifest::Manifest;
 use crate::ports::{BaseName, Check, Holder, NewQuestion, SliceName};
@@ -167,7 +169,18 @@ impl Scene {
         })
     }
 
+    /// [`Scene::with_ports_at`] at a time when a pull request opened at 20 is old enough for a
+    /// no-check question to exist.
     fn with_ports<T>(&self, version: Option<&str>, read: impl FnOnce(&Ports<'_>) -> T) -> T {
+        self.with_ports_at(version, time(20) + NO_CHECK_DEADLINE, read)
+    }
+
+    fn with_ports_at<T>(
+        &self,
+        version: Option<&str>,
+        now: SystemTime,
+        read: impl FnOnce(&Ports<'_>) -> T,
+    ) -> T {
         read(&Ports {
             board: &self.board,
             forge: &self.forge,
@@ -177,6 +190,7 @@ impl Scene {
             state_dir: &self.state_dir,
             alive: &|_: &Holder| false,
             version,
+            now,
         })
     }
 
@@ -390,17 +404,41 @@ fn a_pull_request_with_a_pending_check_is_read_at_its_head() {
             result: CheckResult::Pending,
         }]
     );
-    assert!(!pull.changes_a_file, "the forge lists no changed file");
+    assert!(!pull.changes_a_file(), "the forge lists no changed file");
     scene
         .forge
         .set_changed_files(pr, &["src/lib.rs"])
         .expect("files");
     let facts = scene.facts_of(7);
-    assert!(facts.pull.as_ref().is_some_and(|pull| pull.changes_a_file));
+    assert!(facts.pull.as_ref().is_some_and(PullFacts::changes_a_file));
     assert_eq!(
         place(&facts, time(100)),
         Place::Waiting([WaitingOn::Check(id(7), CommitId::from("h1"))].into())
     );
+}
+
+#[test]
+fn gather_keeps_the_changed_file_the_forge_names() {
+    let scene = Scene::new();
+    scene.task(7, EPIC, TicketState::Claimed, "—");
+    let pr = scene.open_pr(7, CheckState::Pending);
+    scene
+        .forge
+        .set_changed_files(pr, &["src/a.rs", "src/lib.rs"])
+        .expect("files");
+    let named = scene.forge.last_changed_file(pr).expect("forge reads");
+    let pull = scene.facts_of(7).pull.expect("the pull request is read");
+    assert_eq!(pull.changed_file, named.map(RepoPath::from));
+    assert!(pull.changed_file.is_some());
+}
+
+#[test]
+fn gather_keeps_no_changed_file_when_the_forge_names_none() {
+    let scene = Scene::new();
+    scene.task(7, EPIC, TicketState::Claimed, "—");
+    scene.open_pr(7, CheckState::Pending);
+    let pull = scene.facts_of(7).pull.expect("the pull request is read");
+    assert_eq!(pull.changed_file, None);
 }
 
 #[test]
@@ -1087,5 +1125,170 @@ fn a_ruled_question_on_the_base_deadline_lets_its_ticket_through_at_that_head() 
     assert_eq!(
         place(&gathered.tickets[0], time(100)),
         Place::Waiting([WaitingOn::Base(CommitId::from("b2"))].into())
+    );
+}
+
+impl Scene {
+    /// `task`'s pull request at head `h1`, changing a file, with no check registered there.
+    fn open_unchecked_pr(&self, task: u64) -> PrNumber {
+        let pr = self.open_changing_pr(task, CheckState::Passed);
+        self.forge.set_checks(pr, Vec::new()).expect("no checks");
+        pr
+    }
+
+    /// The question the scheduler raises on `task` for a head with no check, number `number`,
+    /// ruled when `ruling` is given.
+    fn no_check_question(&self, number: u64, task: u64, head: &str, ruling: Option<&str>) {
+        let asked = NewQuestion {
+            on: id(task),
+            text: format!(
+                "No check has registered. {}",
+                no_check_marker(&CommitId::from(head))
+            ),
+            door: false,
+        };
+        self.board.add_question(Ticket {
+            id: id(number),
+            epic: None,
+            title: asked.title().into(),
+            body: asked.body().into(),
+            state: None,
+            url: "".into(),
+            kind: None,
+        });
+        if let Some(ruling) = ruling {
+            self.board.record_ruling(id(number), ruling).expect("rules");
+        }
+    }
+}
+
+fn goes_on_to_merge(facts: &TicketFacts) -> bool {
+    matches!(
+        place(facts, time(100)),
+        Place::InLane { ref next, .. } if next.as_str() == "merge"
+    )
+}
+
+#[test]
+fn gather_reads_a_ruled_no_check_question() {
+    let scene = Scene::new();
+    scene.task(7, EPIC, TicketState::Claimed, "—");
+    scene.open_unchecked_pr(7);
+    scene.no_check_question(50, 7, "h1", None);
+    // Open, the question rules nothing: the ticket waits on a check that never comes.
+    let facts = scene.facts_of(7);
+    assert_eq!(facts.no_check_ruled, None);
+    assert!(!goes_on_to_merge(&facts));
+
+    scene
+        .board
+        .record_ruling(id(50), "Go on without it.")
+        .expect("rules");
+    let gathered = scene.gather();
+    let facts = &gathered.tickets[0];
+    assert_eq!(facts.no_check_ruled, Some(CommitId::from("h1")));
+    assert!(goes_on_to_merge(facts), "{:?}", place(facts, time(100)));
+    assert!(gathered.warnings.is_empty(), "{:?}", gathered.warnings);
+}
+
+#[test]
+fn a_young_pull_request_is_not_read_for_a_no_check_ruling() {
+    let scene = Scene::new();
+    scene.task(7, EPIC, TicketState::Claimed, "—");
+    scene.open_unchecked_pr(7);
+    scene.no_check_question(50, 7, "h1", Some("Go on without it."));
+    let reads = scene.board.question_reads();
+    // One second short of the deadline after the opening at 20.
+    let now = time(20) + NO_CHECK_DEADLINE - Duration::from_secs(1);
+    let gathered = scene.with_ports_at(None, now, |ports| gather(ports).expect("it reads"));
+    assert_eq!(gathered.tickets[0].no_check_ruled, None);
+    assert_eq!(scene.board.question_reads(), reads);
+    assert!(gathered.warnings.is_empty(), "{:?}", gathered.warnings);
+}
+
+#[test]
+fn an_old_enough_pull_request_reads_its_no_check_ruling() {
+    let scene = Scene::new();
+    scene.task(7, EPIC, TicketState::Claimed, "—");
+    scene.open_unchecked_pr(7);
+    scene.no_check_question(50, 7, "h1", Some("Go on without it."));
+    let reads = scene.board.question_reads();
+    // Exactly the deadline after the opening at 20.
+    let now = time(20) + NO_CHECK_DEADLINE;
+    let gathered = scene.with_ports_at(None, now, |ports| gather(ports).expect("it reads"));
+    assert_eq!(
+        gathered.tickets[0].no_check_ruled,
+        Some(CommitId::from("h1"))
+    );
+    assert!(scene.board.question_reads() > reads);
+}
+
+#[test]
+fn gather_one_reads_a_ruled_no_check_question() {
+    let scene = Scene::new();
+    scene.task(7, EPIC, TicketState::Claimed, "—");
+    scene.open_unchecked_pr(7);
+    scene.no_check_question(50, 7, "h1", Some("Go on without it."));
+    let (alone, _) = scene.with_ports(None, |ports| {
+        gather_one(ports, id(7))
+            .expect("it reads")
+            .expect("it is open")
+    });
+    assert_eq!(alone.no_check_ruled, Some(CommitId::from("h1")));
+    assert!(goes_on_to_merge(&alone));
+    assert_eq!(alone, scene.facts_of(7));
+}
+
+#[test]
+fn gather_ignores_a_ruling_on_an_old_head() {
+    let scene = Scene::new();
+    scene.task(7, EPIC, TicketState::Claimed, "—");
+    let pr = scene.open_unchecked_pr(7);
+    scene.no_check_question(50, 7, "h1", Some("Go on without it."));
+    assert_eq!(scene.facts_of(7).no_check_ruled, Some(CommitId::from("h1")));
+
+    // A push moves the head, and no check has registered there either.
+    scene.forge.set_head(pr, Some("h2")).expect("head");
+    let facts = scene.facts_of(7);
+    assert_eq!(facts.no_check_ruled, None);
+    assert!(!goes_on_to_merge(&facts));
+}
+
+#[test]
+fn gather_skips_the_read_when_the_head_has_checks() {
+    let scene = Scene::new();
+    scene.task(7, EPIC, TicketState::Claimed, "—");
+    scene.open_changing_pr(7, CheckState::Pending);
+    scene.no_check_question(50, 7, "h1", Some("Go on without it."));
+    let reads = scene.board.question_reads();
+    let facts = scene.facts_of(7);
+    assert_eq!(scene.board.question_reads(), reads);
+    assert_eq!(facts.no_check_ruled, None);
+    // No pull request at all reads nothing either.
+    scene.task(8, EPIC, TicketState::Claimed, "—");
+    scene.facts_of(8);
+    assert_eq!(scene.board.question_reads(), reads);
+}
+
+#[test]
+fn gather_keeps_waiting_when_rulings_cannot_be_read() {
+    let scene = Scene::new();
+    scene.task(7, EPIC, TicketState::Claimed, "—");
+    scene.open_unchecked_pr(7);
+    scene.no_check_question(50, 7, "h1", Some("Go on without it."));
+    scene.board.fail_question_reads();
+    let gathered = scene.gather();
+    assert!(gathered.unreadable.is_empty(), "{:?}", gathered.unreadable);
+    let facts = &gathered.tickets[0];
+    assert_eq!(facts.no_check_ruled, None);
+    assert_eq!(
+        place(facts, time(100)),
+        Place::Waiting([WaitingOn::Check(id(7), CommitId::from("h1"))].into())
+    );
+    assert_eq!(gathered.warnings.len(), 1, "{:?}", gathered.warnings);
+    assert!(
+        gathered.warnings[0].starts_with("#7: its ruled questions were not read"),
+        "{}",
+        gathered.warnings[0]
     );
 }

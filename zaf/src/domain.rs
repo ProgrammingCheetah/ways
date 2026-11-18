@@ -37,7 +37,7 @@ pub use epic::{
     Signature, SignatureError, of_version, release_of, with_release,
 };
 pub use finding::{Finding, FindingSource, Location, Severity};
-pub use ids::{CommitId, IdError, PageId, TicketId};
+pub use ids::{CommitId, IdError, PageId, RepoPath, TicketId};
 pub use instance::{Instance, InstanceNumber, RoleName};
 pub use labels::{PageStatus, TicketState};
 pub use memory::{MEBIBYTES_PER_UNIT, Mebibytes, Units};

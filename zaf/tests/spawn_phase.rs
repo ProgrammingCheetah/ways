@@ -187,6 +187,7 @@ fn facts(task: TicketId, runs: Vec<zaf::domain::schedule::RunRecord>) -> TicketF
         ruled: Vec::new(),
         ready_since: None,
         merging: Default::default(),
+        no_check_ruled: None,
     }
 }
 

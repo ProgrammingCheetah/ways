@@ -183,6 +183,7 @@ fn why_section(composition: &Composition, board: &dyn Board, task: TicketId) -> 
         state_dir: &state_dir,
         alive: &process::alive,
         version: version.as_deref(),
+        now: std::time::SystemTime::now(),
     };
     match why_this_run(&ports, task) {
         Ok(why) => why.render(),

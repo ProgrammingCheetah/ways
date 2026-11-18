@@ -408,7 +408,7 @@ impl Report {
         lines.push(self.actions_dir.line());
         lines.extend(self.logins.iter().map(LoginCheck::line));
         lines.extend(self.packs.iter().map(PackCheck::line));
-        lines.extend(self.stale.iter().map(profile::StaleProfile::line));
+        lines.extend(profile::stale_line(&self.stale));
         lines.extend(self.actions.iter().flat_map(ActionCheck::lines));
         lines.extend(self.actions_error.clone());
         lines.extend(self.needed.iter().flat_map(NeededCheck::lines));

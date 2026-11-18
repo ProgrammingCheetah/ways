@@ -271,6 +271,40 @@ fn unreachable_board_reason() {
 }
 
 #[test]
+fn hub_reports_one_problem_for_all_stale_profiles() {
+    const MANIFEST: &str = "[project]\nname = \"example\"\n\n[board]\nkind = \"forgejo-issues\"\n\
+        repo = \"example/tracker\"\nurl = \"http://forgejo.invalid\"\n\
+        token_env = \"ZAF_TEST_HUB_STATE_TOKEN\"\n\n\
+        [runners.claude]\ncommand = \"true\"\n\n\
+        [roles.team]\nmodel = \"opus\"\neffort = \"xhigh\"\nprofile = \"build\"\nturns = 5\nbatch = 2\n\n\
+        [roles.programmer]\nmodel = \"sonnet\"\neffort = \"high\"\nprofile = \"lean\"\nturns = 5\nbatch = 2\n";
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join(".zaf.toml"), MANIFEST).expect("manifest");
+    // Both profiles have a home and no stamp: both are stale.
+    for name in ["build", "lean"] {
+        std::fs::create_dir_all(dir.path().join(".zaf/profiles").join(name)).expect("home");
+    }
+
+    let state = gather_project(dir.path(), at(1_000));
+
+    let profiles: Vec<&Problem> = state
+        .problems
+        .iter()
+        .filter(|problem| problem.kind == ProblemKind::Profile)
+        .collect();
+    assert_eq!(profiles.len(), 1, "{:?}", state.problems);
+    let problem = profiles[0];
+    assert_eq!(
+        problem.detail,
+        "profiles lean and build have no stamp: run zaf profile init"
+    );
+    assert_eq!(
+        problem.fix.as_deref(),
+        Some(format!("cd {} && zaf profile init", dir.path().display()).as_str())
+    );
+}
+
+#[test]
 fn the_value_serializes_with_its_documented_names() {
     let world = World::new();
     world

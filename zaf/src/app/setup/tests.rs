@@ -87,7 +87,15 @@ fn setup(
     manifest: &Manifest,
     commands: &dyn Commands,
 ) -> Result<SetupReport, SetupError> {
-    super::setup_with(root, home, manifest, commands, &RecordingShell::new(), None)
+    super::setup_with(
+        root,
+        home,
+        manifest,
+        commands,
+        &RecordingShell::new(),
+        None,
+        None,
+    )
 }
 
 /// [`super::setup_with`] through a fresh shell.
@@ -105,6 +113,7 @@ fn setup_with(
         commands,
         &RecordingShell::new(),
         claude_home,
+        None,
     )
 }
 
@@ -536,8 +545,8 @@ fn setup_generates_profiles() {
     let commands = FakeCommands::new();
     let shell = RecordingShell::new();
 
-    let report =
-        super::setup_with(&root, Some(&home), &manifest, &commands, &shell, None).expect("sets up");
+    let report = super::setup_with(&root, Some(&home), &manifest, &commands, &shell, None, None)
+        .expect("sets up");
 
     for name in ["build", "lean"] {
         let profile = root.join(".zaf/profiles").join(name);
@@ -566,13 +575,13 @@ fn setup_rerun_issues_no_plugin_command() {
     let manifest = manifest(TAGGED);
     let commands = FakeCommands::new();
     let shell = RecordingShell::new();
-    super::setup_with(&root, Some(&home), &manifest, &commands, &shell, None).expect("first");
+    super::setup_with(&root, Some(&home), &manifest, &commands, &shell, None, None).expect("first");
     let issued = shell.lines().len();
     assert!(issued > 0, "the first run installed the pack");
     let before = snapshot(&root.join(".zaf/profiles"));
 
-    let second =
-        super::setup_with(&root, Some(&home), &manifest, &commands, &shell, None).expect("again");
+    let second = super::setup_with(&root, Some(&home), &manifest, &commands, &shell, None, None)
+        .expect("again");
 
     assert_eq!(
         shell.lines().len(),
@@ -595,7 +604,7 @@ fn setup_pack_refusal_is_a_step() {
     let commands = FakeCommands::new();
     let shell = RecordingShell::installing("2.0.3");
 
-    let report = super::setup_with(&root, Some(&home), &manifest, &commands, &shell, None)
+    let report = super::setup_with(&root, Some(&home), &manifest, &commands, &shell, None, None)
         .expect("a refusal is a step, not an error");
 
     assert!(report.profiles.is_none());
@@ -651,6 +660,7 @@ fn setup_installs_pack_actions() {
         &FakeCommands::new(),
         &shell,
         None,
+        None,
     )
     .expect("sets up");
 
@@ -702,14 +712,14 @@ fn setup_keeps_edited_machine_action() {
     let shell = RecordingShell::installing_at(&pack);
     let manifest = manifest(TAGGED);
     let commands = FakeCommands::new();
-    super::setup_with(&root, Some(&home), &manifest, &commands, &shell, None).expect("first");
+    super::setup_with(&root, Some(&home), &manifest, &commands, &shell, None, None).expect("first");
     let edited = home.join("actions/action-03");
     fs::write(&edited, "#!/bin/sh\n# the Engineer's own\n").expect("edit");
     fs::remove_file(home.join("actions/action-04")).expect("remove one");
     let before = snapshot(&home.join("actions"));
 
-    let second =
-        super::setup_with(&root, Some(&home), &manifest, &commands, &shell, None).expect("again");
+    let second = super::setup_with(&root, Some(&home), &manifest, &commands, &shell, None, None)
+        .expect("again");
 
     assert_eq!(read(&edited), "#!/bin/sh\n# the Engineer's own\n");
     let after = snapshot(&home.join("actions"));
@@ -724,10 +734,11 @@ fn setup_keeps_edited_machine_action() {
     assert_eq!(second.actions.installed, ["action-04"]);
     assert_eq!(second.actions.kept.len(), PACK_ACTIONS - 1);
     assert!(second.actions.kept.contains(&"action-03".to_owned()));
+    assert_eq!(second.actions.differs, ["action-03"]);
     assert_eq!(
         second.actions.lines().len(),
-        2,
-        "one line each, installed and kept"
+        3,
+        "one line each: installed, kept and differs"
     );
 }
 
@@ -741,6 +752,7 @@ fn setup_installs_nothing_without_a_pack_or_its_actions() {
         &manifest(""),
         &commands,
         &RecordingShell::new(),
+        None,
         None,
     )
     .expect("no pack");
@@ -756,6 +768,7 @@ fn setup_installs_nothing_without_a_pack_or_its_actions() {
         &manifest(TAGGED),
         &commands,
         &shell,
+        None,
         None,
     )
     .expect("no actions folder");
@@ -779,6 +792,7 @@ fn project_action_shadows_installed() {
         &manifest(TAGGED),
         &FakeCommands::new(),
         &shell,
+        None,
         None,
     )
     .expect("sets up");
@@ -820,7 +834,386 @@ fn setup_fails_when_a_plugin_command_fails() {
         &FakeCommands::new(),
         &Failing,
         None,
+        None,
     )
     .expect_err("a failed backend");
     assert!(matches!(error, SetupError::Profile(_)), "{error}");
+}
+
+/// Two action files, the installed and the pack's, with the same bytes and the mode `0o755`.
+fn two_actions() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let installed = dir.path().join("installed");
+    let pack = dir.path().join("pack");
+    for path in [&installed, &pack] {
+        fs::write(path, "#!/bin/sh\necho hi\n").expect("an action");
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).expect("a mode");
+    }
+    (dir, installed, pack)
+}
+
+#[test]
+fn equal_actions_do_not_differ() {
+    let (_dir, installed, pack) = two_actions();
+    assert!(!super::differs(&installed, &pack).expect("compares"));
+}
+
+#[test]
+fn changed_bytes_differ() {
+    let (_dir, installed, pack) = two_actions();
+    fs::write(&installed, "#!/bin/sh\necho edited\n").expect("an edit");
+    assert!(super::differs(&installed, &pack).expect("compares"));
+}
+
+#[test]
+fn changed_mode_differs() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (_dir, installed, pack) = two_actions();
+    fs::set_permissions(&installed, fs::Permissions::from_mode(0o750)).expect("a mode");
+    assert!(super::differs(&installed, &pack).expect("compares"));
+}
+
+#[test]
+fn difference_returns_the_git_diff() {
+    let (_dir, installed, pack) = two_actions();
+    let text = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n";
+    // `git diff --no-index` exits 1 when the files differ, so the fake fails.
+    let commands = FakeCommands::new().failing("git", text);
+    assert_eq!(
+        super::difference(&commands, &installed, &pack).as_deref(),
+        Some(text)
+    );
+    let call = &commands.calls()[0];
+    assert_eq!(
+        call[..6],
+        [
+            "git",
+            "diff",
+            "--no-index",
+            "--no-ext-diff",
+            "--no-color",
+            "--"
+        ]
+    );
+    assert_eq!(call[6], installed.to_string_lossy());
+    assert_eq!(call[7], pack.to_string_lossy());
+}
+
+#[test]
+fn difference_is_none_without_git() {
+    let (_dir, installed, pack) = two_actions();
+    assert_eq!(
+        super::difference(&FakeCommands::new(), &installed, &pack),
+        None
+    );
+}
+
+#[test]
+fn difference_is_none_for_output_that_is_not_a_diff() {
+    let (_dir, installed, pack) = two_actions();
+    for text in [
+        "",
+        "fatal: not a git repository\n",
+        "warning\ndiff --git a b\n",
+    ] {
+        let commands = FakeCommands::new().failing("git", text);
+        assert_eq!(
+            super::difference(&commands, &installed, &pack),
+            None,
+            "{text:?}"
+        );
+        let commands = FakeCommands::new().with("git", text);
+        assert_eq!(
+            super::difference(&commands, &installed, &pack),
+            None,
+            "{text:?}"
+        );
+    }
+}
+
+const DIFF: &str = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n";
+
+/// An asker that answers every question with `answer` and records each one.
+struct Asker {
+    answer: bool,
+    asked: Vec<(String, String)>,
+}
+
+impl Asker {
+    fn new(answer: bool) -> Self {
+        Self {
+            answer,
+            asked: Vec::new(),
+        }
+    }
+}
+
+impl ReplaceAction for Asker {
+    fn replace(&mut self, name: &str, difference: &str) -> bool {
+        self.asked.push((name.to_owned(), difference.to_owned()));
+        self.answer
+    }
+}
+
+/// Sets up once, so the pack's actions are installed, then edits `action-03` and returns what a
+/// second setup needs: the places, the pack and its shell.
+fn installed_then_edited() -> (tempfile::TempDir, PathBuf, PathBuf, RecordingShell) {
+    let (dir, root, home) = places();
+    let pack = pack_with_actions(dir.path());
+    let shell = RecordingShell::installing_at(&pack);
+    super::setup_with(
+        &root,
+        Some(&home),
+        &manifest(TAGGED),
+        &FakeCommands::new(),
+        &shell,
+        None,
+        None,
+    )
+    .expect("first");
+    fs::write(home.join("actions/action-03"), "#!/bin/sh\n# own\n").expect("edit");
+    (dir, root, home, shell)
+}
+
+fn setup_asking(
+    root: &Path,
+    home: &Path,
+    shell: &RecordingShell,
+    commands: &FakeCommands,
+    asker: Option<&mut dyn ReplaceAction>,
+) -> SetupReport {
+    super::setup_with(
+        root,
+        Some(home),
+        &manifest(TAGGED),
+        commands,
+        shell,
+        None,
+        asker,
+    )
+    .expect("again")
+}
+
+#[test]
+fn setup_replaces_a_differing_action_on_yes() {
+    let (dir, root, home, shell) = installed_then_edited();
+    let pack = dir.path().join("pack/actions/action-03");
+    let mut asker = Asker::new(true);
+
+    let report = setup_asking(
+        &root,
+        &home,
+        &shell,
+        &FakeCommands::new().failing("git", DIFF),
+        Some(&mut asker),
+    );
+
+    assert_eq!(asker.asked, [("action-03".to_owned(), DIFF.to_owned())]);
+    let installed = home.join("actions/action-03");
+    assert_eq!(read(&installed), read(&pack));
+    assert_eq!(mode_of(&installed), mode_of(&pack));
+    assert_eq!(report.actions.replaced.len(), 1);
+    let (name, old) = &report.actions.replaced[0];
+    assert_eq!(name, "action-03");
+    assert_eq!(
+        report.actions.lines()[0],
+        format!("replaced action-03 (the old one is at {})", old.display())
+    );
+    assert!(report.actions.differs.is_empty());
+    assert!(!report.actions.kept.contains(&"action-03".to_owned()));
+    assert!(
+        fs::read_dir(home.join("actions"))
+            .expect("tier")
+            .all(|entry| !entry
+                .expect("entry")
+                .file_name()
+                .to_string_lossy()
+                .contains("zaf-installing")),
+        "no temporary file is left"
+    );
+}
+
+#[test]
+fn setup_keeps_the_replaced_copy_under_actions_replaced() {
+    let (_dir, root, home, shell) = installed_then_edited();
+    let mut asker = Asker::new(true);
+
+    let report = setup_asking(
+        &root,
+        &home,
+        &shell,
+        &FakeCommands::new().failing("git", DIFF),
+        Some(&mut asker),
+    );
+
+    let (_, old) = &report.actions.replaced[0];
+    assert_eq!(old.parent(), Some(home.join("actions-replaced").as_path()));
+    let file = old.file_name().expect("a name").to_string_lossy();
+    let time = file
+        .strip_prefix("action-03.")
+        .expect("name, a dot, the time");
+    assert!(
+        time.len() == 16 && time.ends_with('Z') && time.as_bytes()[8] == b'T',
+        "UTC time as YYYYMMDDTHHMMSSZ: {time}"
+    );
+    assert_eq!(read(old), "#!/bin/sh\n# own\n");
+    assert_eq!(mode_of(old), 0o755);
+}
+
+#[test]
+fn a_failure_after_a_replacement_still_names_what_was_replaced() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (_dir, root, home, shell) = installed_then_edited();
+    // action-07 differs by its mode, and a folder sits where its temporary file goes, so writing
+    // it fails whoever runs the test (a mode of 0 would not stop root, as in CI).
+    let installed = home.join("actions/action-07");
+    fs::set_permissions(&installed, fs::Permissions::from_mode(0o600)).expect("mode");
+    fs::create_dir(home.join("actions/.action-07.zaf-installing")).expect("blocker");
+    let mut asker = Asker::new(true);
+
+    let error = super::setup_with(
+        &root,
+        Some(&home),
+        &manifest(TAGGED),
+        &FakeCommands::new().failing("git", DIFF),
+        &shell,
+        None,
+        Some(&mut asker),
+    )
+    .expect_err("the second action fails");
+
+    let super::SetupError::Actions(failed) = error else {
+        panic!("not the actions' failure: {error}");
+    };
+    assert_eq!(failed.replaced.len(), 1);
+    let (name, old) = &failed.replaced[0];
+    assert_eq!(name, "action-03");
+    assert_eq!(read(old), "#!/bin/sh\n# own\n");
+    assert_eq!(
+        failed.lines(),
+        [format!(
+            "replaced action-03 (the old one is at {})",
+            old.display()
+        )]
+    );
+}
+
+#[test]
+fn setup_keeps_a_differing_action_on_no() {
+    let (_dir, root, home, shell) = installed_then_edited();
+    let mut asker = Asker::new(false);
+
+    let report = setup_asking(
+        &root,
+        &home,
+        &shell,
+        &FakeCommands::new().failing("git", DIFF),
+        Some(&mut asker),
+    );
+
+    assert_eq!(asker.asked.len(), 1);
+    assert_eq!(read(&home.join("actions/action-03")), "#!/bin/sh\n# own\n");
+    assert!(
+        !home.join("actions-replaced").exists(),
+        "nothing is written there"
+    );
+    assert!(report.actions.replaced.is_empty());
+    assert!(report.actions.kept.contains(&"action-03".to_owned()));
+}
+
+#[test]
+fn setup_without_an_asker_lists_differing_actions() {
+    let (_dir, root, home, shell) = installed_then_edited();
+    fs::write(home.join("actions/action-07"), "#!/bin/sh\n# own too\n").expect("edit");
+
+    let report = setup_asking(&root, &home, &shell, &FakeCommands::new(), None);
+
+    assert_eq!(read(&home.join("actions/action-03")), "#!/bin/sh\n# own\n");
+    assert!(!home.join("actions-replaced").exists());
+    assert_eq!(report.actions.differs, ["action-03", "action-07"]);
+    assert!(
+        report.actions.lines().contains(
+            &"differs from the pack, kept: action-03, action-07; run zaf setup in a terminal to review"
+                .to_owned()
+        ),
+        "{:?}",
+        report.actions.lines()
+    );
+}
+
+#[test]
+fn setup_never_offers_an_equal_action() {
+    let (_dir, root, home, shell) = installed_then_edited();
+    let mut asker = Asker::new(true);
+
+    setup_asking(
+        &root,
+        &home,
+        &shell,
+        &FakeCommands::new().failing("git", DIFF),
+        Some(&mut asker),
+    );
+
+    let names: Vec<&str> = asker.asked.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(names, ["action-03"], "the other 16 are equal");
+}
+
+#[test]
+fn setup_never_offers_a_linked_action() {
+    let (dir, root, home, shell) = installed_then_edited();
+    let own = dir.path().join("own-action");
+    fs::write(&own, "#!/bin/sh\n# linked\n").expect("a file to link to");
+    let linked = home.join("actions/action-05");
+    fs::remove_file(&linked).expect("remove");
+    std::os::unix::fs::symlink(&own, &linked).expect("link");
+    let folder = home.join("actions/action-06");
+    fs::remove_file(&folder).expect("remove");
+    fs::create_dir(&folder).expect("a folder");
+    let mut asker = Asker::new(true);
+
+    let report = setup_asking(
+        &root,
+        &home,
+        &shell,
+        &FakeCommands::new().failing("git", DIFF),
+        Some(&mut asker),
+    );
+
+    let names: Vec<&str> = asker.asked.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(names, ["action-03"]);
+    assert_eq!(fs::read_link(&linked).expect("still a link"), own);
+    assert!(folder.is_dir());
+    assert!(report.actions.kept.contains(&"action-05".to_owned()));
+    assert!(report.actions.kept.contains(&"action-06".to_owned()));
+}
+
+#[test]
+fn setup_keeps_an_action_whose_difference_cannot_be_shown() {
+    let (_dir, root, home, shell) = installed_then_edited();
+    let mut asker = Asker::new(true);
+
+    // No `git`: the difference cannot be shown.
+    let report = setup_asking(&root, &home, &shell, &FakeCommands::new(), Some(&mut asker));
+
+    assert!(
+        asker.asked.is_empty(),
+        "no one is asked what cannot be shown"
+    );
+    assert_eq!(read(&home.join("actions/action-03")), "#!/bin/sh\n# own\n");
+    assert!(!home.join("actions-replaced").exists());
+    assert_eq!(report.actions.differs, ["action-03"]);
+    assert_eq!(report.actions.unshown, ["action-03"]);
+    assert!(
+        report
+            .actions
+            .lines()
+            .iter()
+            .any(|line| line.contains("the difference could not be shown: action-03")),
+        "{:?}",
+        report.actions.lines()
+    );
 }

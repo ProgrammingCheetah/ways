@@ -48,8 +48,8 @@ pub use phase::{
 pub use place::{Place, Placement, Run, WaitingOn, place};
 pub use wait::{
     Awaited, CHALLENGE_DEADLINE, CHECK_DEADLINE, DeadDependency, DeadReason, DependencyGraph,
-    OverdueChallenge, OverdueCheck, base_clock, check_clock, dead_dependencies, dependency_graph,
-    overdue, unchallenged,
+    NO_CHECK_DEADLINE, OverdueChallenge, OverdueCheck, base_clock, check_clock, dead_dependencies,
+    dependency_graph, overdue, unchallenged,
 };
 
 #[cfg(test)]

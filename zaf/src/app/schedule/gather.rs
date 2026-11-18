@@ -42,9 +42,9 @@
 //! writes, and nothing here decides.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use super::ask::{base_deadline_marker, marked_run};
+use super::ask::{base_deadline_marker, marked_run, no_check_marker};
 use super::{lock, record};
 use crate::adapters::process;
 use crate::app::actions::{
@@ -55,7 +55,8 @@ use crate::app::spawn::phase::{Ports, listed};
 use crate::composition::{Composition, STATE_DIR, zaf_home};
 use crate::domain::schedule::{
     ActionName, BaseFacts, CheckFact, CheckResult, Dependency, EpicFacts, MergeFacts,
-    NOWHERE_LIMIT, Phase, PullFacts, ReviewFact, RuledMarker, TicketFacts, at_merge, order_merges,
+    NO_CHECK_DEADLINE, NOWHERE_LIMIT, Phase, PullFacts, ReviewFact, RuledMarker, TicketFacts,
+    at_merge, order_merges,
 };
 use crate::domain::{
     CommitId, DEFAULT_TASK_TYPE, Epic, EpicTask, OpenTicket, Standing, StandingAt, Ticket, TicketId,
@@ -227,7 +228,7 @@ pub fn gather(ports: &Ports<'_>) -> Result<Gathered, PortError> {
     };
     for open in &open {
         let ticket = &open.ticket;
-        match read_ticket(ports, &shared, &mut standings, open) {
+        match read_ticket(ports, &shared, &mut standings, &mut gathered.warnings, open) {
             Ok(Some((facts, beside))) => {
                 if let Err(ignored) = &open.priority {
                     gathered.warnings.push(format!(
@@ -345,17 +346,49 @@ fn ruled_through(board: &dyn Board, facts: &TicketFacts) -> Result<Option<Commit
     let Some(head) = facts.merging.base.awaited().filter(|_| at_merge(facts)) else {
         return Ok(None);
     };
-    let marker = base_deadline_marker(head);
-    let ruled = board
-        .questions_on(facts.ticket)?
+    let ruled = ruled_ending(board, facts.ticket, &base_deadline_marker(head))?;
+    Ok(ruled.then(|| head.clone()))
+}
+
+/// The head the Engineer ruled `task` through with no check: the pull request's, when it has no
+/// check at all and a ruled question on the ticket ends with the marker of that head
+/// ([`no_check_marker`]). The board is read only for a pull request that is open at a head with no
+/// check and that opened [`NO_CHECK_DEADLINE`] before `now` or earlier, so most gathers read
+/// nothing: a no-check question is asked only once the wait at the head is that old, and the
+/// wait's clock is never earlier than the pull request's opening, so a younger pull request has no
+/// such question yet. A ruling on an older head matches nothing at this one.
+fn ruled_no_check(
+    board: &dyn Board,
+    task: TicketId,
+    pull: Option<&PullFacts>,
+    now: SystemTime,
+) -> Result<Option<CommitId>, PortError> {
+    let Some(head) = pull
+        .filter(|pull| pull.merged_at.is_none() && pull.checks.is_empty())
+        .filter(|pull| {
+            pull.opened_at
+                .checked_add(NO_CHECK_DEADLINE)
+                .is_some_and(|due| due <= now)
+        })
+        .and_then(|pull| pull.head.as_ref())
+    else {
+        return Ok(None);
+    };
+    let ruled = ruled_ending(board, task, &no_check_marker(head))?;
+    Ok(ruled.then(|| head.clone()))
+}
+
+/// Whether a ruled question on `task` ends with `marker`.
+fn ruled_ending(board: &dyn Board, task: TicketId, marker: &str) -> Result<bool, PortError> {
+    Ok(board
+        .questions_on(task)?
         .iter()
         .filter(|(_, ruling)| ruling.is_some())
         .any(|(question, _)| {
             crate::ports::NewQuestion::text_of(question)
                 .trim()
-                .ends_with(&marker)
-        });
-    Ok(ruled.then(|| head.clone()))
+                .ends_with(marker)
+        }))
 }
 
 /// Orders the merges of `tickets` ([`order_merges`]) among those that share an integration
@@ -433,6 +466,7 @@ pub fn gather_for(
         state_dir: &state_dir,
         alive: &process::alive,
         version: version.as_deref(),
+        now: SystemTime::now(),
     };
     gather(&ports).map(Some).map_err(|error| error.to_string())
 }
@@ -458,7 +492,11 @@ pub fn gather_one(
     };
     let shared = shared(ports.board).map_err(unread)?;
     let mut standings = BTreeMap::new();
-    let Some((facts, beside)) = read_ticket(ports, &shared, &mut standings, ticket)? else {
+    // A ruling that cannot be read leaves the ticket waiting on its checks, which is the refusal
+    // the caller gives; the tick's gather is the one that words it.
+    let mut warnings = Vec::new();
+    let Some((facts, beside)) = read_ticket(ports, &shared, &mut standings, &mut warnings, ticket)?
+    else {
         return Ok(None);
     };
     if !at_merge(&facts) {
@@ -466,7 +504,9 @@ pub fn gather_one(
     }
     let mut tickets = vec![facts];
     for other in open.iter().filter(|open| open.ticket.id != task) {
-        if let Ok(Some((facts, _))) = read_ticket(ports, &shared, &mut standings, other) {
+        if let Ok(Some((facts, _))) =
+            read_ticket(ports, &shared, &mut standings, &mut warnings, other)
+        {
             tickets.push(facts);
         }
     }
@@ -564,10 +604,13 @@ pub fn open_on(
 /// [`Skip`] that names why otherwise: [`NOT_OF_AN_EPIC`] for one that names no epic, or what could
 /// not be read. `standings` keeps each dependency's standing, and when it closed, once it is
 /// asked. Its priority is its label's, none when the label is ignored (the caller names that).
+/// A read of its ruled no-check questions that fails ([`ruled_no_check`]) is a line in `warnings`
+/// and leaves the ticket waiting on its checks.
 fn read_ticket(
     ports: &Ports<'_>,
     shared: &Shared,
     standings: &mut BTreeMap<TicketId, StandingAt>,
+    warnings: &mut Vec<String>,
     open: &OpenTicket,
 ) -> Result<Option<(TicketFacts, Beside)>, Skip> {
     let ticket = &open.ticket;
@@ -651,6 +694,17 @@ fn read_ticket(
             .map_err(|error| Skip::Unread(format!("its questions: {error}")))?
     };
     let on_epic = shared.questions.get(&epic_id).cloned().unwrap_or_default();
+    let no_check_ruled = match ruled_no_check(ports.board, ticket.id, pull.as_ref(), ports.now) {
+        Ok(ruled) => ruled,
+        Err(error) => {
+            warnings.push(format!(
+                "{}: its ruled questions were not read, so it still waits on the checks of its \
+                 pull request's head: {error}",
+                ticket.id
+            ));
+            None
+        }
+    };
     let facts = TicketFacts {
         ticket: ticket.id,
         epic,
@@ -665,6 +719,7 @@ fn read_ticket(
         ready_since: open.opened_at.max(last_done),
         // Filled for all the tickets at once, when every one is read ([`merging`]).
         merging: MergeFacts::default(),
+        no_check_ruled,
     };
     let beside = Beside {
         list,
@@ -715,7 +770,10 @@ pub fn read_pull(forge: &dyn Forge, pr: PrNumber) -> Result<PullFacts, String> {
         .head(pr)
         .map_err(failed)?
         .map(crate::domain::CommitId::from);
-    let changes_a_file = forge.last_changed_file(pr).map_err(failed)?.is_some();
+    let changed_file = forge
+        .last_changed_file(pr)
+        .map_err(failed)?
+        .map(crate::domain::RepoPath::from);
     let checks = check_facts(forge.checks(pr).map_err(failed)?)?;
     let reviews = forge
         .review_comments(pr)
@@ -730,7 +788,7 @@ pub fn read_pull(forge: &dyn Forge, pr: PrNumber) -> Result<PullFacts, String> {
         opened_at: request.opened_at,
         merged_at,
         head,
-        changes_a_file,
+        changed_file,
         checks,
         reviews,
     })

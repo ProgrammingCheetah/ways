@@ -132,6 +132,7 @@ impl Inline {
             state_dir: &self.state_dir,
             alive,
             version: None,
+            now: SystemTime::now(),
         };
         open_inline(&ports, TicketId::from(7), &ActionName::from("merge"), this)
     }

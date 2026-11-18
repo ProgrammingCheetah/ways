@@ -211,6 +211,7 @@ impl Scene {
             state_dir: &self.state_dir,
             alive: &live,
             version: None,
+            now: SystemTime::now(),
         }
     }
 
@@ -1799,7 +1800,7 @@ mod fixing {
             opened_at: time(10),
             merged_at: None,
             head: Some(CommitId::from("h1")),
-            changes_a_file: true,
+            changed_file: Some(crate::domain::RepoPath::from("src/lib.rs")),
             checks: vec![CheckFact {
                 name: CheckName::from("ci"),
                 result: CheckResult::Passed(time(12)),

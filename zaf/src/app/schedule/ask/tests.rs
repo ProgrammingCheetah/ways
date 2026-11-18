@@ -178,7 +178,7 @@ fn pull(checks: Vec<CheckFact>) -> PullFacts {
         opened_at: time(10),
         merged_at: None,
         head: Some(CommitId::from("abc123")),
-        changes_a_file: true,
+        changed_file: Some(crate::domain::RepoPath::from("src/lib.rs")),
         checks,
         reviews: Vec::new(),
     }
@@ -497,6 +497,8 @@ fn a_new_failure_at_the_same_head_is_asked_again() {
 
 const T0: u64 = 1_800_000_000;
 const HOUR: u64 = 60 * 60;
+/// The deadline of a head where no check has registered.
+const TEN_MINUTES: u64 = 10 * 60;
 
 /// implement (a model ending at an open pull request), ci (a wait ending when CI is done, no
 /// `on-fail`), merge (zaf).
@@ -531,7 +533,7 @@ fn awaiting_checks(head: &str, checks: Vec<CheckFact>, runs: Vec<RunRecord>) -> 
         opened_at: time(T0),
         merged_at: None,
         head: Some(CommitId::from(head)),
-        changes_a_file: true,
+        changed_file: Some(crate::domain::RepoPath::from("src/lib.rs")),
         checks,
         reviews: Vec::new(),
     };
@@ -566,7 +568,7 @@ fn a_check_that_never_registers_raises_a_question_after_the_deadline() {
     let board = board_with(&[7]);
     let facts = awaiting_checks(HEAD_A, Vec::new(), vec![left(HEAD_A, T0 - 50)]);
     assert_eq!(
-        place(&facts, time(T0 + 2 * HOUR)),
+        place(&facts, time(T0 + TEN_MINUTES)),
         Place::Waiting(BTreeSet::from([WaitingOn::Check(
             id(7),
             CommitId::from(HEAD_A)
@@ -575,24 +577,26 @@ fn a_check_that_never_registers_raises_a_question_after_the_deadline() {
     );
     let gathered = gathered_of(vec![facts]);
     assert!(
-        asks_at(&board, &gathered, T0 + 2 * HOUR - 1).is_empty(),
+        asks_at(&board, &gathered, T0 + TEN_MINUTES - 1).is_empty(),
         "not before the deadline"
     );
-    let raised = asks_at(&board, &gathered, T0 + 2 * HOUR);
+    let raised = asks_at(&board, &gathered, T0 + TEN_MINUTES);
     assert_eq!(raised.len(), 1, "{raised:?}");
     assert_eq!(raised[0].task, id(7));
     assert_eq!(
         raised[0].cause,
-        "no check has registered at abc1234 for 2 h"
+        "no check has registered at abc1234 for 10 min"
     );
     assert_eq!(
         asked(&board),
         [(
             Some(id(7)),
             format!(
-                "No check has registered at abc1234 for 2 h (since 2027-01-15T08:00:00Z): the \
+                "No check has registered at abc1234 for 10 min (since 2027-01-15T08:00:00Z): the \
                  runner may be down, or the workflow's path filter may have skipped this \
-                 change. It waits on its checks until one ends there. Check deadline: {HEAD_A}."
+                 change. The pull request changes `src/lib.rs`, so see whether the filter covers \
+                 it. It waits on its checks until one ends there. Once this is ruled, it goes on \
+                 at that commit with no check. No check: {HEAD_A}."
             )
         )]
     );
@@ -660,7 +664,7 @@ fn a_new_head_starts_the_check_clock_again() {
         Vec::new(),
         vec![left(HEAD_A, T0 - 50)],
     )]);
-    assert_eq!(asks_at(&board, &at_a, T0 + 2 * HOUR).len(), 1);
+    assert_eq!(asks_at(&board, &at_a, T0 + TEN_MINUTES).len(), 1);
     rule_all(&board);
     // A run pushed a new head at T0 + 4 h; its checks have not registered either.
     let t1 = T0 + 4 * HOUR;
@@ -678,19 +682,166 @@ fn a_new_head_starts_the_check_clock_again() {
     );
     let at_b = gathered_of(vec![facts]);
     assert!(
-        asks_at(&board, &at_b, t1 + 2 * HOUR - 1).is_empty(),
+        asks_at(&board, &at_b, t1 + TEN_MINUTES - 1).is_empty(),
         "the clock started again at the new head"
     );
-    let raised = asks_at(&board, &at_b, t1 + 2 * HOUR);
+    let raised = asks_at(&board, &at_b, t1 + TEN_MINUTES);
     assert_eq!(raised.len(), 1, "{raised:?}");
     assert_eq!(
         raised[0].cause,
-        "no check has registered at fed9876 for 2 h"
+        "no check has registered at fed9876 for 10 min"
     );
     assert!(
         asked(&board)[0]
             .1
-            .ends_with(&format!("Check deadline: {HEAD_B}."))
+            .ends_with(&format!("No check: {HEAD_B}."))
+    );
+}
+
+// The no-check question (#165).
+
+/// The text of the one question on the board.
+fn only_question(board: &FakeBoard) -> String {
+    let asked = asked(board);
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    asked[0].1.clone()
+}
+
+/// Task #7 at [`HEAD_A`] with no check, its pull request changing `file`.
+fn no_check_at(file: Option<&str>) -> Gathered {
+    let mut facts = awaiting_checks(HEAD_A, Vec::new(), vec![left(HEAD_A, T0 - 50)]);
+    if let Some(pull) = facts.pull.as_mut() {
+        pull.changed_file = file.map(crate::domain::RepoPath::from);
+    }
+    gathered_of(vec![facts])
+}
+
+#[test]
+fn no_check_question_has_its_own_marker() {
+    assert_eq!(
+        no_check_marker(&CommitId::from(HEAD_A)),
+        format!("No check: {HEAD_A}.")
+    );
+    let board = board_with(&[7]);
+    let raised = asks_at(&board, &no_check_at(Some("src/lib.rs")), T0 + TEN_MINUTES);
+    assert_eq!(raised.len(), 1, "{raised:?}");
+    let text = only_question(&board);
+    assert!(
+        text.ends_with(&format!(" No check: {HEAD_A}.")),
+        "the full head, as the last sentence: {text}"
+    );
+    assert!(!text.contains("Check deadline"), "{text}");
+}
+
+#[test]
+fn no_check_question_names_the_changed_file_in_a_code_span() {
+    let board = board_with(&[7]);
+    asks_at(&board, &no_check_at(Some("src/lib.rs")), T0 + TEN_MINUTES);
+    let text = only_question(&board);
+    assert!(text.contains(" `src/lib.rs`, "), "{text}");
+    assert!(
+        text.ends_with(&format!(
+            "Once this is ruled, it goes on at that commit with no check. No check: {HEAD_A}."
+        )),
+        "{text}"
+    );
+
+    // With no file from the forge, the text says so.
+    let board = board_with(&[7]);
+    asks_at(&board, &no_check_at(None), T0 + TEN_MINUTES);
+    let text = only_question(&board);
+    assert!(
+        text.contains("The forge named no file the pull request changes."),
+        "{text}"
+    );
+    assert!(
+        text.ends_with(&format!("with no check. No check: {HEAD_A}.")),
+        "{text}"
+    );
+
+    // A name that tries to leave its span, mention someone or break the line stays inside it.
+    let board = board_with(&[7]);
+    let name = "a`b``c\n@everyone`";
+    asks_at(&board, &no_check_at(Some(name)), T0 + TEN_MINUTES);
+    let text = only_question(&board);
+    assert!(
+        text.contains("changes ``` a`b``c @everyone` ```, so"),
+        "{text}"
+    );
+}
+
+#[test]
+fn code_span_fences_what_it_holds() {
+    assert_eq!(code_span("src/a.rs"), "`src/a.rs`");
+    assert_eq!(code_span("a`b"), "``a`b``");
+    assert_eq!(code_span("`a"), "`` `a ``");
+    assert_eq!(code_span("x\ny"), "`x y`");
+}
+
+#[test]
+fn no_check_question_gives_the_wait_in_minutes() {
+    let board = board_with(&[7]);
+    let gathered = no_check_at(Some("src/lib.rs"));
+    let raised = asks_at(&board, &gathered, T0 + 25 * 60 + 59);
+    assert_eq!(
+        raised[0].cause,
+        "no check has registered at abc1234 for 25 min"
+    );
+    let text = only_question(&board);
+    assert!(
+        text.starts_with("No check has registered at abc1234 for 25 min (since "),
+        "{text}"
+    );
+    assert!(!text.contains(" h "), "{text}");
+}
+
+#[test]
+fn no_check_question_is_asked_once_per_head() {
+    let board = board_with(&[7]);
+    let at_a = no_check_at(Some("src/lib.rs"));
+    assert_eq!(asks_at(&board, &at_a, T0 + TEN_MINUTES).len(), 1);
+    assert!(
+        asks_at(&board, &at_a, T0 + 2 * TEN_MINUTES).is_empty(),
+        "open at this head"
+    );
+    rule_all(&board);
+    assert!(
+        asks_at(&board, &at_a, T0 + 3 * TEN_MINUTES).is_empty(),
+        "ruled at this head"
+    );
+    // A new head with no check asks again.
+    let t1 = T0 + 4 * HOUR;
+    let at_b = gathered_of(vec![awaiting_checks(
+        HEAD_B,
+        Vec::new(),
+        vec![left(HEAD_A, T0 - 50), left(HEAD_B, t1)],
+    )]);
+    let raised = asks_at(&board, &at_b, t1 + TEN_MINUTES);
+    assert_eq!(raised.len(), 1, "{raised:?}");
+    assert!(only_question(&board).ends_with(&format!("No check: {HEAD_B}.")));
+}
+
+#[test]
+fn pending_checks_keep_the_check_deadline_question() {
+    let board = board_with(&[7]);
+    let gathered = gathered_of(vec![awaiting_checks(
+        HEAD_A,
+        vec![check("build", CheckResult::Pending)],
+        vec![left(HEAD_A, T0 - 50)],
+    )]);
+    let raised = asks_at(&board, &gathered, T0 + 2 * HOUR);
+    assert_eq!(raised.len(), 1, "{raised:?}");
+    assert_eq!(
+        raised[0].cause,
+        "the checks at abc1234 are still pending after 2 h"
+    );
+    assert_eq!(
+        only_question(&board),
+        format!(
+            "The checks build at abc1234 are still pending after 2 h (since \
+             2027-01-15T08:00:00Z): the runner may be down. It waits until they end there. \
+             Check deadline: {HEAD_A}."
+        )
     );
 }
 
@@ -1179,7 +1330,7 @@ fn a_red_integration_branch_raises_one_question_on_the_epic() {
         )]
     );
     // The same red head, at the next tick: the question is open, and no second one is raised.
-    assert!(asks_at(&board, &gathered, T0 + HOUR).is_empty());
+    assert!(asks_at(&board, &gathered, T0 + 60).is_empty());
     assert_eq!(asked(&board).len(), 1);
 }
 
@@ -1195,11 +1346,11 @@ fn a_ruled_red_head_is_not_asked_again_and_a_new_red_head_is() {
     assert_eq!(asks_at(&board, &gathered, T0).len(), 1);
     rule_all(&board);
     // Ruled: work goes on though the branch is still red there.
-    assert!(asks_at(&board, &gathered, T0 + HOUR).is_empty());
+    assert!(asks_at(&board, &gathered, T0 + 60).is_empty());
     assert!(board.questions().expect("lists").is_empty());
     // A merge moved the branch and it is red again: a new head, a new question.
     gathered.base = red("0123456789abcdef");
-    let raised = asks_at(&board, &gathered, T0 + HOUR + 1);
+    let raised = asks_at(&board, &gathered, T0 + 61);
     assert_eq!(raised.len(), 1, "{raised:?}");
     assert_eq!(raised[0].cause, "feature/v1 is red at 0123456");
 }
@@ -1274,7 +1425,7 @@ fn held_at_its_merge() -> (FakeBoard, Gathered) {
         opened_at: time(T0),
         merged_at: None,
         head: Some(CommitId::from(HEAD_A)),
-        changes_a_file: true,
+        changed_file: Some(crate::domain::RepoPath::from("src/lib.rs")),
         checks: Vec::new(),
         reviews: Vec::new(),
     };

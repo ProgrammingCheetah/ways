@@ -241,6 +241,7 @@ fn line_task_counts_phases_ended() {
         ruled: Vec::new(),
         ready_since: None,
         merging: Default::default(),
+        no_check_ruled: None,
     };
     let gathered = Gathered {
         tickets: vec![facts],

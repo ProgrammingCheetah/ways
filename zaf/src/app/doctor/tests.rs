@@ -58,6 +58,33 @@ fn status_of(report: &Report, tool: &str) -> ToolStatus {
 }
 
 #[test]
+fn doctor_prints_one_line_for_stale_profiles() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(STATE_DIR);
+    let roles = "[runners.claude]\ncommand = \"true\"\n\n\
+        [roles.team]\nmodel = \"opus\"\neffort = \"xhigh\"\nprofile = \"build\"\nturns = 5\nbatch = 2\n\n\
+        [roles.programmer]\nmodel = \"sonnet\"\neffort = \"high\"\nprofile = \"lean\"\nturns = 5\nbatch = 2\n";
+    let before = manifest(&format!("{roles}[forbidden]\ncommands = [\"git push\"]\n"));
+    let after = manifest(&format!(
+        "{roles}[forbidden]\ncommands = [\"gh pr merge\"]\n"
+    ));
+    profile::write_stamps(&state, &before);
+    provide_slice_actions(dir.path());
+
+    let report = super::doctor(dir.path(), None, &after, &logged_in());
+    let lines = report.lines();
+    let stale: Vec<&String> = lines
+        .iter()
+        .filter(|line| line.contains("older than the manifest"))
+        .collect();
+    assert_eq!(
+        stale,
+        ["profiles lean and build are older than the manifest (forbidden changed)"],
+        "{lines:?}"
+    );
+}
+
+#[test]
 fn doctor_names_a_stale_profile() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state = dir.path().join(STATE_DIR);
@@ -71,7 +98,9 @@ fn doctor_names_a_stale_profile() {
     assert!(!report.passed());
     let lines = report.lines();
     assert!(
-        lines.contains(&"profile build is older than the manifest (forbidden changed)".to_owned()),
+        lines.contains(
+            &"profiles lean and build are older than the manifest (forbidden changed)".to_owned()
+        ),
         "{lines:?}"
     );
 
@@ -79,9 +108,11 @@ fn doctor_names_a_stale_profile() {
     let report = super::doctor(dir.path(), None, &edited, &logged_in());
     assert!(!report.passed());
     assert!(
-        report
-            .lines()
-            .contains(&"profile build has no stamp: run zaf profile init".to_owned())
+        report.lines().contains(
+            &"profile lean is older than the manifest (forbidden changed); \
+                  profile build has no stamp"
+                .to_owned()
+        )
     );
 
     profile::write_stamps(&state, &edited);

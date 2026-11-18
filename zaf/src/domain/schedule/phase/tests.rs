@@ -37,11 +37,13 @@ fn pr_open_holds_only_for_a_pull_request_that_changes_a_file() {
     let mut facts = facts(pack());
     assert!(!end_fact_holds(&implement, &facts));
     facts.pull = Some(PullFacts {
-        changes_a_file: false,
+        changed_file: None,
         ..pull("h1", 20)
     });
     assert!(!end_fact_holds(&implement, &facts));
-    edit_pull(&mut facts, |pull| pull.changes_a_file = true);
+    edit_pull(&mut facts, |pull| {
+        pull.changed_file = Some(crate::domain::RepoPath::from("src/lib.rs"));
+    });
     assert!(end_fact_holds(&implement, &facts));
 }
 
@@ -500,4 +502,108 @@ fn the_latest_counted_run_is_the_one_the_status_reads() {
         latest_counted_run(&merge, &facts).map(|run| run.started_at),
         Some(time(30))
     );
+}
+
+/// The pack's ticket with its pull request at `h1` (opened at 20), no check there, and the
+/// Engineer's ruling on `h1`.
+fn ruled_through() -> TicketFacts {
+    let mut facts = with_pull();
+    facts.no_check_ruled = Some(commit("h1"));
+    facts
+}
+
+/// A run of `action` that began and ended at `h1`, ending at `end`.
+fn ran_at_h1(action: &str, end: u64) -> RunRecord {
+    run(action, Some("h1"), end - 1)
+        .exits(0, end)
+        .leaves(Some("h1"))
+}
+
+#[test]
+fn ruled_no_check_head_ends_ci() {
+    let ci = phase("ci", &[PhaseEnd::CiDone], Some("fix"));
+    let mut facts = with_pull();
+    assert!(!end_fact_holds(&ci, &facts), "unruled, no check is open");
+    assert_eq!(facts.awaited_checks(), Some(&commit("h1")));
+
+    facts.no_check_ruled = Some(commit("h1"));
+    assert!(end_fact_holds(&ci, &facts));
+    assert_eq!(facts.awaited_checks(), None);
+    let current = current_phase(&facts).expect("current");
+    assert_eq!(current.phase.name, name("review"));
+    assert_eq!(current.status, PhaseStatus::Open, "its next phase is ready");
+}
+
+#[test]
+fn ruled_no_check_time_is_the_last_run_before_ci() {
+    let ci = phase("ci", &[PhaseEnd::CiDone], Some("fix"));
+    let mut facts = ruled_through();
+    facts.runs.push(ran_at_h1("implement", 25));
+    facts.runs.push(ran_at_h1("implement", 30));
+    // A run at another head, one of an unlisted action and one of a later phase do not count.
+    facts.runs.push(
+        run("implement", Some("h0"), 39)
+            .exits(0, 40)
+            .leaves(Some("h0")),
+    );
+    facts.runs.push(ran_at_h1("fix", 50));
+    facts.runs.push(ran_at_h1("review", 60));
+    assert_eq!(ended_at(&ci, &facts, None), Some(time(30)));
+}
+
+#[test]
+fn ruled_no_check_time_falls_back_to_the_opening() {
+    let ci = phase("ci", &[PhaseEnd::CiDone], Some("fix"));
+    let mut facts = ruled_through();
+    assert_eq!(ended_at(&ci, &facts, None), Some(time(20)));
+    // A run before ci that never ended gives no time.
+    facts.runs.push(run("implement", Some("h1"), 24));
+    assert_eq!(ended_at(&ci, &facts, None), Some(time(20)));
+}
+
+#[test]
+fn ruled_no_check_time_does_not_move_after_review() {
+    let ci = phase("ci", &[PhaseEnd::CiDone], Some("fix"));
+    let mut facts = ruled_through();
+    facts.runs.push(ran_at_h1("implement", 25));
+    assert_eq!(ended_at(&ci, &facts, None), Some(time(25)));
+    // The phase after ci reads it as the time the phase before it ended.
+    assert_eq!(
+        current_phase(&facts).map(|current| current.previous),
+        Some(Some(time(25)))
+    );
+    facts.runs.push(ran_at_h1("review", 90));
+    assert_eq!(ended_at(&ci, &facts, None), Some(time(25)));
+}
+
+#[test]
+fn ruling_on_an_old_head_does_not_pass_a_new_one() {
+    let ci = phase("ci", &[PhaseEnd::CiDone], Some("fix"));
+    let mut facts = ruled_through();
+    edit_pull(&mut facts, |pull| pull.head = Some(commit("h2")));
+    assert!(!end_fact_holds(&ci, &facts));
+    assert_eq!(facts.awaited_checks(), Some(&commit("h2")));
+    assert_eq!(
+        current_phase(&facts).map(|current| current.phase.name.clone()),
+        Some(name("ci"))
+    );
+}
+
+#[test]
+fn ruling_does_not_pass_a_pending_check() {
+    let ci = phase("ci", &[PhaseEnd::CiDone], Some("fix"));
+    for checks in [
+        vec![pending()],
+        vec![passed(30), pending()],
+        vec![failed(30)],
+    ] {
+        let mut facts = ruled_through();
+        edit_pull(&mut facts, |pull| pull.checks = checks.clone());
+        assert!(!end_fact_holds(&ci, &facts));
+        assert!(!facts.ruled_no_check());
+    }
+    // A pending check keeps the wait on the head.
+    let mut facts = ruled_through();
+    edit_pull(&mut facts, |pull| pull.checks = vec![pending()]);
+    assert_eq!(facts.awaited_checks(), Some(&commit("h1")));
 }

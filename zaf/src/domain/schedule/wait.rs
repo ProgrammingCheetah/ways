@@ -22,6 +22,11 @@ use crate::domain::{CommitId, Epic, EpicStage, Standing, TicketId};
 /// (the plan's proposal), a constant as `STARVE_AFTER` is.
 pub const CHECK_DEADLINE: Duration = Duration::from_secs(2 * 60 * 60);
 
+/// How long a ticket may wait at a head where no check has registered at all before a question is
+/// raised: 10 minutes, a constant and not a manifest key. A registered check that is pending, an
+/// outside wait and a base wait keep [`CHECK_DEADLINE`].
+pub const NO_CHECK_DEADLINE: Duration = Duration::from_secs(10 * 60);
+
 /// How long an epic may be planned and not challenged before a question is raised on it: 24 hours
 /// (the plan's proposal), from when planning ended.
 pub const CHALLENGE_DEADLINE: Duration = Duration::from_secs(24 * 60 * 60);
@@ -88,8 +93,9 @@ pub fn base_clock(facts: &TicketFacts) -> Option<SystemTime> {
 }
 
 /// The ticket's check wait, when it waits on the checks at its head at `now` and has for
-/// [`CHECK_DEADLINE`] or more by [`check_clock`]: a check that never registered, a runner that
-/// is down. A ticket held at its merge by the integration branch's checks
+/// [`CHECK_DEADLINE`] or more by [`check_clock`] (a pending check, a phase awaiting the outside),
+/// or [`NO_CHECK_DEADLINE`] when no check has registered at the head ([`Awaited::NoCheck`]): a
+/// runner that is down, a path filter that skipped the change. A ticket held at its merge by the integration branch's checks
 /// ([`WaitingOn::Base`]) is overdue the same way, by [`base_clock`], at the branch's head and
 /// with the checks pending there ([`Awaited::Base`]). None otherwise: a ticket that waits on
 /// neither, one that waits only on another ticket's merge, and one that also waits on a question
@@ -124,7 +130,11 @@ pub fn overdue(facts: &TicketFacts, now: SystemTime) -> Option<OverdueCheck> {
         (None, None) => return None,
     };
     let waited = now.duration_since(since).unwrap_or_default();
-    (waited >= CHECK_DEADLINE).then(|| OverdueCheck {
+    let deadline = match awaited {
+        Awaited::NoCheck => NO_CHECK_DEADLINE,
+        _ => CHECK_DEADLINE,
+    };
+    (waited >= deadline).then(|| OverdueCheck {
         head: head.clone(),
         since,
         awaited,

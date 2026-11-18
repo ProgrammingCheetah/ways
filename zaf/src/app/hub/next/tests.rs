@@ -286,7 +286,7 @@ fn project_cannot_run() {
     let mut stale = project("ways");
     stale.problems.push(Problem {
         kind: ProblemKind::Profile,
-        detail: "profile lean is older than zaf (written by zaf 0.3.0)".to_owned(),
+        detail: "profile lean is of another profile generation (written by zaf 0.3.0)".to_owned(),
         fix: Some("cd /srv/ways && zaf profile init".to_owned()),
     });
     let mut gone = project("old");
@@ -325,6 +325,34 @@ fn project_cannot_run() {
     assert_eq!(list[2].project, "old");
     assert_eq!(list[2].command, None);
     assert!(list[2].how.contains("Restore it"), "{}", list[2].how);
+}
+
+#[test]
+fn next_for_you_has_one_item_for_stale_profiles() {
+    let mut stale = project("ways");
+    stale.problems.push(Problem {
+        kind: ProblemKind::Profile,
+        detail: "profiles build and lean are of another profile generation (written by zaf 0.3.0)"
+            .to_owned(),
+        fix: Some("cd /srv/ways && zaf profile init".to_owned()),
+    });
+
+    let list = next_for_you(&machine(vec![stale]));
+
+    assert_eq!(list.len(), 1, "{list:?}");
+    assert_eq!(list[0].kind, NextKind::Broken);
+    assert_eq!(list[0].project, "ways");
+    assert!(
+        list[0]
+            .title
+            .contains("profiles build and lean are of another profile generation"),
+        "{}",
+        list[0].title
+    );
+    assert_eq!(
+        list[0].command.as_deref(),
+        Some("cd /srv/ways && zaf profile init")
+    );
 }
 
 #[test]

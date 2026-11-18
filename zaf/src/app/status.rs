@@ -23,7 +23,7 @@ use std::time::SystemTime;
 
 use super::epic::EpicLine;
 use super::guard::{self, GuardError, GuardState};
-use super::profile::StaleProfile;
+use super::profile::{StaleProfile, stale_line};
 use super::release::DueRelease;
 use super::schedule::gather::Gathered;
 use super::schedule::shadow;
@@ -704,8 +704,8 @@ impl Status {
                 GuardState::line
             )
         ));
-        for stale in &self.stale {
-            line(stale.line());
+        if let Some(stale) = stale_line(&self.stale) {
+            line(stale);
         }
         for cycle in &self.cycles {
             let tasks: Vec<TicketId> = cycle.iter().copied().map(TicketId::from).collect();

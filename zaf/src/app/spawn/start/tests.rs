@@ -79,7 +79,7 @@ fn failed_ci(task: u64, size: TaskSize, on_fail: Option<&str>) -> (TicketFacts, 
         opened_at: time(20),
         merged_at: None,
         head: Some(CommitId::from("head")),
-        changes_a_file: true,
+        changed_file: Some(crate::domain::RepoPath::from("src/lib.rs")),
         checks: vec![CheckFact {
             name: CheckName::from("ci"),
             result: CheckResult::Failed(time(30)),
@@ -636,7 +636,7 @@ fn a_starved_phase_lets_zaf_actions_run() {
         opened_at: time(10),
         merged_at: None,
         head: Some(CommitId::from("head")),
-        changes_a_file: true,
+        changed_file: Some(crate::domain::RepoPath::from("src/lib.rs")),
         checks: Vec::new(),
         reviews: Vec::new(),
     };

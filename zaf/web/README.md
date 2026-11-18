@@ -40,7 +40,8 @@ cd zaf/web && npm run dev
   fragment (`#key=`), keeps it in memory for the tab only and strips it from the address; it
   travels in the `X-Zaf-Key` header. With `controls: false` in the state, or no key, no button shows.
 - `src/Action.svelte`: one button that shows what happened, or the hub's reason for a refusal.
-- `src/EpicLine.svelte`: one epic's line of squares (`epic.tasks` of the state): the epic's own block
-  of 2, then a run for each task by its size, coloured by its state; a working task fills by its
-  phases. Under it, `<done> of <all> done` and a legend of the six colours in words.
+- `src/EpicLine.svelte`: one epic's line (`epic.tasks` of the state): one square beside the title (the epic's own, coloured by its line state), then
+  the tasks' squares as one grid, a run for each task by its size, coloured by its state, filled by
+  column with one gap between neighbours (`gridRows` and `gridCells` of `src/line.js` give the rows and
+  each square's place); the grid scrolls sideways in its own box. A working task fills by its phases. Under it, `<done> of <all> done` and a legend of the six colours in words.
 - `src/app.css`: light and dark from the system's theme; one column that works at phone width.

@@ -72,6 +72,7 @@ pub(super) fn facts(phases: Vec<Phase>) -> TicketFacts {
         ruled: Vec::new(),
         ready_since: Some(time(1)),
         merging: Default::default(),
+        no_check_ruled: None,
     }
 }
 
@@ -81,7 +82,7 @@ pub(super) fn pull(head: &str, opened: u64) -> PullFacts {
         opened_at: time(opened),
         merged_at: None,
         head: Some(commit(head)),
-        changes_a_file: true,
+        changed_file: Some(crate::domain::RepoPath::from("src/lib.rs")),
         checks: Vec::new(),
         reviews: Vec::new(),
     }
@@ -528,7 +529,7 @@ fn parity_rows() -> Vec<Row> {
             {
                 let mut facts = facts(pack());
                 facts.pull = Some(PullFacts {
-                    changes_a_file: false,
+                    changed_file: None,
                     checks: vec![passed(12)],
                     ..pull("h1", 8)
                 });
@@ -688,7 +689,7 @@ fn failure_1_a_done_dependency_leaves_no_ticket_waiting_whatever_its_label() {
 fn asked_and_exited_zero() -> TicketFacts {
     let mut facts = facts(pack());
     facts.pull = Some(PullFacts {
-        changes_a_file: false,
+        changed_file: None,
         checks: vec![passed(12)],
         ..pull("h1", 8)
     });

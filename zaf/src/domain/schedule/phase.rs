@@ -33,7 +33,8 @@ pub enum PhaseEnd {
     PrOpen,
     /// A review is posted at the pull request's head.
     ReviewPosted,
-    /// The pull request's checks at its head all passed.
+    /// The pull request's checks at its head all passed, or the head has no check at all and the
+    /// Engineer ruled it through ([`TicketFacts::no_check_ruled`]).
     CiDone,
     /// The pull request is merged.
     Merged,
@@ -127,7 +128,7 @@ fn end_time(
     let head = facts.head();
     match end {
         PhaseEnd::PrOpen => pull
-            .filter(|pull| pull.changes_a_file && !last_run_asked(phase, facts, report))
+            .filter(|pull| pull.changes_a_file() && !last_run_asked(phase, facts, report))
             .map(|pull| pull.opened_at),
         PhaseEnd::Merged => pull?.merged_at,
         PhaseEnd::ReviewPosted => {
@@ -139,7 +140,13 @@ fn end_time(
                 .map(|review| review.posted_at)
                 .min()
         }
-        PhaseEnd::CiDone => pull?.checks_passed_at(),
+        PhaseEnd::CiDone => pull?.checks_passed_at().or_else(|| {
+            if facts.ruled_no_check() {
+                ruled_no_check_at(phase, facts)
+            } else {
+                None
+            }
+        }),
         PhaseEnd::Exit => {
             let keyed = exit_keyed_on_head(phase, facts);
             let recorded = facts
@@ -157,6 +164,28 @@ fn end_time(
                 .min()
         }
     }
+}
+
+/// When `ci-done` holds at a head the Engineer ruled through with no check, a time that never
+/// moves: the latest end, at that head, of a run of a phase listed before `phase`, or else the
+/// pull request's opening. It is never [`check_clock`](super::wait::check_clock), which moves when
+/// the review's run ends. None without a pull request.
+fn ruled_no_check_at(phase: &Phase, facts: &TicketFacts) -> Option<SystemTime> {
+    let pull = facts.pull.as_ref()?;
+    let head = facts.head();
+    let before = facts
+        .phases
+        .iter()
+        .position(|listed| listed.name == phase.name)
+        .map_or(&facts.phases[..0], |at| &facts.phases[..at]);
+    let last_run = facts
+        .runs
+        .iter()
+        .filter(|run| before.iter().any(|listed| listed.name == run.action))
+        .filter(|run| run.left() == head)
+        .filter_map(|run| run.exit.map(|exit| exit.at))
+        .max();
+    Some(last_run.unwrap_or(pull.opened_at))
 }
 
 /// Whether `phase`'s `exit` is keyed on the head: it is listed after the phase that carries
@@ -198,7 +227,9 @@ pub(super) fn ended_at(
 ///
 /// - `pr-open`: a pull request is recorded and changes at least one file.
 /// - `review-posted`: a review was made on the head.
-/// - `ci-done`: at least one check at the head, every one passed.
+/// - `ci-done`: at least one check at the head, every one passed; or no check at all at a head
+///   [`TicketFacts::no_check_ruled`] names. Pending or failed checks are never passed by the
+///   ruling.
 /// - `merged`: the pull request is merged.
 /// - `exit`, for a phase listed after the one that carries `pr-open`: a run of the phase left the
 ///   head (its recorded end head, or its start head for a folder that recorded none) with exit 0

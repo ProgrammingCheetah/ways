@@ -12,7 +12,7 @@ use std::time::SystemTime;
 
 use super::lane::Priority;
 use super::phase::{ActionName, Phase, PhaseEnd};
-use crate::domain::{CommitId, Standing, TaskSize, TicketId};
+use crate::domain::{CommitId, RepoPath, Standing, TaskSize, TicketId};
 use crate::newtype::text_newtype;
 
 text_newtype! {
@@ -189,8 +189,9 @@ pub struct PullFacts {
     pub merged_at: Option<SystemTime>,
     /// Its current head; none when the forge reports none.
     pub head: Option<CommitId>,
-    /// Whether it changes at least one file (`Forge::last_changed_file` gives one).
-    pub changes_a_file: bool,
+    /// The file it changes, as the forge names it (`Forge::last_changed_file`); none when it
+    /// changes no file.
+    pub changed_file: Option<RepoPath>,
     /// Its check runs at the current head, in the forge's order.
     pub checks: Vec<CheckFact>,
     /// Its reviews, at whatever head each was made.
@@ -198,6 +199,12 @@ pub struct PullFacts {
 }
 
 impl PullFacts {
+    /// Whether it changes at least one file.
+    #[must_use]
+    pub fn changes_a_file(&self) -> bool {
+        self.changed_file.is_some()
+    }
+
     /// Whether every check at the head has ended: there is at least one and none is pending. No
     /// check at all has not ended, since nothing says it will never come.
     #[must_use]
@@ -386,6 +393,11 @@ pub struct TicketFacts {
     /// What its merge waits on beyond the ticket itself: the integration branch's checks and the
     /// ticket that merges first.
     pub merging: MergeFacts,
+    /// The head the Engineer ruled to go on with no check at all: the no-check question naming it
+    /// is ruled. Set only by the gather. It passes the checks of that one head, and only while
+    /// none is registered there ([`Self::ruled_no_check`]); a head the pull request has left lets
+    /// nothing through.
+    pub no_check_ruled: Option<CommitId>,
 }
 
 impl TicketFacts {
@@ -412,9 +424,21 @@ impl TicketFacts {
             .min_by_key(|run| run.started_at)
     }
 
+    /// Whether the Engineer ruled the pull request's current head through with no check: it has
+    /// no check at all and is the head [`Self::no_check_ruled`] names. A head with a check, pending
+    /// or failed, is never passed so.
+    #[must_use]
+    pub fn ruled_no_check(&self) -> bool {
+        let Some(pull) = self.pull.as_ref() else {
+            return false;
+        };
+        pull.checks.is_empty() && pull.head.is_some() && pull.head == self.no_check_ruled
+    }
+
     /// The head whose checks the ticket waits on: its phases wait on checks (one ends at
     /// `ci-done`), the pull request has a head, and the checks there have not all ended (none
-    /// registered counts as not ended). None otherwise.
+    /// registered counts as not ended, unless the Engineer ruled that head through with none,
+    /// [`Self::ruled_no_check`]). None otherwise.
     #[must_use]
     pub fn awaited_checks(&self) -> Option<&CommitId> {
         let pull = self.pull.as_ref()?;
@@ -423,7 +447,7 @@ impl TicketFacts {
             .phases
             .iter()
             .any(|phase| phase.ends.contains(&PhaseEnd::CiDone));
-        (waits_on_checks && !pull.checks_ended()).then_some(head)
+        (waits_on_checks && !pull.checks_ended() && !self.ruled_no_check()).then_some(head)
     }
 
     /// When the last run of `action` a ruled question counted started: the latest marker for it.

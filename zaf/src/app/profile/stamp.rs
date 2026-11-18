@@ -1,22 +1,33 @@
 //! The stamp a generated profile carries: what it was made from.
 //!
 //! `zaf profile init` writes `.zaf/profiles/<name>/.zaf-stamp.json` last:
-//! `{"zaf": "<version>", "parts": {"<part>": "<digest>", ...}}`, the version of zaf that
-//! generated the profile and one digest per input the generator reads ([`PARTS`]). [`stale`] compares each generated profile's stamp with the live manifest
-//! and this zaf; doctor, status and the spawner call it, so a profile built from an older
-//! manifest (or by another zaf) is named instead of run with yesterday's deny list.
+//! `{"zaf": "<version>", "generation": <n>, "parts": {"<part>": "<digest>", ...}}`, the version
+//! of zaf that generated the profile, the [`GENERATION`] of what `init` writes and one digest per
+//! input the generator reads ([`PARTS`]). [`stale`] compares each generated profile's stamp with
+//! the live manifest and this zaf; doctor, status and the spawner call it, so a profile built
+//! from an older manifest (or an older generation) is named instead of run with yesterday's deny
+//! list.
 //!
-//! A digest is FNV-1a over the part's text: stable for one zaf version, which is all the
-//! comparison needs (the version sits beside it, and a stamp from another version is stale
-//! before any digest is compared). The bytes are deterministic, so a rerun with nothing
-//! changed writes nothing.
+//! A stamp is stale when its generation differs from this zaf's or is missing (stale once, for
+//! stamps written before the number existed), or when an input's digest differs. The zaf version
+//! alone no longer makes it stale: a profile another zaf wrote stays current while the
+//! generation and every digest match. The version is kept to word the reason.
+//!
+//! A digest is FNV-1a over the part's text, the debug text (`{:?}`) of the manifest values for
+//! most parts. That text has to stay the same from one zaf to the next, or every profile reads
+//! as older than the manifest after an upgrade. The test
+//! `stamp_digests_of_a_fixed_manifest_do_not_move` pins each part's digest for one fixed
+//! manifest: when it fails, raise `GENERATION` and fix its values together. It guards the
+//! parts it covers; a manifest field it does not hold, or a change only a different value
+//! shows, is still unguarded. The bytes are deterministic, so a rerun with nothing changed
+//! writes nothing.
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::fs;
 use std::path::Path;
 
-use super::{generated, home, read_project_rules};
+use super::{GENERATION, generated, home, read_project_rules};
 use crate::domain::Profile;
 use crate::manifest::Manifest;
 
@@ -38,6 +49,9 @@ pub const PARTS: [&str; 6] = [
 struct Stamp {
     /// The zaf version that generated the profile.
     zaf: String,
+    /// The profile generation `init` wrote; none in a stamp written before it existed.
+    #[serde(default)]
+    generation: Option<u32>,
     /// Part name to digest.
     parts: BTreeMap<String, String>,
 }
@@ -57,7 +71,7 @@ fn digest(text: &str) -> String {
 /// `project_rules` is the text of `roles/project.md`, when there is one. Only what the generator
 /// reads counts: the `[requires]` tool names, the gate lines, the forbidden commands, each
 /// role's profile, model and effort, the `[pack]` section and the project's rules.
-fn parts(manifest: &Manifest, project_rules: Option<&str>) -> BTreeMap<String, String> {
+pub(super) fn parts(manifest: &Manifest, project_rules: Option<&str>) -> BTreeMap<String, String> {
     let requires: Vec<String> = manifest.requires.keys().map(ToString::to_string).collect();
     let gate = manifest
         .gate
@@ -93,6 +107,7 @@ fn parts(manifest: &Manifest, project_rules: Option<&str>) -> BTreeMap<String, S
 pub(super) fn bytes(manifest: &Manifest, project_rules: Option<&str>) -> Vec<u8> {
     let stamp = Stamp {
         zaf: env!("CARGO_PKG_VERSION").to_owned(),
+        generation: Some(GENERATION),
         parts: parts(manifest, project_rules),
     };
     let mut text = serde_json::to_string_pretty(&stamp).unwrap_or_default();
@@ -117,8 +132,8 @@ pub fn write_stamps(state_dir: &Path, manifest: &Manifest) {
 pub enum Reason {
     /// The profile has no readable stamp.
     NoStamp,
-    /// Another zaf wrote it, this version.
-    Zaf(String),
+    /// It was written under another profile generation, or under none, by the zaf version held.
+    Generation(String),
     /// This input changed since the profile was made; it reads `<part> changed`.
     Changed(String),
 }
@@ -127,7 +142,7 @@ impl fmt::Display for Reason {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NoStamp => write!(formatter, "no stamp"),
-            Self::Zaf(old) => write!(formatter, "written by zaf {old}"),
+            Self::Generation(old) => write!(formatter, "written by zaf {old}"),
             Self::Changed(part) => write!(formatter, "{part} changed"),
         }
     }
@@ -158,27 +173,94 @@ fn each_as_text<S: serde::Serializer>(
 impl StaleProfile {
     /// The line doctor, status and the spawner print:
     /// `profile <name> is older than the manifest (forbidden changed)`,
-    /// `profile <name> is older than zaf (written by zaf <old>)` or
-    /// `profile <name> has no stamp: run zaf profile init`.
+    /// `profile <name> is of another profile generation (written by zaf <old>): run zaf profile init`
+    /// or `profile <name> has no stamp: run zaf profile init`.
     pub fn line(&self) -> String {
         let name = &self.profile;
-        if self.reasons.contains(&Reason::NoStamp) {
-            return format!("profile {name} has no stamp: run zaf profile init");
-        }
-        let words: Vec<String> = self.reasons.iter().map(ToString::to_string).collect();
-        let older = if self
+        format!("profile {name} {}{}", self.predicate(false), self.fix())
+    }
+
+    /// What follows the words when the profile has no stamp or is of another generation: the
+    /// fix. Other reasons end where their words do.
+    fn fix(&self) -> &'static str {
+        let regenerate = self
             .reasons
             .iter()
-            .any(|reason| matches!(reason, Reason::Zaf(_)))
-        {
-            "zaf"
+            .any(|reason| matches!(reason, Reason::NoStamp | Reason::Generation(_)));
+        if regenerate {
+            ": run zaf profile init"
         } else {
-            "the manifest"
+            ""
+        }
+    }
+}
+
+impl StaleProfile {
+    /// What is said of this profile after its name, in the singular or the plural:
+    /// `is of another profile generation (written by zaf 0.4.3)`, `has no stamp`. Profiles that
+    /// share these words share a reason.
+    fn predicate(&self, plural: bool) -> String {
+        if self.reasons.contains(&Reason::NoStamp) {
+            return format!("{} no stamp", if plural { "have" } else { "has" });
+        }
+        let words: Vec<String> = self.reasons.iter().map(ToString::to_string).collect();
+        let verb = if plural { "are" } else { "is" };
+        let generation = self
+            .reasons
+            .iter()
+            .any(|reason| matches!(reason, Reason::Generation(_)));
+        let what = if generation {
+            "of another profile generation"
+        } else {
+            "older than the manifest"
         };
-        format!(
-            "profile {name} is older than {older} ({})",
-            words.join(", ")
-        )
+        format!("{verb} {what} ({})", words.join(", "))
+    }
+}
+
+/// One sentence for all of a project's stale profiles, grouped by reason, in the order each
+/// reason first appears; none when none is stale.
+///
+/// Profiles that share a reason are named together: `profiles build and lean are of another
+/// profile generation (written by zaf 0.4.3)`. Several reasons are joined with `; `:
+/// `profile build has no stamp; profile lean is older than the manifest (forbidden changed)`.
+/// One stale profile reads as its [`StaleProfile::line`].
+pub fn stale_line(stale: &[StaleProfile]) -> Option<String> {
+    if let [only] = stale {
+        return Some(only.line());
+    }
+    let mut groups: Vec<(String, Vec<&StaleProfile>)> = Vec::new();
+    for profile in stale {
+        let reason = profile.predicate(false);
+        match groups.iter_mut().find(|(known, _)| *known == reason) {
+            Some((_, members)) => members.push(profile),
+            None => groups.push((reason, vec![profile])),
+        }
+    }
+    let lone = groups.len() == 1;
+    let sentences: Vec<String> = groups
+        .iter()
+        .map(|(_, members)| {
+            let names: Vec<String> = members.iter().map(|m| m.profile.to_string()).collect();
+            let plural = names.len() > 1;
+            let predicate = members[0].predicate(plural);
+            let fix = if lone { members[0].fix() } else { "" };
+            format!(
+                "{} {} {predicate}{fix}",
+                if plural { "profiles" } else { "profile" },
+                names_in_words(&names)
+            )
+        })
+        .collect();
+    (!sentences.is_empty()).then(|| sentences.join("; "))
+}
+
+/// `a`, `a and b`, `a, b and c`.
+fn names_in_words(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [only] => only.clone(),
+        [init @ .., last] => format!("{} and {last}", init.join(", ")),
     }
 }
 
@@ -187,7 +269,8 @@ impl StaleProfile {
 /// rules under `state_dir`, in profile order, each with its reasons: `no stamp`,
 /// `written by zaf <old>`, `<part> changed`.
 ///
-/// A stamp from another zaf version is stale for that alone: its digests mean nothing here.
+/// A stamp from another zaf version is current while its generation and every digest match; one
+/// of another generation, or with none, is stale for that alone: its digests mean nothing here.
 pub fn stale(state_dir: &Path, manifest: &Manifest) -> Vec<StaleProfile> {
     let rules = read_project_rules(state_dir).ok().flatten();
     let live = parts(manifest, rules.as_deref());
@@ -219,8 +302,8 @@ fn reasons(file: &Path, live: &BTreeMap<String, String>) -> Vec<Reason> {
     else {
         return vec![Reason::NoStamp];
     };
-    if stamp.zaf != env!("CARGO_PKG_VERSION") {
-        return vec![Reason::Zaf(stamp.zaf)];
+    if stamp.generation != Some(GENERATION) {
+        return vec![Reason::Generation(stamp.zaf)];
     }
     live.iter()
         .filter(|(part, digest)| stamp.parts.get(*part) != Some(*digest))

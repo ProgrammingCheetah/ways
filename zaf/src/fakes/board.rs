@@ -78,6 +78,10 @@ struct State {
     /// The issue types the repository defines; none until [`FakeBoard::set_issue_types`],
     /// when it defines [`DEFAULT_ISSUE_TYPES`].
     types: Option<Vec<TicketType>>,
+    /// Whether a read of the questions raised on a ticket fails ([`FakeBoard::fail_question_reads`]).
+    question_reads_fail: bool,
+    /// How many reads of the questions raised on a ticket were made.
+    question_reads: usize,
 }
 
 /// The issue types the in-memory repository defines until told otherwise: GitHub's own.
@@ -236,6 +240,16 @@ impl FakeBoard {
             issue.closed = true;
             issue.not_planned = true;
         }
+    }
+
+    /// Makes every read of the questions raised on one ticket ([`Board::questions_on`]) fail.
+    pub fn fail_question_reads(&self) {
+        self.state().question_reads_fail = true;
+    }
+
+    /// How many times the questions raised on one ticket were read ([`Board::questions_on`]).
+    pub fn question_reads(&self) -> usize {
+        self.state().question_reads
     }
 
     /// Puts an open question ticket on the board, labelled `question`, as `open_question` would.
@@ -602,8 +616,12 @@ impl Board for FakeBoard {
     }
 
     fn questions_on(&self, task: TicketId) -> Result<Vec<(Ticket, Option<String>)>, PortError> {
-        let raised = self
-            .state()
+        let mut state = self.state();
+        state.question_reads += 1;
+        if state.question_reads_fail {
+            return Err(PortError::Unavailable("the board is down".to_owned()));
+        }
+        let raised = state
             .issues
             .values()
             .filter(|issue| issue.question)

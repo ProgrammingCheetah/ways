@@ -390,13 +390,10 @@ fn tick(
     // Before anything is planned or reserved, dry run included: a profile made from an older
     // manifest runs its instances with yesterday's deny list.
     let stale = profile::stale(&state_dir, manifest);
-    if !stale.is_empty() {
-        for profile in &stale {
-            eprintln!("zaf {path}: {}", profile.line());
-        }
+    if let Some(line) = profile::stale_line(&stale) {
+        eprintln!("zaf {path}: {line}");
         if !dry_run {
-            let lines: Vec<String> = stale.iter().map(|profile| profile.line()).collect();
-            traced.stopped = Some(lines.join("; "));
+            traced.stopped = Some(line);
         }
         return REFUSED;
     }
@@ -849,6 +846,7 @@ fn phase_tick(
         _ => root.join(STATE_DIR),
     };
     let manifest = composition.manifest();
+    let now = std::time::SystemTime::now();
     let ports = Ports {
         board,
         forge: forge.as_ref(),
@@ -858,8 +856,8 @@ fn phase_tick(
         state_dir: &state_dir,
         alive: &process::alive,
         version: Some(version),
+        now,
     };
-    let now = std::time::SystemTime::now();
     let gathered = match schedule_gather::gather(&ports) {
         Ok(gathered) => gathered,
         Err(error) => {
@@ -1394,6 +1392,7 @@ mod tests {
                 ruled: Vec::new(),
                 ready_since: Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1)),
                 merging: Default::default(),
+                no_check_ruled: None,
             });
             gathered.beside.insert(
                 TicketId::from(*task),

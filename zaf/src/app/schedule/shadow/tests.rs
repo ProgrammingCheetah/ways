@@ -36,6 +36,7 @@ fn facts(number: u64) -> TicketFacts {
         ruled: Vec::new(),
         ready_since: Some(time(60)),
         merging: Default::default(),
+        no_check_ruled: None,
     }
 }
 
@@ -44,7 +45,7 @@ fn pull(head: &str) -> PullFacts {
         opened_at: time(20),
         merged_at: None,
         head: Some(CommitId::from(head)),
-        changes_a_file: true,
+        changed_file: Some(crate::domain::RepoPath::from("src/lib.rs")),
         checks: Vec::new(),
         reviews: Vec::new(),
     }

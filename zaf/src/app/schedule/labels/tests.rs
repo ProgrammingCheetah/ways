@@ -169,6 +169,7 @@ impl Scene {
             state_dir: &self.state_dir,
             alive: &|_: &Holder| false,
             version: None,
+            now: SystemTime::now(),
         };
         gather(&ports).expect("the board reads")
     }

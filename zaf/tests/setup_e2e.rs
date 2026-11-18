@@ -348,6 +348,44 @@ fn setup_rerun_changes_nothing() {
     assert_eq!(fs::read(&action).expect("action"), edited);
 }
 
+/// With no terminal (stdin and stdout are pipes), `zaf setup` keeps every installed action that
+/// differs from the pack's, asks nothing, replaces nothing and prints the one kept line.
+#[test]
+fn setup_without_a_terminal_keeps_differing_actions() {
+    let scene = Scene::new();
+    let (code, stdout, stderr) = outcome(&scene.zaf(&["setup"], Some("\n\n\n\n")));
+    assert_eq!(code, 0, "first setup:\n{stdout}{stderr}");
+    let mut edited = Vec::new();
+    for name in ["commit", "push"] {
+        let action = scene.home.join("actions").join(name);
+        let mut text = fs::read(&action).expect("an installed action");
+        text.extend_from_slice(b"\n# edited by the Engineer\n");
+        fs::write(&action, &text).expect("edit");
+        edited.push((action, text));
+    }
+
+    // Answers on stdin are not read: a `y` there replaces nothing.
+    let (code, stdout, stderr) = outcome(&scene.zaf(&["setup"], Some("y\ny\n")));
+    assert_eq!(code, 0, "second setup:\n{stdout}{stderr}");
+    for (action, text) in &edited {
+        assert_eq!(&fs::read(action).expect("action"), text, "{action:?}");
+    }
+    assert!(
+        !scene.home.join("actions-replaced").exists(),
+        "nothing was replaced"
+    );
+    let kept: Vec<&str> = stdout
+        .lines()
+        .filter(|line| line.starts_with("differs from the pack, kept:"))
+        .collect();
+    assert_eq!(
+        kept,
+        ["differs from the pack, kept: commit, push; run zaf setup in a terminal to review"],
+        "{stdout}"
+    );
+    assert!(!stdout.contains("replace commit?"), "{stdout}");
+}
+
 /// `zaf doctor` exits 0 on a copy of ways' own `.zaf.toml` and `.zaf/actions/` with an empty zaf
 /// home, so it is ways' own actions that pass, none taken from the machine. The profiles ways
 /// keeps per machine are generated first, with `zaf profile init`.

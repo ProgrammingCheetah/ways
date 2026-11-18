@@ -6,7 +6,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/sve
 import { tick } from 'svelte';
 import { forgetKey, takeKey } from './controls.js';
 import EpicLine from './EpicLine.svelte';
-import { turnedDone } from './line.js';
+import { gridCells, gridRows, turnedDone } from './line.js';
 
 const task = (number, state, size, extra = {}) => ({
   number,
@@ -26,13 +26,74 @@ const squares = (el) => el.querySelectorAll('.square');
 describe('epic line', () => {
   it('epic line draws a run of squares per task by size', () => {
     render(EpicLine, { epic: epic([task(1, 'done', 'XS'), task(2, 'working', 'M'), task(3, 'not_started', null)]) });
-    const own = screen.getByTestId('epic-block');
     const blocks = screen.getAllByTestId('task-block');
-    expect(squares(own)).toHaveLength(2);
-    // The epic's own block comes before the first task.
-    expect(own.compareDocumentPosition(blocks[0]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(blocks.map((b) => b.dataset.task)).toEqual(['1', '2', '3']);
     expect(blocks.map((b) => squares(b).length)).toEqual([1, 3, 2]);
+  });
+
+  it('epic line draws the epic\'s square beside the title', () => {
+    render(EpicLine, { epic: epic([task(1, 'done', 'XS'), task(2, 'working', 'M')]) });
+    const own = screen.getByTestId('epic-block');
+    // Exactly one square, in the title row and not in the grid.
+    expect(squares(own)).toHaveLength(1);
+    const title = document.querySelector('.line-title');
+    expect(title.contains(own)).toBe(true);
+    expect(title.querySelector('.title').textContent).toBe('an epic');
+    expect(screen.getByTestId('epic-grid').contains(own)).toBe(false);
+    expect(squares(screen.getByTestId('epic-grid'))).toHaveLength(4);
+  });
+
+  it('epic line places each square at its grid row and column', () => {
+    render(EpicLine, { epic: epic([task(1, 'done', 'XS'), task(2, 'working', 'M'), task(3, 'not_started', null)]) });
+    const grid = screen.getByTestId('epic-grid');
+    const rows = gridRows(6);
+    expect(grid.style.getPropertyValue('--rows')).toBe(String(rows));
+    const placed = [...squares(grid)].map((s) => [s.style.gridRow, s.style.gridColumn]);
+    const cells = gridCells([task(1, 'done', 'XS'), task(2, 'working', 'M'), task(3, 'not_started', null)]);
+    expect(placed).toEqual(cells.map((c) => [String(c.row + 1), String(c.column + 1)]));
+  });
+
+  it('epic line draws 50 squares as 7 rows by 8 columns', () => {
+    // Twenty-five S tasks are 50 squares.
+    const tasks = Array.from({ length: 25 }, (_, i) => task(i + 1, 'not_started', 'S'));
+    render(EpicLine, { epic: epic(tasks) });
+    const grid = screen.getByTestId('epic-grid');
+    expect(grid.dataset.rows).toBe('7');
+    const all = [...squares(grid)];
+    expect(all).toHaveLength(50);
+    expect(Math.max(...all.map((s) => Number(s.dataset.row)))).toBe(7);
+    expect(Math.max(...all.map((s) => Number(s.dataset.column)))).toBe(8);
+  });
+
+  it('epic line uses one gap for every square', () => {
+    const css = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), 'app.css'), 'utf8');
+    render(EpicLine, { epic: epic([task(1, 'done', 'S'), task(2, 'done', 'M')]) });
+    // No task-group wrapper class and no per-task spacing in the page or the stylesheet.
+    expect(document.querySelector('.task-group, .group, .run')).toBeNull();
+    expect(css).not.toMatch(/gap:\s*1px/);
+    expect(css).not.toMatch(/gap:\s*0\.35rem 0\.25rem/);
+    // The grid's one gap is the shared variable; the epic's one square sits outside the grid.
+    const gaps = [...css.matchAll(/^\s*gap:\s*var\(--sq-gap\);/gm)];
+    expect(gaps).toHaveLength(1);
+    expect(css).toMatch(/\.grid\s*\{[^}]*gap:\s*var\(--sq-gap\)/);
+    expect(css.match(/--sq-gap:\s*[^;]+;/g)).toHaveLength(1);
+    for (const s of squares(screen.getByTestId('epic-grid'))) expect(s.style.margin).toBe('');
+  });
+
+  it('epic line scrolls its grid sideways in its own box', () => {
+    const css = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), 'app.css'), 'utf8');
+    render(EpicLine, { epic: epic([task(1, 'done', 'S')]) });
+    const box = screen.getByTestId('epic-grid-box');
+    expect(box.contains(screen.getByTestId('epic-grid'))).toBe(true);
+    expect(css).toMatch(/\.grid-box\s*\{[^}]*overflow-x:\s*auto/);
+  });
+
+  it('the_grid_box_leaves_room_for_outlines_and_motion', () => {
+    const css = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), 'app.css'), 'utf8');
+    const rule = css.match(/\.grid-box\s*\{([^}]*)\}/)[1];
+    expect(rule).toMatch(/overflow-x:\s*auto/);
+    expect(rule).toMatch(/padding:\s*6px\s*;/);
+    expect(rule).toMatch(/margin:\s*-6px\s*;/);
   });
 
   it('epic line draws the sizes S, L, XL and E', () => {
@@ -68,7 +129,7 @@ describe('epic line', () => {
 
   it('epic line fills a working task by phases', () => {
     render(EpicLine, { epic: epic([task(1, 'working', 'M', { phases_done: 1, phases_total: 3 })]) });
-    const own = within(screen.getByTestId('task-block')).getByRole('img');
+    const own = screen.getByTestId('task-block');
     const [a, b, c] = squares(own);
     expect([a, b, c].map((s) => Number(s.dataset.fill))).toEqual([1, 0, 0]);
     expect(a.classList.contains('partial')).toBe(false);
@@ -90,17 +151,41 @@ describe('line card', () => {
     });
     expect(screen.queryByTestId('line-card')).toBeNull();
     const block = screen.getByTestId('task-block');
-    await fireEvent.mouseEnter(block);
+    const [first, , last] = squares(block);
+    // Any square of the task shows its card: the first, or a later one.
+    await fireEvent.mouseEnter(last);
     const card = screen.getByTestId('line-card');
     expect(card.textContent).toContain('#5');
     expect(card.textContent).toContain('build it');
     expect(card.textContent).toContain('size M');
     expect(card.textContent).toContain('working');
     expect(card.textContent).toContain('phase implement');
-    // The card is tied to its block, and closes when the mouse leaves.
+    // The card is tied to the task's one stop, and closes when the mouse leaves.
     expect(within(block).getByRole('link').getAttribute('aria-describedby')).toBe(card.id);
-    await fireEvent.mouseLeave(block);
+    await fireEvent.mouseLeave(last);
     expect(screen.queryByTestId('line-card')).toBeNull();
+    await fireEvent.mouseEnter(first);
+    expect(screen.getByTestId('line-card')).toBeTruthy();
+  });
+
+  it('line card hangs from the square under the pointer', async () => {
+    const rect = (left) => ({ left, top: 10, right: left + 14, bottom: 24, width: 14, height: 14 });
+    const proto = Element.prototype.getBoundingClientRect;
+    Element.prototype.getBoundingClientRect = function () {
+      return this.classList?.contains('square') ? rect(20 * Number(this.dataset.column)) : proto.call(this);
+    };
+    try {
+      render(EpicLine, { epic: epic([task(5, 'working', 'M', { issue_url: url(5) })]) });
+      const all = squares(screen.getByTestId('task-block'));
+      const place = () => Number.parseFloat(screen.getByTestId('line-card').style.left);
+      await fireEvent.mouseEnter(all[0]);
+      const first = place();
+      await fireEvent.mouseLeave(all[0]);
+      await fireEvent.mouseEnter(all[2]);
+      expect(place()).toBe(first + 20 * (Number(all[2].dataset.column) - Number(all[0].dataset.column)));
+    } finally {
+      Element.prototype.getBoundingClientRect = proto;
+    }
   });
 
   it('line card shows on keyboard focus', async () => {
@@ -123,13 +208,33 @@ describe('line card', () => {
     expect(screen.queryByTestId('line-card')).toBeNull();
   });
 
+  it('scrolling_the_grid_box_hides_the_card', async () => {
+    render(EpicLine, { epic: epic([task(5, 'working', 'M', { issue_url: url(5) })]) });
+    const [first] = squares(screen.getByTestId('task-block'));
+    await fireEvent.mouseEnter(first);
+    expect(screen.getByTestId('line-card')).toBeTruthy();
+    await fireEvent.scroll(screen.getByTestId('epic-grid-box'));
+    expect(screen.queryByTestId('line-card')).toBeNull();
+  });
+
+  it('the window scroll and resize still hide the card', async () => {
+    render(EpicLine, { epic: epic([task(5, 'working', 'M', { issue_url: url(5) })]) });
+    const [first] = squares(screen.getByTestId('task-block'));
+    for (const event of ['scroll', 'resize']) {
+      await fireEvent.mouseEnter(first);
+      expect(screen.getByTestId('line-card')).toBeTruthy();
+      await fireEvent(window, new Event(event));
+      expect(screen.queryByTestId('line-card')).toBeNull();
+    }
+  });
+
   it('line card lists a blocked task\'s blockers', async () => {
     const blocked_by = [
       { number: 3, title: 'first part', state: 'working' },
       { number: 4, title: null, state: 'not_started' },
     ];
     render(EpicLine, { epic: epic([task(9, 'blocked', 'S', { blocked_by })]) });
-    await fireEvent.mouseEnter(screen.getByTestId('task-block'));
+    await fireEvent.mouseEnter(squares(screen.getByTestId('task-block'))[0]);
     const items = within(screen.getByTestId('card-blockers')).getAllByRole('listitem');
     expect(items.map((li) => li.textContent.trim())).toEqual(['#3 first part: working', '#4: not started']);
   });
@@ -137,7 +242,7 @@ describe('line card', () => {
   it('line card shows a yellow task\'s question, as text', async () => {
     const question = { number: 20, text: 'Which <b>door</b>?' };
     render(EpicLine, { epic: epic([task(8, 'question', 'S', { question })]) });
-    await fireEvent.mouseEnter(screen.getByTestId('task-block'));
+    await fireEvent.mouseEnter(squares(screen.getByTestId('task-block'))[0]);
     const text = screen.getByTestId('card-question');
     expect(text.textContent).toBe('Which <b>door</b>?');
     expect(text.querySelector('b')).toBeNull();
@@ -174,6 +279,107 @@ describe('line card', () => {
     expect(within(blocks[0]).getByRole('link').getAttribute('href')).toBe(url(1));
     expect(within(blocks[1]).queryByRole('link')).toBeNull();
     expect(within(blocks[2]).queryByRole('link')).toBeNull();
+  });
+});
+
+describe('line focus', () => {
+  const url = (n) => `https://example.test/issues/${n}`;
+  const stops = (root) =>
+    [...root.querySelectorAll('a[href], button, [tabindex]')].filter((el) => el.getAttribute('tabindex') !== '-1');
+  const mixed = () =>
+    epic([
+      task(1, 'done', 'M', { issue_url: url(1) }),
+      task(2, 'blocked', 'S'),
+      task(3, 'question', 'L', { issue_url: url(3), question: { number: 20, text: 'Which?' } }),
+    ]);
+
+  it('line focus has one stop per task', () => {
+    render(EpicLine, { epic: mixed(), controls: true, project: '/p' });
+    for (const block of screen.getAllByTestId('task-block')) {
+      const found = stops(block);
+      expect(found).toHaveLength(1);
+      // Its first square, carrying the task's name.
+      expect(found[0]).toBe(squares(block)[0]);
+      expect(within(found[0]).getByRole('img').getAttribute('aria-label')).toMatch(/^Task #/);
+    }
+    expect(screen.getByRole('link', { name: 'Task #1 task 1: done' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Task #3 task 3: has a question open' })).toBeTruthy();
+    expect(screen.getAllByRole('link')).toHaveLength(1);
+    // A task with no address is still its one stop, opening nothing.
+    expect(squares(screen.getAllByTestId('task-block')[1])[0].getAttribute('tabindex')).toBe('0');
+  });
+
+  it('line focus hides a task\'s other squares', () => {
+    render(EpicLine, { epic: mixed() });
+    for (const block of screen.getAllByTestId('task-block')) {
+      const [, ...rest] = squares(block);
+      expect(rest.length).toBeGreaterThan(0);
+      for (const s of rest) {
+        expect(s.getAttribute('aria-hidden')).toBe('true');
+        expect(s.hasAttribute('tabindex')).toBe(false);
+        expect(s.matches('a, button, [href]')).toBe(false);
+        expect(s.querySelector('a, button, [tabindex]')).toBeNull();
+      }
+    }
+    expect(screen.getAllByTestId('task-block').every((b) => b.tagName === 'LI')).toBe(true);
+  });
+
+  it('line focus keeps the ordered list and no display contents', () => {
+    const css = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), 'app.css'), 'utf8');
+    expect(css).not.toMatch(/display:\s*contents/);
+    render(EpicLine, { epic: mixed() });
+    expect(screen.getByTestId('epic-grid').tagName).toBe('UL');
+  });
+
+  it('line hover outlines a task\'s squares', async () => {
+    render(EpicLine, { epic: mixed() });
+    const [one, two] = screen.getAllByTestId('task-block');
+    const outlined = () => [...document.querySelectorAll('.square.outlined')];
+    expect(outlined()).toHaveLength(0);
+    const [, second] = squares(one);
+    await fireEvent.mouseEnter(second);
+    // Every square of that task, the one hovered included, and none of another task's.
+    expect(outlined()).toEqual([...squares(one)]);
+    await fireEvent.mouseLeave(second);
+    expect(outlined()).toHaveLength(0);
+    await fireEvent.mouseEnter(squares(two)[0]);
+    expect(outlined()).toEqual([...squares(two)]);
+    // Neither the epic's square nor the legend's swatches are outlined.
+    expect(squares(screen.getByTestId('epic-block'))[0].classList.contains('outlined')).toBe(false);
+  });
+
+  it('line click on a later square goes where the first goes', async () => {
+    render(EpicLine, { epic: mixed() });
+    const [one] = screen.getAllByTestId('task-block');
+    const first = squares(one)[0];
+    const clicks = [];
+    first.addEventListener('click', (e) => {
+      clicks.push(e);
+      e.preventDefault();
+    });
+    const later = squares(one)[2];
+    await fireEvent.click(later, { ctrlKey: true });
+    expect(clicks).toHaveLength(1);
+    expect(clicks[0].target).toBe(first);
+    expect(clicks[0].ctrlKey).toBe(true);
+    expect(first.getAttribute('href')).toBe(url(1));
+  });
+
+  it('line click on a later square opens the same prompt', async () => {
+    window.history.replaceState(null, '', '/#key=k3y-0123456789');
+    forgetKey();
+    takeKey();
+    try {
+      render(EpicLine, { epic: mixed(), controls: true, project: '/p' });
+      const block = screen.getAllByTestId('task-block')[2];
+      await fireEvent.click(squares(block)[3]);
+      expect(screen.getByTestId('prompt-question').textContent).toBe('Which?');
+      await fireEvent.click(screen.getByTestId('prompt-close'));
+      expect(document.activeElement).toBe(squares(block)[0]);
+    } finally {
+      forgetKey();
+      window.history.replaceState(null, '', '/');
+    }
   });
 });
 
@@ -431,11 +637,25 @@ describe('line finish', () => {
     expect(finished(screen.getByTestId('epic-line'))).toBe(0);
     await rerender({ epic: open(101, 'done', 'done') });
     const line = screen.getByTestId('epic-line');
-    // The epic's two squares and each task's two, in a wave that starts at the epic's block.
-    expect(finished(line)).toBe(6);
-    const n = [...squares(line.querySelector('.line'))].map((s) => s.style.getPropertyValue('--n'));
-    expect(n).toEqual(['0', '1', '2', '3', '4', '5']);
-    expect(Number.parseFloat(line.style.getPropertyValue('--step')) * 5 + 0.7).toBeLessThan(2);
+    // Each task's two squares and the epic's one.
+    expect(finished(line)).toBe(5);
+    expect(Number.parseFloat(line.style.getPropertyValue('--step')) * 4 + 0.7).toBeLessThan(2);
+  });
+
+  it('line finish shines the epic\'s square last', async () => {
+    asReduced(false);
+    const { rerender } = render(EpicLine, { epic: open(106, 'done', 'working') });
+    await rerender({ epic: open(106, 'done', 'done') });
+    // The grid's squares are reached in grid order: down a column, then the next.
+    const grid = [...squares(screen.getByTestId('epic-grid'))].sort(
+      (a, b) => a.dataset.column - b.dataset.column || a.dataset.row - b.dataset.row,
+    );
+    expect(grid.map((s) => s.style.getPropertyValue('--n'))).toEqual(['0', '1', '2', '3']);
+    // The epic's square comes after the grid's last.
+    const own = squares(screen.getByTestId('epic-block'));
+    expect(own).toHaveLength(1);
+    expect(own[0].classList.contains('finish')).toBe(true);
+    expect(own[0].style.getPropertyValue('--n')).toBe('4');
   });
 
   it('line finish skips an epic done at first read', () => {
@@ -448,7 +668,7 @@ describe('line finish', () => {
     asReduced(false);
     const { rerender } = render(EpicLine, { epic: open(103, 'done', 'working') });
     await rerender({ epic: open(103, 'done', 'done') });
-    expect(finished(screen.getByTestId('epic-line'))).toBe(6);
+    expect(finished(screen.getByTestId('epic-line'))).toBe(5);
     // The next read of the finished epic plays none.
     await rerender({ epic: open(103, 'done', 'done') });
     expect(finished(screen.getByTestId('epic-line'))).toBe(0);
@@ -462,10 +682,10 @@ describe('line finish', () => {
     asReduced(false);
     const a = render(EpicLine, { epic: open(104, 'done', 'working'), project: '/p/a' });
     await a.rerender({ epic: open(104, 'done', 'done'), project: '/p/a' });
-    expect(finished(a.container)).toBe(6);
+    expect(finished(a.container)).toBe(5);
     const b = render(EpicLine, { epic: open(104, 'done', 'working'), project: '/p/b' });
     await b.rerender({ epic: open(104, 'done', 'done'), project: '/p/b' });
-    expect(finished(b.container)).toBe(6);
+    expect(finished(b.container)).toBe(5);
     // Each plays once: the next read of the second plays none.
     await b.rerender({ epic: open(104, 'done', 'done'), project: '/p/b' });
     expect(finished(b.container)).toBe(0);

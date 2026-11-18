@@ -181,7 +181,8 @@ pub enum ProblemKind {
     Token,
     /// The board cannot be reached.
     Board,
-    /// A generated profile is older than the manifest or zaf, or has no stamp.
+    /// Generated profiles are older than the manifest or zaf, or have no stamp: one problem
+    /// for the project, however many profiles.
     Profile,
     /// The project's folder, or its manifest, is gone from the machine.
     Missing,
@@ -421,10 +422,11 @@ pub fn gather_project(root: &Path, now: SystemTime) -> ProjectState {
     });
     // The faults that stopped the board's read lead; a stale profile follows.
     problems.append(&mut state.problems);
-    for stale in profile::stale_homes(&state_dir, manifest) {
+    // One problem for all of the project's stale profiles: one sentence, one fix.
+    if let Some(detail) = profile::stale_line(&profile::stale_homes(&state_dir, manifest)) {
         problems.push(Problem {
             kind: ProblemKind::Profile,
-            detail: stale.line(),
+            detail,
             fix: Some(format!("cd {} && zaf profile init", root.display())),
         });
     }

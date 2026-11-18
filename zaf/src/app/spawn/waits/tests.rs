@@ -63,7 +63,7 @@ fn at_review(task: u64) -> (TicketFacts, Vec<ListedPhase>) {
         opened_at: time(10),
         merged_at: None,
         head: Some(CommitId::from("head")),
-        changes_a_file: true,
+        changed_file: Some(crate::domain::RepoPath::from("src/lib.rs")),
         checks: Vec::new(),
         reviews: Vec::new(),
     };

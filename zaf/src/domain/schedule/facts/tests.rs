@@ -2,6 +2,17 @@ use super::super::tests::*;
 use super::*;
 
 #[test]
+fn changes_a_file_follows_changed_file() {
+    let mut pull = pull("h1", 20);
+    pull.changed_file = None;
+    assert!(!pull.changes_a_file());
+    pull.changed_file = Some(RepoPath::from("src/lib.rs"));
+    assert!(pull.changes_a_file());
+    pull.changed_file = None;
+    assert!(!pull.changes_a_file());
+}
+
+#[test]
 fn no_check_at_all_has_not_ended() {
     let mut pull = pull("h1", 20);
     assert!(!pull.checks_ended());

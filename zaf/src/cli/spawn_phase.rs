@@ -74,6 +74,7 @@ pub fn run(cli: &Cli, task: TicketId, action: &str) -> u8 {
         state_dir: &state_dir,
         alive: &process::alive,
         version: version.as_deref(),
+        now: std::time::SystemTime::now(),
     };
     let launch = |started: &Started| detach(root, &started.run_dir);
     match phase::start(&ports, task, action, &launch) {

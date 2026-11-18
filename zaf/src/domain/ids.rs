@@ -93,5 +93,10 @@ text_newtype! {
     CommitId
 }
 
+text_newtype! {
+    /// A path in the repository, as the forge names it: a file a pull request changes.
+    RepoPath
+}
+
 #[cfg(test)]
 mod tests;

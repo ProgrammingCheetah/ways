@@ -10,7 +10,7 @@
 //! - ready work no scheduler ticks: tasks ready in a project whose `zaf spawn --watch` does not run;
 //! - a phase that got nowhere three times, which raised a question of its own;
 //! - a project that cannot run: a manifest that does not read, a token that is not set, a board
-//!   that does not answer, a profile that is stale, a folder that is gone.
+//!   that does not answer, profiles that are stale (one item a project), a folder that is gone.
 //!
 //! An item's `blocks` is the number of tasks it holds back. Items sort by it, most first. Ties
 //! break by age, and the board gives no time for a question or a ready task, so the age is the

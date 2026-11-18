@@ -32,19 +32,71 @@ fn the_check_clock_is_the_latest_of_the_opening_the_run_that_left_the_head_and_t
     assert_eq!(check_clock(&self::facts(pack())), None);
 }
 
+const MINUTES_10: u64 = 10 * 60;
+
 #[test]
-fn a_check_that_never_registers_is_overdue_after_the_deadline() {
+fn no_check_is_not_overdue_before_ten_minutes() {
     let facts = waiting_since(20);
-    assert_eq!(CHECK_DEADLINE, std::time::Duration::from_secs(HOURS_2));
-    assert_eq!(overdue(&facts, time(20 + HOURS_2 - 1)), None);
+    assert_eq!(overdue(&facts, time(20 + MINUTES_10 - 60)), None);
+    assert_eq!(overdue(&facts, time(20 + MINUTES_10 - 1)), None);
+}
+
+#[test]
+fn no_check_is_overdue_after_ten_minutes() {
+    let facts = waiting_since(20);
     assert_eq!(
-        overdue(&facts, time(20 + HOURS_2)),
+        NO_CHECK_DEADLINE,
+        std::time::Duration::from_secs(MINUTES_10)
+    );
+    assert_eq!(
+        overdue(&facts, time(20 + MINUTES_10)),
         Some(OverdueCheck {
             head: commit("h1"),
             since: time(20),
             awaited: Awaited::NoCheck,
         })
     );
+}
+
+#[test]
+fn pending_check_keeps_the_two_hour_deadline() {
+    let mut facts = waiting_since(20);
+    facts.pull = Some(PullFacts {
+        checks: vec![check("lint", CheckResult::Pending)],
+        ..pull("h1", 20)
+    });
+    assert_eq!(CHECK_DEADLINE, std::time::Duration::from_secs(HOURS_2));
+    assert_eq!(overdue(&facts, time(20 + MINUTES_10)), None);
+    assert_eq!(overdue(&facts, time(20 + HOURS_2 - 1)), None);
+    assert_eq!(
+        overdue(&facts, time(20 + HOURS_2)).map(|overdue| overdue.awaited),
+        Some(Awaited::Pending(vec![CheckName::from("lint")]))
+    );
+}
+
+#[test]
+fn outside_wait_keeps_the_two_hour_deadline() {
+    // The checks passed at h1; review exited 0 there at 40 and the review never came.
+    let mut facts = facts(vec![
+        phase("implement", &[PhaseEnd::PrOpen], None),
+        phase("ci", &[PhaseEnd::CiDone], Some("fix")),
+        phase("review", &[PhaseEnd::ReviewPosted], Some("fix")),
+    ]);
+    facts.pull = Some(PullFacts {
+        checks: vec![passed(30)],
+        ..pull("h1", 20)
+    });
+    facts.runs.push(
+        run("review", Some("h1"), 35)
+            .exits(0, 40)
+            .leaves(Some("h1")),
+    );
+    assert_eq!(overdue(&facts, time(40 + MINUTES_10)), None);
+    assert!(overdue(&facts, time(40 + HOURS_2)).is_some());
+    // A base wait keeps it too.
+    let held = held_by_the_base();
+    assert_eq!(overdue(&held, time(32) + NO_CHECK_DEADLINE), None);
+    assert!(overdue(&held, time(32) + CHECK_DEADLINE).is_some());
 }
 
 #[test]

@@ -47,7 +47,12 @@
     },
     {
       "name": "line.js",
-      "role": "pure helpers of the epic line: turnedDone(previous, next), the tasks that turned done between two reads and whether the whole epic just did",
+      "role": "pure helpers of the epic line: turnedDone(previous, next), the tasks that turned done between two reads and whether the whole epic just did; gridRows(squares), the grid's rows, and gridCells(tasks), each square's column and row, column-major in task order",
+      "node": false
+    },
+    {
+      "name": "line.test.js",
+      "role": "the grid's rows and cells",
       "node": false
     },
     {

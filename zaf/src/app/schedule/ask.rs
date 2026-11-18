@@ -9,8 +9,10 @@
 //!   ([`crate::app::schedule::tick::may_start`]). Machinery failures never count.
 //! - **A failed wait with no `on-fail`** ([`FailedWait`]): the ticket has nowhere to go.
 //! - **An overdue check wait** ([`overdue`]): the ticket has waited on the checks at one head for
-//!   [`CHECK_DEADLINE`](crate::domain::schedule::CHECK_DEADLINE) and they have not ended: none registered, some still pending, or the
-//!   phase awaits something from outside that has not come. A ticket held at its merge that long
+//!   [`CHECK_DEADLINE`](crate::domain::schedule::CHECK_DEADLINE) and they have not ended: some
+//!   still pending, or the phase awaits something from outside that has not come. A head where
+//!   no check has registered is asked after `NO_CHECK_DEADLINE` (domain::schedule), in minutes,
+//!   naming a file the pull request changes. A ticket held at its merge that long
 //!   by the integration branch's pending checks (R29) is asked about the same way.
 //! - **A dead dependency** ([`dead_dependencies`]): a ticket its `Blocked by:` line names is closed
 //!   as not planned, or is no ticket at all. Asked at once.
@@ -36,7 +38,7 @@
 //! - a failed wait: `Failed wait: <action> at <head>, <n>.` names the head and the failure's time,
 //!   so a ruling at that head and failure is not asked again; a new head or a new failure is;
 //! - an overdue check wait: `Check deadline: <head>.`, once per head; a new head starts the clock
-//!   again. One on the integration branch's checks is `Base deadline: <head>.`, once per ticket
+//!   again. One on a head with no check is `No check: <head>.`, once per head the same way. One on the integration branch's checks is `Base deadline: <head>.`, once per ticket
 //!   and head of the branch, and its ruling is the way through: the gather reads it
 //!   ([`base_deadline_marker`]) and the branch's checks no longer hold that ticket at that head;
 //! - a dead dependency: `Dead dependency: <ticket>.`, once per ticket and dependency;
@@ -73,7 +75,7 @@ use crate::domain::schedule::{
     Placement, RunRecord, TicketFacts, dead_dependencies, dependency_graph, nowhere, overdue,
     unchallenged,
 };
-use crate::domain::{CheckName, CommitId, Ticket, TicketId};
+use crate::domain::{CheckName, CommitId, RepoPath, Ticket, TicketId};
 use crate::ports::BranchName;
 use crate::ports::{Board, NewQuestion};
 
@@ -145,6 +147,40 @@ fn short(head: &str) -> String {
 /// The whole hours of `waited`.
 fn hours(waited: Duration) -> u64 {
     waited.as_secs() / 3600
+}
+
+/// The whole minutes of `waited`.
+fn minutes(waited: Duration) -> u64 {
+    waited.as_secs() / 60
+}
+
+/// `text` as a Markdown code span, so nothing inside it is a mention, a link or markup: the
+/// delimiter is one backtick longer than the longest run inside, padded with a space when the text
+/// begins or ends with a backtick, and a line break or other control character reads as a space.
+fn code_span(text: &str) -> String {
+    let text: String = text
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect();
+    let mut longest = 0;
+    let mut run = 0;
+    for character in text.chars() {
+        run = if character == '`' { run + 1 } else { 0 };
+        longest = longest.max(run);
+    }
+    let fence = "`".repeat(longest + 1);
+    let pad = if text.starts_with('`') || text.ends_with('`') {
+        " "
+    } else {
+        ""
+    };
+    format!("{fence}{pad}{text}{pad}{fence}")
 }
 
 /// A time as a question shows it: RFC 3339, to the second.
@@ -299,6 +335,13 @@ pub fn base_deadline_marker(head: &CommitId) -> String {
     format!("Base deadline: {head}.")
 }
 
+/// The marker of the question an overdue wait at a head where no check has registered raises on a
+/// ticket: `No check: <head>.`, the head in full. A ruled question on the ticket that ends with it
+/// lets the ticket go on at that head with no check; the gather reads it back.
+pub fn no_check_marker(head: &CommitId) -> String {
+    format!("No check: {head}.")
+}
+
 /// Why the scheduler asks the Engineer: one cause, one question (see the module above).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Cause {
@@ -318,6 +361,9 @@ pub enum Cause {
         /// The integration branch, for a wait on its checks ([`Awaited::Base`]), when the gather
         /// named it; none for a wait on the ticket's own checks.
         branch: Option<BranchName>,
+        /// A file the ticket's pull request changes, as the forge names it, for the question of
+        /// a head with no check ([`Awaited::NoCheck`]); none when the forge named none.
+        file: Option<RepoPath>,
     },
     /// A ticket its `Blocked by:` line names can never complete.
     DeadDependency {
@@ -393,7 +439,8 @@ impl Cause {
 
     /// The question's last sentence, which the scheduler reads back to know the question is this
     /// cause's: `Last run: <n>.`, `Failed wait: <action> at <head>, <n>.`, `Check deadline:
-    /// <head>.` (`Base deadline: <head>.` for the integration branch's), `Dead dependency:
+    /// <head>.` (`Base deadline: <head>.` for the integration branch's, `No check: <head>.` for a
+    /// head with no check), `Dead dependency:
     /// <ticket>.`, `Dependency cycle: <tickets>.`, `Challenge
     /// deadline: <n>.` or `Red base: <branch> at <head>.`
     pub fn marker(&self) -> String {
@@ -402,7 +449,8 @@ impl Cause {
             Self::FailedWait(failed) => failed_wait_marker(failed),
             Self::OverdueCheck { overdue, .. } => match overdue.awaited {
                 Awaited::Base(_) => base_deadline_marker(&overdue.head),
-                Awaited::NoCheck | Awaited::Pending(_) | Awaited::Outside { .. } => {
+                Awaited::NoCheck => no_check_marker(&overdue.head),
+                Awaited::Pending(_) | Awaited::Outside { .. } => {
                     format!("Check deadline: {}.", overdue.head)
                 }
             },
@@ -427,9 +475,11 @@ impl Cause {
                 overdue,
                 waited,
                 branch,
+                file,
             } => {
                 let at = short(overdue.head.as_str());
                 let hours = hours(*waited);
+                let minutes = minutes(*waited);
                 let since = shown(overdue.since);
                 let body = match &overdue.awaited {
                     Awaited::Base(checks) => format!(
@@ -448,9 +498,17 @@ impl Cause {
                             .unwrap_or_default(),
                     ),
                     Awaited::NoCheck => format!(
-                        "No check has registered at {at} for {hours} h (since {since}): the \
+                        "No check has registered at {at} for {minutes} min (since {since}): the \
                          runner may be down, or the workflow's path filter may have skipped this \
-                         change. It waits on its checks until one ends there."
+                         change. {} It waits on its checks until one ends there. Once this is \
+                         ruled, it goes on at that commit with no check.",
+                        file.as_ref().map_or_else(
+                            || "The forge named no file the pull request changes.".to_owned(),
+                            |file| format!(
+                                "The pull request changes {}, so see whether the filter covers it.",
+                                code_span(file.as_ref())
+                            )
+                        )
                     ),
                     Awaited::Pending(checks) => format!(
                         "The checks {} at {at} are still pending after {hours} h (since \
@@ -564,7 +622,10 @@ impl Cause {
                 let at = short(overdue.head.as_str());
                 let hours = hours(*waited);
                 match &overdue.awaited {
-                    Awaited::NoCheck => format!("no check has registered at {at} for {hours} h"),
+                    Awaited::NoCheck => format!(
+                        "no check has registered at {at} for {} min",
+                        minutes(*waited)
+                    ),
                     Awaited::Pending(_) => {
                         format!("the checks at {at} are still pending after {hours} h")
                     }
@@ -629,6 +690,10 @@ pub fn waiting_causes(gathered: &Gathered, placement: &Placement, now: SystemTim
                     .as_ref()
                     .filter(|_| matches!(found.awaited, Awaited::Base(_)))
                     .map(|base| base.branch.clone()),
+                file: facts
+                    .pull
+                    .as_ref()
+                    .and_then(|pull| pull.changed_file.clone()),
                 overdue: found,
             });
         }

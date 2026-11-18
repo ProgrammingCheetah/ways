@@ -346,6 +346,39 @@ fn json_carries_the_whole_screen() {
 }
 
 #[test]
+fn status_prints_one_line_for_stale_profiles() {
+    use crate::app::profile;
+
+    const HEAD: &str = "[project]\nname = \"bookshelf\"\n[board]\nkind = \"github-issues\"\nrepo = \"example/b\"\n\
+        [runners.claude]\ncommand = \"true\"\n\n\
+        [roles.team]\nmodel = \"opus\"\neffort = \"xhigh\"\nprofile = \"build\"\nturns = 5\nbatch = 2\n\n\
+        [roles.programmer]\nmodel = \"sonnet\"\neffort = \"high\"\nprofile = \"lean\"\nturns = 5\nbatch = 2\n";
+    let dir = tempfile::tempdir().expect("tempdir");
+    let before: crate::manifest::Manifest =
+        format!("{HEAD}[forbidden]\ncommands = [\"git push\"]\n")
+            .parse()
+            .expect("manifest");
+    let after: crate::manifest::Manifest =
+        format!("{HEAD}[forbidden]\ncommands = [\"gh pr merge\"]\n")
+            .parse()
+            .expect("manifest");
+    profile::write_stamps(dir.path(), &before);
+
+    let screen = status(&board(), dir.path(), 1, &all_alive)
+        .expect("status")
+        .with_stale(profile::stale(dir.path(), &after));
+    let text = screen.render_text();
+    let lines: Vec<&str> = text.lines().filter(|l| l.contains("older than")).collect();
+    assert_eq!(
+        lines,
+        ["profiles lean and build are older than the manifest (forbidden changed)"],
+        "{text}"
+    );
+    let json: serde_json::Value = serde_json::from_str(&screen.to_json()).expect("json");
+    assert_eq!(json["stale"].as_array().map(Vec::len), Some(2));
+}
+
+#[test]
 fn status_names_a_stale_profile() {
     use crate::app::profile;
 
@@ -371,7 +404,7 @@ fn status_names_a_stale_profile() {
         .with_stale(profile::stale(dir.path(), &after));
     let text = screen.render_text();
     assert!(
-        text.contains("profile build is older than the manifest (forbidden changed)"),
+        text.contains("profiles lean and build are older than the manifest (forbidden changed)"),
         "{text}"
     );
     let json: serde_json::Value = serde_json::from_str(&screen.to_json()).expect("json");
@@ -939,7 +972,7 @@ fn status_prints_the_waits_of_a_merge_as_it_prints_the_others() {
             opened_at: since,
             merged_at: None,
             head: Some(CommitId::from("h1")),
-            changes_a_file: true,
+            changed_file: Some(crate::domain::RepoPath::from("src/lib.rs")),
             checks: Vec::new(),
             reviews: Vec::new(),
         };

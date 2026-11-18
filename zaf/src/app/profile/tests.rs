@@ -1734,23 +1734,114 @@ fn a_profile_without_a_stamp_is_stale() {
     assert_eq!(stale(&state, &manifest)[0].reasons, [Reason::NoStamp]);
 }
 
+/// Rewrites the build profile's stamp after `edit` changed its JSON.
+fn edit_build_stamp(state: &Path, edit: impl FnOnce(&mut Value)) {
+    let file = state.join("profiles/build").join(STAMP_FILE);
+    let text = fs::read_to_string(&file).expect("stamp");
+    let mut stamp: Value = serde_json::from_str(&text).expect("parses");
+    edit(&mut stamp);
+    fs::write(&file, stamp.to_string()).expect("rewrite");
+}
+
 #[test]
-fn a_stamp_from_another_zaf_is_older_than_zaf() {
+fn stamp_records_the_generation() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    init_here(&state, &manifest("")).expect("init");
+    for profile in ["lean", "build"] {
+        let text = fs::read_to_string(state.join("profiles").join(profile).join(STAMP_FILE))
+            .expect("the stamp");
+        let stamp: Value = serde_json::from_str(&text).expect("the stamp parses");
+        assert_eq!(stamp["generation"], Value::from(GENERATION));
+    }
+}
+
+#[test]
+fn stamp_from_another_zaf_with_same_generation_is_current() {
     let dir = tempfile::tempdir().expect("temp dir");
     let state = dir.path().join(".zaf");
     let manifest = manifest(FORBIDDEN_PUSH);
     init_here(&state, &manifest).expect("init");
-    let file = state.join("profiles/build").join(STAMP_FILE);
-    let text = fs::read_to_string(&file).expect("stamp");
-    let mut stamp: Value = serde_json::from_str(&text).expect("parses");
-    stamp["zaf"] = Value::from("0.0.1");
-    fs::write(&file, stamp.to_string()).expect("rewrite");
+    edit_build_stamp(&state, |stamp| stamp["zaf"] = Value::from("0.0.1"));
+    assert!(stale(&state, &manifest).is_empty());
+}
+
+#[test]
+fn a_stamp_of_another_generation_reads_plainly() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    let manifest = manifest(FORBIDDEN_PUSH);
+    init_here(&state, &manifest).expect("init");
+    edit_build_stamp(&state, |stamp| {
+        stamp["zaf"] = Value::from("0.0.1");
+        stamp["generation"] = Value::from(GENERATION + 1);
+    });
     let named = stale(&state, &manifest);
     assert_eq!(named.len(), 1);
-    assert_eq!(named[0].reasons, [Reason::Zaf("0.0.1".to_owned())]);
+    assert_eq!(named[0].reasons, [Reason::Generation("0.0.1".to_owned())]);
     assert_eq!(
         named[0].line(),
-        "profile build is older than zaf (written by zaf 0.0.1)"
+        "profile build is of another profile generation (written by zaf 0.0.1): run zaf profile init"
+    );
+}
+
+#[test]
+fn a_newer_generation_is_not_called_older() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    let manifest = manifest(FORBIDDEN_PUSH);
+    init_here(&state, &manifest).expect("init");
+    edit_build_stamp(&state, |stamp| {
+        stamp["zaf"] = Value::from("9.0.0");
+        stamp["generation"] = Value::from(GENERATION + 1);
+    });
+    let named = stale(&state, &manifest);
+    let line = stale_line(&named).expect("stale");
+    assert_eq!(
+        line,
+        "profile build is of another profile generation (written by zaf 9.0.0): run zaf profile init"
+    );
+    assert!(!line.contains("older"), "{line}");
+    assert_eq!(line.matches('(').count(), 1, "{line}");
+}
+
+#[test]
+fn stamp_without_generation_is_stale_once() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    let manifest = manifest(FORBIDDEN_PUSH);
+    init_here(&state, &manifest).expect("init");
+    edit_build_stamp(&state, |stamp| {
+        stamp.as_object_mut().expect("object").remove("generation");
+    });
+    let named = stale(&state, &manifest);
+    assert_eq!(named.len(), 1);
+    assert_eq!(
+        named[0].reasons,
+        [Reason::Generation(env!("CARGO_PKG_VERSION").to_owned())]
+    );
+
+    init_here(&state, &manifest).expect("init again");
+    assert!(stale(&state, &manifest).is_empty());
+}
+
+#[test]
+fn stamp_with_same_generation_and_changed_part_is_stale() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    init_here(&state, &manifest("")).expect("init");
+    let changed = manifest(FORBIDDEN_PUSH);
+    edit_build_stamp(&state, |stamp| stamp["zaf"] = Value::from("0.0.1"));
+    let named = stale(&state, &changed);
+    assert!(
+        named
+            .iter()
+            .all(|profile| profile.reasons == [Reason::Changed("forbidden".to_owned())]),
+        "{named:?}"
+    );
+    assert_eq!(
+        stale_line(&named).as_deref(),
+        Some("profiles lean and build are older than the manifest (forbidden changed)")
     );
 }
 
@@ -1771,4 +1862,290 @@ fn a_missing_home_is_stale_for_the_spawner_and_unnamed_by_doctor_and_status() {
     let named = stale_homes(&state, &manifest);
     assert_eq!(named.len(), 1);
     assert_eq!(named[0].profile.to_string(), "build");
+}
+
+fn stale_profile(profile: Profile, reason: Reason) -> StaleProfile {
+    StaleProfile {
+        profile,
+        reasons: vec![reason],
+    }
+}
+
+#[test]
+fn stale_line_is_none_for_no_profile() {
+    assert_eq!(stale_line(&[]), None);
+}
+
+#[test]
+fn stale_line_groups_profiles_by_reason() {
+    let old = || Reason::Generation("0.4.3".to_owned());
+    let both = [
+        stale_profile(Profile::Build, old()),
+        stale_profile(Profile::Lean, old()),
+    ];
+    assert_eq!(
+        stale_line(&both).as_deref(),
+        Some(
+            "profiles build and lean are of another profile generation (written by zaf 0.4.3): run zaf profile init"
+        )
+    );
+    let three = [
+        stale_profile(Profile::Build, old()),
+        stale_profile(Profile::Lean, old()),
+        stale_profile(Profile::Design, old()),
+    ];
+    assert_eq!(
+        stale_line(&three).as_deref(),
+        Some(
+            "profiles build, lean and design are of another profile generation (written by zaf 0.4.3): run zaf profile init"
+        )
+    );
+}
+
+#[test]
+fn stale_line_joins_several_reasons() {
+    let mixed = [
+        stale_profile(Profile::Build, Reason::NoStamp),
+        stale_profile(Profile::Lean, Reason::Changed("forbidden".to_owned())),
+    ];
+    assert_eq!(
+        stale_line(&mixed).as_deref(),
+        Some(
+            "profile build has no stamp; profile lean is older than the manifest (forbidden changed)"
+        )
+    );
+}
+
+#[test]
+fn stale_line_of_one_profile_matches_its_line() {
+    for reason in [
+        Reason::NoStamp,
+        Reason::Generation("0.4.3".to_owned()),
+        Reason::Changed("gate".to_owned()),
+    ] {
+        let one = stale_profile(Profile::Lean, reason);
+        assert_eq!(stale_line(std::slice::from_ref(&one)), Some(one.line()));
+    }
+}
+
+/// The generation and the hash of what `init` writes for [`GUARD_FIXTURE`], fixed together: the
+/// pair that was current when `GENERATION` was last raised. Raising `GENERATION` means updating both.
+const GUARDED_GENERATION: u32 = 1;
+const GUARDED_HASH: &str = "51e0b7e3f3bd1394eb35ebb4da5a749a991d3672c78967adf7d4bb0239a9eeae";
+
+/// The generation and the hash of what `init` does for [`PACK_GUARD_FIXTURE`], fixed together as
+/// the first case's pair is: the commands the pack step ran, in order, and every file written.
+const GUARDED_PACK_GENERATION: u32 = 1;
+const GUARDED_PACK_HASH: &str = "c3abd5c1336e01c82a010258d3655dd160a65d7fed1ee0e24a20093c032531b2";
+
+/// A fixture manifest with a `[pack]` section, reaching the plugin commands, the pack's tag record
+/// and the settings written after the install.
+const PACK_GUARD_FIXTURE: &str = "[requires]\njj = \"*\"\n[gate]\nfull = \"cargo test\"\n[forbidden]\ncommands = [\"git push\"]\n[pack]\ntag = \"teams-v2.1.0\"\n";
+
+/// A fixture manifest that reaches the deny list, the allow list and the gate rules.
+const GUARD_FIXTURE: &str = "[requires]\njj = \"*\"\ngh = \"*\"\nnpm = \"*\"\n[gate]\nfull = \"cargo fmt --check && cargo test\"\ntests = \"cargo test\"\n[forbidden]\ncommands = [\"git push\", \"gh pr merge\"]\n";
+
+/// Every file under `root`, relative to it, in sorted order.
+fn files_under(root: &Path, relative: &Path, found: &mut Vec<PathBuf>) {
+    let mut names: Vec<_> = fs::read_dir(root.join(relative))
+        .expect("reads")
+        .map(|entry| entry.expect("entry").file_name())
+        .collect();
+    names.sort();
+    for name in names {
+        let path = relative.join(&name);
+        if root.join(&path).is_dir() {
+            files_under(root, &path, found);
+        } else {
+            found.push(path);
+        }
+    }
+}
+
+/// A sha256 over `commands` (one per line) and every file `init` wrote under `profiles`, but the
+/// stamp: each file's path relative to the profiles folder (with `/` separators), its length and
+/// its bytes, in sorted order, so the hash is the same on every machine. With no commands it is
+/// the hash of the files alone.
+fn hash_of(commands: &[String], profiles: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    let mut files = Vec::new();
+    files_under(profiles, Path::new(""), &mut files);
+    let mut hasher = Sha256::new();
+    for line in commands {
+        hasher.update(format!("{line}\n"));
+    }
+    for file in files.iter().filter(|file| !file.ends_with(STAMP_FILE)) {
+        let name = file
+            .components()
+            .map(|part| part.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
+        let bytes = fs::read(profiles.join(file)).expect("reads");
+        hasher.update(format!("{name}\n{}\n", bytes.len()));
+        hasher.update(&bytes);
+    }
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// A hash of every file `init` writes for `manifest` and one project rule, but the stamp.
+fn generated_hash(manifest: &Manifest) -> String {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    fs::create_dir_all(state.join("roles")).expect("roles");
+    fs::write(state.join(PROJECT_RULES), "Rule one.\n").expect("rules");
+    // `init_here` asserts that its fake shell stayed unused: no claude or plugin command runs.
+    init_here(&state, manifest).expect("generates");
+    hash_of(&[], &state.join(PROFILES_DIR))
+}
+
+/// What `init` did for a manifest with a pack and one project rule, its fake shell answering the
+/// pack step and recording the install at [`TEAMS_RECORDED`].
+struct PackRun {
+    /// Keeps the folder alive.
+    _dir: tempfile::TempDir,
+    profiles: PathBuf,
+    /// The commands the pack step ran, in order, with the profile's folder written `<home>`.
+    commands: Vec<String>,
+}
+
+impl PackRun {
+    fn of(manifest: &Manifest) -> Self {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let state = dir.path().join(".zaf");
+        fs::create_dir_all(state.join("roles")).expect("roles");
+        fs::write(state.join(PROJECT_RULES), "Rule one.\n").expect("rules");
+        let shell = RecordingShell::answering(GateVerdict::Passed).recording(TEAMS_RECORDED);
+        init_through(&state, manifest, &shell).expect("generates");
+        let profiles = state.join(PROFILES_DIR);
+        let home = profiles.join("build").display().to_string();
+        let commands: Vec<String> = shell
+            .lines()
+            .iter()
+            .map(|line| line.replace(&home, "<home>"))
+            .collect();
+        assert!(!commands.is_empty(), "the pack step ran no command");
+        Self {
+            _dir: dir,
+            profiles,
+            commands,
+        }
+    }
+
+    /// The hash of the commands the pack step ran and every file written.
+    fn hash(&self) -> String {
+        hash_of(&self.commands, &self.profiles)
+    }
+}
+
+#[test]
+fn generated_profile_changes_raise_the_generation() {
+    let hash = generated_hash(&manifest(GUARD_FIXTURE));
+    assert_eq!(
+        hash,
+        generated_hash(&manifest(GUARD_FIXTURE)),
+        "the hash must not depend on where the profile is written"
+    );
+    if GENERATION == GUARDED_GENERATION {
+        assert_eq!(
+            hash, GUARDED_HASH,
+            "what `zaf profile init` writes changed while GENERATION is still {GENERATION}: \
+             raise GENERATION in zaf/src/app/profile/mod.rs, then set GUARDED_GENERATION to the \
+             new number and GUARDED_HASH to {hash} in this test"
+        );
+    } else {
+        assert_eq!(
+            GENERATION, GUARDED_GENERATION,
+            "GENERATION was raised: set GUARDED_GENERATION to {GENERATION} and GUARDED_HASH to {hash}"
+        );
+    }
+}
+
+#[test]
+fn a_pack_step_change_raises_the_generation() {
+    let run = PackRun::of(&manifest(PACK_GUARD_FIXTURE));
+    let hash = run.hash();
+    assert_eq!(
+        hash,
+        PackRun::of(&manifest(PACK_GUARD_FIXTURE)).hash(),
+        "the hash must not depend on where the profile is written"
+    );
+
+    // The hash takes in each command the pack step ran, their order, and the pack's files.
+    let mut changed = run.commands.clone();
+    changed.push("claude plugin enable 'teams@ways'".to_owned());
+    assert_ne!(hash, hash_of(&changed, &run.profiles), "a command added");
+    let mut changed = run.commands.clone();
+    changed.swap(0, 1);
+    assert_ne!(hash, hash_of(&changed, &run.profiles), "commands reordered");
+    let mut changed = run.commands.clone();
+    changed[2] = changed[2].replace("teams@ways", "teams@other");
+    assert_ne!(hash, hash_of(&changed, &run.profiles), "a command changed");
+    let tag = run.profiles.join("build/plugins").join(INSTALLED_TAG_FILE);
+    assert!(tag.is_file(), "the pack's tag record is written");
+    fs::write(&tag, "9.9.9\n").expect("edits");
+    assert_ne!(hash, run.hash(), "the tag record changed");
+    fs::write(&tag, "2.1.0\n").expect("restores");
+    assert_eq!(hash, run.hash(), "restored");
+    let settings = run.profiles.join("build/settings.json");
+    let original = fs::read(&settings).expect("reads");
+    fs::write(&settings, "{}\n").expect("edits");
+    assert_ne!(hash, run.hash(), "the settings changed");
+    fs::write(&settings, original).expect("restores");
+
+    if GENERATION == GUARDED_PACK_GENERATION {
+        assert_eq!(
+            hash, GUARDED_PACK_HASH,
+            "what `zaf profile init` does for a pack changed while GENERATION is still \
+             {GENERATION}: raise GENERATION in zaf/src/app/profile/mod.rs, then set \
+             GUARDED_PACK_GENERATION to the new number and GUARDED_PACK_HASH to {hash} in this test"
+        );
+    } else {
+        assert_eq!(
+            GENERATION, GUARDED_PACK_GENERATION,
+            "GENERATION was raised: set GUARDED_PACK_GENERATION to {GENERATION} and \
+             GUARDED_PACK_HASH to {hash}"
+        );
+    }
+}
+
+/// A fixture manifest holding every part the stamp digests: `[requires]`, `[gate]`,
+/// `[forbidden]`, the roles and `[pack]`.
+const STAMP_FIXTURE: &str = "[requires]\njj = \"*\"\ngh = \"*\"\n[gate]\nfull = \"cargo fmt --check && cargo test\"\nlight = \"cargo fmt --check\"\ntests = \"cargo test\"\n[forbidden]\ncommands = [\"git push\", \"gh pr merge\"]\n[roles.attended]\nmodel = \"opus\"\neffort = \"max\"\nprofile = \"design\"\nturns = 10\n[roles.implement]\nmodel = \"sonnet\"\neffort = \"high\"\nprofile = \"build\"\nturns = 40\n[pack]\ntag = \"teams-v2.1.4\"\n";
+
+/// The digest of each stamped part of [`STAMP_FIXTURE`] with the project rules `Be brief.`,
+/// fixed. A stamp written by another zaf of the same generation is compared digest by digest, so
+/// the text a part digests must not move from one zaf to the next.
+const STAMP_DIGESTS: [(&str, &str); 6] = [
+    ("requires", "11f7f4bca7145a9a"),
+    ("gate", "871f642f32fee599"),
+    ("forbidden", "8b7b298afffcb29a"),
+    ("roles", "bd1d02a488152960"),
+    ("pack", "417ec911e22d5a08"),
+    ("roles/project.md", "82218ced4e7eff32"),
+];
+
+#[test]
+fn stamp_digests_of_a_fixed_manifest_do_not_move() {
+    let live = stamp::parts(&manifest(STAMP_FIXTURE), Some("Be brief.\n"));
+    let names: Vec<&str> = live.keys().map(String::as_str).collect();
+    let mut expected: Vec<&str> = STAMP_DIGESTS.iter().map(|(part, _)| *part).collect();
+    expected.sort_unstable();
+    assert_eq!(
+        names, expected,
+        "the stamp's parts changed: raise GENERATION in zaf/src/app/profile/mod.rs and fix \
+         STAMP_DIGESTS together, since stamps written by an earlier zaf then read as changed"
+    );
+    for (part, digest) in STAMP_DIGESTS {
+        assert_eq!(
+            live[part], digest,
+            "the digest of `{part}` changed for the same manifest: stamps written by an earlier \
+             zaf now read `{part} changed`, so raise GENERATION in zaf/src/app/profile/mod.rs and \
+             fix STAMP_DIGESTS together (the new digest is {})",
+            live[part]
+        );
+    }
 }

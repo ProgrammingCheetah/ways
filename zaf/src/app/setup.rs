@@ -19,7 +19,9 @@
 //!
 //! After the profiles, [`install_pack_actions`] copies the `actions/` folder of the pack installed
 //! in a generated profile into the zaf home's `actions/`: each file the machine tier lacks, with
-//! its mode bits, once. A name already there is left byte for byte, and nothing is deleted.
+//! its mode bits, once. A name already there is left byte for byte, and nothing is deleted, unless
+//! it is a regular file that differs from the pack's and a [`ReplaceAction`] asker says yes: the old
+//! file is then kept under `actions-replaced/` in the zaf home and the pack's renamed into place.
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -276,6 +278,9 @@ pub enum SetupError {
     /// The profiles could not be generated: a file, the marketplace or a `claude plugin` command.
     #[error(transparent)]
     Profile(ProfileError),
+    /// The pack's actions could not be installed; `replaced` holds what was replaced before.
+    #[error("{}", .0.error)]
+    Actions(ActionsFailed),
 }
 
 /// What `setup` did and what remains.
@@ -316,13 +321,32 @@ impl SetupReport {
     }
 }
 
+/// The folder in the zaf home that keeps the copy of each action [`install_pack_actions`] replaced.
+pub const REPLACED_DIR: &str = "actions-replaced";
+
+/// Who is asked whether an installed action that differs from the pack's is replaced:
+/// `trait ReplaceAction { fn replace(&mut self, name: &str, difference: &str) -> bool; }`.
+pub trait ReplaceAction {
+    /// Whether the machine's action `name` is replaced by the pack's, given `difference`, the diff
+    /// of the two. Only `true` replaces.
+    fn replace(&mut self, name: &str, difference: &str) -> bool;
+}
+
 /// What [`install_pack_actions`] did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PackActions {
     /// The names copied into the zaf home's `actions/`, sorted.
     pub installed: Vec<String>,
-    /// The names the machine tier already had, left as they are, sorted.
+    /// The names the machine tier already had and left as they are, sorted: those that are equal
+    /// to the pack's, not a regular file, or differ and were not replaced.
     pub kept: Vec<String>,
+    /// Each name replaced by the pack's and where the old copy went, in the order replaced.
+    pub replaced: Vec<(String, PathBuf)>,
+    /// The names kept though they differ from the pack's, with no one asked: there was no asker, or
+    /// the difference could not be shown. Sorted.
+    pub differs: Vec<String>,
+    /// The names in [`PackActions::differs`] whose difference could not be shown, sorted.
+    pub unshown: Vec<String>,
 }
 
 impl PackActions {
@@ -337,51 +361,128 @@ impl PackActions {
                 self.installed.join(", ")
             ));
         }
+        for (name, old) in &self.replaced {
+            lines.push(format!(
+                "replaced {name} (the old one is at {})",
+                old.display()
+            ));
+        }
         if !self.kept.is_empty() {
             lines.push(format!(
                 "kept the machine's own, unchanged: {}",
                 self.kept.join(", ")
             ));
         }
+        let unreviewed: Vec<&str> = self
+            .differs
+            .iter()
+            .filter(|name| !self.unshown.contains(name))
+            .map(String::as_str)
+            .collect();
+        if !unreviewed.is_empty() {
+            lines.push(format!(
+                "differs from the pack, kept: {}; run zaf setup in a terminal to review",
+                unreviewed.join(", ")
+            ));
+        }
+        if !self.unshown.is_empty() {
+            lines.push(format!(
+                "differs from the pack, kept, and the difference could not be shown: {}",
+                self.unshown.join(", ")
+            ));
+        }
         lines
+    }
+}
+
+/// How [`install_pack_actions`] failed, with what it had replaced before: the Engineer is still
+/// told where each old copy went.
+#[derive(Debug)]
+pub struct ActionsFailed {
+    /// Each name replaced before the failure and where the old copy went, in the order replaced.
+    pub replaced: Vec<(String, PathBuf)>,
+    /// The failure.
+    pub error: io::Error,
+}
+
+impl ActionsFailed {
+    /// The lines naming what was replaced before the failure, as [`PackActions::lines`] words them.
+    pub fn lines(&self) -> Vec<String> {
+        PackActions {
+            replaced: self.replaced.clone(),
+            ..PackActions::default()
+        }
+        .lines()
     }
 }
 
 /// Copies the files of the `actions/` folder of the pack installed in a generated profile that
 /// carries it into the zaf `home`'s `actions/`, each name the machine tier lacks, keeping its mode
 /// bits. A name already there (a file, a link or anything else) is left byte for byte and listed
-/// in [`PackActions::kept`]; nothing is overwritten or deleted. Only regular files are copied: a
-/// link, a folder (`hooks/` included) and a name an action may not have are skipped. Installs
-/// nothing without a home, a pack, an installed pack or a pack with no `actions/`.
+/// in [`PackActions::kept`], with one exception: an installed regular file whose bytes or mode bits
+/// differ from the pack's is offered to `asker` with the difference `git` shows, and on yes the old
+/// file is copied to `actions-replaced/<name>.<UTC time>` in the zaf home and the pack's written
+/// over it by a rename. With no asker, or when the difference cannot be shown, it is kept and
+/// listed in [`PackActions::differs`]. A link or a folder is never offered. Nothing is deleted.
+/// Only regular files of the pack are used: a link, a folder (`hooks/` included) and a name an
+/// action may not have are skipped. Installs nothing without a home, a pack, an installed pack or
+/// a pack with no `actions/`.
 fn install_pack_actions(
     root: &Path,
     state_dir: &Path,
     home: Option<&Path>,
     manifest: &Manifest,
-) -> io::Result<PackActions> {
+    commands: &dyn Commands,
+    asker: Option<&mut dyn ReplaceAction>,
+    now: SystemTime,
+) -> Result<PackActions, ActionsFailed> {
     let mut done = PackActions::default();
+    match install_into(
+        &mut done, root, state_dir, home, manifest, commands, asker, now,
+    ) {
+        Ok(()) => Ok(done),
+        Err(error) => Err(ActionsFailed {
+            replaced: done.replaced,
+            error,
+        }),
+    }
+}
+
+/// The work of [`install_pack_actions`], recording into `done` as it goes, so a failure leaves
+/// there what was done before it.
+#[allow(clippy::too_many_arguments)]
+fn install_into(
+    done: &mut PackActions,
+    root: &Path,
+    state_dir: &Path,
+    home: Option<&Path>,
+    manifest: &Manifest,
+    commands: &dyn Commands,
+    mut asker: Option<&mut dyn ReplaceAction>,
+    now: SystemTime,
+) -> io::Result<()> {
     let Some(home) = home else {
-        return Ok(done);
+        return Ok(());
     };
     let Some(pack) = manifest
         .pack
         .as_ref()
         .and_then(|pack| profile::pack_ref(root, pack).ok().flatten())
     else {
-        return Ok(done);
+        return Ok(());
     };
     let Some(profile) = profile::generated(manifest)
         .into_iter()
         .find(|profile| profile::carries_pack(*profile))
     else {
-        return Ok(done);
+        return Ok(());
     };
     let profile_home = profile::home(state_dir, profile);
     let Some(installed) = profile::installed_path(&profile_home, &pack.to_string()) else {
-        return Ok(done);
+        return Ok(());
     };
     let Ok(entries) = fs::read_dir(installed.join(ACTIONS_DIR)) else {
-        return Ok(done);
+        return Ok(());
     };
     let mut files: Vec<(String, PathBuf)> = Vec::new();
     for entry in entries {
@@ -400,21 +501,79 @@ fn install_pack_actions(
         fs::create_dir_all(&target)?;
         if copy_new(&path, &target, &name)? {
             done.installed.push(name);
+            continue;
+        }
+        let installed = target.join(&name);
+        // A link, a folder or anything but a regular file is never offered.
+        if !fs::symlink_metadata(&installed)?.is_file() || !differs(&installed, &path)? {
+            done.kept.push(name);
+            continue;
+        }
+        let Some(asker) = asker.as_deref_mut() else {
+            done.differs.push(name.clone());
+            done.kept.push(name);
+            continue;
+        };
+        let Some(shown) = difference(commands, &installed, &path) else {
+            done.unshown.push(name.clone());
+            done.differs.push(name.clone());
+            done.kept.push(name);
+            continue;
+        };
+        if asker.replace(&name, &shown) {
+            let old = keep_old_copy(&installed, &home.join(REPLACED_DIR), &name, now)?;
+            replace_with(&path, &target, &name)?;
+            done.replaced.push((name, old));
         } else {
             done.kept.push(name);
         }
     }
-    Ok(done)
+    Ok(())
 }
 
-/// Copies `source` to `<dir>/<name>` with its mode bits unless something is there; whether it did.
-/// The bytes go to a temporary file first and are linked into place, which fails when the name
-/// exists, so a reader never sees half a file and a name made meanwhile is never replaced.
-fn copy_new(source: &Path, dir: &Path, name: &str) -> io::Result<bool> {
-    let target = dir.join(name);
-    if fs::symlink_metadata(&target).is_ok() {
-        return Ok(false);
+/// Copies `installed`, with its mode bits, to a new file `<dir>/<name>.<UTC time>` (as
+/// `20261118T091500Z`), making `dir`; a name already taken gets `.1`, `.2` and so on after it, so
+/// nothing is overwritten. Returns where the copy is.
+fn keep_old_copy(installed: &Path, dir: &Path, name: &str, now: SystemTime) -> io::Result<PathBuf> {
+    fs::create_dir_all(dir)?;
+    let time = humantime::format_rfc3339_seconds(now)
+        .to_string()
+        .replace(['-', ':'], "");
+    let mode = fs::metadata(installed)?.permissions().mode() & 0o777;
+    let bytes = fs::read(installed)?;
+    for attempt in 0_u32.. {
+        let file = if attempt == 0 {
+            format!("{name}.{time}")
+        } else {
+            format!("{name}.{time}.{attempt}")
+        };
+        let path = dir.join(file);
+        let mut copy = match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(copy) => copy,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        };
+        copy.write_all(&bytes)?;
+        copy.set_permissions(fs::Permissions::from_mode(mode))?;
+        copy.sync_all()?;
+        return Ok(path);
     }
+    unreachable!("the attempts are not bounded")
+}
+
+/// Puts `source`, with its mode bits, at `<dir>/<name>` over whatever is there: the bytes go to a
+/// temporary file first, which is renamed over the name, so a reader never sees half a file.
+fn replace_with(source: &Path, dir: &Path, name: &str) -> io::Result<()> {
+    let temporary = write_temporary(source, dir, name)?;
+    let renamed = fs::rename(&temporary, dir.join(name));
+    if renamed.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    renamed
+}
+
+/// Writes `source`, with its mode bits, to a new temporary file in `dir`; returns its path.
+fn write_temporary(source: &Path, dir: &Path, name: &str) -> io::Result<PathBuf> {
     let mode = fs::metadata(source)?.permissions().mode() & 0o777;
     let temporary = dir.join(format!(".{name}.zaf-installing"));
     match fs::remove_file(&temporary) {
@@ -429,15 +588,68 @@ fn copy_new(source: &Path, dir: &Path, name: &str) -> io::Result<bool> {
             .open(&temporary)?;
         file.write_all(&fs::read(source)?)?;
         file.set_permissions(fs::Permissions::from_mode(mode))?;
-        file.sync_all()?;
-        match fs::hard_link(&temporary, &target) {
-            Ok(()) => Ok(true),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
-            Err(error) => Err(error),
-        }
+        file.sync_all()
     })();
+    if let Err(error) = written {
+        let _ = fs::remove_file(&temporary);
+        return Err(error);
+    }
+    Ok(temporary)
+}
+
+/// Copies `source` to `<dir>/<name>` with its mode bits unless something is there; whether it did.
+/// The bytes go to a temporary file first and are linked into place, which fails when the name
+/// exists, so a reader never sees half a file and a name made meanwhile is never replaced.
+fn copy_new(source: &Path, dir: &Path, name: &str) -> io::Result<bool> {
+    let target = dir.join(name);
+    if fs::symlink_metadata(&target).is_ok() {
+        return Ok(false);
+    }
+    let temporary = write_temporary(source, dir, name)?;
+    let linked = match fs::hard_link(&temporary, &target) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(false),
+        Err(error) => Err(error),
+    };
     let _ = fs::remove_file(&temporary);
-    written
+    linked
+}
+
+/// Whether the installed action at `installed` differs from the pack's at `pack`: in its bytes or
+/// in its mode bits (the nine permission bits `copy_new` keeps). The comparison is made here, on
+/// the bytes and the mode, and never by `git`. Either file missing is an error.
+fn differs(installed: &Path, pack: &Path) -> io::Result<bool> {
+    let installed_mode = fs::metadata(installed)?.permissions().mode() & 0o777;
+    let pack_mode = fs::metadata(pack)?.permissions().mode() & 0o777;
+    if installed_mode != pack_mode {
+        return Ok(true);
+    }
+    Ok(fs::read(installed)? != fs::read(pack)?)
+}
+
+/// The difference between an installed action and the pack's as `git diff --no-index` prints it,
+/// asked through `commands`. Only the text is returned, and only when it opens with `diff --git`:
+/// a missing `git`, a failure to start it or any other output is none. `git` shows the difference
+/// and never decides it (see [`differs`]); it exits 1 when files differ, so its exit status is not
+/// read.
+fn difference(commands: &dyn Commands, installed: &Path, pack: &Path) -> Option<String> {
+    let installed = installed.to_string_lossy();
+    let pack = pack.to_string_lossy();
+    let output = commands
+        .run(
+            "git",
+            &[
+                "diff",
+                "--no-index",
+                "--no-ext-diff",
+                "--no-color",
+                "--",
+                &installed,
+                &pack,
+            ],
+        )
+        .ok()?;
+    output.text.starts_with("diff --git").then_some(output.text)
 }
 
 fn clone_design(root: &Path, manifest: &Manifest, commands: &dyn Commands) -> Option<CloneOutcome> {
@@ -542,13 +754,16 @@ fn worksheet(
 /// design repo that is missing, generates the manifest's profiles through `shell` as
 /// `zaf profile init` does, runs doctor and builds the worksheet. Idempotent.
 ///
-/// A refusal of the generation is a worksheet step; any other failure of it is an error.
+/// A refusal of the generation is a worksheet step; any other failure of it is an error. An
+/// installed action that differs from the pack's is replaced only when `asker` says yes; with
+/// none, no one can be asked and it is kept.
 pub fn setup(
     root: &Path,
     home: Option<&Path>,
     manifest: &Manifest,
     commands: &dyn Commands,
     shell: &dyn Shell,
+    asker: Option<&mut dyn ReplaceAction>,
 ) -> Result<SetupReport, SetupError> {
     let claude_home = profile::claude_home();
     setup_with(
@@ -558,6 +773,7 @@ pub fn setup(
         commands,
         shell,
         claude_home.as_deref(),
+        asker,
     )
 }
 
@@ -569,6 +785,7 @@ fn setup_with(
     commands: &dyn Commands,
     shell: &dyn Shell,
     claude_home: Option<&Path>,
+    asker: Option<&mut dyn ReplaceAction>,
 ) -> Result<SetupReport, SetupError> {
     let mut homes = ensure_homes(Some(root), home)?;
     if homes.ignore == Some(IgnoreState::Star) {
@@ -584,7 +801,16 @@ fn setup_with(
             Err(error) => return Err(SetupError::Profile(error)),
         };
     let actions = if profiles.is_some() {
-        install_pack_actions(root, &state_dir, home, manifest)?
+        install_pack_actions(
+            root,
+            &state_dir,
+            home,
+            manifest,
+            commands,
+            asker,
+            SystemTime::now(),
+        )
+        .map_err(SetupError::Actions)?
     } else {
         PackActions::default()
     };

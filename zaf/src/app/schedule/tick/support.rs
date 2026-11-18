@@ -33,6 +33,7 @@ pub(crate) fn facts(
         ruled: Vec::new(),
         ready_since: Some(ready_since),
         merging: Default::default(),
+        no_check_ruled: None,
     }
 }
 

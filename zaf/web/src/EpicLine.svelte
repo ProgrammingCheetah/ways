@@ -4,12 +4,13 @@
 </script>
 
 <script>
-  // One epic's line of squares: its own block first, then a run of squares for each task, coloured by state.
-  // Each block is one focusable stop; hovering or focusing it shows a card that tells what it is.
+  // One epic's line: its own square beside its title, then the grid of its tasks' squares, coloured by state.
+  // Each block is one focusable stop (a task's is its first square; its other squares are for the pointer
+  // alone); hovering any square or focusing the stop shows a card that tells what it is.
   // It reads GET /api/state's `epic.tasks[]` (number, title, size, state, phase, blocked_by, question,
   // issue_url) and the epic's own `line_state` and `line_question`.
   import { safeUrl } from './api.js';
-  import { turnedDone } from './line.js';
+  import { gridCells, gridRows, turnedDone } from './line.js';
   import QuestionPrompt from './QuestionPrompt.svelte';
 
   // `controls`: the hub serves controls and this page holds its key; only then does a yellow block open
@@ -17,10 +18,6 @@
   // project's open questions, whose `url` is the question's issue.
   let { epic, project = null, controls = false, questions = [] } = $props();
   const uid = $props.id();
-
-  const SIZES = { XS: 1, S: 2, M: 3, L: 4, XL: 5, E: 6 };
-  const UNKNOWN_SIZE = 2;
-  const EPIC_SQUARES = 2;
 
   // The six colours, each with the words that name it (the legend, and the accessible names).
   const STATES = [
@@ -78,15 +75,21 @@
     finishing = play;
   });
   const doneCount = $derived(tasks.filter((t) => t.state === 'done').length);
+  // The grid: its rows, and the place of every task square (gridCells), a task's squares one after another.
+  const cells = $derived(gridCells(tasks));
+  const rows = $derived(gridRows(cells.length));
+  const columns = $derived(cells.reduce((most, c) => Math.max(most, c.column + 1), 1));
   const blocks = $derived(
     tasks.map((t) => {
-      const count = SIZES[t.size] ?? UNKNOWN_SIZE;
+      const mine = cells.filter((c) => c.task === t);
       const phases = t.state === 'working' && t.phases_total > 0 ? ` (${t.phases_done} of ${t.phases_total} phases)` : '';
-      const squares = fills(count, t.state, t.phases_done, t.phases_total);
+      const squares = fills(mine.length, t.state, t.phases_done, t.phases_total);
       return {
         task: t,
         cls: classOf(t.state),
         href: safeUrl(t.issue_url),
+        cells: mine,
+        first: cells.indexOf(mine[0]),
         squares,
         motion: motions(t.state, squares),
         shine: shining.includes(t.number),
@@ -94,9 +97,9 @@
       };
     }),
   );
-  // The wave runs along the whole line, the epic's block first, in under two seconds however long it is.
-  const step = $derived(Math.min(0.04, 1.2 / (EPIC_SQUARES + blocks.reduce((n, b) => n + b.squares.length, 0))));
-  const starts = $derived(blocks.map((_, i) => EPIC_SQUARES + blocks.slice(0, i).reduce((n, b) => n + b.squares.length, 0)));
+  // The wave runs along the grid's squares in grid order (down a column and on to the next) and reaches
+  // the epic's square last, in under two seconds however long it is.
+  const step = $derived(Math.min(0.04, 1.2 / (cells.length + 1)));
   const epicClass = $derived(classOf(epic.line_state));
   const epicName = $derived(`Epic #${epic.number} ${epic.title}: ${wordOf(epic.line_state)}`);
   const epicHref = $derived(safeUrl(epic.url));
@@ -135,7 +138,17 @@
   let place = $state({ left: 0, top: 0 });
   const cardId = (key) => `${uid}-card-${key}`;
 
+  // The task the pointer is on (every one of its squares is outlined), apart from `active`, which focus sets too.
+  let pointed = $state(null);
+
+  // A block's card hangs from the square under the pointer, or from its first square when focus brings it.
   function show(key, event) {
+    active = key;
+    anchor = event.currentTarget.querySelector('.square') ?? event.currentTarget;
+  }
+
+  function point(key, event) {
+    pointed = key;
     active = key;
     anchor = event.currentTarget;
   }
@@ -143,7 +156,34 @@
   function hide() {
     active = null;
     anchor = null;
+    pointed = null;
   }
+
+  // A task's later squares are not in the tab order: a click on one goes where its first square goes, the
+  // same click with its keys (so a new tab still opens), and so the prompt returns focus to the first square.
+  function clickFirst(event) {
+    const first = event.currentTarget.closest('.task-block')?.querySelector('.hit');
+    first?.dispatchEvent(
+      new MouseEvent('click', {
+        bubbles: true,
+        cancelable: true,
+        button: event.button,
+        ctrlKey: event.ctrlKey,
+        shiftKey: event.shiftKey,
+        altKey: event.altKey,
+        metaKey: event.metaKey,
+      }),
+    );
+  }
+
+  const squareClass = (block, i) =>
+    ['square', block.cls, block.motion[i], block.squares[i] < 1 && 'partial', block.shine && 'shine', finishing && 'finish', pointed === block.task.number && 'outlined']
+      .filter(Boolean)
+      .join(' ');
+  const squareStyle = (block, i) => {
+    const cell = block.cells[i];
+    return [`grid-row: ${cell.row + 1}`, `grid-column: ${cell.column + 1}`, block.shine ? `--i: ${i}` : '', finishing ? `--n: ${block.first + i}` : ''].filter(Boolean).join('; ');
+  };
 
   // Keeps the card inside the viewport: under its block, or above it when there is no room below.
   $effect(() => {
@@ -167,8 +207,8 @@
 
 {#if tasks.length}
   <div class="epic-line" data-testid="epic-line" data-epic={epic.number} style={finishing ? `--step: ${step}s` : null}>
-    <div class="line-title"><span class="id">#{epic.number}</span> <span class="title">{epic.title}</span></div>
-    <ul class="line">
+    <div class="line-title">
+      <ul class="epic-own">
       <li
         class="block epic-block"
         data-testid="epic-block"
@@ -180,9 +220,7 @@
       >
         {#snippet epicSquares()}
           <span role="img" aria-label={epicName}>
-            {#each Array(EPIC_SQUARES) as _, i (i)}
-              <span class="square {epicClass}" class:finish={finishing} style={finishing ? `--n: ${i}` : null} data-fill="1"></span>
-            {/each}
+            <span class="square {epicClass}" class:finish={finishing} style={finishing ? `--n: ${cells.length}` : null} data-fill="1"></span>
           </span>
         {/snippet}
         {#if askable(epic.line_state, epic.line_question)}
@@ -215,51 +253,96 @@
           </div>
         {/if}
       </li>
-      {#each blocks as block, b (block.task.number)}
+      </ul>
+      <span class="id">#{epic.number}</span> <span class="title">{epic.title}</span>
+    </div>
+    <ul class="line">
+      <!-- The box scrolls on its own, and an element's scroll never reaches the window: it hides the card too. -->
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+      <li class="grid-box" data-testid="epic-grid-box" onscroll={hide}>
+      <ul class="grid" data-testid="epic-grid" data-rows={rows} style="--rows: {rows}; --cols: {columns}">
+      {#each blocks as block (block.task.number)}
         {@const t = block.task}
         <li
           class="block task-block"
           data-testid="task-block"
           data-task={t.number}
           data-state={block.cls}
-          onmouseenter={(e) => show(t.number, e)}
-          onmouseleave={hide}
           onfocusin={(e) => show(t.number, e)}
           onfocusout={hide}
         >
-          {#snippet squares()}
-            <span role="img" aria-label={block.name}>
-              {#each block.squares as fill, i (i)}
-                <span
-                  class="square {block.cls} {block.motion[i]}"
-                  class:partial={fill < 1}
-                  class:shine={block.shine}
-                  class:finish={finishing}
-                  style={[block.shine ? `--i: ${i}` : '', finishing ? `--n: ${starts[b] + i}` : ''].filter(Boolean).join('; ') || null}
-                  data-fill={fill}
-                >
-                  {#if block.cls === 'working'}
-                    <span class="fill" style="transform: scaleX({fill})"></span>
-                  {/if}
-                </span>
-              {/each}
-            </span>
+          {#snippet inside(fill)}
+            {#if block.cls === 'working'}
+              <span class="fill" style="transform: scaleX({fill})"></span>
+            {/if}
           {/snippet}
-          {#if askable(t.state, t.question)}
-            <button
-              type="button"
-              class="hit"
-              data-testid="ask-task"
-              aria-describedby={active === t.number ? cardId(t.number) : undefined}
-              onclick={(e) => ask(t.question, issueOf(t.question, t.issue_url, t.number), e)}
-              >{@render squares()}</button
-            >
-          {:else if block.href}
-            <a class="hit" href={block.href} aria-describedby={active === t.number ? cardId(t.number) : undefined}>{@render squares()}</a>
-          {:else}
-            <!-- svelte-ignore a11y_no_noninteractive_tabindex: a block with no safe address is focusable, opens nothing -->
-            <span class="hit" tabindex="0" aria-describedby={active === t.number ? cardId(t.number) : undefined}>{@render squares()}</span>
-          {/if}
+          {#each block.squares as fill, i (i)}
+            {@const cell = block.cells[i]}
+            {#if i === 0}
+              <!-- A task's first square is its one stop: the link to its issue, or the button that opens its prompt,
+                   with the task's name. -->
+              {#if askable(t.state, t.question)}
+                <button
+                  type="button"
+                  class="hit {squareClass(block, i)}"
+                  style={squareStyle(block, i)}
+                  data-testid="ask-task"
+                  data-row={cell.row + 1}
+                  data-column={cell.column + 1}
+                  data-fill={fill}
+                  aria-describedby={active === t.number ? cardId(t.number) : undefined}
+                  onmouseenter={(e) => point(t.number, e)}
+                  onmouseleave={hide}
+                  onclick={(e) => ask(t.question, issueOf(t.question, t.issue_url, t.number), e)}
+                  ><span role="img" aria-label={block.name}></span>{@render inside(fill)}</button
+                >
+              {:else if block.href}
+                <a
+                  class="hit {squareClass(block, i)}"
+                  style={squareStyle(block, i)}
+                  href={block.href}
+                  data-row={cell.row + 1}
+                  data-column={cell.column + 1}
+                  data-fill={fill}
+                  aria-describedby={active === t.number ? cardId(t.number) : undefined}
+                  onmouseenter={(e) => point(t.number, e)}
+                  onmouseleave={hide}
+                  ><span role="img" aria-label={block.name}></span>{@render inside(fill)}</a
+                >
+              {:else}
+                <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_static_element_interactions, a11y_mouse_events_have_key_events: a block with no safe address is focusable, opens nothing -->
+                <span
+                  class="hit {squareClass(block, i)}"
+                  style={squareStyle(block, i)}
+                  tabindex="0"
+                  data-row={cell.row + 1}
+                  data-column={cell.column + 1}
+                  data-fill={fill}
+                  aria-describedby={active === t.number ? cardId(t.number) : undefined}
+                  onmouseenter={(e) => point(t.number, e)}
+                  onmouseleave={hide}
+                  ><span role="img" aria-label={block.name}></span>{@render inside(fill)}</span
+                >
+              {/if}
+            {:else}
+              <!-- The later squares: out of the tab order and the reading, they show the card, outline the task and
+                   click through to the first square's place. -->
+              <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events, a11y_mouse_events_have_key_events -->
+              <span
+                class={squareClass(block, i)}
+                class:clickable={askable(t.state, t.question) || block.href}
+                style={squareStyle(block, i)}
+                aria-hidden="true"
+                data-row={cell.row + 1}
+                data-column={cell.column + 1}
+                data-fill={fill}
+                onmouseenter={(e) => point(t.number, e)}
+                onmouseleave={hide}
+                onclick={clickFirst}
+                >{@render inside(fill)}</span
+              >
+            {/if}
+          {/each}
           {#if active === t.number}
             <div
               class="card"
@@ -287,6 +370,8 @@
           {/if}
         </li>
       {/each}
+      </ul>
+      </li>
     </ul>
     {#if prompt}
       {#key prompt.question.number}

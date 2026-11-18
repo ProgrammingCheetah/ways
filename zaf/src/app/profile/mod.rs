@@ -1,5 +1,9 @@
 //! `zaf profile init`: generate `.zaf/profiles/<name>/`, a complete Claude home per profile.
 //!
+//! The stamp it writes last records the [`GENERATION`] of what it writes and a digest per input
+//! (see `stamp.rs`): a profile is stale when its generation or a digest differs, and no longer
+//! for the zaf version alone.
+//!
 //! Each profile the manifest's roles name gets `settings.json`, `CLAUDE.md` and the
 //! `projects/`, `memory/` and `plugins/` folders, ready for `CLAUDE_CONFIG_DIR`.
 //! Generation is deterministic (sorted keys, fixed order, no timestamps), so a rerun
@@ -43,7 +47,7 @@ use serde_json::{Map, Value, json};
 mod stamp;
 #[cfg(test)]
 pub use stamp::write_stamps;
-pub use stamp::{PARTS, Reason, STAMP_FILE, StaleProfile, stale, stale_homes};
+pub use stamp::{PARTS, Reason, STAMP_FILE, StaleProfile, stale, stale_homes, stale_line};
 
 use crate::app::actions::forbidden_action;
 use crate::app::brief::INTERFACE_PAGE;
@@ -51,6 +55,11 @@ use crate::composition::HOME_VAR;
 use crate::domain::Profile;
 use crate::manifest::{CommandLine, Effort, Manifest, PackSection, RoleSection, ToolName};
 use crate::ports::{GateVerdict, Shell};
+
+/// The generation of what `zaf profile init` writes: raised by hand, and only when that changes
+/// (the settings, the denies, the pack step). Each stamp records it, and a stamp of another
+/// generation, or of none, is stale; a new zaf with the same number leaves profiles current.
+pub const GENERATION: u32 = 1;
 
 /// The folder under the state folder that holds the profiles.
 pub const PROFILES_DIR: &str = "profiles";
