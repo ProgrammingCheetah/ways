@@ -91,6 +91,29 @@ fn an_edit_voids_the_signature() {
 }
 
 #[test]
+fn epic_of_a_version_reads_the_first_line_only() {
+    let of = |body: &str| Epic {
+        body: body.into(),
+        ..epic()
+    };
+    let first = of("Release: 0.6.0\n\nGoal: one.");
+    let crlf = of("Release: 0.6.0\r\nGoal: one.");
+    let second = of("Goal: one.\nRelease: 0.6.0");
+    let none = of(BODY);
+    assert_eq!(first.release(), Some("0.6.0"));
+    assert_eq!(crlf.release(), Some("0.6.0"));
+    assert_eq!(second.release(), None);
+    assert_eq!(none.release(), None);
+    assert_eq!(release_of("Release: "), None);
+    assert_eq!(release_of(""), None);
+
+    let epics = [first, second, none, crlf];
+    assert_eq!(of_version(&epics, "0.6.0").count(), 2);
+    assert_eq!(of_version(&epics, "0.5.0").count(), 0);
+    assert_eq!(release_of(&with_release("0.6.0", "Goal.")), Some("0.6.0"));
+}
+
+#[test]
 fn a_stage_prints_as_its_word() {
     assert_eq!(EpicStage::Challenged.to_string(), "challenged");
     assert_eq!(

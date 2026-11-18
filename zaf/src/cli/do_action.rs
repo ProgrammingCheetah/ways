@@ -13,8 +13,9 @@ use super::Cli;
 use super::exit::{BACKEND, OK};
 use super::slice::VERSION_VAR;
 use crate::app::actions::{
-    Caller, MINUTE, Nesting, Refused, RunOutcome, RunRequest, RunResult, RunStep, SliceContext,
-    Terminal, Tier, last_lines, list_actions, read_action, refuse_forbidden, run_action,
+    Caller, MINUTE, Nesting, PhaseEnv, Refused, RunOutcome, RunRequest, RunResult, RunStep,
+    SliceContext, Terminal, Tier, last_lines, list_actions, read_action, refuse_forbidden,
+    run_action,
 };
 use crate::composition::{Composition, CompositionError, zaf_home};
 use crate::manifest::{ActionsSection, HOME_FILE};
@@ -198,6 +199,33 @@ pub(super) fn run_named_in(
     version: VersionFrom<'_>,
     run: Option<RunStep<'_>>,
 ) -> RunOutcome {
+    run_named_with(name, args, only, terminal, version, run, None)
+}
+
+/// [`run_named`] for a release phase's action: `zaf begin` runs it on its terminal with `phase`'s
+/// environment, the version being the one begun.
+pub(super) fn run_named_phase(name: &str, terminal: Terminal, phase: PhaseEnv) -> RunOutcome {
+    let version = phase.version.clone();
+    run_named_with(
+        name,
+        &[],
+        None,
+        terminal,
+        VersionFrom::Given(&version),
+        None,
+        Some(phase),
+    )
+}
+
+fn run_named_with(
+    name: &str,
+    args: &[OsString],
+    only: Option<Tier>,
+    terminal: Terminal,
+    version: VersionFrom<'_>,
+    run: Option<RunStep<'_>>,
+    phase: Option<PhaseEnv>,
+) -> RunOutcome {
     let not_run = |reason| RunOutcome::not_run(name, None, reason);
     let place = match Place::here() {
         Ok(place) => place,
@@ -265,7 +293,7 @@ pub(super) fn run_named_in(
         },
         None => BTreeMap::new(),
     };
-    run_action(&RunRequest {
+    let request = RunRequest {
         name,
         args,
         cwd: &cwd,
@@ -280,6 +308,11 @@ pub(super) fn run_named_in(
         env,
         terminal,
         run,
+        phase: None,
+    };
+    run_action(&match phase {
+        Some(phase) => request.with_phase(phase),
+        None => request,
     })
 }
 

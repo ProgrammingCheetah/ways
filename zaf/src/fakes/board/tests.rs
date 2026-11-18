@@ -168,3 +168,74 @@ fn only_open_blocked_tasks_are_listed_in_number_order() {
         .collect();
     assert_eq!(listed, [TicketId::from(3), TicketId::from(5)]);
 }
+
+#[test]
+fn the_fake_board_files_epics_from_many_threads_with_distinct_ids() {
+    let board = FakeBoard::default();
+    let ids: Vec<TicketId> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..8)
+            .map(|n| {
+                let board = &board;
+                scope.spawn(move || {
+                    board
+                        .file_epic(&NewEpic {
+                            title: format!("epic {n}").into(),
+                            body: "".into(),
+                        })
+                        .expect("file epic")
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("thread"))
+            .collect()
+    });
+    let distinct: std::collections::BTreeSet<_> = ids.iter().collect();
+    assert_eq!(distinct.len(), 8);
+    let epics: Vec<TicketId> = board
+        .epics()
+        .expect("epics")
+        .iter()
+        .map(|epic| epic.id)
+        .collect();
+    for id in &ids {
+        assert!(epics.contains(id), "{id} reads back as an epic");
+    }
+}
+
+#[test]
+fn the_fake_board_files_tasks_from_many_threads_with_distinct_ids() {
+    let board = FakeBoard::default();
+    let epic = board
+        .file_epic(&NewEpic {
+            title: "epic".into(),
+            body: "".into(),
+        })
+        .expect("file epic");
+    let ids: Vec<TicketId> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..8)
+            .map(|n| {
+                let board = &board;
+                scope.spawn(move || {
+                    board
+                        .file_task(&NewTask {
+                            epic,
+                            title: format!("task {n}").into(),
+                            body: "".into(),
+                            state: TicketState::Ready,
+                            group: None,
+                            kind: "Task".into(),
+                        })
+                        .expect("file task")
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| handle.join().expect("thread"))
+            .collect()
+    });
+    let distinct: std::collections::BTreeSet<_> = ids.iter().collect();
+    assert_eq!(distinct.len(), 8);
+}

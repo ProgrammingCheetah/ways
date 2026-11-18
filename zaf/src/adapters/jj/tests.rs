@@ -127,6 +127,19 @@ impl Fixture {
 }
 
 #[test]
+fn has_tag_says_whether_the_repository_holds_the_tag() {
+    let fixture = Fixture::new(true);
+    jj(&fixture.root, &["tag", "set", "-r", "@-", "app-v1.0.0"]);
+    assert!(JjVcs.has_tag(&fixture.root, "app-v1.0.0").expect("tag"));
+    assert!(!JjVcs.has_tag(&fixture.root, "app-v2.0.0").expect("tag"));
+    assert!(
+        !JjVcs
+            .has_tag(&fixture.root, "app-v1")
+            .expect("prefix is no tag")
+    );
+}
+
+#[test]
 fn latest_commit_reads_the_workspace() {
     let fixture = Fixture::new(false);
     let (dir, _base) = fixture.slice();

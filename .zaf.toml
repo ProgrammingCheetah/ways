@@ -38,6 +38,9 @@ path = "docs"
 [workspaces]
 path = ".zaf/workspaces"
 
+[release]
+tag = "zaf-v{version}"
+
 [branches]
 integration = "feature/{version}"
 task = "feature/{version}-{epic}-{task}"

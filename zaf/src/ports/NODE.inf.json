@@ -87,7 +87,7 @@
     },
     {
       "name": "vcs.rs",
-      "role": "slices: open, merge base, commit, publish, diff",
+      "role": "slices: open, merge base, commit, publish, diff; whether the repository holds a tag",
       "node": false
     },
     {

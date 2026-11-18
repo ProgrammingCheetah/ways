@@ -188,6 +188,16 @@ fn merged_manifest_missing_board_is_an_error() {
 }
 
 #[test]
+fn a_release_tag_pattern_holds_the_version() {
+    let ok = format!("[project]\nname = \"p\"\n{BOARD}[release]\ntag = \"v{{version}}\"\n");
+    let manifest = load_layers(&[(".zaf.toml", &ok)], None).expect("loads");
+    assert_eq!(manifest.release.tag.as_deref(), Some("v{version}"));
+    let bad = format!("[project]\nname = \"p\"\n{BOARD}[release]\ntag = \"v1\"\n");
+    let error = load_layers(&[(".zaf.toml", &bad)], None).expect_err("no placeholder");
+    assert!(error.to_string().contains("tag"), "{error}");
+}
+
+#[test]
 fn legacy_manifest_still_loads() {
     let legacy = format!("[project]\nname = \"old\"\n{BOARD}");
     let manifest = load_layers(&[("ZAF.toml", &legacy)], None).expect("loads");

@@ -65,6 +65,10 @@ pub trait Vcs {
     /// from its own state. A directory that is no workspace is [`PortError::NotFound`].
     fn diff_stat(&self, workspace: &Path, base: &BaseName) -> Result<DiffStat, PortError>;
 
+    /// Whether the repository at `root` holds the tag. A directory that is no repository is
+    /// [`PortError::NotFound`].
+    fn has_tag(&self, root: &Path, tag: &str) -> Result<bool, PortError>;
+
     /// The hunks of one changed file of a workspace against its base, on request; a file
     /// with no change is [`PortError::NotFound`].
     fn diff_hunks(

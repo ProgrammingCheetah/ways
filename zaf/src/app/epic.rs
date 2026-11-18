@@ -14,8 +14,8 @@ use std::time::SystemTime;
 use super::spawn::SpawnError;
 use super::spawn::runs::{self, Run};
 use crate::domain::{
-    BodyHash, Epic, EpicStage, EpicTask, GroupName, Signature, Standing, TicketBody, TicketId,
-    TicketState, TicketTitle, TicketType,
+    BodyHash, Epic, EpicStage, EpicTask, GroupName, NewEpic, Signature, Standing, TicketBody,
+    TicketId, TicketState, TicketTitle, TicketType, of_version, with_release,
 };
 use crate::ports::{Board, Holder, PortError};
 
@@ -37,6 +37,15 @@ pub enum EpicError {
     /// The run folders could not be read, so no one can tell who runs.
     #[error(transparent)]
     Runs(#[from] SpawnError),
+    /// The epic's title is empty.
+    #[error("an epic needs a title")]
+    EmptyTitle,
+    /// The epic's body is empty.
+    #[error("an epic needs a body")]
+    EmptyBody,
+    /// The version is empty or has a space or a line break in it, so no first line could name it.
+    #[error("`{0}` is not a version a Release line can hold")]
+    BadVersion(String),
 }
 
 /// An open epic as `zaf epic list` prints it.
@@ -186,6 +195,65 @@ pub fn show(board: &dyn Board, id: TicketId) -> Result<EpicView, EpicError> {
 pub fn list(board: &dyn Board) -> Result<Vec<EpicLine>, EpicError> {
     let epics = board.epics().map_err(EpicError::Board)?;
     Ok(epics.iter().map(EpicLine::from).collect())
+}
+
+/// What `zaf epic file` did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileOutcome {
+    /// The epic was opened.
+    Filed(TicketId),
+    /// An open epic of the version has that title already; nothing was opened.
+    AlreadyFiled(TicketId),
+}
+
+impl FileOutcome {
+    /// The epic, filed now or before.
+    pub fn epic(self) -> TicketId {
+        match self {
+            Self::Filed(epic) | Self::AlreadyFiled(epic) => epic,
+        }
+    }
+}
+
+/// Files an epic of `version`: its body is `Release: <version>` as the first line, then `body`.
+///
+/// An empty title or body is refused before the board is read. An open epic of the version with
+/// the same title is handed back and nothing is opened, so the verb run again files nothing twice.
+pub fn file(
+    board: &dyn Board,
+    version: &str,
+    title: &str,
+    body: &str,
+) -> Result<FileOutcome, EpicError> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err(EpicError::EmptyTitle);
+    }
+    if body.trim().is_empty() {
+        return Err(EpicError::EmptyBody);
+    }
+    if version.is_empty() || version.contains(char::is_whitespace) {
+        return Err(EpicError::BadVersion(version.to_owned()));
+    }
+    let title = TicketTitle::from(title);
+    let epics = match board.epics() {
+        Ok(epics) => epics,
+        // A board that cannot list epics cannot be told apart from one that holds none: the
+        // filing then answers with its own sentence.
+        Err(PortError::Rejected(_)) => Vec::new(),
+        Err(error) => return Err(EpicError::Board(error)),
+    };
+    if let Some(filed) = of_version(&epics, version).find(|epic| epic.title == title) {
+        return Ok(FileOutcome::AlreadyFiled(filed.id));
+    }
+    let epic = NewEpic {
+        title,
+        body: with_release(version, body.trim_end()).into(),
+    };
+    board
+        .file_epic(&epic)
+        .map(FileOutcome::Filed)
+        .map_err(EpicError::Board)
 }
 
 /// What signing did.

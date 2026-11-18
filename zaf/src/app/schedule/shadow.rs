@@ -26,7 +26,9 @@ use serde_json::{Value, json};
 use super::gather::{Gathered, Unreadable, gather};
 use crate::app::spawn::phase::Ports;
 use crate::domain::TicketId;
-use crate::domain::schedule::{Place, WaitingOn, Weight, place, weight};
+use crate::domain::schedule::{
+    Place, TicketFacts, WaitingOn, Weight, current_phase, place, weight,
+};
 
 /// One ticket in its place, with its weight when it is in the lane.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,6 +69,12 @@ pub fn places(gathered: &Gathered, now: SystemTime) -> Vec<Placed> {
             }
         })
         .collect()
+}
+
+/// The name of the phase `facts`'s ticket is in, as the core reads it: the first whose end fact
+/// does not hold at the pull request's head; none once every phase has ended.
+pub fn current_phase_name(facts: &TicketFacts) -> Option<String> {
+    current_phase(facts).map(|current| current.phase.name.to_string())
 }
 
 /// `gathered` placed at `now`, as JSON.

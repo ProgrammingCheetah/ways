@@ -2167,5 +2167,83 @@ fn a_signature_is_one_marked_comment_on_the_epic() {
     );
 }
 
+#[test]
+fn github_file_epic_opens_an_epic_labelled_issue() {
+    use crate::domain::NewEpic;
+
+    let fake = FakeGh::new();
+    fake.on(
+        "issue create *",
+        &format!("https://github.com/{REPO}/issues/12\n"),
+    );
+    let epic = NewEpic {
+        title: "tickets".into(),
+        body: "Release: 0.5.0\nGoal: one ticket shape.".into(),
+    };
+    assert_eq!(fake.board().file_epic(&epic), Ok(TicketId::from(12)));
+    let expected_call = argv(&[
+        "issue",
+        "create",
+        "--title",
+        "tickets",
+        "--body",
+        "Release: 0.5.0\nGoal: one ticket shape.",
+        "--label",
+        "epic",
+        "--repo",
+        REPO,
+    ]);
+    assert_eq!(fake.calls(), [expected_call]);
+}
+
+#[test]
+fn github_filed_epic_is_listed_by_epics() {
+    use crate::domain::NewEpic;
+
+    let body = "Release: 0.5.0\nGoal: one ticket shape.";
+    let fake = FakeGh::new();
+    fake.on(
+        "issue create *",
+        &format!("https://github.com/{REPO}/issues/12\n"),
+    );
+    let epics = serde_json::json!([{
+        "number": 12,
+        "title": "tickets",
+        "body": body,
+        "labels": [{"name": "epic"}],
+        "comments": [],
+    }]);
+    fake.on("issue list --label epic *", &epics.to_string())
+        .on("issue list --label task *", "[]");
+    let epic = NewEpic {
+        title: "tickets".into(),
+        body: body.into(),
+    };
+    let board = fake.board();
+    let id = board.file_epic(&epic).expect("epic filed");
+    let listed = board.epics().expect("epics read");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, id);
+    assert_eq!(listed[0].body.as_str(), body);
+    assert!(listed[0].tasks.is_empty());
+}
+
+#[test]
+fn github_file_epic_maps_a_gh_failure() {
+    use crate::domain::NewEpic;
+
+    let fake = FakeGh::new();
+    fake.fail_on("issue create *", "HTTP 502: bad gateway");
+    let epic = NewEpic {
+        title: "tickets".into(),
+        body: "Goal: one ticket shape.".into(),
+    };
+    let error = fake.board().file_epic(&epic).expect_err("gh failed");
+    assert!(
+        matches!(&error, PortError::Backend(message) if message.contains("bad gateway")),
+        "{error:?}"
+    );
+}
+
 mod forge_writes;
 mod projects;

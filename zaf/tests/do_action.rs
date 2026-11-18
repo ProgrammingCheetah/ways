@@ -641,6 +641,7 @@ fn request<'a>(
         env: BTreeMap::new(),
         terminal: Terminal::Absent,
         run: None,
+        phase: None,
     }
 }
 

@@ -1,11 +1,16 @@
 use super::*;
+use std::time::UNIX_EPOCH;
+
+use crate::app::release::due_releases;
 use crate::app::spawn::runs;
 use crate::app::spawn::tick::PlannedLaunch;
 use crate::domain::{
     Budget, Instance, InstanceNumber, OpenTicket, RoleName, SizeTable, TaskSize, TicketId,
     TicketState,
 };
+use crate::domain::{DocumentSignature, Epic, with_release};
 use crate::fakes::FakeBoard;
+use crate::manifest::Manifest;
 
 /// A task body that follows the template, its security trigger line reading `trigger`.
 fn task_body(trigger: &str) -> String {
@@ -975,5 +980,123 @@ fn status_prints_the_waits_of_a_merge_as_it_prints_the_others() {
             {"task": 3, "on": "waiting(merge of #12)"},
             {"task": 5, "on": "waiting(base a1b2c3d)"},
         ])
+    );
+}
+
+const RELEASE_MANIFEST: &str =
+    "[project]\nname = \"demo\"\n[board]\nkind = \"github-issues\"\nrepo = \"owner/demo\"\n";
+
+/// A project root holding the release folder of `0.6.0`, its `objectives.md` signed or not, and
+/// `design.md` signed when `design` is set.
+fn release_project(signed: bool, design: bool) -> (tempfile::TempDir, Manifest) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let folder = dir.path().join(".teams/releases/0.6.0");
+    std::fs::create_dir_all(&folder).expect("folder");
+    let objectives = if signed {
+        DocumentSignature::sign("The objectives.\n", UNIX_EPOCH)
+    } else {
+        "The objectives.\n".to_owned()
+    };
+    std::fs::write(folder.join("objectives.md"), objectives).expect("objectives");
+    if design {
+        let text = DocumentSignature::sign("The design.\n", UNIX_EPOCH);
+        std::fs::write(folder.join("design.md"), text).expect("design");
+    }
+    (dir, RELEASE_MANIFEST.parse().expect("manifest"))
+}
+
+/// The screen with the releases due in the project, none of them released.
+fn releases_screen(dir: &Path, manifest: &Manifest, epics: &[Epic]) -> Status {
+    let state = tempfile::tempdir().expect("state dir");
+    let due = due_releases(dir, manifest, epics, &|_| false);
+    status(&FakeBoard::default(), state.path(), 1, &all_alive)
+        .expect("status")
+        .with_releases(&due)
+}
+
+fn epic_of(version: &str) -> Epic {
+    let body = with_release(version, "Goal.");
+    Epic {
+        id: 7.into(),
+        title: "release".into(),
+        signature: None,
+        body: body.as_str().into(),
+        tasks: Vec::new(),
+        planned_at: None,
+        challenged: false,
+    }
+}
+
+#[test]
+fn status_names_a_release_with_objectives_due() {
+    let (dir, manifest) = release_project(false, false);
+    let text = releases_screen(dir.path(), &manifest, &[]).render_text();
+    assert!(
+        text.contains("release 0.6.0: objectives due, run zaf begin --version 0.6.0\n"),
+        "{text}"
+    );
+}
+
+#[test]
+fn status_names_a_release_with_design_due() {
+    let (dir, manifest) = release_project(true, false);
+    let text = releases_screen(dir.path(), &manifest, &[]).render_text();
+    assert!(
+        text.contains("release 0.6.0: design due, run zaf begin --version 0.6.0\n"),
+        "{text}"
+    );
+}
+
+#[test]
+fn status_omits_a_release_with_nothing_due() {
+    let (dir, manifest) = release_project(true, true);
+    let screen = releases_screen(dir.path(), &manifest, &[epic_of("0.6.0")]);
+    assert!(screen.releases.is_empty());
+    assert!(!screen.render_text().contains("release 0.6.0"));
+}
+
+#[test]
+fn status_omits_a_released_version_and_a_folder_with_a_signoff() {
+    let (dir, manifest) = release_project(false, false);
+    let old = dir.path().join(".teams/releases/0.5.0");
+    std::fs::create_dir_all(&old).expect("folder");
+    std::fs::write(old.join("signoff.md"), "| File | hash | date |\n").expect("signoff");
+    let due = due_releases(dir.path(), &manifest, &[], &|version| version == "0.6.0");
+    assert!(due.is_empty(), "{due:?}");
+}
+
+#[test]
+fn a_version_is_released_when_the_vcs_holds_its_tag() {
+    let (dir, mut manifest) = release_project(false, false);
+    let vcs = crate::fakes::FakeVcs::default();
+    vcs.tag("zaf-v0.6.0");
+    let released = |manifest: &Manifest, vcs: Option<&dyn crate::ports::Vcs>| {
+        crate::app::release::is_released(dir.path(), manifest, vcs, "0.6.0")
+    };
+    assert!(!released(&manifest, Some(&vcs)), "no key, nothing released");
+    manifest.release.tag = Some("zaf-v{version}".to_owned());
+    assert!(released(&manifest, Some(&vcs)));
+    assert!(!released(&manifest, None), "no vcs, nothing released");
+    manifest.release.tag = Some("other-v{version}".to_owned());
+    assert!(!released(&manifest, Some(&vcs)));
+    manifest.release.tag = Some("zaf-v{version}".to_owned());
+    let due = due_releases(dir.path(), &manifest, &[], &|v| {
+        crate::app::release::is_released(dir.path(), &manifest, Some(&vcs), v)
+    });
+    assert!(due.is_empty(), "{due:?}");
+}
+
+#[test]
+fn status_json_lists_due_releases() {
+    let (dir, manifest) = release_project(false, false);
+    let json = releases_screen(dir.path(), &manifest, &[]).to_json();
+    let json: serde_json::Value = serde_json::from_str(&json).expect("json");
+    assert_eq!(
+        json["releases"],
+        serde_json::json!([{
+            "version": "0.6.0",
+            "phase": "objectives",
+            "command": "zaf begin --version 0.6.0",
+        }])
     );
 }

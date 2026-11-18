@@ -24,8 +24,8 @@ use crate::adapters::notes::{
 };
 use crate::domain::schedule::Priority;
 use crate::domain::{
-    Epic, EpicTask, Instance, NewTask, OpenTicket, Signature, Standing, StandingAt, Ticket,
-    TicketId, TicketState, TicketType,
+    Epic, EpicTask, Instance, NewEpic, NewTask, OpenTicket, Signature, Standing, StandingAt,
+    Ticket, TicketId, TicketState, TicketType,
 };
 use crate::manifest::RepoName;
 use crate::ports::{Board, ClaimOutcome, ClaimRecord, IssueTypes, NewQuestion, PortError};
@@ -393,6 +393,22 @@ impl<S: StateStore> Board for GithubBoard<S> {
         self.store
             .change(&self.gh, number, &rows, Some(task.state), &[])?;
         Ok(TicketId::from(number))
+    }
+
+    /// Opens an issue labelled `epic` with the title and the body, so `epics()` lists it. An
+    /// epic carries no state, no type and no parent.
+    fn file_epic(&self, epic: &NewEpic) -> Result<TicketId, PortError> {
+        let stdout = self.gh.text(&[
+            "issue",
+            "create",
+            "--title",
+            epic.title.as_str(),
+            "--body",
+            epic.body.as_str(),
+            "--label",
+            EPIC_LABEL,
+        ])?;
+        Ok(TicketId::from(number_from_url(&stdout)?))
     }
 
     /// One comment on the epic: the signature's marker over a line a person reads.

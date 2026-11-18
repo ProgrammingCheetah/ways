@@ -8,8 +8,8 @@ use std::time::SystemTime;
 
 use super::PortError;
 use crate::domain::{
-    Epic, Instance, NewTask, OpenTicket, Signature, Standing, StandingAt, Ticket, TicketId,
-    TicketState, TicketType,
+    Epic, Instance, NewEpic, NewTask, OpenTicket, Signature, Standing, StandingAt, Ticket,
+    TicketId, TicketState, TicketType,
 };
 
 /// What a claim did.
@@ -219,6 +219,18 @@ pub trait Board {
             "this board cannot file a task under {}",
             task.epic
         )))
+    }
+
+    /// Files an epic, open and unsigned with no tasks, and returns its id.
+    ///
+    /// Interface: `Board::file_epic(epic) -> Result<TicketId, PortError>`.
+    ///
+    /// A board that cannot file one answers [`PortError::Rejected`] unless it overrides this.
+    fn file_epic(&self, epic: &NewEpic) -> Result<TicketId, PortError> {
+        let _ = epic;
+        Err(PortError::Rejected(
+            "this board cannot file an epic".to_owned(),
+        ))
     }
 
     /// Whether the backend answers and the board's credential can read and write its

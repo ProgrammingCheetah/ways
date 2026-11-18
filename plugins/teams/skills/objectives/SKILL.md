@@ -10,6 +10,16 @@ The lifecycle's first step. **The Engineer drives:** you interview them one sect
 
 Run it in the main session, never in a Spawn: an interview can't be delegated. The content is the Engineer's: you sharpen their words, probe for gaps and play each section back; you never supply an objective, a check, a scope line or a priority they didn't give. So the interview's questions aren't pre-filled; every question outside it is.
 
+## In a zaf phase (`ZAF_PHASE` set)
+
+A session started by a zaf phase (the `objectives` action) has `ZAF_PHASE` in its environment; with it unset, ignore this section and follow the steps as written. In a phase:
+
+- **Write into the release folder:** `objectives.md` (or `scope.md` for a small release) goes into `ZAF_RELEASE_DIR`, the version being `ZAF_VERSION`; never into another folder.
+- **Write no `signoff.md`:** skip step 7's `git hash-object` table and its row. zaf takes the signature itself.
+- **Tell the Engineer to end the session to sign:** at step 7, once the questions are answered, fill `## Signed` as usual, then say in one line that ending this session signs the document.
+- **A document zaf signed is a signed document:** one whose first lines are zaf's signature block (a `---` line, `signed:`, `hash:`, a `---` line) is signed, with or without a `signoff.md` row; in a phase there is no row. Opening it again is a change to a signed document: open a round as step 1 says, change only the text below the block, never write or edit the block itself, and run steps 5 to 7. zaf signs again when the session ends. Never resume it as unfinished.
+- **Epics:** this skill files none. A session that also files epics does it with `zaf epic file --version <v> --title <t>`, the body on stdin.
+
 ## 0. Config
 
 Read the teams file (`.claude/TEAMS.md`, else `.claude/TEAMS.yaml`, else `.claude/TEAMS.toml`) at the root of this checkout; if absent and this is a secondary workspace, at the root of the main checkout (git: the first path `git worktree list` prints; jj: `jj workspace root --name default`). Use `Repository › docs` (`<docs>`, resolved from the main checkout's root), `owner`, `vcs`, `main`, `decisions` and `style`, and `Release › version format`.
@@ -21,8 +31,8 @@ No teams file: say so in one line. Test whether the repo is the Engineer's own (
 - From the argument; else ask, pre-filled with the next version after the newest folder under `<docs>/releases/`, in `Release › version format`. A line after the version is the Engineer's first answer to **Why**.
 - **A small release** (the Engineer calls it one, e.g. a patch) gets no interview: write a one-paragraph `scope.md` (version, scope in the Engineer's words, what's out), unsigned and without QA; then stop.
 - **`scope.md` already there:** that release runs on it to the end; say so and stop. Its design is checked against `scope.md`'s scope and what's out, and its acceptance against the design's Features' "done when".
-- **`objectives.md` there, not in `signoff.md`:** resume where it stopped. One of the six interview sections still holding the template's placeholder: carry on from the first such section. All six filled, the Summary still a placeholder: step 4. Summary written, no QA challenges: step 5. Challenges, no resolutions: step 6. Otherwise: step 7.
-- **`objectives.md` in `signoff.md`, its id matching the row:** a change to a signed document. Add `## Earlier rounds` at the end of the file if missing, and move into it, as `### Round <n> (signed <date>)`, the contents of the QA challenges, QA resolutions and Signed sections, leaving those sections empty; copy into that entry the signed text of each section before you first edit it. Interview only the sections the Engineer wants changed, then run steps 5 to 7.
+- **`objectives.md` there, not in `signoff.md`, and no signature block:** resume where it stopped. One of the six interview sections still holding the template's placeholder: carry on from the first such section. All six filled, the Summary still a placeholder: step 4. Summary written, no QA challenges: step 5. Challenges, no resolutions: step 6. Otherwise: step 7.
+- **`objectives.md` in `signoff.md`, its id matching the row, or its first lines zaf's signature block (a `---` line, `signed:`, `hash:`, a `---` line; see "In a zaf phase"):** a change to a signed document. Leave the block as it is, and change only the text below it. Add `## Earlier rounds` at the end of the file if missing, and move into it, as `### Round <n> (signed <date>)`, the contents of the QA challenges, QA resolutions and Signed sections, leaving those sections empty; copy into that entry the signed text of each section before you first edit it. Interview only the sections the Engineer wants changed, then run steps 5 to 7.
 - **In `signoff.md`, its id no longer matching:** with a round open (the newest `### Round` entry and `## Signed` empty), a change under way: ask which sections are still to change and carry on, then no QA challenges: step 5; challenges, no resolutions: step 6; otherwise step 7. With no round open, the file was edited outside this skill: tell the Engineer, then open a round as above, taking the signed text from VCS history where it's there.
 
 On either change path, if release documents are signed too, list which parts of them rest on what changed: they go back to the Engineer with it.
@@ -77,7 +87,7 @@ Refresh the Summary's question count, and check your resolutions against the rep
 
 ## 7. The Engineer signs
 
-In one sitting: the Summary, the questions, and where to look (the path and section titles). Write each answer on its **Engineer:** line and apply it. When the Engineer says it's signed, fill `## Signed` (the date, their words), then take `git hash-object <file>` (never `-w`) and record it in the release folder's `signoff.md`, a table `| File | git hash-object | Signed |`, creating it if missing. A re-sign replaces the file's row and moves the old one under the table's `## History`. Any later edit changes the id: it's a change to a signed document (step 1).
+In one sitting: the Summary, the questions, and where to look (the path and section titles). Write each answer on its **Engineer:** line and apply it. When the Engineer says it's signed, fill `## Signed` (the date, their words); in a zaf phase stop there (see "In a zaf phase"). Otherwise take `git hash-object <file>` (never `-w`) and record it in the release folder's `signoff.md`, a table `| File | git hash-object | Signed |`, creating it if missing. A re-sign replaces the file's row and moves the old one under the table's `## History`. Any later edit changes the id: it's a change to a signed document (step 1).
 
 Then:
 Say where the file is, and stop. The design documents are next, and their author reads this signed file.

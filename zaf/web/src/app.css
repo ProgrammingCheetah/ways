@@ -6,6 +6,13 @@
   --muted: #5b6573;
   --line: #d6dbe1;
   --warn: #a4262c;
+  --sq-done: #c99a06;
+  --sq-question: #f0d93a;
+  --sq-working: #2e9e4f;
+  --sq-working-rest: #bfe3c9;
+  --sq-blocked: #cf3b3b;
+  --sq-waiting: #3b7fd4;
+  --sq-not-started: #a9b0ba;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -15,6 +22,13 @@
     --muted: #98a2b0;
     --line: #2c313a;
     --warn: #ff8b8b;
+    --sq-done: #e0b020;
+    --sq-question: #f5e050;
+    --sq-working: #3fb868;
+    --sq-working-rest: #2a4a36;
+    --sq-blocked: #e55a5a;
+    --sq-waiting: #5b9aea;
+    --sq-not-started: #5b6573;
   }
 }
 
@@ -270,6 +284,239 @@ h2 {
   cursor: pointer;
 }
 
+/* An epic's line of squares: one block for the epic, then a run of squares for each task. */
+.epic-line {
+  margin: 0 0 0.5rem;
+}
+
+.line-title {
+  margin-bottom: 0.25rem;
+  overflow-wrap: anywhere;
+}
+
+.line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.25rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.block {
+  display: inline-flex;
+}
+
+.block > [role='img'] {
+  display: inline-flex;
+  gap: 1px;
+}
+
+.epic-block {
+  margin-right: 0.5rem;
+}
+
+.square {
+  display: inline-block;
+  width: 0.9rem;
+  height: 0.9rem;
+  border-radius: 2px;
+  background: var(--sq-not-started);
+  position: relative;
+}
+
+.square.done {
+  background: var(--sq-done);
+}
+
+.square.question {
+  background: var(--sq-question);
+}
+
+.square.working {
+  background: var(--sq-working-rest);
+}
+
+/* A working square's fill is a layer scaled from the left: a transform, so it eases and never reflows. */
+.square .fill {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--sq-working);
+  transform-origin: left center;
+}
+
+.square.blocked {
+  background: var(--sq-blocked);
+}
+
+.square.waiting_tick {
+  background: var(--sq-waiting);
+}
+
+.square.not_started {
+  background: var(--sq-not-started);
+}
+
+/* The steady motion of each state: transform and opacity only, so the line never reflows.
+   Nothing moves under prefers-reduced-motion: reduce; colours and fill change at once. */
+@keyframes square-pulse {
+  50% {
+    transform: scale(1.18);
+    opacity: 0.7;
+  }
+}
+
+@keyframes square-bounce {
+  50% {
+    transform: translateY(-3px);
+  }
+}
+
+@keyframes square-glow {
+  50% {
+    opacity: 0.9;
+  }
+}
+
+@keyframes square-shimmer {
+  50% {
+    opacity: 0.55;
+  }
+}
+
+@keyframes square-sheen {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/* The one-time shine of a task that just turned done: a bright band sweeps across its squares, each
+   a beat after the one before (--i). The class stays only until the next read. */
+@keyframes square-shine {
+  from {
+    transform: translateX(-120%);
+  }
+  to {
+    transform: translateX(120%);
+  }
+}
+
+.square.shine {
+  overflow: hidden;
+}
+
+/* The one-time finish of an epic's line when its last task turns done: a gold burst runs along every
+   square (--n), each a beat after the one before (--step, set so the wave ends within two seconds); the
+   line then rests gold with its sheen. The class stays only until the next read. */
+@keyframes square-finish {
+  40% {
+    transform: scale(1.35);
+    filter: brightness(1.35);
+    box-shadow: 0 0 8px 3px var(--sq-done);
+  }
+  to {
+    transform: none;
+    filter: none;
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+.square.shine::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  background: linear-gradient(100deg, transparent 20%, rgba(255, 255, 255, 0.95) 50%, transparent 80%);
+}
+
+.square.bounce::after,
+.square.sheen::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+}
+
+.square.bounce::after {
+  box-shadow: 0 0 6px 2px var(--sq-question);
+}
+
+.square.sheen::after {
+  background: linear-gradient(135deg, transparent 30%, rgba(255, 255, 255, 0.7) 50%, transparent 70%);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .square .fill {
+    transition: transform 0.6s ease-out;
+  }
+
+  .square.pulse {
+    animation: square-pulse 1.4s ease-in-out infinite;
+  }
+
+  .square.bounce {
+    animation: square-bounce 1.6s ease-in-out infinite;
+  }
+
+  .square.bounce::after {
+    animation: square-glow 1.6s ease-in-out infinite;
+  }
+
+  .square.shimmer {
+    animation: square-shimmer 3.5s ease-in-out infinite;
+  }
+
+  .square.sheen::after {
+    animation: square-sheen 4s ease-in-out infinite;
+  }
+
+  .square.finish {
+    animation: square-finish 0.7s ease-out calc(var(--n, 0) * var(--step, 0.04s)) 1 both;
+  }
+
+  .square.shine::before {
+    opacity: 1;
+    animation: square-shine 0.9s ease-out calc(var(--i, 0) * 0.12s) 1 both;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .square,
+  .square::before,
+  .square::after,
+  .square .fill {
+    animation: none;
+    transition: none;
+  }
+}
+
+.line-count {
+  margin: 0.25rem 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem 0.75rem;
+  margin: 0.15rem 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.legend .swatch {
+  width: 0.7rem;
+  height: 0.7rem;
+  margin-right: 0.3rem;
+}
+
 .control:disabled {
   cursor: progress;
   color: var(--muted);
@@ -312,4 +559,96 @@ h2 {
   background: transparent;
   color: var(--fg);
   font: inherit;
+}
+
+/* The card a block on the line shows on hover or focus: fixed, and kept inside the viewport by the page. */
+.hit {
+  display: inline-flex;
+  border-radius: 3px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.hit:focus-visible {
+  outline: 2px solid var(--fg);
+  outline-offset: 2px;
+}
+
+.card {
+  position: fixed;
+  z-index: 10;
+  width: max-content;
+  max-width: min(20rem, calc(100vw - 8px));
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 0.4rem;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 0.9rem;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 25%);
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+
+.card p {
+  margin: 0;
+}
+
+.card-head {
+  font-weight: 600;
+}
+
+.card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 0.75rem;
+  color: var(--muted);
+}
+
+.card-state {
+  color: var(--muted);
+}
+
+.card-blockers {
+  margin: 0.25rem 0 0;
+  padding-left: 1.1rem;
+}
+
+.card-question {
+  margin-top: 0.25rem;
+  white-space: pre-wrap;
+}
+
+/* The prompt a yellow block opens: a native modal dialog. */
+button.hit {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+}
+
+.prompt {
+  width: min(32rem, calc(100vw - 2rem));
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 0.4rem;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.prompt h3 {
+  margin: 0 0 0.5rem;
+}
+
+.prompt-question {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.prompt-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
 }

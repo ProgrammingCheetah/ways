@@ -6,8 +6,8 @@ use std::time::SystemTime;
 
 use crate::domain::schedule::Priority;
 use crate::domain::{
-    CHALLENGER_ROLE, Epic, EpicTask, GroupName, Instance, NewTask, OpenTicket, Signature, Standing,
-    StandingAt, Ticket, TicketId, TicketState, TicketType,
+    CHALLENGER_ROLE, Epic, EpicTask, GroupName, Instance, NewEpic, NewTask, OpenTicket, Signature,
+    Standing, StandingAt, Ticket, TicketId, TicketState, TicketType,
 };
 use crate::ports::{Board, ClaimOutcome, ClaimRecord, IssueTypes, NewQuestion, PortError};
 
@@ -294,6 +294,12 @@ fn not_found(issue: TicketId) -> PortError {
 }
 
 impl State {
+    /// The number after the highest one on the board.
+    fn next_id(&self) -> TicketId {
+        let highest = self.issues.keys().next_back().map_or(0, |id| id.get());
+        TicketId::from(highest + 1)
+    }
+
     fn issue_mut(&mut self, number: TicketId) -> Result<&mut Issue, PortError> {
         self.issues
             .get_mut(&number)
@@ -358,13 +364,12 @@ impl Board for FakeBoard {
                 types.repo, task.kind
             )));
         }
-        let id = {
-            let mut state = self.state();
-            state.issue_mut(task.epic)?;
-            let highest = state.issues.keys().next_back().map_or(0, |id| id.get());
-            TicketId::from(highest + 1)
-        };
-        self.add_ticket(Ticket {
+        // The id, the ticket and its group are set under one lock, so two calls at once
+        // never share an id.
+        let mut state = self.state();
+        state.issue_mut(task.epic)?;
+        let id = state.next_id();
+        let mut issue = Issue::of(Ticket {
             id,
             epic: Some(task.epic),
             title: task.title.clone(),
@@ -373,9 +378,27 @@ impl Board for FakeBoard {
             url: link(id).into(),
             kind: Some(task.kind.clone()),
         });
-        if let Some(group) = &task.group {
-            self.set_group(id, group.as_str());
-        }
+        issue.group = task.group.clone();
+        state.issues.insert(id, issue);
+        Ok(id)
+    }
+
+    fn file_epic(&self, epic: &NewEpic) -> Result<TicketId, PortError> {
+        // The id, the ticket and its epic mark are set under one lock: no other call takes
+        // the id, and no reader sees the epic as a task.
+        let mut state = self.state();
+        let id = state.next_id();
+        let mut issue = Issue::of(Ticket {
+            id,
+            epic: None,
+            title: epic.title.clone(),
+            body: epic.body.clone(),
+            state: None,
+            url: link(id).into(),
+            kind: None,
+        });
+        issue.epic = true;
+        state.issues.insert(id, issue);
         Ok(id)
     }
 

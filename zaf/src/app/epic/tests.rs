@@ -188,6 +188,77 @@ fn show_more_adds_the_epics_body_and_the_json_does_not() {
     assert!(printed.get("body").is_none(), "{printed}");
 }
 
+fn read_epic(board: &FakeBoard, id: TicketId) -> Epic {
+    board.epic(id).expect("an open epic")
+}
+
+#[test]
+fn epic_file_prepends_the_release_line() {
+    let board = board();
+    let outcome = file(&board, "0.6.0", "release six", "Goal: six.\n").expect("filed");
+    let FileOutcome::Filed(id) = outcome else {
+        panic!("not filed: {outcome:?}");
+    };
+    let epic = read_epic(&board, id);
+    assert_eq!(epic.body.as_str(), "Release: 0.6.0\n\nGoal: six.");
+    assert_eq!(epic.release(), Some("0.6.0"));
+    assert_eq!(epic.title.as_str(), "release six");
+    assert_eq!(epic.stage(), EpicStage::Unsigned);
+}
+
+#[test]
+fn epic_file_does_not_file_a_title_twice() {
+    let board = board();
+    let first = file(&board, "0.6.0", "release six", "Goal: six.").expect("filed");
+    let again = file(&board, "0.6.0", "release six", "Goal: another.").expect("handed back");
+    assert!(matches!(first, FileOutcome::Filed(_)));
+    assert_eq!(again, FileOutcome::AlreadyFiled(first.epic()));
+    let sixes = list(&board)
+        .expect("list")
+        .into_iter()
+        .filter(|line| line.title.as_str() == "release six")
+        .count();
+    assert_eq!(sixes, 1);
+
+    // The same title of another version is another epic.
+    let other = file(&board, "0.7.0", "release six", "Goal: six.").expect("filed");
+    assert!(matches!(other, FileOutcome::Filed(id) if id != first.epic()));
+}
+
+#[test]
+fn epic_file_refuses_an_empty_title() {
+    let board = board();
+    let before = list(&board).expect("list").len();
+    for title in ["", "  \n"] {
+        let refused = file(&board, "0.6.0", title, "Goal: six.");
+        assert!(matches!(refused, Err(EpicError::EmptyTitle)), "{refused:?}");
+    }
+    assert_eq!(list(&board).expect("list").len(), before);
+}
+
+#[test]
+fn epic_file_refuses_an_empty_body() {
+    let board = board();
+    let before = list(&board).expect("list").len();
+    for body in ["", " \n\n"] {
+        let refused = file(&board, "0.6.0", "release six", body);
+        assert!(matches!(refused, Err(EpicError::EmptyBody)), "{refused:?}");
+    }
+    assert_eq!(list(&board).expect("list").len(), before);
+}
+
+#[test]
+fn epic_file_refuses_a_version_a_line_cannot_hold() {
+    let board = board();
+    for version in ["", "0.6 .0", "0.6.0\nSigned: yes"] {
+        let refused = file(&board, version, "release six", "Goal: six.");
+        assert!(
+            matches!(refused, Err(EpicError::BadVersion(_))),
+            "{refused:?}"
+        );
+    }
+}
+
 #[test]
 fn show_refuses_a_ticket_that_is_no_open_epic() {
     let board = board();

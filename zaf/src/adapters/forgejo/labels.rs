@@ -13,7 +13,9 @@ use serde_json::json;
 
 use super::api::{ForgejoApi, Method};
 use super::rows::LabelRow;
-use crate::adapters::issues::{DOOR_LABEL, GROUP_COLOR, GROUP_PREFIX, QUESTION_LABEL, TASK_LABEL};
+use crate::adapters::issues::{
+    DOOR_LABEL, EPIC_LABEL, GROUP_COLOR, GROUP_PREFIX, QUESTION_LABEL, TASK_LABEL,
+};
 use crate::domain::{DEFAULT_TASK_TYPE, GroupName, TicketState, TicketType};
 use crate::ports::PortError;
 
@@ -92,6 +94,11 @@ impl LabelSpec {
     /// `task`.
     pub fn task() -> Self {
         Self::kind(TASK_LABEL, "0075ca", "A zaf task")
+    }
+
+    /// `epic`.
+    pub fn epic() -> Self {
+        Self::kind(EPIC_LABEL, "5319e7", "A zaf epic")
     }
 
     /// `question`.

@@ -108,6 +108,10 @@ pub struct Gathered {
     /// The integration branch and what the forge says of it, as every ticket's facts carry it;
     /// none when no version names the branch, no ticket was gathered, or the read failed.
     pub base: Option<Base>,
+    /// How many phases each task type with a phase list has, folded as the core reads them, by
+    /// the type's name: what a done task, which the gather holds no facts of, has ended. A type
+    /// whose list could not be read is absent.
+    pub phase_totals: BTreeMap<String, u32>,
 }
 
 /// The integration branch of a gather, and what the forge says of it.
@@ -133,6 +137,7 @@ impl Default for Gathered {
             epics: Vec::new(),
             warnings: Vec::new(),
             base: None,
+            phase_totals: BTreeMap::new(),
         }
     }
 }
@@ -248,7 +253,30 @@ pub fn gather(ports: &Ports<'_>) -> Result<Gathered, PortError> {
     gathered.base = base;
     gathered.warnings.extend(warnings);
     gathered.open = OpenTicket::tickets(open);
+    gathered.phase_totals = phase_totals(ports, &shared.tasks);
     Ok(gathered)
+}
+
+/// The phase count of each type among `tasks` that has a phase list, folded as the core reads it
+/// ([`phases_of`]); a type whose actions cannot be listed is left out.
+fn phase_totals(ports: &Ports<'_>, tasks: &[EpicTask]) -> BTreeMap<String, u32> {
+    let kinds: BTreeSet<&str> = tasks
+        .iter()
+        .map(|task| {
+            task.kind
+                .as_ref()
+                .map_or(DEFAULT_TASK_TYPE, |kind| kind.as_str())
+        })
+        .collect();
+    kinds
+        .into_iter()
+        .filter_map(|kind| {
+            let names = ports.manifest.phase_list(kind)?;
+            let list = listed(ports.root, ports.home, names).ok()?;
+            let total = u32::try_from(phases_of(&list).len()).ok()?;
+            Some((kind.to_owned(), total))
+        })
+        .collect()
 }
 
 /// The integration branch every ticket of `version` merges into: `[branches] integration` with

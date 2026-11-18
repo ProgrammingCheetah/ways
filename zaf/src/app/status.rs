@@ -24,6 +24,7 @@ use std::time::SystemTime;
 use super::epic::EpicLine;
 use super::guard::{self, GuardError, GuardState};
 use super::profile::StaleProfile;
+use super::release::DueRelease;
 use super::schedule::gather::Gathered;
 use super::schedule::shadow;
 use super::schedule::trace::ShortPlace;
@@ -175,11 +176,34 @@ pub struct PhaseLine {
     pub started_at: String,
 }
 
+/// A release whose objectives or design are due, and the command that runs the phase.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ReleaseLine {
+    /// The version.
+    pub version: String,
+    /// The phase due: `objectives` or `design`.
+    pub phase: String,
+    /// The command that runs it.
+    pub command: String,
+}
+
+impl From<&DueRelease> for ReleaseLine {
+    fn from(due: &DueRelease) -> Self {
+        Self {
+            version: due.version.clone(),
+            phase: due.phase.name().to_owned(),
+            command: due.command(),
+        }
+    }
+}
+
 /// The whole screen.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct Status {
     /// The open epics, each with its stage; none on a board that cannot list them.
     pub epics: Vec<EpicLine>,
+    /// The releases whose objectives or design are due; empty until [`Status::with_releases`].
+    pub releases: Vec<ReleaseLine>,
     /// Tasks open for a claim whose body follows the template; with the placement read
     /// ([`Status::with_placement`]), the tickets in the lane and those the core does not place
     /// that are labelled `ready`.
@@ -413,6 +437,7 @@ pub fn status(
         .collect();
     Ok(Status {
         epics,
+        releases: Vec::new(),
         ready,
         lane: Vec::new(),
         waiting: None,
@@ -546,6 +571,13 @@ impl Status {
         self
     }
 
+    /// The screen with the releases whose objectives or design are due.
+    #[must_use]
+    pub fn with_releases(mut self, due: &[DueRelease]) -> Self {
+        self.releases = due.iter().map(ReleaseLine::from).collect();
+        self
+    }
+
     /// The screen with the profiles `profile::stale` names.
     #[must_use]
     pub fn with_stale(mut self, stale: Vec<StaleProfile>) -> Self {
@@ -568,6 +600,12 @@ impl Status {
         };
         for epic in &self.epics {
             line(format!("epic      {}", epic.render()));
+        }
+        for release in &self.releases {
+            line(format!(
+                "release {}: {} due, run {}",
+                release.version, release.phase, release.command
+            ));
         }
         line(format!(
             "ready     {}{}",

@@ -16,6 +16,7 @@ use crate::ports::PrNumber;
 
 pub mod ask;
 pub mod asklog;
+pub mod begin;
 pub mod board;
 pub mod brief;
 pub mod changes;
@@ -196,6 +197,17 @@ pub enum Verb {
         #[command(subcommand)]
         action: EpicAction,
     },
+    /// The Engineer's start of a release: the phase due for a version, or, with none due, its open
+    /// epics to sign. Refused inside an instance and where there is no terminal.
+    Begin {
+        /// The version to begin.
+        #[arg(long)]
+        version: String,
+        /// `--phase <objectives|design>`: open that phase's shell even when it is not due, to
+        /// change a signed document; design is refused while the objectives are not signed.
+        #[arg(long, value_enum)]
+        phase: Option<begin::BeginPhase>,
+    },
     /// The forge `[forge]` names: open and merge pull requests, read their checks and head.
     Forge {
         /// What to do on the forge.
@@ -271,6 +283,16 @@ pub enum EpicAction {
     Sign {
         /// The epic.
         epic: TicketId,
+    },
+    /// File an epic of a version, its body on stdin under a `Release: <version>` line, and print
+    /// its id; an open epic of the version with that title is handed back instead.
+    File {
+        /// The version the epic builds toward.
+        #[arg(long)]
+        version: String,
+        /// The epic's title.
+        #[arg(long, allow_hyphen_values = true)]
+        title: String,
     },
 }
 
@@ -669,6 +691,7 @@ fn run_verb(cli: &Cli) -> u8 {
         Verb::Progress { action } => progress::run(cli, action),
         Verb::Update { check } => update::run(cli, *check),
         Verb::Epic { action } => epic::run(cli, action),
+        Verb::Begin { version, phase } => begin::run(cli, version, *phase),
         Verb::Forge { action } => forge::run(cli, action),
     }
 }

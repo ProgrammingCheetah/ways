@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use super::*;
+use crate::app::hub::LineState;
 use crate::app::hub::state::{
     EpicState, MachineLine, Problem, ProblemKind, ProjectState, QuestionState, QueueTask,
     WatchState,
@@ -57,6 +58,9 @@ fn epic(number: u64, stage: EpicStage, done: u32, total: u32) -> EpicState {
         total,
         dollars: 0.0,
         groups: Vec::new(),
+        line_state: LineState::NotStarted,
+        line_question: None,
+        tasks: Vec::new(),
     }
 }
 
@@ -472,6 +476,7 @@ fn matches_what_status_and_epic_list_show() {
         alive: &|_| true,
         now: std::time::SystemTime::UNIX_EPOCH,
         places: None,
+        gathered: None,
     });
 
     let list = next_for_you(&machine(vec![state]));

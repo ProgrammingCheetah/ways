@@ -30,7 +30,7 @@ use super::resolve::{
     HOOKS_DIR, ResolveError, Resolved, Tier, can_shadow, check_name, hook_file, hook_file_in, list,
     resolve, resolve_in, same_file,
 };
-use super::slice_env::{SliceContext, SliceEnv};
+use super::slice_env::{SliceContext, SliceEnv, VERSION_VAR};
 use crate::composition::{STATE_DIR, ZAF_HOME_VAR};
 use crate::domain::TicketId;
 
@@ -285,6 +285,57 @@ pub struct RunRequest<'a> {
     /// raises is recorded in that run, and who is told the body's process once it has started;
     /// `None` keeps whatever the caller's environment holds.
     pub run: Option<RunStep<'a>>,
+    /// The phase a `zaf begin` run carries, set on the body as the `ZAF_PHASE*` variables; `None`
+    /// for every other run, which then sets none of them. Only [`RunRequest::with_phase`] sets it.
+    pub phase: Option<PhaseEnv>,
+}
+
+impl RunRequest<'_> {
+    /// This run, carrying `phase`'s environment: `with_phase(PhaseEnv)`.
+    #[must_use]
+    pub fn with_phase(mut self, phase: PhaseEnv) -> Self {
+        self.phase = Some(phase);
+        self
+    }
+}
+
+/// The phase's name: `design`, `objectives`, and so on.
+pub const PHASE_VAR: &str = "ZAF_PHASE";
+
+/// The release's folder, absolute.
+pub const RELEASE_DIR_VAR: &str = "ZAF_RELEASE_DIR";
+
+/// The file a phase reads its input from; set only when the phase has one (design).
+pub const PHASE_INPUT_VAR: &str = "ZAF_PHASE_INPUT";
+
+/// What an action run for a release phase is told (docs/zaf-actions.md §3, epic #92 §5):
+/// `PhaseEnv { version, phase, release_dir, input: Option<PathBuf> }`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhaseEnv {
+    /// The release the branches build toward: `ZAF_VERSION`.
+    pub version: String,
+    /// The phase's name: `ZAF_PHASE`.
+    pub phase: String,
+    /// The release's folder: `ZAF_RELEASE_DIR`, made absolute when it is not.
+    pub release_dir: PathBuf,
+    /// The input file: `ZAF_PHASE_INPUT`, set only when given and never for objectives.
+    pub input: Option<PathBuf>,
+}
+
+impl PhaseEnv {
+    /// Puts the variables on `command`.
+    fn apply(&self, command: &mut Command) {
+        let release_dir =
+            std::path::absolute(&self.release_dir).unwrap_or_else(|_| self.release_dir.clone());
+        command
+            .env(VERSION_VAR, &self.version)
+            .env(PHASE_VAR, &self.phase)
+            .env(RELEASE_DIR_VAR, release_dir);
+        match &self.input {
+            Some(input) => command.env(PHASE_INPUT_VAR, input),
+            None => command.env_remove(PHASE_INPUT_VAR),
+        };
+    }
 }
 
 /// The phase run folder a run is a step of (the tick's inline run of a `zaf`-kind action), and who
@@ -967,6 +1018,9 @@ fn spawn_body(request: &RunRequest<'_>, body: Body<'_>, slice_env: &SliceEnv) ->
     }
     // Last, so nothing the caller or an earlier line set can stand in for these.
     slice_env.apply(&mut command);
+    if let Some(phase) = &request.phase {
+        phase.apply(&mut command);
+    }
     let mut tries = 1;
     loop {
         match command.spawn() {

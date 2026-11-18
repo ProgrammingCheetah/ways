@@ -7,6 +7,7 @@
 mod answer;
 mod ask;
 mod budget;
+mod document_signature;
 mod epic;
 mod finding;
 mod ids;
@@ -30,9 +31,10 @@ pub use ask::{
     QuestionId,
 };
 pub use budget::{Budget, DEFAULT_RESERVE, Fit, SizeTable};
+pub use document_signature::{DocumentSignature, SignatureState};
 pub use epic::{
-    BodyHash, CHALLENGER_ROLE, Epic, EpicStage, EpicTask, GroupName, PLANNING_ROLE, Signature,
-    SignatureError,
+    BodyHash, CHALLENGER_ROLE, Epic, EpicStage, EpicTask, GroupName, PLANNING_ROLE, RELEASE_PREFIX,
+    Signature, SignatureError, of_version, release_of, with_release,
 };
 pub use finding::{Finding, FindingSource, Location, Severity};
 pub use ids::{CommitId, IdError, PageId, TicketId};
@@ -48,6 +50,6 @@ pub use task::{
     SecurityTrigger, TaskField, TaskModel, TaskProblem, TaskSize, TaskTemplate, TaskTemplateError,
 };
 pub use ticket::{
-    DEFAULT_TASK_TYPE, NewTask, OpenTicket, Standing, StandingAt, Ticket, TicketBody,
+    DEFAULT_TASK_TYPE, NewEpic, NewTask, OpenTicket, Standing, StandingAt, Ticket, TicketBody,
     TicketSummary, TicketTitle, TicketType, TicketUrl,
 };

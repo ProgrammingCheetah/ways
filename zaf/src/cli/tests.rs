@@ -19,7 +19,7 @@ fn every_verb_is_listed() {
         [
             "board", "ask", "brief", "check", "changes", "verify", "slice", "spawn", "asklog",
             "status", "report", "guard", "doctor", "setup", "profile", "do", "hub", "progress",
-            "update", "epic", "forge",
+            "update", "epic", "begin", "forge",
         ]
     );
     let forge = command.find_subcommand("forge").expect("forge");

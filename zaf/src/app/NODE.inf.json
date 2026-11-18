@@ -2,7 +2,7 @@
   "path": "zaf/src/app",
   "charted": "2026-11-16",
   "short": "use cases, one per verb",
-  "is": "Twenty-two use-case modules, one per verb or concern (verify lives in check, `zaf do` in actions, the scheduler's edge in schedule, the zaf home's project list in projects), each taking a query or command over port traits and returning a flat result, the larger ones split into submodules.",
+  "is": "Twenty-three use-case modules, one per verb or concern (verify lives in check, `zaf do` in actions, the scheduler's edge in schedule, the zaf home's project list in projects, a version's release folder in release), each taking a query or command over port traits and returning a flat result, the larger ones split into submodules.",
   "type": "code",
   "tags": [
     "category:source",
@@ -29,6 +29,16 @@
     {
       "name": "asklog/",
       "role": "`zaf asklog`: top cited pages, recurring questions, gaps",
+      "node": false
+    },
+    {
+      "name": "begin.rs",
+      "role": "`zaf begin --version <v>`: refused with one sentence inside an instance (SignGuard's process ancestry) and where there is no terminal; else the phase due (phase_due) or, with none due, the version's open epics, each with `zaf epic sign <id>` while not signed; the place the begin run, sign and `--phase` tasks extend",
+      "node": false
+    },
+    {
+      "name": "begin/",
+      "role": "tests.rs",
       "node": false
     },
     {
@@ -73,7 +83,7 @@
     },
     {
       "name": "epic.rs",
-      "role": "zaf epic list|sign: the open epics with their stage, and the signature refused when an instance runs above this process (process ancestry against the run folders)",
+      "role": "zaf epic list|sign|file: the open epics with their stage, the signature refused when an instance runs above this process (process ancestry against the run folders), and an epic of a version filed under a `Release: <version>` first line, an open one of that version and title handed back instead",
       "node": false
     },
     {
@@ -137,6 +147,16 @@
       "node": false
     },
     {
+      "name": "release.rs",
+      "role": "ReleaseFolder: a version's release folder from `[release] folder`, its objectives document (objectives.md, else scope.md) and design.md; phase_due, the phase due for a version (PhaseDue: objectives, design or nothing, with any malformed block) from the folder and the board's epics; release_versions and due_releases, each release folder the pattern matches whose objectives or design are due (a released version, as is_released reads it from the `[release] tag` pattern and the version control, and a folder with a signoff.md left out)",
+      "node": false
+    },
+    {
+      "name": "release/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
       "name": "report.rs",
       "role": "`zaf report`: tokens and dollars per model from transcripts",
       "node": false
@@ -183,7 +203,7 @@
     },
     {
       "name": "status.rs",
-      "role": "`zaf status`: epics with their stage, board, instances, slots, guard on one screen; with `[phases]`, ready is the core's lane and a waiting line names what each ticket waits on",
+      "role": "`zaf status`: epics with their stage, a line per release whose objectives or design are due, board, instances, slots, guard on one screen; with `[phases]`, ready is the core's lane and a waiting line names what each ticket waits on",
       "node": false
     },
     {

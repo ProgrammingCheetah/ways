@@ -890,6 +890,7 @@ fn request<'a>(
         env: std::collections::BTreeMap::new(),
         terminal,
         run: None,
+        phase: None,
     }
 }
 
@@ -1058,4 +1059,68 @@ fn a_hook_never_takes_the_terminal() {
         Some("it needs a terminal, and a hook runs with no one there")
     );
     assert!(!place.root.join("ran").exists(), "the hook never ran");
+}
+
+/// Runs the project action `probe` with `phase` and returns what it saw of the four phase
+/// variables, `unset` for one the body did not have, one per line.
+fn phase_env_seen(place: &Tiers, phase: Option<PhaseEnv>) -> Vec<String> {
+    let file = place.root.join(".zaf/actions/probe");
+    script(
+        &file,
+        "",
+        "printf '%s\\n' \"${ZAF_VERSION-unset}\" \"${ZAF_PHASE-unset}\" \"${ZAF_RELEASE_DIR-unset}\" \"${ZAF_PHASE_INPUT-unset}\" > \"$ZAF_ROOT/seen\"",
+    );
+    let mut request = request(place, "probe", Terminal::Absent, MINUTE);
+    if let Some(phase) = phase {
+        request = request.with_phase(phase);
+    }
+    let outcome = run_action(&request);
+    assert_eq!(outcome.result, RunResult::Ok, "{outcome:?}");
+    std::fs::read_to_string(place.root.join("seen"))
+        .expect("seen")
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn phase_env_reaches_the_action() {
+    let place = Tiers::new();
+    let seen = phase_env_seen(
+        &place,
+        Some(PhaseEnv {
+            version: "0.5.0".to_owned(),
+            phase: "design".to_owned(),
+            release_dir: PathBuf::from(".teams/releases/0.5.0"),
+            input: Some(PathBuf::from("/in/brief.md")),
+        }),
+    );
+    assert_eq!(seen[0], "0.5.0");
+    assert_eq!(seen[1], "design");
+    assert!(Path::new(&seen[2]).is_absolute(), "{seen:?}");
+    assert!(seen[2].ends_with(".teams/releases/0.5.0"), "{seen:?}");
+    assert_eq!(seen[3], "/in/brief.md");
+}
+
+#[test]
+fn objectives_phase_has_no_input() {
+    let place = Tiers::new();
+    let seen = phase_env_seen(
+        &place,
+        Some(PhaseEnv {
+            version: "0.5.0".to_owned(),
+            phase: "objectives".to_owned(),
+            release_dir: place.root.join("release"),
+            input: None,
+        }),
+    );
+    assert_eq!(seen[1], "objectives");
+    assert_eq!(seen[3], "unset", "{seen:?}");
+}
+
+#[test]
+fn plain_run_has_no_phase_env() {
+    let place = Tiers::new();
+    let seen = phase_env_seen(&place, None);
+    assert_eq!(&seen[1..], ["unset", "unset", "unset"], "{seen:?}");
 }

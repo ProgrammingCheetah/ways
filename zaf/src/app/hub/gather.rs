@@ -5,7 +5,7 @@
 //! ([`shown_state`], R5): a ticket in the lane shows `ready`, one that runs shows `claimed`. A task
 //! the core does not place (no `[phases]`, or a type with no list) shows its label.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 use std::time::SystemTime;
 
@@ -17,7 +17,7 @@ use crate::app::actions::{PhaseUnreadable, SliceRecords, derive_phase, gather_ph
 use crate::app::report::PriceTable;
 use crate::app::report::epics::cost_of;
 use crate::app::report::ledger::{LedgerRow, is_this_project};
-use crate::domain::schedule::{Place, label_for};
+use crate::domain::schedule::{Place, TicketFacts, WaitingOn, end_fact_holds, label_for};
 use crate::domain::{Epic, EpicTask, Standing, TicketId, TicketState};
 use crate::ports::{Board, Forge, Holder, NewQuestion, PortError, Vcs};
 
@@ -82,6 +82,94 @@ pub fn shown_state(task: &EpicTask, places: Option<&Places>, claimed: bool) -> O
         Some(place) => Some(label_for(place, claimed)).filter(|state| *state != TicketState::Done),
         None => task.state,
     }
+}
+
+/// The colour of a task's line (epic #115 §2): the first of these six that holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LineState {
+    /// The task is done.
+    Done,
+    /// A question open on the task waits for the Engineer.
+    Question,
+    /// A phase run of it is live.
+    Working,
+    /// It waits on a ticket that is not done.
+    Blocked,
+    /// It has begun (a phase has ended or a run is recorded) and waits for the next tick.
+    WaitingTick,
+    /// Nothing of it has begun.
+    NotStarted,
+}
+
+/// The line colour of `task`, worked out from where the core places it (`place`) and the facts
+/// that placement read (`facts`).
+///
+/// A done task is `done` whatever else holds. A question open on the task is `question` even
+/// while a run of it is live; `epic_questions` are the questions raised on the task's epic itself,
+/// which colour no task (the Engineer's ruling on #128: the epic shows them). `working` is a live
+/// run, `blocked` a wait on a ticket not done, `waiting_tick` any other task with a phase ended or
+/// a run recorded, and `not_started` the rest. A task the core does not place (`place` is none)
+/// reads its label: done, question, claimed (working), blocked, else `not_started`.
+pub fn line_state(
+    task: &EpicTask,
+    place: Option<&Place>,
+    facts: Option<&TicketFacts>,
+    epic_questions: &BTreeSet<TicketId>,
+) -> LineState {
+    if task.standing == Standing::Done || matches!(place, Some(Place::Done)) {
+        return LineState::Done;
+    }
+    let Some(place) = place else {
+        return match task.state {
+            Some(TicketState::Done) => LineState::Done,
+            Some(TicketState::Question) => LineState::Question,
+            Some(TicketState::Claimed) => LineState::Working,
+            Some(TicketState::Blocked) => LineState::Blocked,
+            _ => LineState::NotStarted,
+        };
+    };
+    let waits = match place {
+        Place::Waiting(waits) => Some(waits),
+        _ => None,
+    };
+    let own_question = waits.is_some_and(|waits| {
+        waits.iter().any(|waiting_on| {
+            matches!(waiting_on, WaitingOn::Question(question) if !epic_questions.contains(question))
+        })
+    }) || facts.is_some_and(|facts| {
+        facts
+            .open_questions
+            .iter()
+            .any(|question| !epic_questions.contains(question))
+    });
+    if own_question {
+        return LineState::Question;
+    }
+    if matches!(place, Place::Running(_)) {
+        return LineState::Working;
+    }
+    if waits.is_some_and(|waits| {
+        waits
+            .iter()
+            .any(|waiting_on| matches!(waiting_on, WaitingOn::Ticket(_)))
+    }) {
+        return LineState::Blocked;
+    }
+    if facts.is_some_and(has_begun) {
+        LineState::WaitingTick
+    } else {
+        LineState::NotStarted
+    }
+}
+
+/// Whether a phase of the ticket has ended or a run of it is recorded.
+pub fn has_begun(facts: &TicketFacts) -> bool {
+    !facts.runs.is_empty()
+        || facts
+            .phases
+            .iter()
+            .any(|phase| end_fact_holds(phase, facts))
 }
 
 /// Reads one snapshot: one row per open epic, with its claimed tasks and groups.

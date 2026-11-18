@@ -126,6 +126,17 @@ pub struct NewTask {
     pub kind: TicketType,
 }
 
+/// An epic to file, as [`crate::ports::Board::file_epic`] opens it: open, with no tasks, unsigned.
+///
+/// Interface: `NewEpic { title, body }`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewEpic {
+    /// Its title.
+    pub title: TicketTitle,
+    /// Its body, whole: for an epic of a release its first line is `Release: <version>`.
+    pub body: TicketBody,
+}
+
 /// A ticket as every verb's `--json` prints it (see [`Ticket::summary`]): the id and the epic
 /// as bare numbers, the state as its snake_case word, the type as its name or `null`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]

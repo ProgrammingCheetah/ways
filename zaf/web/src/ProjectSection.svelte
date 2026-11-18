@@ -3,6 +3,7 @@
   import { dropProject, startWatch, stopTask, stopWatch, tick as runTick } from './controls.js';
   import Action from './Action.svelte';
   import AnswerControl from './AnswerControl.svelte';
+  import EpicLine from './EpicLine.svelte';
 
   // `controls`: the hub serves controls and this page holds its key; without both, no button shows.
   let { project, controls = false } = $props();
@@ -32,6 +33,10 @@
   {/if}
 
   {#if !project.missing}
+    {#each epics as epic (epic.number)}
+      <EpicLine {epic} project={project.root} {controls} {questions} />
+    {/each}
+
     <h3>Epics</h3>
     {#if epics.length}
       <ul class="rows" data-testid="epics">

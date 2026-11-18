@@ -88,6 +88,7 @@ impl Place {
             env: BTreeMap::new(),
             terminal: Terminal::Absent,
             run: None,
+            phase: None,
         }
     }
 

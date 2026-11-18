@@ -93,7 +93,7 @@ const RELEASE_ONLY: [&str; 2] = ["base-up", "release"];
 
 /// The actions only the Engineer runs: `ship` merges onto any base, `main` included, and `design`
 /// is the Engineer's own session on the terminal.
-const OWNER_ONLY: [&str; 2] = ["design", "ship"];
+const OWNER_ONLY: [&str; 3] = ["design", "objectives", "ship"];
 
 /// The three actions that run one line, each with that line.
 const LINES: [(&str, &str); 3] = [

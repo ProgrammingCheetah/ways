@@ -24,6 +24,34 @@ text_newtype! {
     GroupName
 }
 
+/// What the first line of an epic's body opens with when the epic is of a release.
+pub const RELEASE_PREFIX: &str = "Release: ";
+
+/// The version an epic's body names: the text after `Release: ` on its first line, and only
+/// there. A body whose first line is anything else, or that has the line second, is of no
+/// version.
+///
+/// Interface: `release_of(body)`, the function [`Epic::release`] reads through.
+pub fn release_of(body: &str) -> Option<&str> {
+    let first = body.lines().next()?;
+    let version = first.strip_prefix(RELEASE_PREFIX)?;
+    (!version.is_empty()).then_some(version)
+}
+
+/// `body` with the `Release: <version>` line as its first line, a blank line, then `body`.
+pub fn with_release(version: &str, body: &str) -> String {
+    format!("{RELEASE_PREFIX}{version}\n\n{body}")
+}
+
+/// The epics of `epics` that are of `version` (see [`Epic::release`]), in the order given.
+///
+/// Interface: `of_version(epics, version)`; consumed by the phase-due and `zaf begin` tasks.
+pub fn of_version<'a>(epics: &'a [Epic], version: &'a str) -> impl Iterator<Item = &'a Epic> + 'a {
+    epics
+        .iter()
+        .filter(move |epic| epic.release() == Some(version))
+}
+
 /// A task of an epic as the epic lists it, closed ones included.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EpicTask {
@@ -174,6 +202,13 @@ pub struct Epic {
 }
 
 impl Epic {
+    /// The release it is of: the version its body's first line names (see [`release_of`]).
+    ///
+    /// Interface: `Epic::release() -> Option<&str>`.
+    pub fn release(&self) -> Option<&str> {
+        release_of(self.body.as_str())
+    }
+
     /// Whether it is signed: its latest signature holds the hash of its body as it reads now.
     pub fn signed(&self) -> bool {
         self.signature

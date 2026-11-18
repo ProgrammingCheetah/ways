@@ -10,6 +10,7 @@ on:
       - ".zaf/**"
       - ".zaf.toml"
       - ".forgejo/workflows/zaf.yml"
+      - "plugins/teams/**"
   push:
     branches: [main]
     paths:
@@ -17,6 +18,7 @@ on:
       - ".zaf/**"
       - ".zaf.toml"
       - ".forgejo/workflows/zaf.yml"
+      - "plugins/teams/**"
 
 permissions:
   contents: read

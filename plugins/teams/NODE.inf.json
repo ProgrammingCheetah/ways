@@ -2,7 +2,7 @@
   "path": "plugins/teams",
   "charted": "2026-11-16",
   "short": "the zaf role-brief and design-routine pack",
-  "is": "The `teams` plugin (2.1.5): agent briefs for the instances the zaf spawner launches plus the design-session judgment lane, a SessionStart hook that prints `zaf doctor`, and five routines for the Engineer's design session.",
+  "is": "The `teams` plugin (2.2.0): agent briefs for the instances the zaf spawner launches plus the design-session judgment lane, a SessionStart hook that prints `zaf doctor`, and five routines for the Engineer's design session.",
   "type": "code",
   "tags": [
     "category:source",
@@ -21,7 +21,7 @@
   "fs": [
     {
       "name": ".claude-plugin/",
-      "role": "plugin.json manifest, name teams, version 2.1.5",
+      "role": "plugin.json manifest, name teams, version 2.2.0",
       "node": false
     },
     {
@@ -31,7 +31,7 @@
     },
     {
       "name": "actions/",
-      "role": "the 20 standard actions a project copies into its `.zaf/actions/`, taken from ways' own; `design` and `review-epic` start the Designer; `merge` names `fix` as its on-fail for a base that conflicts, and `sync-base` is the programmer's way to bring the base in",
+      "role": "the 21 standard actions a project copies into its `.zaf/actions/`, taken from ways' own; `objectives`, `design` and `review-epic` start the Designer; `merge` names `fix` as its on-fail for a base that conflicts, and `sync-base` is the programmer's way to bring the base in",
       "node": false
     },
     {
@@ -52,7 +52,7 @@
   ],
   "notes": [
     "this repo's .zaf.toml `[pack] path` points here: `zaf profile init` adds the repo as a marketplace and installs and enables teams@ways in each zaf profile",
-    "the only pack whose plugin.json sets a `version` (2.1.5), which `zaf doctor` reports; the root README says so",
+    "the only pack whose plugin.json sets a `version` (2.2.0), which `zaf doctor` reports; the root README says so",
     "the hook's matcher is `startup` only (not resume or clear) and it always exits 0, so it never blocks a session",
     "the `zaf` binary these briefs and the hook drive is built from this repo's zaf/ crate; the interface page and keeper prompt they rely on live in zaf/assets/",
     "needs Claude Code 2.1.296 or later because team.md sets `autoCompactWindow`"

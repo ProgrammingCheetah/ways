@@ -8,10 +8,11 @@ use super::Cli;
 use super::exit::{self, BACKEND, OK};
 use crate::adapters::process;
 use crate::app::profile;
+use crate::app::release;
 use crate::app::schedule::gather::gather_for;
 use crate::app::status::{self, Status, StatusError};
 use crate::composition::Composition;
-use crate::ports::Board;
+use crate::ports::{Board, PortError};
 
 /// Prints the screen.
 pub fn run(cli: &Cli) -> u8 {
@@ -39,6 +40,17 @@ fn screen(composition: &Composition, board: &dyn Board) -> Result<Status, Status
     )?
     .with_machine(&process::displayed())
     .with_budget(spawn.budget());
+    let epics = match board.epics() {
+        Ok(epics) => epics,
+        Err(PortError::Rejected(_)) => Vec::new(),
+        Err(error) => return Err(error.into()),
+    };
+    let (root, manifest) = (composition.root(), composition.manifest());
+    let vcs = composition.vcs().ok();
+    let due = release::due_releases(root, manifest, &epics, &|version| {
+        release::is_released(root, manifest, vcs.as_deref(), version)
+    });
+    let screen = screen.with_releases(&due);
     Ok(match gather_for(composition, board, None) {
         Ok(Some(gathered)) => screen.with_placement(&gathered, std::time::SystemTime::now()),
         Ok(None) => screen,

@@ -206,6 +206,7 @@ fn post_phase(path: &str, run_dir: &Path, launch: &phase::Launch, code: i32) {
             env,
             terminal: Terminal::Absent,
             run: None,
+            phase: None,
         },
         Some(&input),
     );

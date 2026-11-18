@@ -3,6 +3,7 @@ use std::time::Duration;
 use super::*;
 use crate::domain::EpicStage;
 
+mod line;
 mod liveness;
 use liveness::{Dead, board, gathered, instance, refresh, run_folder};
 
@@ -570,6 +571,7 @@ fn state_of(state_dir: &std::path::Path, board: &crate::fakes::FakeBoard) -> sta
         alive: &alive,
         now: std::time::SystemTime::UNIX_EPOCH,
         places: None,
+        gathered: None,
     })
 }
 

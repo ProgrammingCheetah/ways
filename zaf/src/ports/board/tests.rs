@@ -409,3 +409,25 @@ fn the_default_issue_state_reads_the_task_and_never_calls_a_missing_one_closed()
         "a backend failure is not a dead blocker"
     );
 }
+
+#[test]
+fn board_without_file_epic_rejects() {
+    let board = TaskOnly(Vec::new());
+    let epic = NewEpic {
+        title: "tickets".into(),
+        body: "Release: 0.6.0\n\nGoal.".into(),
+    };
+
+    assert_eq!(
+        board.file_epic(&epic),
+        Err(PortError::Rejected(
+            "this board cannot file an epic".to_owned()
+        ))
+    );
+    let filed = crate::app::epic::file(&board, "0.6.0", "tickets", "Goal.");
+    assert!(
+        matches!(&filed, Err(crate::app::epic::EpicError::Board(PortError::Rejected(sentence)))
+            if sentence == "this board cannot file an epic"),
+        "{filed:?}"
+    );
+}

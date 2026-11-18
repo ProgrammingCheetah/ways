@@ -14,20 +14,21 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use super::gather::{Places, dollars_by_epic, shown_state, tally};
+use super::gather::{LineState, Places, dollars_by_epic, shown_state, tally};
 use super::reports::last_report;
 use crate::adapters::process;
 use crate::app::actions::{SliceRecords, derive_phase, gather_phase_facts};
 use crate::app::profile;
 use crate::app::report::PriceTable;
 use crate::app::report::ledger::{LEDGER_FILE, Ledger, LedgerRow};
-use crate::app::schedule::gather::gather_for;
+use crate::app::schedule::gather::{Gathered, gather_for};
 use crate::app::schedule::shadow;
 use crate::app::spawn::runs::{self, Run};
 use crate::composition::{Composition, zaf_home};
 use crate::domain::{Epic, EpicStage, EpicTask, Instance, TicketId, TicketState};
 use crate::ports::{Board, ClaimRecord, Forge, Holder, NewQuestion, PortError, Vcs};
 
+mod line;
 pub mod machine;
 
 pub use machine::{MachineLine, MachineState, gather_machine};
@@ -85,6 +86,63 @@ pub struct EpicState {
     pub dollars: f64,
     /// Its tasks done of all, by `group:<name>` label.
     pub groups: Vec<GroupState>,
+    /// Its own line colour: `question` while a question is open on the epic itself, else `done`
+    /// when every task that counts is done, else `working` when any is, else `waiting_tick` when
+    /// any has started, else `not_started` (the Engineer's ruling on #128).
+    pub line_state: LineState,
+    /// The first question open on the epic itself.
+    pub line_question: Option<LineQuestion>,
+    /// Its tasks that count (open or done, never closed as not planned), in id order: what the
+    /// page draws its line from.
+    pub tasks: Vec<LineTask>,
+}
+
+/// A question open on a ticket, as a line shows it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct LineQuestion {
+    /// The question's issue number.
+    pub number: u64,
+    /// The whole question, without the `Raised on` line.
+    pub text: String,
+}
+
+/// A task of an epic as its line shows it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct LineTask {
+    /// Its issue number.
+    pub number: u64,
+    /// Its title.
+    pub title: String,
+    /// Its size, `XS` to `E`, from its body's template; none when the body has none or is not a
+    /// task.
+    pub size: Option<&'static str>,
+    /// Its line colour.
+    pub state: LineState,
+    /// The phase it is in, by name; none for a done task, one the core does not place, or one
+    /// with every phase ended.
+    pub phase: Option<String>,
+    /// The phases of its type that have ended.
+    pub phases_done: u32,
+    /// All the phases of its type; `0` with `phases_done` for a task the core does not place.
+    pub phases_total: u32,
+    /// Each blocker its `Blocked by:` line names.
+    pub blocked_by: Vec<LineBlocker>,
+    /// The first question open on it.
+    pub question: Option<LineQuestion>,
+    /// Where a person opens its issue.
+    pub issue_url: Option<String>,
+}
+
+/// A blocker a task's `Blocked by:` line names.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct LineBlocker {
+    /// Its issue number.
+    pub number: u64,
+    /// Its title; none when the board does not hold it.
+    pub title: Option<String>,
+    /// Its line colour when it is a task of an open epic, else `done` or `not_started` from its
+    /// standing.
+    pub state: LineState,
 }
 
 /// An open question: a ticket the Engineer rules on.
@@ -260,6 +318,9 @@ pub struct StateInputs<'a> {
     /// Where the core places each open ticket with a phase list at `now`; none when nothing was
     /// placed, and every task shows its label.
     pub places: Option<&'a Places>,
+    /// What the tick's gather read of each open ticket (its facts, its body, the phases of each
+    /// type); none when nothing was gathered, and a line then reads its label.
+    pub gathered: Option<&'a Gathered>,
 }
 
 /// Gathers the state of the project at `root`. It never fails: a project that cannot be read
@@ -318,20 +379,17 @@ pub fn gather_project(root: &Path, now: SystemTime) -> ProjectState {
         .unwrap_or_default();
     // Where the core places each ticket, as the tick gathers them; a gather that fails leaves the
     // labels' word.
-    let places: Option<Places> = board
-        .as_ref()
-        .ok()
-        .and_then(|board| {
-            gather_for(&composition, board.as_ref(), None)
-                .ok()
-                .flatten()
-        })
-        .map(|gathered| {
-            shadow::places(&gathered, now)
-                .into_iter()
-                .map(|placed| (placed.ticket, placed.place))
-                .collect()
-        });
+    let gathered: Option<Gathered> = board.as_ref().ok().and_then(|board| {
+        gather_for(&composition, board.as_ref(), None)
+            .ok()
+            .flatten()
+    });
+    let places: Option<Places> = gathered.as_ref().map(|gathered| {
+        shadow::places(gathered, now)
+            .into_iter()
+            .map(|placed| (placed.ticket, placed.place))
+            .collect()
+    });
     let pull_base = manifest.forge.as_ref().and_then(|forge| {
         let repo = forge.repo.as_ref()?;
         match forge.kind {
@@ -359,6 +417,7 @@ pub fn gather_project(root: &Path, now: SystemTime) -> ProjectState {
         alive: &process::alive,
         now,
         places: places.as_ref(),
+        gathered: gathered.as_ref(),
     });
     // The faults that stopped the board's read lead; a stale profile follows.
     problems.append(&mut state.problems);
@@ -464,9 +523,9 @@ struct BoardRead {
 fn read_board(inputs: &StateInputs, board: &dyn Board) -> Result<BoardRead, PortError> {
     let trees = board.epics()?;
     let claims = board.claims()?;
-    let ready_urls: HashMap<TicketId, String> = board
-        .ready()?
-        .into_iter()
+    let ready = board.ready()?;
+    let ready_urls: HashMap<TicketId, String> = ready
+        .iter()
         .map(|ticket| (ticket.id, ticket.url.to_string()))
         .collect();
     let holders: HashMap<TicketId, String> = claims
@@ -488,10 +547,39 @@ fn read_board(inputs: &StateInputs, board: &dyn Board) -> Result<BoardRead, Port
         inputs.prices,
         &epic_of,
     );
+    let titles: HashMap<u64, String> = trees
+        .iter()
+        .flat_map(|tree| {
+            std::iter::once((tree.id.get(), tree.title.to_string())).chain(
+                tree.tasks
+                    .iter()
+                    .map(|task| (task.number.get(), task.title.to_string())),
+            )
+        })
+        .collect();
+    // A board that cannot tell the doors shows every question as a two-way one.
+    let doors = board.open_doors().unwrap_or_default();
+    let questions: Vec<QuestionState> = board
+        .questions()?
+        .iter()
+        .map(|ticket| QuestionState {
+            number: ticket.id.get(),
+            raised_on: NewQuestion::raised_on(ticket.body.as_str()).map(TicketId::get),
+            text: NewQuestion::text_of(ticket).trim().to_owned(),
+            door: doors.contains(&ticket.id),
+            url: Some(ticket.url.to_string()).filter(|url| !url.is_empty()),
+        })
+        .collect();
+    let mut lines = line::read(inputs, board, &trees, &questions, &titles, ready);
     let mut epics = Vec::new();
     let mut queue = Vec::new();
     for tree in &trees {
         let mut epic = epic_state(tree, dollars.get(&tree.id.get()).copied().unwrap_or(0.0));
+        if let Some(line) = lines.remove(&tree.id.get()) {
+            epic.line_state = line.state;
+            epic.line_question = line.question;
+            epic.tasks = line.tasks;
+        }
         if epic.stage == EpicStage::Unsigned {
             // The link the Engineer signs from; a read that fails shows none.
             epic.url = board
@@ -517,29 +605,6 @@ fn read_board(inputs: &StateInputs, board: &dyn Board) -> Result<BoardRead, Port
             ));
         }
     }
-    let titles = trees
-        .iter()
-        .flat_map(|tree| {
-            std::iter::once((tree.id.get(), tree.title.to_string())).chain(
-                tree.tasks
-                    .iter()
-                    .map(|task| (task.number.get(), task.title.to_string())),
-            )
-        })
-        .collect();
-    // A board that cannot tell the doors shows every question as a two-way one.
-    let doors = board.open_doors().unwrap_or_default();
-    let questions = board
-        .questions()?
-        .iter()
-        .map(|ticket| QuestionState {
-            number: ticket.id.get(),
-            raised_on: NewQuestion::raised_on(ticket.body.as_str()).map(TicketId::get),
-            text: NewQuestion::text_of(ticket).trim().to_owned(),
-            door: doors.contains(&ticket.id),
-            url: Some(ticket.url.to_string()).filter(|url| !url.is_empty()),
-        })
-        .collect();
     Ok(BoardRead {
         epics,
         queue,
@@ -567,6 +632,9 @@ fn epic_state(tree: &Epic, dollars: f64) -> EpicState {
         done,
         total,
         dollars,
+        line_state: LineState::NotStarted,
+        line_question: None,
+        tasks: Vec::new(),
         groups: groups
             .into_iter()
             .map(|(name, tasks)| {

@@ -32,10 +32,10 @@ pub use resolve::{
 };
 pub use run::{
     ACTION_VAR, CHAIN_VAR, DEPTH_VAR, HOOK_HAS_NO_TERMINAL, LOG_VAR, ListedAction, MAX_DEPTH,
-    MINUTE, NO_SUCH_ACTION, NO_TERMINAL, NOT_RUN_EXIT, Nesting, ROOT_VAR, Refused, RunOutcome,
-    RunRequest, RunResult, RunStep, RunsAs, StdioPlan, TIMEOUT_EXIT, Terminal, forbidden_action,
-    last_lines, list_actions, read_action, refuse_forbidden, run_action, run_hook,
-    run_hook_with_input, stdio_plan,
+    MINUTE, NO_SUCH_ACTION, NO_TERMINAL, NOT_RUN_EXIT, Nesting, PHASE_INPUT_VAR, PHASE_VAR,
+    PhaseEnv, RELEASE_DIR_VAR, ROOT_VAR, Refused, RunOutcome, RunRequest, RunResult, RunStep,
+    RunsAs, StdioPlan, TIMEOUT_EXIT, Terminal, forbidden_action, last_lines, list_actions,
+    read_action, refuse_forbidden, run_action, run_hook, run_hook_with_input, stdio_plan,
 };
 pub use slice_env::{BASE_VAR, PR_VAR, SLICE_VAR, SliceContext, TASK_TITLE_VAR, VERSION_VAR};
 

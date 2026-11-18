@@ -66,6 +66,7 @@ impl Place {
             env: Default::default(),
             terminal: Terminal::Absent,
             run: None,
+            phase: None,
         })
     }
 

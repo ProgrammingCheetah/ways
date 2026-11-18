@@ -33,7 +33,7 @@ mod watch;
 
 pub use dashboard::{BindError, Dashboard, Page, StateReader, lan_address, lan_url};
 pub use draw::draw;
-pub use gather::{HubError, HubInputs, Places, gather, shown_state};
+pub use gather::{HubError, HubInputs, LineState, Places, gather, line_state, shown_state};
 pub use hook::{PROGRAMMER, TEAM, TESTING, ToolCall, WAITING_ON_REVIEW, task_in_workspace};
 pub use live::Liveness;
 pub use phases::{PhaseError, PhasePlan, declare, enter, plans_dir, plans_of};

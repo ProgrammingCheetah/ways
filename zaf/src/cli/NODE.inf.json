@@ -30,6 +30,11 @@
       "node": false
     },
     {
+      "name": "begin.rs",
+      "role": "`zaf begin --version <v>`: exit 2 with one sentence inside an instance or without a terminal; runs the due phase's action (objectives or design) on the terminal, checks what the session left, asks `Sign <path>? [y/N]` and, on y, goes on to what is due next; exit 1 only when the action failed, something is missing or the document is left unsigned (exit 2 when the action never ran); exit 0 printing the version's open epics when nothing is due",
+      "node": false
+    },
+    {
       "name": "board.rs",
       "role": "board actions; a question asked inside a phase run (ZAF_RUN) of its own task is recorded in the run folder's `questions`",
       "node": false
@@ -61,7 +66,7 @@
     },
     {
       "name": "epic.rs",
-      "role": "zaf epic list|sign: one line per open epic, or `signed #<n> sha256:<hex>`; exit 1 inside an instance or for no open epic; a signature that cannot ask the running scheduler for a tick stays signed and says so in one line on stderr",
+      "role": "zaf epic file --version <v> --title <t>: the body on stdin, prints the epic's id; an empty title or body, or a board that cannot file an epic, exits 1. zaf epic list|sign: one line per open epic, or `signed #<n> sha256:<hex>`; exit 1 inside an instance or for no open epic; a signature that cannot ask the running scheduler for a tick stays signed and says so in one line on stderr",
       "node": false
     },
     {
@@ -171,7 +176,7 @@
     }
   ],
   "notes": [
-    "Verbs: board (ready, claim, report, handoff, question, ruling), ask, brief, check, verify, changes, slice (open, pr, merge, drop), spawn (phase, stop, trace), asklog, status, report, guard, doctor, setup, profile init, do, hub (report, link, service install|remove), progress (plan, at), update, epic (list, show, sign), forge (open, merge, checks, head, log)",
+    "Verbs: board (ready, claim, report, handoff, question, ruling), ask, brief, check, verify, changes, slice (open, pr, merge, drop), spawn (phase, stop, trace), asklog, status, report, guard, doctor, setup, profile init, do, hub (report, link, service install|remove), progress (plan, at), update, epic (list, show, sign, file), begin, forge (open, merge, checks, head, log)",
     "`init` is not a verb: `setup` asks the manifest questions through app/init.rs",
     "check.rs names adapters directly (SystemShell, gate RUNS_DIR), the only non-test place outside composition.rs that does"
   ]

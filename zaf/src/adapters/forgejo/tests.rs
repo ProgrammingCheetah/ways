@@ -10,7 +10,7 @@ use super::rows::parse_time;
 use super::*;
 use crate::adapters::notes::{LeaseNote, marked, report_marker, signature_marker};
 use crate::domain::{
-    BodyHash, Instance, InstanceNumber, NewTask, RoleName, Signature, Standing, TicketId,
+    BodyHash, Instance, InstanceNumber, NewEpic, NewTask, RoleName, Signature, Standing, TicketId,
     TicketState, TicketType,
 };
 use crate::manifest::{EnvVarName, ForgeUrl, RepoName};
@@ -998,6 +998,96 @@ fn a_filed_task_creates_the_labels_it_lacks_and_its_epic_depends_on_it() {
     assert_eq!(
         fake.bodies(&format!("POST {API}/issues/5/dependencies")),
         [json!({ "owner": "example", "repo": "tracker", "index": 9 })]
+    );
+}
+
+fn release_epic() -> NewEpic {
+    NewEpic {
+        title: "the release".into(),
+        body: "Release: 0.6.0\n\nGoal: ship".into(),
+    }
+}
+
+#[test]
+fn forgejo_file_epic_posts_an_epic_labelled_issue() {
+    let fake = FakeCurl::new();
+    fake.on(&format!("GET {API}/labels?*"), 200, &labels(&["epic"]));
+    fake.on(
+        &format!("POST {API}/issues"),
+        201,
+        &issue(12, &["epic"], "open"),
+    );
+    let filed = fake
+        .board()
+        .file_epic(&release_epic())
+        .expect("the epic is filed");
+    assert_eq!(filed, TicketId::from(12));
+    let posted = fake.bodies(&format!("POST {API}/issues"));
+    assert_eq!(
+        posted,
+        [json!({
+            "title": "the release",
+            "body": "Release: 0.6.0\n\nGoal: ship",
+            "labels": [label_id("epic")],
+        })]
+    );
+    assert!(fake.bodies(&format!("POST {API}/labels")).is_empty());
+}
+
+#[test]
+fn forgejo_filed_epic_is_listed_by_epics() {
+    let fake = FakeCurl::new();
+    let body = release_epic().body;
+    // The repository lacks the label: it is created, then the issue opens carrying it.
+    fake.once(&format!("GET {API}/labels?*"), 200, &json!([]));
+    fake.on(&format!("POST {API}/labels"), 201, &label("epic"));
+    fake.on(&format!("GET {API}/labels?*"), 200, &labels(&["epic"]));
+    fake.on(
+        &format!("POST {API}/issues"),
+        201,
+        &issue_with_body(12, &["epic"], "open", body.as_str()),
+    );
+    let board = fake.board();
+    let filed = board.file_epic(&release_epic()).expect("the epic is filed");
+    let created = &fake.bodies(&format!("POST {API}/labels"))[0];
+    assert_eq!(created["name"], "epic");
+    assert_eq!(created["exclusive"], false);
+
+    fake.on(
+        &format!("GET {API}/issues?state=open&type=issues&labels=epic*"),
+        200,
+        &json!([issue_with_body(12, &["epic"], "open", body.as_str())]),
+    );
+    fake.on(
+        &format!("GET {API}/issues/12/comments"),
+        200,
+        &comments(&[]),
+    );
+    fake.on(
+        &format!("GET {API}/issues/12/dependencies?*"),
+        200,
+        &json!([]),
+    );
+    let epics = board.epics().expect("epics read");
+    assert_eq!(epics.len(), 1);
+    assert_eq!(epics[0].id, filed);
+    assert_eq!(epics[0].body, body);
+    assert!(epics[0].tasks.is_empty());
+}
+
+#[test]
+fn forgejo_file_epic_maps_a_forge_error() {
+    let fake = FakeCurl::new();
+    fake.on(&format!("GET {API}/labels?*"), 200, &labels(&["epic"]));
+    fake.on(
+        &format!("POST {API}/issues"),
+        500,
+        &json!({ "message": "boom" }),
+    );
+    let filed = fake.board().file_epic(&release_epic());
+    assert!(
+        matches!(&filed, Err(PortError::Backend(message)) if message.contains("boom")),
+        "{filed:?}"
     );
 }
 

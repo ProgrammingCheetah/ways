@@ -5,6 +5,8 @@ use crate::app::spawn::tick::PlannedLaunch;
 use crate::domain::{InstanceNumber, RoleName, Ticket};
 use crate::fakes::{FakeBoard, FakeForge, FakeVcs};
 
+mod line;
+
 const EPIC: u64 = 100;
 
 fn at(seconds: u64) -> SystemTime {
@@ -84,6 +86,7 @@ impl World {
             alive: &alive,
             now,
             places: None,
+            gathered: None,
         }
     }
 
@@ -506,6 +509,9 @@ fn read_with(root: &Path, now: SystemTime, running: usize) -> ProjectState {
         total: 1,
         dollars: 0.0,
         groups: Vec::new(),
+        line_state: LineState::NotStarted,
+        line_question: None,
+        tasks: Vec::new(),
     }];
     state
 }

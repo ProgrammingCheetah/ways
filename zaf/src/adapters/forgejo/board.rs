@@ -25,8 +25,8 @@ use crate::adapters::notes::{
 };
 use crate::domain::schedule::Priority;
 use crate::domain::{
-    Epic, EpicTask, Instance, NewTask, OpenTicket, Signature, Standing, StandingAt, Ticket,
-    TicketId, TicketState,
+    Epic, EpicTask, Instance, NewEpic, NewTask, OpenTicket, Signature, Standing, StandingAt,
+    Ticket, TicketId, TicketState,
 };
 use crate::ports::{
     AccessCheck, Board, ClaimOutcome, ClaimRecord, IssueTypes, NewQuestion, PortError,
@@ -308,6 +308,20 @@ impl Board for ForgejoBoard {
                 )),
             });
         }
+        Ok(TicketId::from(opened.number))
+    }
+
+    /// Opens the issue with the label `epic` (created when the repository lacks it), the title
+    /// and the body as given: open, with no state and no tasks.
+    fn file_epic(&self, epic: &NewEpic) -> Result<TicketId, PortError> {
+        let mut repo = RepoLabels::read(&self.api)?;
+        let id = repo.ensure(&self.api, &LabelSpec::epic())?;
+        let body = json!({
+            "title": epic.title.as_str(),
+            "body": epic.body.as_str(),
+            "labels": [id],
+        });
+        let opened: IssueRow = self.api.send(Method::Post, "issues", Some(&body))?;
         Ok(TicketId::from(opened.number))
     }
 

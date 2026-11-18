@@ -1,0 +1,9 @@
+# Release 0.5.0 scope: objectives and design as zaf phases
+
+2026-11-17 · a small release on the Engineer's word: "Make this into a minor release version to be worked on RIGHT NOW. It'll be used to design the outside work we want. I wish to pick up the objectives using this new workflow."
+
+**Scope.** zaf runs the two steps that come before an epic. In the Engineer's words: "I think zaf should start a claude instance for objectives and wait. The instructions for the Claude instance are started like how you would start a normal subagent, with a prompt on top mentioning current phase and what they're doing (Objectives or Design etc). The input for Objectives is nothing while for Design it's the output of Objectives. Objectives outputs an objectives.md inside a specific folder (Maybe a versioned folder?) in the root. Design grabs it and creates another interactive shell from zaf. Zaf does not know what happens inside each of the shells, as it only sees the start and the end. It checks that the objectives were written (File exists and is not empty) and, after the design phase, it checks that an epic exists (And is not empty)." "They are zaf actions then." The check on a document is metadata at the top of the file with a hash signature: "maybe we can use... Metadata again? Have something like DONE: true at the top of files or something? And hash signature them."
+
+**Out.** Everything of release 0.6.0 (`../0.6.0/objectives.md`): the Jira and zabo board strategies, the board trait as actions, the unified ticket model, a signing strategy per tracker with a configured signer. Also out: a model reporting where it is to the hub, and any change to how an epic is planned, challenged or built.
+
+**Done when.** The objectives of release 0.6.0 are picked up, finished and signed through this workflow.

@@ -31,6 +31,11 @@
       "node": false
     },
     {
+      "name": "cli_begin.rs",
+      "role": "zaf begin on the built binary: no terminal, exit 2 with one sentence",
+      "node": false
+    },
+    {
       "name": "cli_board.rs",
       "role": "board verbs: terse and JSON forms, exits 0, 1, 2",
       "node": false
@@ -112,7 +117,7 @@
     },
     {
       "name": "pack_actions.rs",
-      "role": "the teams pack's 20 standard actions: every file executable and a valid action",
+      "role": "the teams pack's 21 standard actions: every file executable and a valid action",
       "node": false
     },
     {

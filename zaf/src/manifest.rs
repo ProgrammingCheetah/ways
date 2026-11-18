@@ -23,9 +23,9 @@ pub use requirement::{Requirement, RequirementError};
 pub use sections::{
     ActionName, ActionsSection, AskSection, BoardKind, BoardSection, BranchPattern,
     BranchesSection, CheckSection, CheckTarget, ChecksSection, CommandLine, DEFAULT_DESIGN_INDEX,
-    DEFAULT_STATE_FIELD, DEFAULT_TOKEN_ENV, DesignKind, DesignSection, Effort, EnvSection,
-    EnvVarName, ForbiddenSection, ForgeKind, ForgeSection, ForgeUrl, GateSection, IsolationKind,
-    IsolationSection, ModelName, PackSection, ProjectName, ProjectSection, RepoName, RoleSection,
-    Rung, RunnerName, RunnerSection, SizesSection, SpawnSection, StyleSection, ToolName, VcsKind,
-    VcsSection, WorkspacesSection,
+    DEFAULT_RELEASE_FOLDER, DEFAULT_STATE_FIELD, DEFAULT_TOKEN_ENV, DesignKind, DesignSection,
+    Effort, EnvSection, EnvVarName, ForbiddenSection, ForgeKind, ForgeSection, ForgeUrl,
+    GateSection, IsolationKind, IsolationSection, ModelName, PackSection, ProjectName,
+    ProjectSection, ReleaseSection, RepoName, RoleSection, Rung, RunnerName, RunnerSection,
+    SizesSection, SpawnSection, StyleSection, ToolName, VcsKind, VcsSection, WorkspacesSection,
 };

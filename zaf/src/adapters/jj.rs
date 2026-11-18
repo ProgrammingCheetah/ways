@@ -52,6 +52,12 @@ impl Vcs for JjVcs {
         Ok(DiffStat { files })
     }
 
+    fn has_tag(&self, root: &Path, tag: &str) -> Result<bool, PortError> {
+        let names = format!("exact:{}", quoted(tag));
+        let listed = Self::workspace_command(root)?.run(&["tag", "list", &names])?;
+        Ok(!listed.trim().is_empty())
+    }
+
     fn diff_hunks(
         &self,
         workspace: &Path,

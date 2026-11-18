@@ -69,6 +69,10 @@ impl Scene {
             .env("FAKE_DIR", &self.fakes)
             .env_remove("ZAF_ROOT")
             .env_remove("CLAUDE_CONFIG_DIR")
+            .env_remove("ZAF_PHASE")
+            .env_remove("ZAF_VERSION")
+            .env_remove("ZAF_RELEASE_DIR")
+            .env_remove("ZAF_PHASE_INPUT")
             .envs(env.iter().copied());
         if root {
             command.env("ZAF_ROOT", &self.root);
@@ -170,6 +174,124 @@ fn design_exits_with_claudes_code_and_refuses_without_a_root() {
     assert_eq!(code, 1, "{said}");
     assert!(said.contains("usage: design"), "{said}");
     assert_eq!(scene.record("claude.args"), None, "claude never ran");
+
+    let scene = Scene::new();
+    let phase = [("ZAF_PHASE", "objectives"), ("FAKE_CLAUDE_EXIT", "9")];
+    let (code, _) = scene.run("objectives", &[], true, &phase);
+    assert_eq!(code, 9, "claude's own code passes through");
+
+    let scene = Scene::new();
+    let (code, said) = scene.run("objectives", &[], false, &phase);
+    assert_eq!(code, 1, "{said}");
+    assert!(said.contains("usage: objectives"), "{said}");
+    assert_eq!(scene.record("claude.args"), None, "claude never ran");
+}
+
+const PHASE_ENV: [(&str, &str); 4] = [
+    ("ZAF_PHASE", "objectives"),
+    ("ZAF_VERSION", "0.6.0"),
+    ("ZAF_RELEASE_DIR", ".teams/releases/0.6.0"),
+    ("ZAF_PHASE_INPUT", ".teams/releases/0.6.0/objectives.md"),
+];
+
+#[test]
+fn objectives_opens_the_designer_with_the_phase_header() {
+    if !pack().is_dir() {
+        return;
+    }
+    let scene = Scene::new();
+    let (code, said) = scene.run(
+        "objectives",
+        &[],
+        true,
+        &[
+            ("ZAF_PHASE", "objectives"),
+            ("ZAF_VERSION", "0.6.0"),
+            ("ZAF_RELEASE_DIR", ".teams/releases/0.6.0"),
+            ("ZAF_PHASE_INPUT", "must not be named"),
+        ],
+    );
+    assert_eq!(code, 0, "{said}");
+    let args = scene.claude_args();
+    assert_eq!(args[..2], ["--agent", "teams:designer"], "{args:?}");
+    let prompt = args[2..].join("\n");
+    for words in [
+        "objectives",
+        "0.6.0",
+        ".teams/releases/0.6.0",
+        "no input",
+        "objectives.md",
+        "scope.md",
+        "zaf takes the Engineer's signature",
+        "no sign-off",
+    ] {
+        assert!(prompt.contains(words), "{words}: {prompt}");
+    }
+    assert!(!prompt.contains("must not be named"), "{prompt}");
+    assert!(
+        prompt.ends_with("\n\n/teams:objectives 0.6.0"),
+        "the command follows the header: {prompt}"
+    );
+    assert!(prompt.starts_with("Phase: objectives\n"), "{prompt}");
+
+    // Without a phase the session opens on the command alone.
+    let scene = Scene::new();
+    let (code, said) = scene.run("objectives", &[], true, &[("ZAF_VERSION", "0.6.0")]);
+    assert_eq!(code, 0, "{said}");
+    assert_eq!(
+        scene.claude_args(),
+        ["--agent", "teams:designer", "/teams:objectives 0.6.0"]
+    );
+}
+
+#[test]
+fn design_in_its_phase_names_its_input_and_outputs() {
+    if !pack().is_dir() {
+        return;
+    }
+    let scene = Scene::new();
+    let mut env = PHASE_ENV.to_vec();
+    env[0] = ("ZAF_PHASE", "design");
+    let (code, said) = scene.run("design", &[], true, &env);
+    assert_eq!(code, 0, "{said}");
+    let args = scene.claude_args();
+    assert_eq!(args[..2], ["--agent", "teams:designer"], "{args:?}");
+    let prompt = args[2..].join("\n");
+    assert!(prompt.starts_with("Phase: design\n"), "{prompt}");
+    for words in [
+        "0.6.0",
+        ".teams/releases/0.6.0",
+        ".teams/releases/0.6.0/objectives.md",
+        "design.md",
+        "zaf epic file",
+        "zaf takes the Engineer's signature",
+        "no sign-off",
+        "objectives document",
+    ] {
+        assert!(prompt.contains(words), "{words}: {prompt}");
+    }
+}
+
+#[test]
+fn designer_actions_declare_their_terminal_and_mode() {
+    if !pack().is_dir() {
+        return;
+    }
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+    for folder in ["plugins/teams/actions", ".zaf/actions"] {
+        for name in ["objectives", "design"] {
+            let file = root.join(folder).join(name);
+            let text =
+                fs::read_to_string(&file).unwrap_or_else(|error| panic!("{file:?}: {error}"));
+            let parsed = zaf::app::actions::parse(&file, &text).unwrap_or_else(|e| panic!("{e}"));
+            assert!(parsed.metadata.terminal, "{folder}/{name}: terminal");
+            assert_eq!(
+                parsed.metadata.mode,
+                zaf::app::actions::ActionMode::parse("700").expect("mode"),
+                "{folder}/{name}: mode"
+            );
+        }
+    }
 }
 
 #[test]

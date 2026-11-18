@@ -8,8 +8,8 @@ use super::sections::{
     ActionName, ActionsSection, AskSection, BoardKind, BoardSection, BranchesSection,
     ChecksSection, DesignKind, DesignSection, EnvSection, ForbiddenSection, ForgeKind,
     ForgeSection, ForgeUrl, GateSection, IsolationKind, IsolationSection, PackSection,
-    ProjectSection, RoleSection, RunnerName, RunnerSection, SpawnSection, StyleSection, ToolName,
-    VcsSection, WorkspacesSection,
+    ProjectSection, ReleaseSection, RoleSection, RunnerName, RunnerSection, SpawnSection,
+    StyleSection, ToolName, VcsSection, WorkspacesSection,
 };
 use super::{ManifestError, Requirement, layers};
 use crate::domain::{MAX_QUESTIONS, RoleName};
@@ -43,6 +43,9 @@ pub struct Manifest {
     /// `[branches]`.
     #[serde(default)]
     pub branches: BranchesSection,
+    /// `[release]`: where a version's release documents live.
+    #[serde(default)]
+    pub release: ReleaseSection,
     /// `[gate]`; absent means no gate port.
     #[serde(default)]
     pub gate: Option<GateSection>,
@@ -204,6 +207,7 @@ impl Manifest {
 
     fn validate_paths(&self) -> Result<(), ManifestError> {
         require_relative("workspaces", "path", Some(&self.workspaces.path))?;
+        require_relative("release", "folder", Some(&self.release.folder))?;
         require_relative("design", "path", self.design.path.as_ref())?;
         require_relative("design", "index", self.design.index.as_ref())?;
         require_relative(
@@ -224,6 +228,22 @@ impl Manifest {
                 "branches",
                 "task",
                 "must hold `{task}`, or every task shares one branch",
+            ));
+        }
+        if !self.release.folder.to_string_lossy().contains("{version}") {
+            return Err(invalid(
+                "release",
+                "folder",
+                "must hold `{version}`, or every version shares one folder",
+            ));
+        }
+        if let Some(tag) = &self.release.tag
+            && !tag.contains("{version}")
+        {
+            return Err(invalid(
+                "release",
+                "tag",
+                "must hold `{version}`, or every version shares one tag",
             ));
         }
         if self.spawn.slots == 0 {

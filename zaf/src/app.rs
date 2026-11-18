@@ -7,6 +7,7 @@
 pub mod actions;
 pub mod ask;
 pub mod asklog;
+pub mod begin;
 pub mod board;
 pub mod brief;
 pub mod changes;
@@ -19,6 +20,7 @@ pub mod hub;
 pub mod init;
 pub mod profile;
 pub mod projects;
+pub mod release;
 pub mod report;
 pub mod schedule;
 pub mod setup;

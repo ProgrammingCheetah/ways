@@ -73,7 +73,7 @@
     },
     {
       "name": "jj.rs",
-      "role": "JjVcs: a slice is a jj workspace plus a same-named bookmark",
+      "role": "JjVcs: a slice is a jj workspace plus a same-named bookmark; a tag is read with `jj tag list`",
       "node": false
     },
     {

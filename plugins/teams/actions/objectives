@@ -1,0 +1,31 @@
+#!/bin/sh
+# zaf description: the Engineer's objectives session: the Designer (teams:designer) on this terminal, in the Engineer's own Claude profile, at the project root, opened on /teams:objectives for ZAF_VERSION; in a phase (ZAF_PHASE set) a header names the phase and its output
+# zaf 1: refused: no ZAF_ROOT, so it was not run by zaf in a project; or claude's own exit 1
+# zaf mode: 700
+# zaf terminal: yes
+
+# Any other code is claude's own: the session ended that way.
+if [ -z "$ZAF_ROOT" ]; then
+    echo "usage: objectives, run by zaf in a project with ZAF_ROOT set (and ZAF_VERSION, the release)" >&2
+    exit 1
+fi
+cd "$ZAF_ROOT" || exit 1
+
+version=${ZAF_VERSION:-$*}
+command_line="/teams:objectives${version:+ $version}"
+
+if [ -n "$ZAF_PHASE" ]; then
+    prompt="Phase: $ZAF_PHASE
+Version: ${ZAF_VERSION:-none}
+Release folder: ${ZAF_RELEASE_DIR:-none}
+Input: no input
+Output that must exist: objectives.md in the release folder, or scope.md for a small release.
+zaf takes the Engineer's signature when this session ends, so write no sign-off.
+
+$command_line"
+else
+    prompt=$command_line
+fi
+
+# The Engineer's own profile: CLAUDE_CONFIG_DIR stays as the Engineer's shell has it.
+exec claude --agent teams:designer "$prompt"

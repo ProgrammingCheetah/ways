@@ -1238,6 +1238,7 @@ fn run_tick_hook(
         env,
         terminal: Terminal::Absent,
         run: None,
+        phase: None,
     };
     let outcome = run_hook_with_input(&request, input);
     if outcome.result == RunResult::Ok {

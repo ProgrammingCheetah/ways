@@ -1,4 +1,5 @@
-//! `zaf epic list|show|sign`: the open epics and where each stands, and the Engineer's signature.
+//! `zaf epic list|show|sign|file`: the open epics and where each stands, the Engineer's signature,
+//! and filing an epic of a version.
 //!
 //! `list` prints one line per open epic, `#<n> <stage> <done> of <total>  <title>`; `show`
 //! prints that line for one epic and then one indented line per task,
@@ -6,7 +7,9 @@
 //! prints `signed #<n> sha256:<hex>`, or `#<n> is already signed` when the signature holds the
 //! body; it exits 1 inside an instance or for a ticket that is no open epic. A new signature asks
 //! the running scheduler for a tick; a request that cannot be written says so on stderr and
-//! changes neither the signature nor the exit.
+//! changes neither the signature nor the exit. `file --version <v> --title <t>` reads the body on
+//! stdin and prints the new epic's id (the open epic's of that version and title, when there is
+//! one); an empty title or body exits 1, as does a board that cannot file an epic.
 
 use std::time::SystemTime;
 
@@ -15,7 +18,7 @@ use serde_json::json;
 use super::exit::{self, BACKEND, OK, REFUSED};
 use super::{Cli, EpicAction};
 use crate::adapters::process;
-use crate::app::epic::{self, EpicError, SignGuard, SignOutcome};
+use crate::app::epic::{self, EpicError, FileOutcome, SignGuard, SignOutcome};
 use crate::app::schedule::request;
 use crate::composition::Composition;
 
@@ -49,6 +52,30 @@ pub fn run(cli: &Cli, action: &EpicAction) -> u8 {
                 println!("{}", view.render());
             }
         }),
+        EpicAction::File { version, title } => {
+            let body = match std::io::read_to_string(std::io::stdin()) {
+                Ok(body) => body,
+                Err(error) => {
+                    eprintln!("zaf {path}: reading the body on stdin: {error}");
+                    return BACKEND;
+                }
+            };
+            epic::file(board.as_ref(), version, title, &body).map(|outcome| {
+                let number = outcome.epic();
+                if cli.json {
+                    let word = match outcome {
+                        FileOutcome::Filed(_) => "filed",
+                        FileOutcome::AlreadyFiled(_) => "already_filed",
+                    };
+                    println!(
+                        "{}",
+                        json!({ "epic": number.get(), "version": version, "outcome": word })
+                    );
+                } else {
+                    println!("{number}");
+                }
+            })
+        }
         EpicAction::Sign { epic } => {
             let ancestors = process::ancestors();
             let state_dir = composition.state_dir();
@@ -91,7 +118,13 @@ pub fn run(cli: &Cli, action: &EpicAction) -> u8 {
     match done {
         Ok(()) => OK,
         Err(EpicError::Board(error)) => exit::fail(&path, &error),
-        Err(error @ (EpicError::NotAnEpic(_) | EpicError::InsideInstance { .. })) => {
+        Err(
+            error @ (EpicError::NotAnEpic(_)
+            | EpicError::InsideInstance { .. }
+            | EpicError::EmptyTitle
+            | EpicError::EmptyBody
+            | EpicError::BadVersion(_)),
+        ) => {
             eprintln!("zaf {path}: {error}");
             REFUSED
         }

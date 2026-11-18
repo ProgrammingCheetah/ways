@@ -295,6 +295,30 @@ impl Default for BranchesSection {
     }
 }
 
+/// The default of `[release] folder`.
+pub const DEFAULT_RELEASE_FOLDER: &str = ".teams/releases/{version}";
+
+/// `[release] folder = "<path with {version}>"`: where a version's release documents live.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ReleaseSection {
+    /// A path relative to the project root, holding `{version}`. Default:
+    /// `.teams/releases/{version}`.
+    pub folder: PathBuf,
+    /// The tag of a released version, holding `{version}`: `zaf-v{version}`. A version is
+    /// released when the version control has that tag. Absent, no version counts as released.
+    pub tag: Option<String>,
+}
+
+impl Default for ReleaseSection {
+    fn default() -> Self {
+        Self {
+            folder: PathBuf::from(DEFAULT_RELEASE_FOLDER),
+            tag: None,
+        }
+    }
+}
+
 /// `[gate]`: the project's own checks. Absent means no gate port.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]

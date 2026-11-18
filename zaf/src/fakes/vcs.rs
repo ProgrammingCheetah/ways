@@ -27,6 +27,7 @@ struct Slice {
 struct State {
     slices: BTreeMap<SliceName, Slice>,
     next_commit: u64,
+    tags: BTreeSet<String>,
 }
 
 /// A VCS held in memory. Arrange a slice with [`FakeVcs::open`], [`FakeVcs::place`],
@@ -93,6 +94,11 @@ impl FakeVcs {
         Ok(commit_id)
     }
 
+    /// Records a tag of the repository.
+    pub fn tag(&self, tag: &str) {
+        self.state().tags.insert(tag.to_owned());
+    }
+
     /// Whether a slice exists.
     pub fn has_slice(&self, slice: &SliceName) -> bool {
         self.state().slices.contains_key(slice)
@@ -144,6 +150,10 @@ impl Vcs for FakeVcs {
             })
             .collect();
         Ok(DiffStat { files })
+    }
+
+    fn has_tag(&self, _root: &Path, tag: &str) -> Result<bool, PortError> {
+        Ok(self.state().tags.contains(tag))
     }
 
     fn diff_hunks(

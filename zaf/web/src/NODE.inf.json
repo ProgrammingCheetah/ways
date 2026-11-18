@@ -46,6 +46,11 @@
       "node": false
     },
     {
+      "name": "line.js",
+      "role": "pure helpers of the epic line: turnedDone(previous, next), the tasks that turned done between two reads and whether the whole epic just did",
+      "node": false
+    },
+    {
       "name": "MachineLine.svelte",
       "role": "the machine line",
       "node": false
