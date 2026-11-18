@@ -1551,6 +1551,38 @@ fn a_ticket_that_cannot_start_does_not_stop_the_others() {
 }
 
 #[test]
+fn a_launcher_that_recorded_the_action_first_keeps_its_record() {
+    // The launcher is a process of its own: it may record the action's process before the verb
+    // records the launcher. The verb then leaves the record as it is (#223).
+    let scene = Scene::new();
+    scene.task(5, "S");
+    let action = Holder {
+        pid: LIVE,
+        start: "2000".to_owned(),
+    };
+
+    let started = phase::start(
+        &scene.ports(),
+        id(5),
+        "implement",
+        &|started: &phase::Started| {
+            phase::record_pid(&started.run_dir, &action)?;
+            Ok(Holder {
+                pid: LIVE,
+                start: "1000".to_owned(),
+            })
+        },
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
+
+    assert_eq!(
+        fs::read_to_string(started.run_dir.join(phase::PID_FILE)).expect("pid"),
+        action.to_string(),
+        "the action's process, not the launcher's"
+    );
+}
+
+#[test]
 fn a_live_model_run_holds_its_slot_though_its_ticket_cannot_be_read() {
     // One slot. #3's implement runs, live, but #3 records a pull request the forge does not know,
     // so #3 cannot be read this tick. Its run still holds the slot: #5 does not start.

@@ -75,6 +75,30 @@ fn an_opened_folder_holds_the_opening_files_named_by_instance_and_task() {
 }
 
 #[test]
+fn the_launcher_is_recorded_only_while_no_process_is() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let run = opened(dir.path(), "review", Some("h1"));
+    let launcher = Holder::parse("999998 1").expect("a holder");
+    let action = Holder::parse("999999 2").expect("a holder");
+    let pid = || std::fs::read_to_string(run.join(PID_FILE)).expect("pid");
+    let files = || std::fs::read_dir(&run).expect("run").count();
+    let opening = files();
+
+    // No record yet: the launcher is the run's process.
+    record_launcher(&run, &launcher).expect("launcher");
+    assert_eq!(pid(), launcher.to_string());
+
+    // The launcher replaces it with the action's process, as it always did.
+    record_pid(&run, &action).expect("pid");
+    assert_eq!(pid(), action.to_string());
+
+    // A verb that comes after the launcher's record leaves it, and leaves no staging file.
+    record_launcher(&run, &launcher).expect("launcher");
+    assert_eq!(pid(), action.to_string());
+    assert_eq!(files(), opening + 1, "the pid file alone was added");
+}
+
+#[test]
 fn a_phase_that_ended_with_no_scheduler_is_read_from_its_record() {
     let dir = tempfile::tempdir().expect("temp dir");
     let run = opened(dir.path(), "review", Some("h1"));

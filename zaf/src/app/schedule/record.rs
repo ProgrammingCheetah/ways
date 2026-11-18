@@ -151,10 +151,29 @@ fn write_whole(run_dir: &Path, name: &str, text: &str) -> Result<(), String> {
 }
 
 /// Records a process in the run folder as its `pid`, as a holder. The file is replaced whole, so a
-/// reader sees the old record or the new one, never half of either: the verb and the holder both
-/// record.
+/// reader sees the old record or the new one, never half of either. The launcher records the
+/// action's process this way; the verb that started the launcher records with
+/// [`record_launcher`], which replaces nothing.
 pub fn record_pid(run_dir: &Path, holder: &Holder) -> Result<(), String> {
     write_whole(run_dir, PID_FILE, &holder.to_string())
+}
+
+/// Records a run's launcher as its `pid`, only while the folder holds no `pid` yet. The launcher
+/// is a process of its own and may already have recorded the action's process ([`record_pid`]):
+/// that record stays, since nothing writes the action's again (#223). The file is staged and
+/// linked into place, so a reader sees no file or the whole of one, and a record that is there is
+/// never replaced.
+pub fn record_launcher(run_dir: &Path, launcher: &Holder) -> Result<(), String> {
+    let path = run_dir.join(PID_FILE);
+    let staging = run_dir.join(format!("{PID_FILE}.{}.new", std::process::id()));
+    let placed = std::fs::write(&staging, launcher.to_string()).and_then(|()| {
+        match std::fs::hard_link(&staging, &path) {
+            Err(source) if source.kind() == ErrorKind::AlreadyExists => Ok(()),
+            linked => linked,
+        }
+    });
+    let _ = std::fs::remove_file(&staging);
+    placed.map_err(|source| format!("cannot write {}: {source}", path.display()))
 }
 
 /// Records an inline run's body, `holder`, as the run folder's `inline-body`, written whole: the run

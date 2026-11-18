@@ -46,7 +46,7 @@ use crate::ports::{Board, Forge, Holder, PortError};
 
 pub use crate::app::schedule::record::{
     ACTION_FILE, EXIT_FILE, HEAD_FILE, INSTANCE_FILE, OUTPUT_FILE, PID_FILE, POST_PHASE_LOG,
-    SIZE_FILE, TASK_FILE, record_exit, record_pid,
+    SIZE_FILE, TASK_FILE, record_exit, record_launcher, record_pid,
 };
 
 /// Why a phase was not started.
@@ -137,7 +137,8 @@ pub struct Ports<'a> {
 /// starts never both pass, and two model starts never both take the last slot. `launch` starts
 /// the launcher on the folder and returns its process, which is recorded as the run's `pid`
 /// before the lock is let go: the run reads as running from the moment it is written, and the
-/// launcher replaces the record with the action's own process.
+/// launcher replaces the record with the action's own process. A launcher that recorded the
+/// action first keeps its record: the launcher's process is written only while no `pid` is there.
 pub fn start(
     ports: &Ports<'_>,
     task: TicketId,
@@ -222,7 +223,8 @@ pub fn start(
         released,
     };
     let holder = launch(&started).map_err(PhaseError::Failed)?;
-    record_pid(&started.run_dir, &holder).map_err(PhaseError::Failed)?;
+    // Only while no record is there: a launcher that was faster has recorded the action (#223).
+    record_launcher(&started.run_dir, &holder).map_err(PhaseError::Failed)?;
     Ok(started)
 }
 
