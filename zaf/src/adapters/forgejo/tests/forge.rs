@@ -6,7 +6,7 @@ use crate::adapters::notes::{HANDOFF_MARKER, marked};
 use crate::domain::Location;
 use crate::ports::{
     BranchName, CheckBucket, CheckLink, CheckLog, CheckName, CheckRun, CheckState, CommitId, Forge,
-    MergeOutcome, MergeStrategy, NewPullRequest, Opened, PrBody, PrNumber, PrTitle,
+    MergeOutcome, MergeStrategy, NewPullRequest, Opened, PrBody, PrNumber, PrRef, PrTitle,
 };
 
 /// The pull request's head commit.
@@ -24,6 +24,16 @@ fn pr(number: u64) -> PrNumber {
     PrNumber::from(number)
 }
 
+/// The page Forgejo shows pull request `number` on.
+fn page(number: u64) -> String {
+    format!("http://forgejo.test/example/tracker/pulls/{number}")
+}
+
+/// A pull request as the port hands it back.
+fn handed(number: u64) -> PrRef {
+    PrRef::new(pr(number), page(number))
+}
+
 /// A pull request as Forgejo prints it, from `head` at [`SHA`] into `main`.
 fn pull(number: u64, head: &str, state: &str, merged: bool) -> Value {
     pull_from(number, head, REPO_ID, state, merged)
@@ -34,6 +44,7 @@ fn pull_from(number: u64, head: &str, repo_id: u64, state: &str, merged: bool) -
         "number": number,
         "state": state,
         "merged": merged,
+        "html_url": page(number),
         "created_at": "2026-11-12T10:00:00+01:00",
         "merged_at": if merged { json!("2026-11-12T11:00:00Z") } else { Value::Null },
         "head": { "ref": head, "sha": SHA, "repo_id": repo_id },
@@ -377,7 +388,7 @@ fn open_hands_back_the_open_pull_request_of_the_branch_in_this_repository() {
     );
     assert_eq!(
         the_forge(&fake).open_pull_request(&request()),
-        Ok(Opened::AlreadyOpen(pr(7)))
+        Ok(Opened::AlreadyOpen(handed(7)))
     );
     assert!(fake.asked().iter().all(|asked| asked.starts_with("GET")));
 }
@@ -397,7 +408,7 @@ fn open_creates_the_pull_request_when_none_is_open_for_the_branch() {
     );
     assert_eq!(
         the_forge(&fake).open_pull_request(&request()),
-        Ok(Opened::New(pr(12)))
+        Ok(Opened::New(handed(12)))
     );
     assert_eq!(
         fake.bodies(&format!("POST {API}/pulls")),
@@ -408,6 +419,56 @@ fn open_creates_the_pull_request_when_none_is_open_for_the_branch() {
             "body": "Closes #2",
         })]
     );
+}
+
+#[test]
+fn a_pull_request_forgejo_gives_no_link_for_is_a_backend_failure() {
+    let fake = FakeCurl::new();
+    fake.on(&format!("GET {API}/pulls[?]state=open*"), 200, &json!([]));
+    fake.on(
+        &format!("POST {API}/pulls"),
+        201,
+        &json!({ "number": 12, "state": "open" }),
+    );
+    let error = the_forge(&fake)
+        .open_pull_request(&request())
+        .expect_err("no link");
+    assert!(
+        matches!(&error, PortError::Backend(message) if message.contains("Forgejo gave no link")),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn the_default_branch_is_the_repositorys_own() {
+    let fake = FakeCurl::new();
+    fake.on(
+        &format!("GET {API}"),
+        200,
+        &json!({ "default_branch": "trunk", "permissions": { "pull": true, "push": true } }),
+    );
+    assert_eq!(
+        the_forge(&fake).default_branch(),
+        Ok(BranchName::from("trunk"))
+    );
+    assert_eq!(fake.asked(), [format!("GET {API}")]);
+}
+
+#[test]
+fn a_repository_with_no_default_branch_or_a_forge_that_is_down_is_a_failure() {
+    let fake = FakeCurl::new();
+    fake.on(&format!("GET {API}"), 200, &json!({ "default_branch": "" }));
+    assert!(matches!(
+        the_forge(&fake).default_branch(),
+        Err(PortError::Backend(message)) if message.contains("no default branch")
+    ));
+
+    let down = FakeCurl::new();
+    down.unreachable(&format!("GET {API}"));
+    assert!(matches!(
+        the_forge(&down).default_branch(),
+        Err(PortError::Unavailable(_))
+    ));
 }
 
 #[test]

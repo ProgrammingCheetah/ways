@@ -7,7 +7,7 @@ use std::time::SystemTime;
 use crate::ports::{
     BaseName, BranchChecks, BranchName, Check, CheckBucket, CheckLink, CheckLog, CheckRun,
     CommitId, Forge, MergeOutcome, MergeStrategy, NewPullRequest, Opened, PortError, PrNumber,
-    PullRequest, ReviewComment, ScanningAlert, SliceName,
+    PrRef, PullRequest, ReviewComment, ScanningAlert, SliceName,
 };
 
 /// What a pull request is opened from and into.
@@ -51,6 +51,7 @@ struct State {
     branches: BTreeMap<BranchName, BranchChecks>,
     branch_reads: usize,
     branch_checks_fail: bool,
+    default_branch: Option<BranchName>,
 }
 
 /// A forge held in memory. Arrange reviews with [`FakeForge::set_checks`]
@@ -78,6 +79,11 @@ impl FakeForge {
                 checks,
             },
         );
+    }
+
+    /// Sets the branch [`Forge::default_branch`] answers; `main` until then.
+    pub fn set_default_branch(&self, branch: &str) {
+        self.state().default_branch = Some(BranchName::from(branch));
     }
 
     /// Makes every [`Forge::branch_checks`] read fail with a backend error.
@@ -219,7 +225,7 @@ impl FakeForge {
             .find(|(_, pull)| !pull.merged && !pull.closed && pull.request.slice == request.slice)
             .map(|(number, _)| *number);
         if let Some(number) = existing {
-            return Opened::AlreadyOpen(number);
+            return Opened::AlreadyOpen(PrRef::new(number, link_of(number)));
         }
         state.next_number += 1;
         let number = PrNumber::from(state.next_number);
@@ -239,7 +245,7 @@ impl FakeForge {
             merged_at: None,
         };
         state.pulls.insert(number, pull);
-        Opened::New(number)
+        Opened::New(PrRef::new(number, link_of(number)))
     }
 
     /// Merges the pull request; one already merged is [`MergeOutcome::AlreadyMerged`]. It
@@ -254,6 +260,11 @@ impl FakeForge {
         pull.merged_at.get_or_insert(SystemTime::UNIX_EPOCH);
         Ok(MergeOutcome::Merged)
     }
+}
+
+/// The page the fake forge shows a pull request on.
+pub fn link_of(pr: PrNumber) -> String {
+    format!("https://forge.test/pulls/{}", pr.get())
 }
 
 /// A check as `zaf forge checks` lists it, from its state alone.
@@ -340,6 +351,15 @@ impl Forge for FakeForge {
         }
         state.pull_mut(pr)?.handoff = Some(text.to_owned());
         Ok(())
+    }
+
+    /// `main`, unless [`FakeForge::set_default_branch`] arranged another.
+    fn default_branch(&self) -> Result<BranchName, PortError> {
+        Ok(self
+            .state()
+            .default_branch
+            .clone()
+            .unwrap_or_else(|| BranchName::from("main")))
     }
 
     /// The head becomes the slice and the base its line, as [`PrRequest`] holds them.

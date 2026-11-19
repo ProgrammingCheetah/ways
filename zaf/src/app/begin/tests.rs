@@ -368,6 +368,72 @@ fn complete(
     .expect("completes")
 }
 
+/// [`complete_phase`] for the objectives with the Engineer typing `lines` in turn, then closing
+/// the input (an empty string); returns what came of it, the prompts shown and the events
+/// (`ask`) in order.
+fn complete_typing(lines: &[&str]) -> (Completion, Vec<String>, Vec<&'static str>, bool) {
+    use std::cell::RefCell;
+    let dir = tempfile::tempdir().expect("temp dir");
+    let folder = folder_in(dir.path());
+    write_plain(&folder, "objectives.md", "The objectives.\n");
+    let events = RefCell::new(Vec::new());
+    let prompts = RefCell::new(Vec::new());
+    let queue = RefCell::new(lines.iter().map(|l| (*l).to_owned()).collect::<Vec<_>>());
+    let ask = |prompt: &str| -> std::io::Result<String> {
+        events.borrow_mut().push("ask");
+        prompts.borrow_mut().push(prompt.to_owned());
+        let mut queue = queue.borrow_mut();
+        Ok(if queue.is_empty() {
+            String::new()
+        } else {
+            queue.remove(0)
+        })
+    };
+    let done = complete_phase(
+        &board_with_epic(false),
+        &folder,
+        VERSION,
+        Phase::Objectives,
+        UNIX_EPOCH,
+        &ask,
+    )
+    .expect("completes");
+    let signed = is_signed(&folder, "objectives.md");
+    (done, prompts.into_inner(), events.into_inner(), signed)
+}
+
+#[test]
+fn sign_question_is_yes_by_default_in_json() {
+    let (done, prompts, _, signed) = complete_typing(&["\n"]);
+    assert!(matches!(done, Completion::Signed(_)), "{done:?}");
+    assert!(signed);
+    assert_eq!(prompts.len(), 1);
+    assert!(prompts[0].ends_with("? [Y/n] "), "{prompts:?}");
+    for yes in ["y\n", "yes\n", "YES\n"] {
+        let (done, _, _, signed) = complete_typing(&[yes]);
+        assert!(matches!(done, Completion::Signed(_)), "{yes:?}");
+        assert!(signed, "{yes:?}");
+    }
+    for no in ["n\n", "nope\n", "No\n", ""] {
+        let (done, _, _, signed) = complete_typing(&[no]);
+        assert!(matches!(done, Completion::NotSigned(_)), "{no:?}");
+        assert!(!signed, "{no:?}");
+    }
+}
+
+#[test]
+fn sign_question_other_answers_ask_again() {
+    let (done, prompts, events, signed) = complete_typing(&["q\n", "maybe\n", "y\n"]);
+    assert!(matches!(done, Completion::Signed(_)), "{done:?}");
+    assert!(signed);
+    assert_eq!(prompts.len(), 3);
+    assert_eq!(events, ["ask", "ask", "ask"]);
+    let (done, prompts, _, signed) = complete_typing(&["q\n", "n\n"]);
+    assert!(matches!(done, Completion::NotSigned(_)));
+    assert!(!signed);
+    assert_eq!(prompts.len(), 2);
+}
+
 fn write_plain(folder: &ReleaseFolder, name: &str, text: &str) {
     folder.ensure().expect("ensure");
     std::fs::write(folder.path().join(name), text).expect("write");
@@ -487,11 +553,29 @@ fn complete_phase_leaves_a_document_edited_during_the_prompt_unsigned() {
 }
 
 #[test]
+fn complete_phase_signs_on_enter_and_on_yes() {
+    for answer in ["\n", "y\n", "yes\n"] {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let folder = folder_in(dir.path());
+        write_plain(&folder, "objectives.md", "The objectives.\n");
+
+        let done = complete(&board_with_epic(false), &folder, Phase::Objectives, answer);
+
+        assert_eq!(
+            done,
+            Completion::Signed(folder.path().join("objectives.md")),
+            "{answer:?}"
+        );
+        assert!(is_signed(&folder, "objectives.md"), "{answer:?}");
+    }
+}
+
+#[test]
 fn begin_leaves_the_objectives_unsigned_on_no() {
     let dir = tempfile::tempdir().expect("temp dir");
     let folder = folder_in(dir.path());
     write_plain(&folder, "objectives.md", "The objectives.\n");
-    for answer in ["n\n", "\n", "maybe\n", ""] {
+    for answer in ["n\n", "no\n", "nope\n", ""] {
         assert_eq!(
             complete(&board_with_epic(false), &folder, Phase::Objectives, answer),
             Completion::NotSigned(folder.path().join("objectives.md")),

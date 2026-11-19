@@ -16,7 +16,8 @@ kind = "github-issues"
 repo = "example/tracker"
 "#;
 
-const MOVED: &str = "moved ZAF.toml to .zaf.toml";
+/// The Move step's line: the move is said as the plan's row ends.
+const MOVED: &str = "  ✓ Move ZAF.toml to .zaf.toml";
 
 /// A project whose manifest is the legacy root `ZAF.toml`: `Project::new` writes
 /// `.zaf.toml`, so this writes the legacy file itself.

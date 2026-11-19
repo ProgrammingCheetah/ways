@@ -63,7 +63,7 @@
     },
     {
       "name": "github/",
-      "role": "board on issues or a Project (state in labels or a Project field, github/state.rs), forge on PRs and their writes (pr list/create, pr view/merge, pr checks, run view --log-failed, through GhCommand::run where the exit code alone does not decide), GhCommand with gh api graphql, gh JSON rows",
+      "role": "board on issues or a Project (state in labels or a Project field, github/state.rs), forge on PRs and their writes (pr list/create, pr view/merge, pr checks, run view --log-failed, through GhCommand::run where the exit code alone does not decide), GhCommand with gh api graphql, gh JSON rows; PublicReleases (github/public_releases.rs) reads zaf's own releases for `zaf update` over curl from api.github.com with no gh, the GITHUB_TOKEN on curl's stdin alone",
       "node": false
     },
     {

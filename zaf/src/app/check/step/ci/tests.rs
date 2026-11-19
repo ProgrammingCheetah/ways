@@ -93,6 +93,10 @@ impl Forge for ScriptedForge {
         self.inner.open_pull_request(request)
     }
 
+    fn default_branch(&self) -> Result<crate::ports::BranchName, PortError> {
+        self.inner.default_branch()
+    }
+
     fn merge_pull_request(
         &self,
         pr: PrNumber,

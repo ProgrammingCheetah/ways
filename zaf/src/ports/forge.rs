@@ -95,21 +95,55 @@ pub struct NewPullRequest {
     pub body: PrBody,
 }
 
+text_newtype! {
+    /// The page a pull request shows on, as a person opens it.
+    PrLink
+}
+
+/// A pull request opened or found: its number and its link.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrRef {
+    /// Its number.
+    pub number: PrNumber,
+    /// Its page on the forge.
+    pub link: PrLink,
+}
+
+impl PrRef {
+    /// A pull request by its number and link.
+    pub fn new(number: PrNumber, link: impl Into<PrLink>) -> Self {
+        Self {
+            number,
+            link: link.into(),
+        }
+    }
+}
+
 /// What asking for a head branch's pull request did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Opened {
     /// It opened now.
-    New(PrNumber),
+    New(PrRef),
     /// One was already open for the head; nothing was opened.
-    AlreadyOpen(PrNumber),
+    AlreadyOpen(PrRef),
 }
 
 impl Opened {
     /// The pull request, new or already open.
-    pub fn number(self) -> PrNumber {
+    pub fn pull_request(&self) -> &PrRef {
         match self {
-            Self::New(number) | Self::AlreadyOpen(number) => number,
+            Self::New(pr) | Self::AlreadyOpen(pr) => pr,
         }
+    }
+
+    /// Its number.
+    pub fn number(&self) -> PrNumber {
+        self.pull_request().number
+    }
+
+    /// Its link.
+    pub fn link(&self) -> &PrLink {
+        &self.pull_request().link
     }
 }
 
@@ -326,9 +360,14 @@ pub trait Forge {
     fn set_handoff(&self, pr: PrNumber, text: &str) -> Result<(), PortError>;
 
     /// Opens a pull request for `request.head` into `request.base`, or hands back the one
-    /// already open for that head and opens nothing. Every failure, a refusal by the forge
+    /// already open for that head and opens nothing; either way it comes back with its link, the
+    /// page the forge shows it on. Every failure, a refusal by the forge
     /// included, is a backend error: the caller has nothing to change but the forge.
     fn open_pull_request(&self, request: &NewPullRequest) -> Result<Opened, PortError>;
+
+    /// The branch the forge's repository opens on: the base a pull request merges into when none
+    /// is named. A repository the forge gives no default branch for is a backend error.
+    fn default_branch(&self) -> Result<BranchName, PortError>;
 
     /// Merges the pull request with `strategy`; with `head`, only while its head is that commit.
     /// One merged before is [`MergeOutcome::AlreadyMerged`]. A pull request closed unmerged, a

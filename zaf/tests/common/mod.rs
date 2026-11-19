@@ -170,6 +170,75 @@ impl Project {
         }
     }
 
+    /// Makes the project ready for the build start of `version` (`zaf spawn --watch` runs it on a
+    /// fresh start): `[vcs] kind = "jj"` in the manifest, a jj repository whose default branch is
+    /// pushed to a bare remote (`remote.git`, beside the project) unless `remote` is false, the
+    /// objectives and the design of `version` signed, and the shipped `base-open` and
+    /// `papers-commit` as the project's actions. Run it after the project's other files are in
+    /// place: the first commit holds them.
+    pub fn ready_to_build(&mut self, version: &str, remote: bool) {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::UNIX_EPOCH;
+        let manifest = self.root.join(".zaf.toml");
+        let text = fs::read_to_string(&manifest).expect("manifest");
+        // `base-open` asks `zaf forge default-branch`, which the fake `gh` answers `main`: the
+        // actions get the built `zaf` first on their path, so no stand-in `zaf` can say it.
+        self.on_first("api repos/* --jq .default_branch", "main\n");
+        let forge = if text.contains("[forge]") {
+            ""
+        } else {
+            "\n[forge]\nkind = \"github\"\nrepo = \"example/tracker\"\n"
+        };
+        fs::write(&manifest, format!("{text}{forge}\n[vcs]\nkind = \"jj\"\n")).expect("manifest");
+        write(&self.root, ".gitignore", ".zaf/*\n!.zaf/actions/\n");
+        let shipped = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/teams/actions");
+        for name in ["base-open", "papers-commit"] {
+            let body = fs::read_to_string(shipped.join(name)).expect("the shipped action");
+            write(&self.root, &format!(".zaf/actions/{name}"), &body);
+            fs::set_permissions(
+                self.root.join(".zaf/actions").join(name),
+                fs::Permissions::from_mode(0o750),
+            )
+            .expect("mode");
+        }
+        jj(&self.root, &["git", "init", "."]);
+        jj(
+            &self.root,
+            &["config", "set", "--repo", "user.name", "Test Author"],
+        );
+        jj(
+            &self.root,
+            &["config", "set", "--repo", "user.email", "a@example.com"],
+        );
+        if remote {
+            let bare = self.temp.path().join("remote.git");
+            run(
+                self.temp.path(),
+                "git",
+                &["init", "-q", "--bare", "remote.git"],
+            );
+            jj(
+                &self.root,
+                &["git", "remote", "add", "origin", &bare.to_string_lossy()],
+            );
+        }
+        jj(&self.root, &["commit", "-m", "Start the project"]);
+        jj(&self.root, &["bookmark", "create", "main", "-r", "@-"]);
+        if remote {
+            jj(&self.root, &["git", "push", "--bookmark", "main"]);
+        }
+        for (name, body) in [
+            ("objectives.md", "# Objectives\n"),
+            ("design.md", "# Design\n"),
+        ] {
+            write(
+                &self.root,
+                &format!(".teams/releases/{version}/{name}"),
+                &zaf::domain::DocumentSignature::sign(body, UNIX_EPOCH),
+            );
+        }
+    }
+
     /// Every `gh` call's argv, joined by spaces, in order.
     pub fn gh_calls(&self) -> Vec<String> {
         let Ok(entries) = fs::read_dir(self.scene.join("calls")) else {

@@ -71,7 +71,9 @@ fn handed_back(text: &str) -> &str {
 
 /// The `gh pr list` call for the slice, as the fake records it.
 fn list_call() -> String {
-    format!("pr list --head {SLICE} --state open --json number --jq .[].number --repo {REPO}")
+    format!(
+        "pr list --head {SLICE} --state open --json number,url --jq .[] | [.number, .url] | @tsv --repo {REPO}"
+    )
 }
 
 #[test]
@@ -99,15 +101,44 @@ fn pr_open_hands_back_the_number() {
     );
 }
 
+/// The 0.5.1 copy of `pr-open` (tag zaf-v0.5.1), which reads the whole of `zaf forge open`'s
+/// output as the number, so a link on line 2 would make it fail.
 #[test]
-fn pr_open_returns_the_open_one() {
+fn old_pr_open_runs_against_the_new_binary() {
     let mut project = project();
-    project.on("pr list *", "5\n");
+    let old = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/old/pr-open-0.5.1");
+    let text =
+        fs::read_to_string(&old).unwrap_or_else(|error| panic!("{}: {error}", old.display()));
+    let path = project.root.join(".zaf/actions/pr-open");
+    fs::write(&path, text).expect("old pr-open");
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o750)).expect("mode");
+    project.on("pr list *", "").on(
+        "pr create *",
+        &format!("https://github.com/{REPO}/pull/7\n"),
+    );
 
     let (code, text) = open_slice(&project);
 
     assert_eq!(code, 0, "{text}");
-    assert_eq!(handed_back(&text), "5", "{text}");
+    assert_eq!(handed_back(&text), "7", "{text}");
+}
+
+#[test]
+fn pr_open_returns_the_open_one() {
+    let mut project = project();
+    project.on(
+        "pr list *",
+        &format!("5\thttps://github.com/{REPO}/pull/5\n"),
+    );
+
+    let (code, text) = open_slice(&project);
+
+    assert_eq!(code, 0, "{text}");
+    assert_eq!(
+        handed_back(&text),
+        "5",
+        "the link is not handed back: {text}"
+    );
     // Nothing was opened: the list was the only call.
     assert_eq!(project.gh_calls(), [list_call()]);
 }
@@ -140,7 +171,10 @@ fn pr_open_without_a_forge_fails_with_2_and_asks_no_forge() {
         "[project]\nname = \"example\"\n\n[board]\nkind = \"github-issues\"\nrepo = \"example/tracker\"\n",
     )
     .expect("manifest");
-    project.on("pr list *", "9\n");
+    project.on(
+        "pr list *",
+        &format!("9\thttps://github.com/{REPO}/pull/9\n"),
+    );
 
     let (code, text) = open_slice(&project);
 

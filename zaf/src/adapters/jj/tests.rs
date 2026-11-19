@@ -140,6 +140,49 @@ fn has_tag_says_whether_the_repository_holds_the_tag() {
 }
 
 #[test]
+fn jj_has_remote_false_without_remote() {
+    let fixture = Fixture::new(true);
+    assert!(!JjVcs.has_remote(&fixture.root).expect("remote"));
+}
+
+#[test]
+fn jj_has_remote_true_with_origin() {
+    let fixture = Fixture::new(false);
+    jj(
+        &fixture.root,
+        &[
+            "git",
+            "remote",
+            "add",
+            "origin",
+            "https://example.com/repo.git",
+        ],
+    );
+    assert!(JjVcs.has_remote(&fixture.root).expect("remote"));
+}
+
+#[test]
+fn jj_has_remote_errors_outside_a_repository() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    assert!(matches!(
+        JjVcs.has_remote(temp.path()),
+        Err(PortError::NotFound(_))
+    ));
+}
+
+#[test]
+fn tags_lists_every_tag_of_the_repository() {
+    let fixture = Fixture::new(true);
+    assert!(JjVcs.tags(&fixture.root).expect("tags").is_empty());
+    jj(&fixture.root, &["tag", "set", "-r", "@-", "app-v1.0.0"]);
+    jj(&fixture.root, &["tag", "set", "-r", "@-", "app-v0.9.0"]);
+    assert_eq!(
+        JjVcs.tags(&fixture.root).expect("tags"),
+        ["app-v0.9.0", "app-v1.0.0"]
+    );
+}
+
+#[test]
 fn latest_commit_reads_the_workspace() {
     let fixture = Fixture::new(false);
     let (dir, _base) = fixture.slice();

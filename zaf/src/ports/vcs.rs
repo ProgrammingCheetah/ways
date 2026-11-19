@@ -69,6 +69,14 @@ pub trait Vcs {
     /// [`PortError::NotFound`].
     fn has_tag(&self, root: &Path, tag: &str) -> Result<bool, PortError>;
 
+    /// Whether the repository at `root` has a remote. A directory that is no repository is
+    /// [`PortError::NotFound`], and a VCS that cannot be run is an error, never `false`.
+    fn has_remote(&self, root: &Path) -> Result<bool, PortError>;
+
+    /// Every tag of the repository at `root`, by name, in no set order. A directory that is no
+    /// repository is [`PortError::NotFound`].
+    fn tags(&self, root: &Path) -> Result<Vec<String>, PortError>;
+
     /// The hunks of one changed file of a workspace against its base, on request; a file
     /// with no change is [`PortError::NotFound`].
     fn diff_hunks(

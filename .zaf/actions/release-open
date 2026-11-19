@@ -1,0 +1,80 @@
+#!/bin/sh
+# zaf description: open the pull request from a version's integration branch to the forge's default branch, handing back its number on line 1 and its link on line 2; a version with an open one hands that one back, and a second is never opened
+# zaf 1: refused: the argument is not one <version> (letters, digits and . - _ + only, no leading -), it is not ZAF_VERSION's, ZAF_ROOT or ZAF_BASE is not set, or the integration branch is not on the remote, so nothing is opened
+# zaf 2: a backend failed (jj is missing or refused, the fetch failed, the manifest names no forge, or the forge is unreachable, refused, or gave no pull request number)
+# zaf mode: 750
+# zaf group: team, release
+version=$1
+
+if [ -z "$ZAF_ROOT" ] || [ -z "$ZAF_BASE" ] || [ "$#" -ne 1 ]; then
+    echo "usage: release-open <version>, with ZAF_ROOT and ZAF_BASE set" >&2
+    exit 1
+fi
+case $version in
+    "" | -* | *[!A-Za-z0-9._+-]*)
+        echo "version $version is not a usable version" >&2
+        exit 1
+        ;;
+esac
+# ZAF_BASE is the integration branch of ZAF_VERSION: another version would open the wrong one.
+if [ -n "$ZAF_VERSION" ] && [ "$version" != "$ZAF_VERSION" ]; then
+    echo "version $version is not ZAF_VERSION $ZAF_VERSION" >&2
+    exit 1
+fi
+base=$ZAF_BASE
+case $base in
+    "" | -* | *\"* | *\\*)
+        echo "integration branch $base is not a usable branch name" >&2
+        exit 1
+        ;;
+esac
+
+# zaf reads the forge from the manifest at the project root.
+cd "$ZAF_ROOT" || exit 2
+
+# Root commands never snapshot the root's own working copy: it is someone else's checkout.
+root_jj() {
+    jj --no-pager --color=never --ignore-working-copy -R "$ZAF_ROOT" "$@"
+}
+
+# The remote the integration branch tracks; origin when it tracks none.
+remote=origin
+if ! tracked=$(root_jj bookmark list --tracked -T 'remote ++ "\n"' "exact:\"$base\""); then
+    exit 2
+fi
+for name in $tracked; do
+    if [ "$name" != "git" ]; then
+        remote=$name
+        break
+    fi
+done
+
+# The branch must be on the remote as the remote has it now: fetch first. A repository without
+# that remote has no integration branch there.
+if ! remotes=$(root_jj git remote list); then
+    exit 2
+fi
+if ! printf '%s\n' "$remotes" | awk -v remote="$remote" '$1 == remote { found = 1 } END { exit !found }'; then
+    echo "no remote $remote: $base is not on the remote" >&2
+    exit 1
+fi
+root_jj git fetch --remote "$remote" || exit 2
+there=$(root_jj log --no-graph -r "remote_bookmarks(exact:\"$base\", exact:\"$remote\")" -T 'commit_id ++ "\n"') || exit 2
+if [ -z "$there" ]; then
+    echo "$base is not on the remote $remote: push the integration branch first" >&2
+    exit 1
+fi
+
+# With no base the forge opens into its default branch; one already open for the branch is handed
+# back, and zaf says so on stderr. Line 1 is its number, line 2 its link.
+opened=$(zaf forge open --link -- "$base" "Release $version" "The release pull request of $version, opened by zaf.") || exit 2
+number=$(printf '%s\n' "$opened" | head -n 1)
+link=$(printf '%s\n' "$opened" | tail -n +2 | head -n 1)
+case $number in
+    "" | *[!0-9]*)
+        echo "the forge gave no pull request number: $number" >&2
+        exit 2
+        ;;
+esac
+echo "$number"
+echo "$link"

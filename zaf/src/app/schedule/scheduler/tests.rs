@@ -41,6 +41,10 @@ struct Fake {
     stop_at_binary: bool,
     /// The calls made before the first turn.
     startup: Vec<&'static str>,
+    /// Every epic of the version is done.
+    built: bool,
+    /// What each run of the fake action `release-open` ends in, in turn; the last one repeats.
+    release_open: Vec<Result<Opened, String>>,
     log: Vec<String>,
 }
 
@@ -67,6 +71,8 @@ impl Fake {
             pending_signal: false,
             stop_at_binary: false,
             startup: Vec::new(),
+            built: false,
+            release_open: Vec::new(),
             log: Vec::new(),
         }
     }
@@ -175,6 +181,23 @@ impl Host for Fake {
         memory.keep(Placement::default(), SystemTime::UNIX_EPOCH);
         self.in_tick = false;
         self.codes.get(&number).copied().unwrap_or(0)
+    }
+
+    fn version_built(&mut self) -> bool {
+        self.built
+    }
+
+    fn open_release(&mut self) -> Result<Opened, String> {
+        self.log.push("release-open".to_owned());
+        if self.release_open.len() > 1 {
+            self.release_open.remove(0)
+        } else {
+            self.release_open.first().cloned().expect("a fake result")
+        }
+    }
+
+    fn built(&mut self, version: &str, number: &str, link: Option<&str>) {
+        self.log.push(built_line(version, number, link));
     }
 
     fn next_tick(&mut self, interval: Duration) {
@@ -585,4 +608,97 @@ fn a_stop_before_the_last_look_stops_rather_than_restarts() {
         }
     );
     assert_eq!(fake.log, ["binary", "hold stop", "let stop through"]);
+}
+
+fn pull_request() -> Opened {
+    Opened {
+        version: "0.5.2".to_owned(),
+        number: "12".to_owned(),
+        link: Some("https://forge.example/zuri/ways/pulls/12".to_owned()),
+    }
+}
+
+/// A fake with three ticks (the first, and two asked for) and a stop after them.
+fn three_ticks() -> Fake {
+    let mut fake = Fake::new()
+        .ask_at(3, &["ruling #1"])
+        .ask_at(5, &["ruling #2"]);
+    fake.stop_at = 8;
+    fake
+}
+
+fn count(fake: &Fake, line: &str) -> usize {
+    fake.log.iter().filter(|each| each.as_str() == line).count()
+}
+
+#[test]
+fn built_version_opens_release_once() {
+    let mut fake = three_ticks();
+    fake.built = true;
+    fake.release_open = vec![Ok(pull_request())];
+
+    run(&mut fake, MINUTE * 60, start());
+
+    assert_eq!(fake.ticks().len(), 3);
+    assert_eq!(count(&fake, "release-open"), 1, "{:?}", fake.log);
+    let says =
+        "zaf built 0.5.2: release pull request #12, https://forge.example/zuri/ways/pulls/12";
+    assert_eq!(count(&fake, says), 1, "said once: {:?}", fake.log);
+    let opened = fake.log.iter().position(|line| line == "release-open");
+    let first_next = fake
+        .log
+        .iter()
+        .position(|line| line.starts_with("next tick"));
+    assert!(opened < first_next, "after the first tick, before the wait");
+}
+
+#[test]
+fn open_epic_opens_nothing() {
+    let mut fake = three_ticks();
+    fake.built = false;
+    fake.release_open = vec![Ok(pull_request())];
+
+    run(&mut fake, MINUTE * 60, start());
+
+    assert_eq!(fake.ticks().len(), 3);
+    assert_eq!(count(&fake, "release-open"), 0, "{:?}", fake.log);
+    assert!(
+        fake.log.iter().all(|line| !line.starts_with("zaf built")),
+        "{:?}",
+        fake.log
+    );
+}
+
+#[test]
+fn release_open_failure_retries_next_tick() {
+    let mut fake = three_ticks();
+    fake.built = true;
+    fake.release_open = vec![
+        Err("the branch is not on the remote".to_owned()),
+        Err("FAIL release-open".to_owned()),
+        Ok(pull_request()),
+    ];
+
+    run(&mut fake, MINUTE * 60, start());
+
+    assert_eq!(fake.ticks().len(), 3);
+    assert_eq!(
+        count(&fake, "release-open"),
+        3,
+        "tried on each tick, then done"
+    );
+    let warnings: Vec<&String> = fake
+        .log
+        .iter()
+        .filter(|line| line.starts_with("warn: the version is built"))
+        .collect();
+    assert_eq!(warnings.len(), 2, "one for each failure: {:?}", fake.log);
+    assert!(warnings[0].contains("the branch is not on the remote"));
+    assert!(warnings[1].contains("FAIL release-open"));
+    let said = fake
+        .log
+        .iter()
+        .filter(|line| line.starts_with("zaf built"))
+        .count();
+    assert_eq!(said, 1);
 }

@@ -65,6 +65,10 @@ impl Forge for SharedForge {
         self.0.open_pull_request(request)
     }
 
+    fn default_branch(&self) -> Result<crate::ports::BranchName, PortError> {
+        self.0.default_branch()
+    }
+
     fn merge_pull_request(
         &self,
         pr: PrNumber,

@@ -91,6 +91,14 @@ fn an_edit_voids_the_signature() {
 }
 
 #[test]
+fn release_line_with_escape_is_cleaned_or_refused() {
+    assert_eq!(release_of("Release: 0.6.\x1b[2J0\n\nGoal."), None);
+    assert_eq!(release_of("Release: 0.6.0\u{9b}\n"), None);
+    assert_eq!(release_of("Release: 0.6.0\x07"), None);
+    assert_eq!(release_of("Release: 0.6.0\r\nGoal."), Some("0.6.0"));
+}
+
+#[test]
 fn epic_of_a_version_reads_the_first_line_only() {
     let of = |body: &str| Epic {
         body: body.into(),

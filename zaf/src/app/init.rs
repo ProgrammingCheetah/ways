@@ -1,15 +1,16 @@
 //! The questions `zaf setup` asks where a folder has no manifest: write a minimal manifest by asking.
 //!
-//! Four questions on a line each: project name, board repo, forge repo and the gate's
-//! full command. Each offers the value init can work out as the default a blank answer
-//! takes: the folder's name, the `owner/name` of the git remote `origin`, and no gate. The
+//! Four questions: project name, board, forge and the check command. Each is a [`Question`], a
+//! label, one line on what it means and the default a blank answer takes (the folder's name, the
+//! `owner/name` of the git remote `origin`, and no check command); [`questions`] lists them and
+//! the caller's drawer shows each as it likes. The
 //! written manifest also carries the standard values a tick needs: the claude runner, the
 //! roles the phase actions run as, the review steps, the phase lists, the pack's tag, the
 //! tools the actions need (`[requires]`) and the merge commands no instance may run
 //! (`[forbidden]`, so a merge goes through `slice-merge` alone).
 //!
 //! A GitHub `origin`, or none, writes GitHub's kinds. Any other `origin` is taken for a Forgejo
-//! instance: one more question, `forge url`, follows the forge repo, offering as its default the
+//! instance: one more question, the forge's address, follows the forge, offering as its default the
 //! first of a short list of candidates built from the remote's host that answers
 //! `GET /api/v1/version` (the probe is handed in, so this module reaches no network itself); the
 //! manifest then names the kinds `forgejo-issues` and `forgejo` with that `url`, the `repo` and
@@ -48,38 +49,131 @@ pub enum InitError {
     Io(#[from] io::Error),
 }
 
-fn ask(
+/// One question init asks: what it is called, what it means and the answer a blank line takes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Question {
+    /// The name the question goes by, also what a refusal names.
+    pub label: &'static str,
+    /// One line on what the answer is for.
+    pub meaning: String,
+    /// What a blank answer takes.
+    pub default: Option<String>,
+    /// Whether a blank answer with no default is refused; the check command may be blank.
+    pub required: bool,
+}
+
+impl Question {
+    /// The question as plain text: its label padded to 14 and its meaning on one line, then the
+    /// prompt `  › ` with the default in brackets when there is one.
+    pub fn plain(&self) -> String {
+        let default = self
+            .default
+            .as_deref()
+            .map_or_else(String::new, |default| format!("[{default}] "));
+        format!("  {:<14} {}\n  › {default}", self.label, self.meaning)
+    }
+}
+
+/// How a question is shown before its answer is read: the whole text, prompt included.
+pub type Draw<'a> = &'a dyn Fn(&Question) -> String;
+
+/// What the folder and its `origin` say init can offer.
+struct Facts {
+    folder: Option<String>,
+    origin: Origin,
+}
+
+impl Facts {
+    fn of(dir: &Path) -> Self {
+        Self {
+            folder: folder_name(dir),
+            origin: origin_of(dir),
+        }
+    }
+
+    /// The `owner/name` the remote names, when it names one.
+    fn remote(&self) -> Option<String> {
+        match &self.origin {
+            Origin::Github(repo) => Some(repo.clone()),
+            Origin::Other(other) => Some(other.repo().to_string()),
+            Origin::None => None,
+        }
+    }
+
+    fn list(&self) -> Vec<Question> {
+        let remote = self.remote();
+        let kind = match self.origin {
+            Origin::Other(_) => "Forgejo",
+            _ => "GitHub",
+        };
+        let mut list = vec![
+            Question {
+                label: "Project name",
+                meaning: "what zaf calls this project".to_owned(),
+                default: self.folder.clone(),
+                required: true,
+            },
+            Question {
+                label: "Board",
+                meaning: format!("where your tickets live: {kind} issues of owner/name"),
+                default: remote.clone(),
+                required: true,
+            },
+            Question {
+                label: "Forge",
+                meaning: "where pull requests open: owner/name".to_owned(),
+                default: remote,
+                required: true,
+            },
+        ];
+        if matches!(self.origin, Origin::Other(_)) {
+            list.push(Question {
+                label: "Forge address",
+                meaning: "where the forge answers: its base address, e.g. https://forge.example"
+                    .to_owned(),
+                default: None,
+                required: true,
+            });
+        }
+        list.push(Question {
+            label: "Check command",
+            meaning: "the command that proves the code is good, e.g. cargo test (empty: none)"
+                .to_owned(),
+            default: None,
+            required: false,
+        });
+        list
+    }
+}
+
+/// The questions `init` asks in `dir`, in order, with the defaults known before any answer: a
+/// GitHub origin, or none, gives four; any other origin gives five, the forge's address among
+/// them with no default (finding one asks the network, which only [`init_with_home`] does). With
+/// no `origin` the forge question has none either: it takes the board's answer.
+pub fn questions(dir: &Path) -> Vec<Question> {
+    Facts::of(dir).list()
+}
+
+/// Shows `question`, reads one line and returns it trimmed, or the default on a blank one; a
+/// blank one with no default is refused naming the question when it is required.
+fn put(
     input: &mut dyn BufRead,
     output: &mut dyn Write,
-    question: &'static str,
-    shown: &str,
+    draw: Draw<'_>,
+    question: &Question,
 ) -> Result<String, InitError> {
-    write!(output, "{shown}: ")?;
+    write!(output, "{}", draw(question))?;
     output.flush()?;
     let mut line = String::new();
     if input.read_line(&mut line)? == 0 {
-        return Err(InitError::Closed(question));
+        return Err(InitError::Closed(question.label));
     }
-    Ok(line.trim().to_owned())
-}
-
-/// Asks `question`, showing `default`; a blank answer takes it, and with none it is
-/// refused naming the question.
-fn required(
-    input: &mut dyn BufRead,
-    output: &mut dyn Write,
-    question: &'static str,
-    default: Option<&str>,
-) -> Result<String, InitError> {
-    let shown = match default {
-        Some(default) => format!("{question} [{default}]"),
-        None => question.to_owned(),
-    };
-    let answer = ask(input, output, question, &shown)?;
-    match (answer.is_empty(), default) {
-        (false, _) => Ok(answer),
-        (true, Some(default)) => Ok(default.to_owned()),
-        (true, None) => Err(InitError::Blank(question)),
+    let answer = line.trim();
+    match (answer.is_empty(), &question.default) {
+        (false, _) => Ok(answer.to_owned()),
+        (true, Some(default)) => Ok(default.clone()),
+        (true, None) if question.required => Err(InitError::Blank(question.label)),
+        (true, None) => Ok(String::new()),
     }
 }
 
@@ -352,16 +446,26 @@ pub fn init(
     input: &mut dyn BufRead,
     output: &mut dyn Write,
 ) -> Result<PathBuf, InitError> {
-    init_with_home(dir, None, learn_tag, &mut |_| false, input, output)
+    init_with_home(
+        dir,
+        None,
+        learn_tag,
+        &mut |_| false,
+        &Question::plain,
+        input,
+        output,
+    )
 }
 
 /// [`init`] knowing the zaf `home`: when `dir/.zaf` is the zaf home, its `config.toml` is the
-/// machine's, not a project manifest, and does not make init refuse.
+/// machine's, not a project manifest, and does not make init refuse. Each question is shown as
+/// `draw` says.
 pub fn init_with_home(
     dir: &Path,
     home: Option<&Path>,
     learn_tag: LearnTag<'_>,
     probe: ProbeForge<'_>,
+    draw: Draw<'_>,
     input: &mut dyn BufRead,
     output: &mut dyn Write,
 ) -> Result<PathBuf, InitError> {
@@ -370,43 +474,29 @@ pub fn init_with_home(
     if let Some(existing) = found.root.or(found.folder).or(found.legacy) {
         return Err(InitError::Exists(existing));
     }
-    let origin = origin_of(dir);
-    let (remote, other) = match &origin {
-        Origin::Github(repo) => (Some(repo.clone()), None),
-        Origin::Other(other) => (Some(other.repo().to_string()), Some(other)),
-        Origin::None => (None, None),
-    };
-    let name = required(input, output, "project name", folder_name(dir).as_deref())?;
-    let board = required(input, output, "board repo (owner/name)", remote.as_deref())?;
-    let forge = required(
-        input,
-        output,
-        "forge repo (owner/name)",
-        Some(remote.as_deref().unwrap_or(&board)),
-    )?;
-    let url = match other {
-        Some(other) => {
+    let facts = Facts::of(dir);
+    let mut list = facts.list().into_iter();
+    let mut next = || list.next().expect("the list holds every question asked");
+    let name = put(input, output, draw, &next())?;
+    let board = put(input, output, draw, &next())?;
+    let mut forge_question = next();
+    forge_question.default.get_or_insert_with(|| board.clone());
+    let forge = put(input, output, draw, &forge_question)?;
+    let url = match &facts.origin {
+        Origin::Other(other) => {
             writeln!(output, "looking for a Forgejo instance on {}", other.host())?;
             let found = other
                 .candidates()
                 .into_iter()
                 .find(|candidate| probe(candidate));
-            let url = required(
-                input,
-                output,
-                "forge url",
-                found.as_ref().map(ForgeUrl::as_str),
-            )?;
+            let mut address = next();
+            address.default = found.as_ref().map(|found| found.as_str().to_owned());
+            let url = put(input, output, draw, &address)?;
             Some(url.trim_end_matches('/').to_owned())
         }
-        None => None,
+        _ => None,
     };
-    let gate = ask(
-        input,
-        output,
-        "gate full command",
-        "gate full command [blank: none]",
-    )?;
+    let gate = put(input, output, draw, &next())?;
 
     let mut text = match &url {
         Some(url) => format!(

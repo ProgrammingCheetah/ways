@@ -33,7 +33,7 @@
     },
     {
       "name": "begin.rs",
-      "role": "`zaf begin --version <v>`: refused with one sentence inside an instance (SignGuard's process ancestry) and where there is no terminal; else the phase due (phase_due) or, with none due, the version's open epics, each with `zaf epic sign <id>` while not signed; the place the begin run, sign and `--phase` tasks extend",
+      "role": "`zaf begin --version <v>`: refused with one sentence inside an instance (SignGuard's process ancestry) and where there is no terminal; else the phase due (phase_due) or, with none due, the version's open epics, each with `zaf epic sign <id>` while not signed; the place the begin run, sign and `--phase` tasks extend (EpicToSign lives in release.rs)",
       "node": false
     },
     {
@@ -49,6 +49,16 @@
     {
       "name": "board/",
       "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "build.rs",
+      "role": "the build start, `start(composition, version) -> Started`: refuses, changing nothing, while the objectives (or scope) or the design is unsigned or edited since, or the repository has no remote; else runs `base-open` then `papers-commit` through the actions runner with ZAF_VERSION, ZAF_BASE and ZAF_RELEASE_DIR set and reads what they printed",
+      "node": false
+    },
+    {
+      "name": "build/",
+      "role": "tests.rs, on a real jj repository with a bare remote",
       "node": false
     },
     {
@@ -148,7 +158,7 @@
     },
     {
       "name": "release.rs",
-      "role": "ReleaseFolder: a version's release folder from `[release] folder`, its objectives document (objectives.md, else scope.md) and design.md; phase_due, the phase due for a version (PhaseDue: objectives, design or nothing, with any malformed block) from the folder and the board's epics; release_versions and due_releases, each release folder the pattern matches whose objectives or design are due (a released version, as is_released reads it from the `[release] tag` pattern and the version control, and a folder with a signoff.md left out)",
+      "role": "ReleaseFolder: a version's release folder from `[release] folder`, its objectives document (objectives.md, else scope.md) and design.md; phase_due, the phase due for a version (PhaseDue: objectives, design or nothing, with any malformed block) from the folder; stage, the version's stage worked out on each read (Stage: objectives, design, epics with the EpicToSign of each open epic of the version, build or built); release_versions and due_releases, each release folder the pattern matches whose objectives or design are due (a released version, as is_released reads it from the `[release] tag` pattern and the version control, and a folder with a signoff.md left out); next_version, the minor after the highest version among the `[release] tag` tags (the Vcs port's tags) and the release folders, or 0.1.0 with neither",
       "node": false
     },
     {
@@ -208,6 +218,16 @@
     },
     {
       "name": "status/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "steps.rs",
+      "role": "the step report port (StepReport: started(row), ended(row, StepEnd), the row indexing the PlanRows the reporter is built with) and its Recorder for tests; the terminal's adapter is cli::steps",
+      "node": false
+    },
+    {
+      "name": "steps/",
       "role": "tests.rs",
       "node": false
     },

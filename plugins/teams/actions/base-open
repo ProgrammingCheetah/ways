@@ -1,0 +1,97 @@
+#!/bin/sh
+# zaf description: open the version's integration branch (ZAF_BASE) on the remote at the head of the forge's default branch, printing `made <branch>`; a branch already on the remote that descends from the default branch is handed back, quietly; the working copy never moves
+# zaf 1: refused: ZAF_VERSION or ZAF_BASE is unset or not a usable bookmark name, the forge's default branch is not on the remote, the remote's branch shares no history with the default branch, or the branch exists only locally (it is never pushed)
+# zaf 2: a backend failed (jj is missing or refused, the fetch failed, the forge could not say its default branch, or the push failed)
+# zaf mode: 750
+# zaf group: release
+branch=$ZAF_BASE
+
+if [ -z "$ZAF_ROOT" ] || [ -z "$ZAF_VERSION" ] || [ -z "$branch" ] || [ "$#" -ne 0 ]; then
+    echo "usage: base-open, with ZAF_ROOT, ZAF_VERSION and ZAF_BASE set" >&2
+    exit 1
+fi
+case $branch in
+    -* | *\"* | *\\*)
+        echo "$branch is not a usable bookmark name" >&2
+        exit 1
+        ;;
+esac
+
+jj_run() {
+    jj --no-pager --color=never --ignore-working-copy -R "$ZAF_ROOT" "$@"
+}
+
+# One commit id for a revset, or nothing. A jj that fails is its failure: each caller ends the run
+# on it (`|| exit 2`, since an exit in here would end only the `$(...)`).
+commit_of() {
+    ids=$(jj_run log --no-graph -r "$1" -T 'commit_id ++ "\n"') || return 2
+    printf '%s\n' "$ids" | awk 'NF { print; exit }'
+}
+
+# The remote the branch tracks; origin when it tracks none.
+remote=origin
+if ! tracked=$(jj_run bookmark list --tracked -T 'remote ++ "\n"' "exact:\"$branch\"" 2>/dev/null); then
+    echo "jj could not list the bookmarks" >&2
+    exit 2
+fi
+for name in $tracked; do
+    if [ "$name" != "git" ]; then
+        remote=$name
+        break
+    fi
+done
+
+# Every command ignores the working copy, so it never moves and no file changes.
+# Its own words are shown only when it fails: a branch handed back prints nothing.
+if ! fetched=$(jj_run git fetch --remote "$remote" 2>&1); then
+    printf '%s\n' "$fetched" >&2
+    exit 2
+fi
+
+# The default branch is the forge's, never jj's `trunk()` guess.
+default=$(zaf forge default-branch) || exit 2
+case $default in
+    '' | -* | *\"* | *\\*)
+        echo "the forge gave no usable default branch name: $default" >&2
+        exit 2
+        ;;
+esac
+default_head=$(commit_of "remote_bookmarks(exact:\"$default\", exact:\"$remote\")") || exit 2
+if [ -z "$default_head" ]; then
+    echo "the forge's default branch $default is not on $remote to open $branch at" >&2
+    exit 1
+fi
+
+remote_rev="remote_bookmarks(exact:\"$branch\", exact:\"$remote\")"
+remote_head=$(commit_of "$remote_rev") || exit 2
+
+if [ -n "$remote_head" ]; then
+    # On the remote already: it must descend from the default branch at any point (a commit
+    # landing on the default branch later does not unmake it), that is, share a commit with it
+    # beyond the root.
+    shared=$(commit_of "(::$default_head & ::$remote_rev) ~ root()") || exit 2
+    if [ -z "$shared" ]; then
+        echo "$branch on $remote shares no history with the default branch" >&2
+        exit 1
+    fi
+    exit 0
+fi
+
+local_head=$(commit_of "bookmarks(exact:\"$branch\")") || exit 2
+if [ -n "$local_head" ]; then
+    echo "$branch exists only locally, not on $remote; push or remove it first" >&2
+    exit 1
+fi
+
+if ! created=$(jj_run bookmark create "$branch" -r "$default_head" 2>&1); then
+    printf '%s\n' "$created" >&2
+    exit 2
+fi
+# A plain push, never forced. A push that fails leaves no local branch behind, so a second run is
+# not refused for it. jj's words are shown only on a failure: the one line printed is `made`.
+if ! pushed=$(jj_run git push --remote "$remote" --bookmark "exact:$branch" 2>&1); then
+    printf '%s\n' "$pushed" >&2
+    jj_run bookmark forget "exact:$branch" >&2
+    exit 2
+fi
+echo "made $branch"

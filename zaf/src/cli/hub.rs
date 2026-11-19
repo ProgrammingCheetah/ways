@@ -685,7 +685,7 @@ impl Drop for Terminal {
 }
 
 /// Runs `stty` on this terminal; its output when it succeeded.
-fn stty(args: &[&str]) -> Option<String> {
+pub(super) fn stty(args: &[&str]) -> Option<String> {
     let output = Command::new("stty")
         .args(args)
         .stdin(Stdio::inherit())

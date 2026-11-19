@@ -76,6 +76,8 @@ pub struct EpicState {
     pub title: String,
     /// Where it stands: unsigned, signed, planned or challenged.
     pub stage: EpicStage,
+    /// The version its body's `Release:` line names; `null` when the body has none.
+    pub release: Option<String>,
     /// Where a person opens its issue; read for an unsigned epic only, the one the Engineer signs.
     pub url: Option<String>,
     /// Its tasks done.
@@ -630,6 +632,7 @@ fn epic_state(tree: &Epic, dollars: f64) -> EpicState {
         number: tree.id.get(),
         title: tree.title.to_string(),
         stage: tree.stage(),
+        release: tree.release().map(str::to_owned),
         url: None,
         done,
         total,

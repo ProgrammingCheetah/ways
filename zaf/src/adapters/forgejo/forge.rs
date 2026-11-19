@@ -16,15 +16,15 @@ use serde_json::json;
 use super::access::{self, Write};
 use super::api::{ForgejoApi, Method};
 use super::rows::{
-    BranchHeadRow, ChangedFileRow, CommentRow, PullRow, ReviewCommentRow, ReviewRow, StatusRow,
-    UserRow, parse_time,
+    BranchHeadRow, ChangedFileRow, CommentRow, PullRow, RepositoryRow, ReviewCommentRow, ReviewRow,
+    StatusRow, UserRow, parse_time,
 };
 use crate::adapters::notes::{HANDOFF_MARKER, marked, unmarked};
 use crate::domain::Location;
 use crate::ports::{
     AccessCheck, Author, BranchChecks, BranchName, Check, CheckBucket, CheckLink, CheckLog,
     CheckName, CheckRun, CheckState, CommitId, Forge, MergeOutcome, MergeStrategy, NewPullRequest,
-    Opened, PortError, PrNumber, PullRequest, ReviewComment, ScanningAlert,
+    Opened, PortError, PrNumber, PrRef, PullRequest, ReviewComment, ScanningAlert,
 };
 
 /// The author shown for a comment whose account was deleted.
@@ -152,6 +152,19 @@ fn whole_link(url: &str, link: &str) -> String {
         .find('/')
         .map_or(url, |at| &url[..host_from + at]);
     format!("{origin}{link}")
+}
+
+/// A pull request as the port hands it back: its number and its `html_url`, which Forgejo
+/// always gives; a row with none is an error naming the pull request.
+fn pull_ref(row: &PullRow) -> Result<PrRef, PortError> {
+    let number = PrNumber::from(row.number);
+    if row.html_url.is_empty() {
+        return Err(PortError::Backend(format!(
+            "{}: Forgejo gave no link",
+            pull_request(number)
+        )));
+    }
+    Ok(PrRef::new(number, row.html_url.as_str()))
 }
 
 fn author(user: Option<UserRow>) -> Author {
@@ -350,7 +363,7 @@ impl Forge for ForgejoForge {
             .map_err(PortError::into_backend)?;
         let head = request.head.as_str();
         if let Some(pull) = open.iter().find(|pull| pull.is_from(head)) {
-            return Ok(Opened::AlreadyOpen(PrNumber::from(pull.number)));
+            return Ok(Opened::AlreadyOpen(pull_ref(pull)?));
         }
         let body = json!({
             "head": head,
@@ -362,7 +375,19 @@ impl Forge for ForgejoForge {
             .api
             .send(Method::Post, "pulls", Some(&body))
             .map_err(PortError::into_backend)?;
-        Ok(Opened::New(PrNumber::from(created.number)))
+        Ok(Opened::New(pull_ref(&created)?))
+    }
+
+    /// `GET repos/{owner}/{repo}`: its `default_branch`.
+    fn default_branch(&self) -> Result<BranchName, PortError> {
+        let repository: RepositoryRow = self.api.get("").map_err(PortError::into_backend)?;
+        let branch = BranchName::from(repository.default_branch);
+        if !branch.is_usable() {
+            return Err(PortError::Backend(
+                "Forgejo gave the repository no default branch".to_owned(),
+            ));
+        }
+        Ok(branch)
     }
 
     /// The pull request is read first: merged is quiet, closed or at another head is refused

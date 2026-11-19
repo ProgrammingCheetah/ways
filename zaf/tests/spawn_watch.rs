@@ -29,6 +29,11 @@ const MANIFEST: &str = "[project]\nname = \"example\"\n\n\
 /// A project with current profiles, an empty board and a `pre-tick` hook that marks each tick and
 /// exits with `hook_exit`.
 fn project(manifest: &str, hook_exit: u8) -> Project {
+    project_with_remote(manifest, hook_exit, true)
+}
+
+/// [`project`], with the remote the build start opens its branch on only when `remote`.
+fn project_with_remote(manifest: &str, hook_exit: u8, remote: bool) -> Project {
     let mut project = Project::new(manifest);
     let config = project.temp.path().join("claude-config");
     fs::create_dir_all(&config).expect("config");
@@ -49,6 +54,8 @@ fn project(manifest: &str, hook_exit: u8) -> Project {
     )
     .expect("hook");
     fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).expect("mode");
+    // A fresh scheduler opens the build first: signed papers and a remote to open it on.
+    project.ready_to_build("0.3.0", remote);
     project
 }
 
@@ -155,21 +162,27 @@ fn a_failed_tick_does_not_end_the_watch() {
 fn a_held_lock_is_skipped() {
     let project = project(MANIFEST, 0);
     let _held = hold_lock(&project);
-    let before = project.gh_calls().len();
+    let before = forge_reads(&project);
 
-    let mut child = start_watch(&project);
-    std::thread::sleep(Duration::from_secs(2));
-    assert!(running(&mut child), "a held lock ended the watch");
+    let mut watch = scheduler(&project);
+    watch.wait_for_lines("skipped: another tick holds spawn.lock", 1);
+    assert!(watch.runs(), "a held lock ended the watch");
 
-    let (stdout, stderr) = stop(child);
-    assert!(
-        stdout.contains("skipped: another tick holds spawn.lock"),
-        "{stdout}{stderr}"
-    );
+    let stderr = watch.stderr();
     assert!(!stderr.contains("failed"), "a skip is no failure: {stderr}");
     // Nothing ran: no hook, no forge read, no plan.
     assert!(!project.root.join("ticked").exists(), "the pre-tick ran");
-    assert_eq!(project.gh_calls().len(), before, "no forge read");
+    assert_eq!(forge_reads(&project), before, "no forge read");
+}
+
+/// How many `gh` calls were made that a tick makes: the build start's `base-open` asks the forge
+/// for its default branch (`api repos/…`) and is no tick's read.
+fn forge_reads(project: &Project) -> usize {
+    project
+        .gh_calls()
+        .iter()
+        .filter(|call| !call.starts_with("api repos/"))
+        .count()
 }
 
 #[test]
@@ -220,6 +233,86 @@ fn neither_flag_still_refuses() {
 
     assert_eq!(code, 1, "{stderr}");
     assert!(stderr.contains("--once"), "{stderr}");
+}
+
+/// Whether `.zaf/scheduler.lock` can be taken: no scheduler holds it.
+fn lock_is_free(project: &Project) -> bool {
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(project.root.join(".zaf/scheduler.lock"))
+        .expect("the lock file");
+    file.try_lock().is_ok()
+}
+
+#[test]
+fn spawn_watch_refuses_unsigned_design_and_frees_the_lock() {
+    let project = project(MANIFEST, 0);
+    let design = project.root.join(".teams/releases/0.3.0/design.md");
+    fs::write(&design, "# Design\n").expect("an unsigned design");
+
+    let (code, stdout, stderr) = outcome(&project.zaf(&["spawn", "--watch", "--version", "0.3.0"]));
+
+    assert_eq!(code, 1, "{stdout}{stderr}");
+    assert!(stderr.contains("design.md"), "{stderr}");
+    assert!(stderr.contains("zaf begin --version 0.3.0"), "{stderr}");
+    assert!(!stdout.contains("scheduler up"), "{stdout}");
+    assert!(lock_is_free(&project), "the lock was not let go");
+    assert!(!project.root.join("ticked").exists(), "a tick ran");
+}
+
+#[test]
+fn spawn_watch_refuses_without_a_remote() {
+    let project = project_with_remote(MANIFEST, 0, false);
+
+    let (code, stdout, stderr) = outcome(&project.zaf(&["spawn", "--watch", "--version", "0.3.0"]));
+
+    assert_eq!(code, 1, "{stdout}{stderr}");
+    assert!(stderr.contains("no remote"), "{stderr}");
+    assert!(lock_is_free(&project), "the lock was not let go");
+    assert!(!project.root.join("ticked").exists(), "a tick ran");
+}
+
+#[test]
+fn spawn_watch_starts_the_build_first() {
+    let project = project(MANIFEST, 0);
+    let running = scheduler(&project);
+    first_tick(&running);
+
+    let out = running.stdout();
+    let lines: Vec<&str> = out.lines().collect();
+    let at = |wanted: &dyn Fn(&str) -> bool| lines.iter().position(|line| wanted(line));
+    let made = at(&|line| line == "made feature/0.3.0");
+    let committed = at(&|line| line.starts_with("committed ") && line.len() > "committed ".len());
+    let tick = at(&|line| line.starts_with("tick "));
+    let (Some(made), Some(committed), Some(tick)) = (made, committed, tick) else {
+        panic!("no made, committed and tick lines in:\n{out}");
+    };
+    assert!(made < committed && committed < tick, "{out}");
+}
+
+#[test]
+fn spawn_watch_restart_skips_the_start() {
+    let project = project(MANIFEST, 0);
+    let zaf = install(&project, "zaf");
+    let running = scheduler_of(&project, &zaf);
+    first_tick(&running);
+
+    install(&project, "zaf");
+    running.wait_for_lines("scheduler restarted from zaf ", 1);
+    running.wait_for_lines("next tick ", 2);
+
+    let out = running.stdout();
+    let (_, after) = out
+        .split_once("scheduler restarted from zaf ")
+        .expect("the restart line");
+    for text in ["made ", "committed ", " is open"] {
+        assert!(!after.contains(text), "the restart said {text:?}:\n{out}");
+    }
+    // The first image's start said both.
+    assert!(out.contains("made feature/0.3.0"), "{out}");
+    assert!(out.contains("committed "), "{out}");
 }
 
 /// Starts the scheduler of `project` from the built binary.
@@ -711,6 +804,7 @@ fn slow_gh(project: &mut Project, pause: &str) {
         &file,
         format!(
             "#!/bin/sh\n\
+             case \"$*\" in 'api repos/'*) exec '{fake}' \"$@\" ;; esac\n\
              echo call >> '{root}/gh-began'\n\
              touch '{root}/in-gh'\n\
              sleep {pause}\n\
@@ -821,4 +915,82 @@ fn a_stop_that_lands_during_a_restart_still_stops_the_scheduler() {
             running.stderr()
         );
     }
+}
+
+/// The board of a built version: its one epic, signed and challenged, and its one task done.
+fn built_board(project: &mut Project) {
+    use zaf::domain::{BodyHash, TicketBody};
+    let body = "Release: 0.3.0\n\nEpic 1.";
+    let hash = BodyHash::of(&TicketBody::from(body));
+    let epics = serde_json::json!([{
+        "number": 1,
+        "title": "Epic 1",
+        "body": body,
+        "labels": [{"name": "epic"}],
+        "comments": [
+            {"body": format!(
+                "<!-- zaf:signature sha256={} at=2026-11-01T00:00:00Z -->\nSigned.",
+                hash.as_str()
+            )},
+            {"body": "<!-- zaf:report challenger instance 9 on #1 -->\nEvery task is exact."},
+        ],
+    }]);
+    let tasks = serde_json::json!([{
+        "number": 2, "title": "t", "labels": [{"name": "task"}],
+        "parent": {"number": 1}, "state": "CLOSED", "stateReason": "COMPLETED",
+    }]);
+    project
+        .on_first("issue list --label task *", &tasks.to_string())
+        .on_first("issue list --label epic *", &epics.to_string());
+}
+
+/// Gives the project a `release-open` action that counts its runs and prints a pull request.
+fn release_open_action(project: &Project) -> PathBuf {
+    let runs = project.root.join("release-opened");
+    let actions = project.root.join(".zaf/actions");
+    let file = actions.join("release-open");
+    fs::write(
+        &file,
+        format!(
+            "#!/bin/sh\n# zaf description: open the release pull request\n# zaf 1: refused\n\
+             echo \"$1 base=$ZAF_BASE\" >> {}\n\
+             echo 12\necho https://forge.example/example/tracker/pulls/12\n",
+            runs.display()
+        ),
+    )
+    .expect("action");
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).expect("mode");
+    runs
+}
+
+#[test]
+fn piped_watch_says_release_pull_request() {
+    let mut project = project(MANIFEST, 0);
+    built_board(&mut project);
+    let runs = release_open_action(&project);
+
+    let running = scheduler(&project);
+    running.wait_for_lines("zaf built ", 1);
+    // The watch goes on after the line: the tick's wait for the next one is said.
+    running.wait_for_lines("next tick ", 1);
+
+    let out = running.stdout();
+    let said: Vec<&str> = out
+        .lines()
+        .filter(|line| line.starts_with("zaf built "))
+        .collect();
+    assert_eq!(
+        said,
+        [
+            "zaf built 0.3.0: release pull request #12, https://forge.example/example/tracker/pulls/12"
+        ],
+        "{out}"
+    );
+    assert_eq!(
+        fs::read_to_string(&runs).expect("the action ran").trim(),
+        "0.3.0 base=feature/0.3.0"
+    );
+    running.signal("TERM");
+    let mut running = running;
+    assert_eq!(running.wait_exit(), Some(0), "{}", running.stderr());
 }

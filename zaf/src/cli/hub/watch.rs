@@ -18,9 +18,11 @@ use std::sync::Arc;
 use super::super::board::INSTANCE_VAR;
 use super::tick::RUN_VAR;
 use crate::app::actions::MINUTE;
+use crate::app::build::{self, BuildError};
 use crate::app::hub::controls::{Failure, WatchStarted, WatchStopped, Watcher};
 use crate::app::schedule::binary;
-use crate::app::schedule::scheduler::Asked;
+use crate::app::schedule::scheduler::{Asked, Opened};
+use crate::app::spawn::built;
 use crate::app::spawn::watch::{SCHEDULED_BY_VAR, Tick, WatchHandle};
 use crate::composition::{Composition, STATE_DIR};
 
@@ -53,10 +55,30 @@ impl Hub {
     }
 }
 
+impl Hub {
+    /// The build start (`build::start`) for `version`, before the watch takes its lock: a refusal
+    /// or a repository with no remote is [`Failure::Refused`] with its sentence, and a backend
+    /// that failed is [`Failure::Failed`].
+    fn open_the_build(&self, composition: &Composition, version: &str) -> Result<(), Failure> {
+        let started = match &self.home {
+            Some(home) => match std::path::absolute(home) {
+                Ok(home) => build::start_with_home(composition, version, &home),
+                Err(error) => return Err(Failure::Failed(error.to_string())),
+            },
+            None => build::start(composition, version),
+        };
+        started.map(drop).map_err(|error| match error {
+            BuildError::Backend(_) => Failure::Failed(error.sentence(version)),
+            error => Failure::Refused(error.sentence(version)),
+        })
+    }
+}
+
 impl Watcher for Hub {
     fn start(&self, root: &Path, version: &str) -> Result<WatchStarted, Failure> {
         let composition = Composition::discover_with_home(root, self.home.as_deref())
             .map_err(|error| Failure::Failed(error.to_string()))?;
+        self.open_the_build(&composition, version)?;
         let program = match &self.program {
             Some(program) => program.clone(),
             None => binary::path_to_start().map_err(|why| {
@@ -68,6 +90,7 @@ impl Watcher for Hub {
             program,
             root: composition.root().to_owned(),
             version: version.to_owned(),
+            home: self.home.clone(),
         };
         self.watches
             .start(
@@ -91,9 +114,17 @@ struct Process {
     program: PathBuf,
     root: PathBuf,
     version: String,
+    /// The zaf home the hub was given, for the project's manifest and its actions.
+    home: Option<PathBuf>,
 }
 
 impl Process {
+    /// The project, read again: the manifest on disk now.
+    fn composition(&self) -> Result<Composition, String> {
+        Composition::discover_with_home(&self.root, self.home.as_deref())
+            .map_err(|error| error.to_string())
+    }
+
     /// The tick as a command: the verb, in the project's root, for the scheduler of this process.
     fn command(&self) -> Command {
         let mut command = Command::new(&self.program);
@@ -133,6 +164,16 @@ impl Tick for Process {
 
     fn say(&self, line: &str) {
         eprintln!("zaf hub: watch {}: {line}", self.root.display());
+    }
+
+    fn version_built(&self) -> bool {
+        self.composition()
+            .is_ok_and(|composition| built::version_built(&composition, &self.version))
+    }
+
+    fn open_release(&self) -> Result<Opened, String> {
+        let composition = self.composition()?;
+        built::open_release(&composition, &self.version, self.home.as_deref())
     }
 }
 

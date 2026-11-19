@@ -22,8 +22,8 @@ pub use design::{Design, Page};
 pub use errors::PortError;
 pub use forge::{
     Author, BranchChecks, BranchName, Check, CheckBucket, CheckLink, CheckLog, CheckName, CheckRun,
-    CheckState, Forge, JobId, MergeOutcome, MergeStrategy, NewPullRequest, Opened, PrBody,
-    PrNumber, PrTitle, PullRequest, ReviewComment, RuleId, ScanningAlert,
+    CheckState, Forge, JobId, MergeOutcome, MergeStrategy, NewPullRequest, Opened, PrBody, PrLink,
+    PrNumber, PrRef, PrTitle, PullRequest, ReviewComment, RuleId, ScanningAlert,
 };
 pub use gate::{Gate, GateLevel, GateRun, GateVerdict};
 pub use releases::Releases;

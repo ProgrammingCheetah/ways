@@ -136,6 +136,30 @@ fn epics_with_stage_and_groups() {
 }
 
 #[test]
+fn epic_release_read_from_body() {
+    let world = World::new();
+    world
+        .board
+        .set_body(TicketId::from(EPIC), "Release: 0.5.2\n\nGoal: one.");
+
+    let state = world.gather(at(1_000));
+
+    assert_eq!(state.epics[0].release.as_deref(), Some("0.5.2"));
+}
+
+#[test]
+fn epic_without_release_line_is_none() {
+    let world = World::new();
+    world
+        .board
+        .set_body(TicketId::from(EPIC), "Goal: one.\nRelease: 0.5.2");
+
+    let state = world.gather(at(1_000));
+
+    assert_eq!(state.epics[0].release, None);
+}
+
+#[test]
 fn queue_states() {
     let world = World::new();
     world
@@ -353,11 +377,12 @@ fn the_value_serializes_with_its_documented_names() {
     assert!(json["last_tick"].is_null());
     let epic = &json["epics"][0];
     for key in [
-        "number", "title", "stage", "done", "total", "dollars", "groups",
+        "number", "title", "stage", "release", "done", "total", "dollars", "groups",
     ] {
         assert!(epic.get(key).is_some(), "{key} in {:?}", names(epic));
     }
     assert_eq!(epic["stage"], "challenged");
+    assert!(epic["release"].is_null());
     let queued = &json["queue"][0];
     for key in [
         "number",
@@ -538,6 +563,7 @@ fn read_with(root: &Path, now: SystemTime, running: usize) -> ProjectState {
         number: EPIC,
         title: format!("The epic of {name}"),
         stage: EpicStage::Challenged,
+        release: None,
         url: None,
         done: 0,
         total: 1,

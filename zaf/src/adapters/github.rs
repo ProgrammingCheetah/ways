@@ -1,5 +1,5 @@
-//! GitHub through the `gh` CLI: the board on its issues, the forge on its pull requests, and
-//! zaf's own releases for `zaf update`.
+//! GitHub: the board on its issues and the forge on its pull requests, through the `gh` CLI,
+//! and zaf's own releases for `zaf update`, read over `curl` from GitHub's public API.
 //!
 //! Every call goes through one [`GhCommand`], which runs `gh` against the
 //! manifest's repository and turns a failed call into a
@@ -8,14 +8,14 @@
 mod board;
 mod command;
 mod forge;
-mod releases;
+mod public_releases;
 mod rows;
 mod state;
 
 pub use board::{GithubBoard, GithubProjectBoard};
 pub use command::{GhCommand, GhRun};
 pub use forge::GithubForge;
-pub use releases::GithubReleases;
+pub use public_releases::PublicReleases;
 pub use state::ProjectRef;
 
 #[cfg(test)]

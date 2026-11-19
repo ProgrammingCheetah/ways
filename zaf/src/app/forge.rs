@@ -7,7 +7,7 @@
 
 use crate::ports::{
     BranchName, CheckLink, CheckLog, CheckName, CheckRun, CommitId, Forge, MergeOutcome,
-    MergeStrategy, NewPullRequest, Opened, PortError, PrNumber,
+    MergeStrategy, NewPullRequest, Opened, PortError, PrBody, PrNumber, PrTitle,
 };
 
 /// The most lines of a failed job's log `zaf forge log` prints: its last ones, where the failure
@@ -38,18 +38,49 @@ pub enum ForgeError {
 
 /// `zaf forge open`: opens the pull request, or hands back the one open for its head.
 pub fn open(forge: &dyn Forge, request: &NewPullRequest) -> Result<Opened, ForgeError> {
-    for (what, name) in [("head", &request.head), ("base", &request.base)] {
-        if !name.is_usable() {
-            return Err(ForgeError::Branch {
-                what,
-                name: name.clone(),
-            });
-        }
+    check_branch("head", &request.head)?;
+    check_branch("base", &request.base)?;
+    check_title(&request.title)?;
+    Ok(forge.open_pull_request(request)?)
+}
+
+/// `zaf forge open` with no base: the pull request goes into the forge's default branch. A head
+/// or title the forge cannot take is refused before the forge is asked for the default branch.
+pub fn open_on_default(
+    forge: &dyn Forge,
+    head: BranchName,
+    title: PrTitle,
+    body: PrBody,
+) -> Result<Opened, ForgeError> {
+    check_branch("head", &head)?;
+    check_title(&title)?;
+    let base = forge.default_branch()?;
+    open(
+        forge,
+        &NewPullRequest {
+            head,
+            base,
+            title,
+            body,
+        },
+    )
+}
+
+fn check_branch(what: &'static str, name: &BranchName) -> Result<(), ForgeError> {
+    if name.is_usable() {
+        return Ok(());
     }
-    if request.title.as_str().is_empty() {
+    Err(ForgeError::Branch {
+        what,
+        name: name.clone(),
+    })
+}
+
+fn check_title(title: &PrTitle) -> Result<(), ForgeError> {
+    if title.as_str().is_empty() {
         return Err(ForgeError::NoTitle);
     }
-    Ok(forge.open_pull_request(request)?)
+    Ok(())
 }
 
 /// `zaf forge merge`: merges the pull request with `strategy`, at `head` when one is named.
@@ -90,6 +121,11 @@ pub fn check_line(run: &CheckRun) -> String {
 /// `zaf forge head`: the commit the pull request's head is at, when the forge reports one.
 pub fn head(forge: &dyn Forge, pr: PrNumber) -> Result<Option<String>, PortError> {
     forge.head(pr)
+}
+
+/// `zaf forge default-branch`: the name of the forge's default branch.
+pub fn default_branch(forge: &dyn Forge) -> Result<BranchName, PortError> {
+    forge.default_branch()
 }
 
 /// `zaf forge log`: what a person reads of a failed check's log, a header line naming the check

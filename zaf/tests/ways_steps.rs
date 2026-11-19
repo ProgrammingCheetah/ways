@@ -89,7 +89,7 @@ const LAND_STEPS: [&str; 5] = [
 
 /// The actions only the release role runs; every other 750 action is the team's and the
 /// release's.
-const RELEASE_ONLY: [&str; 2] = ["base-up", "release"];
+const RELEASE_ONLY: [&str; 4] = ["base-open", "base-up", "papers-commit", "release"];
 
 /// The actions only the Engineer runs: `ship` merges onto any base, `main` included, and `design`
 /// is the Engineer's own session on the terminal.

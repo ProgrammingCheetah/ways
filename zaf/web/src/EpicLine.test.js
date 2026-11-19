@@ -239,7 +239,7 @@ describe('line card', () => {
     expect(items.map((li) => li.textContent.trim())).toEqual(['#3 first part: working', '#4: not started']);
   });
 
-  it('line card shows a yellow task\'s question, as text', async () => {
+  it('line card shows a purple task\'s question, as text', async () => {
     const question = { number: 20, text: 'Which <b>door</b>?' };
     render(EpicLine, { epic: epic([task(8, 'question', 'S', { question })]) });
     await fireEvent.mouseEnter(squares(screen.getByTestId('task-block'))[0]);
@@ -537,7 +537,7 @@ describe('line prompt', () => {
     window.history.replaceState(null, '', '/');
   });
 
-  it('line prompt opens on a yellow task with the key', async () => {
+  it('line prompt opens on a purple task with the key', async () => {
     withKey();
     render(EpicLine, { epic: asked(), project: ROOT, controls: true, questions: [] });
     expect(screen.queryByTestId('question-prompt')).toBeNull();
@@ -549,7 +549,7 @@ describe('line prompt', () => {
     expect(within(prompt).getByTestId('prompt-text')).toBeTruthy();
   });
 
-  it('line prompt opens on the epic when it is yellow', async () => {
+  it('line prompt opens on the epic when it is purple', async () => {
     withKey();
     render(EpicLine, {
       epic: epic([task(1, 'done', 'S')], {
@@ -605,7 +605,7 @@ describe('line prompt', () => {
     expect(document.activeElement).toBe(opener);
   });
 
-  it('line yellow task opens its issue without the key', async () => {
+  it('line purple task opens its issue without the key', async () => {
     // Controls false: the block is the issue's link.
     const { unmount } = render(EpicLine, { epic: asked(), project: ROOT, controls: false });
     expect(screen.queryByTestId('ask-task')).toBeNull();

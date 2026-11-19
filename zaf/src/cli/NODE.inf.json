@@ -31,7 +31,12 @@
     },
     {
       "name": "begin.rs",
-      "role": "`zaf begin --version <v>`: exit 2 with one sentence inside an instance or without a terminal; runs the due phase's action (objectives or design) on the terminal, checks what the session left, asks `Sign <path>? [y/N]` and, on y, goes on to what is due next; exit 1 only when the action failed, something is missing or the document is left unsigned (exit 2 when the action never ran); exit 0 printing the version's open epics when nothing is due",
+      "role": "`zaf begin --version <v>`: exit 2 with one sentence inside an instance or without a terminal; draws the release's four stages (✓ done, ▸ here) and asks `Open it? [Y/n]` (n: `Nothing changed.`, exit 0), runs the due phase's action (objectives or design) on the terminal, checks what the session left, prints `✓ <file> written`, asks `Sign it? ... [Y/n]` (type-ahead dropped first; Enter, y or yes signs, n does not, anything else asks again) and, on a yes, prints `✓ <file> signed` and goes on to what is due next; with --json none of the screen is drawn; exit 1 only when the action failed, something is missing or the document is left unsigned (`Not signed.`; exit 2 when the action never ran); at the build stage (every open epic signed, one not done; not with --json) it draws the stages with the fourth marked and asks `Every epic of <v> is signed. Start the build now? [Y/n]`: y execs `zaf spawn --watch --version <v>` in place (exit 2 if it cannot start), n or closed input prints that command and exits 0; at the built stage (every open epic done) it draws the four stages done, runs `release-open` and prints the release pull request with `zaf begin --version <next>`; exit 0 when nothing else is due: at the epics stage (an open epic unsigned) it draws the four stages with Epics marked, `The design became <n> epics`, each epic with its ticket count (or `zaf plans its tickets once you sign it`) over `read zaf epic show <n>   sign zaf epic sign <n>` (`signed` for a signed one) and the `zaf spawn --watch --version <v>` line, with --json the epics as JSON",
+      "node": false
+    },
+    {
+      "name": "begin/",
+      "role": "tests.rs",
       "node": false
     },
     {
@@ -66,7 +71,7 @@
     },
     {
       "name": "epic.rs",
-      "role": "zaf epic file --version <v> --title <t>: the body on stdin, prints the epic's id; an empty title or body, or a board that cannot file an epic, exits 1. zaf epic list|sign: one line per open epic, or `signed #<n> sha256:<hex>`; exit 1 inside an instance or for no open epic; a signature that cannot ask the running scheduler for a tick stays signed and says so in one line on stderr",
+      "role": "zaf epic file --version <v> --title <t>: the body on stdin, prints the epic's id; an empty title or body, or a board that cannot file an epic, exits 1. zaf epic list|sign: one line per open epic, or `signed #<n> sha256:<hex>`; exit 1 inside an instance or for no open epic; a signature that cannot ask the running scheduler for a tick stays signed and says so in one line on stderr; a signature that is the last of its version's epics, at a terminal outside an instance and without --json, asks `Every epic of <v> is signed. Start the build now? [Y/n]`, and yes execs `zaf spawn --watch --version <v>` from PATH in place (exit 2 if it cannot start), no or closed input exits 0",
       "node": false
     },
     {
@@ -76,7 +81,7 @@
     },
     {
       "name": "forge.rs",
-      "role": "zaf forge open|merge|checks|head|log: the number, nothing, `<bucket>\\t<name>\\t<link>` lines, the head, the log block; exit 1 refused, 2 backend or no [forge]",
+      "role": "zaf forge open|merge|checks|head|log: the number then the link (base optional: the forge's default branch), nothing, `<bucket>\\t<name>\\t<link>` lines, the head, the log block; exit 1 refused, 2 backend or no [forge]",
       "node": false
     },
     {
@@ -121,7 +126,17 @@
     },
     {
       "name": "scheduler.rs",
-      "role": "`spawn --watch`: the scheduler that stays up; takes scheduler.lock (a second one names the first and exits 1), catches SIGINT and SIGTERM, and runs app/schedule/scheduler.rs with this process as its Host: requests, the timer, the binary look and exec, the lock-held wait, the start, restart and stop lines",
+      "role": "`spawn --watch`: the scheduler that stays up; takes scheduler.lock (a second one names the first and exits 1), catches SIGINT and SIGTERM, and runs app/schedule/scheduler.rs with this process as its Host: requests, the timer, the binary look and exec, the lock-held wait, the start, restart and stop lines; a scheduler fresh on the lock first runs the build start (app/build.rs): `made <branch>` or `<branch> is open`, then `committed <id>`, a refusal on stderr with the lock let go and exit 1 (2 for a backend), and a restart or a take-over skips it",
+      "node": false
+    },
+    {
+      "name": "screen.rs",
+      "role": "the screen kit: Screen::detect (colour only for a terminal stdout, NO_COLOR unset or empty, TERM not dumb; redraw for a terminal and TERM not dumb), paint(Meaning, text) with the mocks' codes, program(text), which colours each whole word `zaf` and never one in a path or a longer word, and ask_yes(screen, prompt, default, input, output), the yes-or-no question: Enter takes the default, y and yes are yes, anything starting with n is no, anything else is asked again, closed input is no, the choices painted as Done; on a terminal it first discards what was typed ahead",
+      "node": false
+    },
+    {
+      "name": "screen/",
+      "role": "tests.rs",
       "node": false
     },
     {
@@ -165,6 +180,16 @@
       "node": false
     },
     {
+      "name": "steps.rs",
+      "role": "ScreenSteps, the terminal's StepReport: on a live screen a thread draws a braille spinner beside the row's verb and noun every 80 ms, and ended replaces the line (`\\r\\x1b[K`) with ✓ or ✗ and the end's text; on any other screen only the final line, with no `\\r` and no escape byte when colour is off; the thread is joined on ended and on drop",
+      "node": false
+    },
+    {
+      "name": "steps/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
       "name": "tests.rs",
       "role": "parsing and exit-64 tests",
       "node": false
@@ -172,6 +197,11 @@
     {
       "name": "update.rs",
       "role": "zaf update [--check]: GitHub releases of ProgrammingCheetah/ways, one line on a change, exit 1 on a check that finds a newer release",
+      "node": false
+    },
+    {
+      "name": "watch_view.rs",
+      "role": "the live view of `spawn --watch` in a terminal (stdin and stdout a terminal, no --json, TERM not dumb): a thread that redraws app/spawn/view.rs's frame in place on the normal screen, reads the window's size before each frame, gathers the project's state after each tick and on each hub report and between those turns the spinner; while it is up stdout and stderr are `.zaf/logs/scheduler.log`, a failed tick is one line naming it, `stty -echo` is on and put back (with the output) on every way out: the drop, a panic hook, the restart's drop before the exec",
       "node": false
     }
   ],

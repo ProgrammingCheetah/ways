@@ -28,11 +28,48 @@ fn open_opens_once_per_head_and_hands_back_the_open_one() {
     let first = open(&forge, &request("feature/v1-1-2", "feature/v1", "Export")).expect("open");
     let again = open(&forge, &request("feature/v1-1-2", "feature/v1", "Export")).expect("again");
     assert!(matches!(first, Opened::New(_)), "{first:?}");
-    assert_eq!(again, Opened::AlreadyOpen(first.number()));
+    assert_eq!(again, Opened::AlreadyOpen(first.pull_request().clone()));
+    assert_eq!(again.link(), first.link());
     let request = forge.request(first.number()).expect("recorded");
     assert_eq!(request.slice, SliceName::from("feature/v1-1-2"));
     assert_eq!(request.base, BaseName::from("feature/v1"));
     assert_eq!(request.body, "Refs #2.");
+}
+
+#[test]
+fn open_on_default_opens_into_the_forges_default_branch() {
+    let forge = FakeForge::default();
+    forge.set_default_branch("trunk");
+    let opened = open_on_default(
+        &forge,
+        BranchName::from("feature/v1"),
+        PrTitle::from("Release"),
+        PrBody::from(""),
+    )
+    .expect("open");
+    let request = forge.request(opened.number()).expect("recorded");
+    assert_eq!(request.base, BaseName::from("trunk"));
+}
+
+#[test]
+fn open_on_default_refuses_a_head_or_title_before_asking_the_forge() {
+    let forge = FakeForge::default();
+    let error = open_on_default(
+        &forge,
+        BranchName::from("-x"),
+        PrTitle::from("T"),
+        PrBody::from(""),
+    )
+    .expect_err("head");
+    assert_eq!(error.to_string(), "head `-x` is not a usable branch name");
+    let error = open_on_default(
+        &forge,
+        BranchName::from("s"),
+        PrTitle::from(""),
+        PrBody::from(""),
+    )
+    .expect_err("title");
+    assert_eq!(error.to_string(), "a pull request needs a title");
 }
 
 #[test]

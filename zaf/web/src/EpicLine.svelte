@@ -13,7 +13,7 @@
   import { gridCells, gridRows, turnedDone } from './line.js';
   import QuestionPrompt from './QuestionPrompt.svelte';
 
-  // `controls`: the hub serves controls and this page holds its key; only then does a yellow block open
+  // `controls`: the hub serves controls and this page holds its key; only then does a purple block open
   // the prompt to answer its question (`project` is the root the answer is sent for). `questions` is the
   // project's open questions, whose `url` is the question's issue.
   let { epic, project = null, controls = false, questions = [] } = $props();
@@ -104,7 +104,7 @@
   const epicName = $derived(`Epic #${epic.number} ${epic.title}: ${wordOf(epic.line_state)}`);
   const epicHref = $derived(safeUrl(epic.url));
 
-  // A yellow task's prompt asks `epic.tasks[].question`; the epic's own asks `line_question`.
+  // A purple task's prompt asks `epic.tasks[].question`; the epic's own asks `line_question`.
   // The prompt: the question asked, its issue's address and the block to give focus back to.
   let prompt = $state(null);
 

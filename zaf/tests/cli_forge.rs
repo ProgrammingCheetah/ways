@@ -78,7 +78,8 @@ fn open_prints_the_number_and_says_when_one_was_open_already() {
     );
 
     let mut project = self::project(GITHUB);
-    project.on("pr list *", "5\n");
+    let five = format!("https://github.com/{REPO}/pull/5");
+    project.on("pr list *", &format!("5\t{five}\n"));
     let (code, stdout, stderr) = forge(&project, &["open", SLICE, "feature/v1", "T", ""]);
     assert_eq!((code, stdout.as_str()), (0, "5\n"), "{stderr}");
     assert_eq!(
@@ -88,7 +89,74 @@ fn open_prints_the_number_and_says_when_one_was_open_already() {
     let (code, stdout, _) = forge(&project, &["--json", "open", SLICE, "feature/v1", "T", ""]);
     assert_eq!(code, 0);
     let json: serde_json::Value = serde_json::from_str(&stdout).expect("json");
-    assert_eq!(json, serde_json::json!({ "pr": 5, "opened": false }));
+    assert_eq!(
+        json,
+        serde_json::json!({ "pr": 5, "opened": false, "link": five })
+    );
+}
+
+#[test]
+fn forge_open_prints_the_number_alone() {
+    let mut project = project(GITHUB);
+    project.on("pr list *", "").on(
+        "pr create *",
+        &format!("https://github.com/{REPO}/pull/7\n"),
+    );
+    let (code, stdout, stderr) = forge(&project, &["open", "--", SLICE, "feature/v1", "T", "B"]);
+    assert_eq!((code, stdout.as_str()), (0, "7\n"), "{stderr}");
+    assert_eq!(stdout.lines().count(), 1);
+}
+
+#[test]
+fn forge_open_link_adds_the_link_line() {
+    let mut project = project(GITHUB);
+    let url = format!("https://github.com/{REPO}/pull/7");
+    project
+        .on("pr list *", "")
+        .on("pr create *", &format!("{url}\n"));
+    let (code, stdout, stderr) = forge(
+        &project,
+        &["open", "--link", "--", SLICE, "feature/v1", "T", "B"],
+    );
+    assert_eq!(
+        (code, stdout.as_str()),
+        (0, format!("7\n{url}\n").as_str()),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn open_with_no_base_opens_into_the_default_branch_and_prints_the_number_then_the_link() {
+    let mut project = project(GITHUB);
+    let url = format!("https://github.com/{REPO}/pull/7");
+    project
+        .on("api *", "trunk\n")
+        .on("pr list *", "")
+        .on("pr create *", &format!("{url}\n"));
+    let (code, stdout, stderr) = forge(
+        &project,
+        &["open", "--link", "--", SLICE, "Release", "Notes"],
+    );
+    assert_eq!(
+        (code, stdout.as_str()),
+        (0, format!("7\n{url}\n").as_str()),
+        "{stderr}"
+    );
+    let calls = project.gh_calls();
+    assert_eq!(calls[0], format!("api repos/{REPO} --jq .default_branch"));
+    assert_eq!(
+        calls[2],
+        format!("pr create --head {SLICE} --base trunk --title Release --body Notes --repo {REPO}")
+    );
+}
+
+#[test]
+fn open_with_no_base_refuses_a_title_it_cannot_use_before_asking_the_forge() {
+    let project = project(GITHUB);
+    let (code, _, stderr) = forge(&project, &["open", "--", SLICE, "", "Notes"]);
+    assert_eq!(code, 1, "{stderr}");
+    assert_eq!(stderr, "zaf forge open: a pull request needs a title\n");
+    assert_eq!(project.gh_calls(), Vec::<String>::new());
 }
 
 #[test]
@@ -244,10 +312,42 @@ fn pull(number: u64, head: &str, state: &str, merged: bool) -> String {
         "number": number,
         "state": state,
         "merged": merged,
+        "html_url": format!("http://forgejo.test/example/tracker/pulls/{number}"),
         "head": { "ref": head, "sha": SHA, "repo_id": 9 },
         "base": { "ref": "feature/v1", "sha": "fedcba", "repo_id": 9 },
     })
     .to_string()
+}
+
+#[test]
+fn a_forgejo_open_with_no_base_goes_into_the_repositorys_default_branch() {
+    let (project, mut curl) = forgejo_project();
+    curl.on(
+        &format!("GET {API}"),
+        200,
+        &serde_json::json!({ "default_branch": "trunk" }).to_string(),
+    )
+    .on(&format!("GET {API}/pulls[?]state=open*"), 200, "[]")
+    .on(
+        &format!("POST {API}/pulls"),
+        201,
+        &pull(12, SLICE, "open", false),
+    );
+
+    let (code, stdout, stderr) = forge(&project, &["open", "--link", "--", SLICE, "Release", ""]);
+    assert_eq!(
+        (code, stdout.as_str()),
+        (0, "12\nhttp://forgejo.test/example/tracker/pulls/12\n"),
+        "{stderr}"
+    );
+    assert_eq!(curl.asked()[0], format!("GET {API}"));
+    let sent: String = std::fs::read_dir(curl.dir.join("calls"))
+        .expect("calls")
+        .map(|entry| entry.expect("call").path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "config"))
+        .map(|path| std::fs::read_to_string(path).expect("config"))
+        .collect();
+    assert!(sent.contains(r#"{\"base\":\"trunk\","#), "{sent}");
 }
 
 #[test]
@@ -344,4 +444,36 @@ fn a_forgejo_forge_without_its_token_fails_with_2() {
     let (code, _, stderr) = forge(&project, &["head", "12"]);
     assert_eq!(code, 2, "{stderr}");
     assert!(stderr.contains("ZAF_TEST_FORGE_TOKEN"), "{stderr}");
+}
+
+#[test]
+fn forge_default_branch_prints_the_name() {
+    let mut project = project(GITHUB);
+    project.on("api *", "trunk\n");
+    let (code, stdout, stderr) = forge(&project, &["default-branch"]);
+    assert_eq!((code, stdout.as_str()), (0, "trunk\n"), "{stderr}");
+    assert_eq!(stderr, "");
+    assert_eq!(
+        project.gh_calls(),
+        vec![format!("api repos/{REPO} --jq .default_branch")]
+    );
+}
+
+#[test]
+fn forge_default_branch_json() {
+    let mut project = project(GITHUB);
+    project.on("api *", "trunk\n");
+    let (code, stdout, stderr) = forge(&project, &["--json", "default-branch"]);
+    assert_eq!(code, 0, "{stderr}");
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("json");
+    assert_eq!(json, serde_json::json!({ "default_branch": "trunk" }));
+}
+
+#[test]
+fn forge_default_branch_backend_failure_is_exit_2() {
+    let mut project = project(GITHUB);
+    project.fail_on("api *", "HTTP 502");
+    let (code, stdout, stderr) = forge(&project, &["default-branch"]);
+    assert_eq!(code, 2, "{stderr}");
+    assert_eq!(stdout, "");
 }

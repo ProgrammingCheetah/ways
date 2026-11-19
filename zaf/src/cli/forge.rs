@@ -1,11 +1,15 @@
-//! `zaf forge open|merge|checks|head|log`: the forge's writes and the reads the standard actions
-//! wait on, for whichever forge `[forge]` names.
+//! `zaf forge open|merge|checks|head|default-branch|log`: the forge's writes and the reads the
+//! standard actions wait on, for whichever forge `[forge]` names.
 //!
-//! `open` prints the pull request's number, and says on stderr when one was already open for the
-//! head. `merge` prints nothing, merged now or before. `checks` prints one line per check,
+//! `zaf forge open [--link] -- <head> <base> <title> <body>` prints the pull request's number alone, as 0.5.1 did, so every older `pr-open` keeps
+//! working; with `--link` it prints the number on line 1 and the link on line 2, and `--json`
+//! carries both. It says on stderr when one was already open for the head; with no base it opens
+//! into the forge's default branch. `merge` prints nothing, merged now or before. `checks` prints one line per check,
 //! `<bucket>\t<name>\t<link>`, the bucket one of `pass`, `fail`, `pending`, `skipping` or
 //! `cancel` and the link empty when the forge gives none. `head` prints the head commit, or
-//! nothing when the forge reports none. `log` prints what a person reads of a failed check's log,
+//! nothing when the forge reports none. `default-branch` prints the forge's default branch name
+//! alone on one line, or with `--json` an object with one field, `default_branch`; a forge that
+//! is unreachable or refuses is exit 2. `log` prints what a person reads of a failed check's log,
 //! or nothing when its link names no job. A refusal exits 1, a backend failure 2; a merge the
 //! forge cannot make yet says `not mergeable yet`, so an action can wait and try again.
 
@@ -34,25 +38,43 @@ pub fn run(cli: &Cli, action: &ForgeAction) -> u8 {
     let forge = forge.as_ref();
     let done: Result<(), ForgeError> = match action {
         ForgeAction::Open {
-            head,
-            base,
-            title,
-            body,
+            link: with_link,
+            args,
         } => {
-            let request = NewPullRequest {
-                head: BranchName::from(head.as_str()),
-                base: BranchName::from(base.as_str()),
-                title: PrTitle::from(title.as_str()),
-                body: PrBody::from(body.as_str()),
+            let (head, base, title, body) = match args.as_slice() {
+                [head, title, body] => (head, None, title, body),
+                [head, base, title, body] => (head, Some(base), title, body),
+                _ => unreachable!("clap takes three or four arguments"),
             };
-            forge::open(forge, &request).map(|opened| {
+            let head_name = BranchName::from(head.as_str());
+            let title = PrTitle::from(title.as_str());
+            let body = PrBody::from(body.as_str());
+            let opened = match base {
+                Some(base) => forge::open(
+                    forge,
+                    &NewPullRequest {
+                        head: head_name,
+                        base: BranchName::from(base.as_str()),
+                        title,
+                        body,
+                    },
+                ),
+                None => forge::open_on_default(forge, head_name, title, body),
+            };
+            opened.map(|opened| {
                 let pr = opened.number();
+                let link = opened.link();
                 if let Opened::AlreadyOpen(_) = opened {
                     eprintln!("pull request {pr} is already open for {head}");
                 }
                 if cli.json {
                     let new = matches!(opened, Opened::New(_));
-                    println!("{}", json!({ "pr": pr.get(), "opened": new }));
+                    println!(
+                        "{}",
+                        json!({ "pr": pr.get(), "opened": new, "link": link.as_str() })
+                    );
+                } else if *with_link {
+                    println!("{}\n{link}", pr.get());
                 } else {
                     println!("{}", pr.get());
                 }
@@ -102,6 +124,15 @@ pub fn run(cli: &Cli, action: &ForgeAction) -> u8 {
                     println!("{}", json!({ "pr": pr.get(), "head": head }));
                 } else if let Some(head) = head {
                     println!("{head}");
+                }
+            })
+            .map_err(ForgeError::from),
+        ForgeAction::DefaultBranch => forge::default_branch(forge)
+            .map(|branch| {
+                if cli.json {
+                    println!("{}", json!({ "default_branch": branch.as_str() }));
+                } else {
+                    println!("{branch}");
                 }
             })
             .map_err(ForgeError::from),

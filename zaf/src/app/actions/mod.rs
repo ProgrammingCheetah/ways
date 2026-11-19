@@ -19,7 +19,7 @@ mod slice_env;
 pub use caller::{Caller, INSTANCE_VAR};
 pub use metadata::{
     ActionKind, ActionMetadata, ActionMode, ActionName, Bits, ListedPhase, MetadataError,
-    ParsedAction, PhaseEnd, Target, parse,
+    ParsedAction, PhaseEnd, Target, block_end, parse,
 };
 pub use phase::{
     LivePhase, PHASES_DIR, Phase, PhaseFacts, PhaseUnreadable, PrFacts, WorkspaceFacts,

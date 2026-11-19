@@ -1,6 +1,6 @@
 //! The ways repository's `release` action (docs/zaf-actions.md §4, §7): run through `zaf do` on a
 //! throwaway jj repository with two bare remotes (`origin`, the forge's, and `github`, the
-//! mirror) and a stand-in `zaf` for the forge verbs it asks, it refuses, changing neither remote,
+//! mirror) and a stand-in `gh` for the forge verbs it asks, it refuses, changing neither remote,
 //! unless the integration branch's pull request has green checks at the branch's head; else it
 //! makes main one squash commit (the branch's files, on the main before it, the message from a
 //! file), tags it `zaf-v<version>` and pushes main and the tag to origin, then to the mirror. A
@@ -62,18 +62,23 @@ fn action_text() -> String {
     fs::read_to_string(&file).unwrap_or_else(|error| panic!("{}: {error}", file.display()))
 }
 
-/// The stand-in `zaf` the action's `zaf forge …` calls reach: `open` prints the `pr` file,
-/// `head` the `head` file and `checks` the `checks` file, all beside it, and `checks` fails when
-/// a `checks-fail` file is there. Every call is recorded in `calls`.
+/// The stand-in `gh` the action's `zaf forge …` calls reach (the built `zaf` is first on an
+/// action's path, so the verbs are its own): `pr list` prints the `pr` file as the one open pull
+/// request, `pr view` the `head` file and `pr checks` the `checks` file, all beside it, and
+/// `pr checks` fails when a `checks-fail` file is there. Every call is recorded in `calls`, as its
+/// first two words.
 const FORGE: &str = r#"#!/bin/sh
 here=$(dirname "$0")
-printf '%s\n' "$*" >> "$here/calls"
+printf '%s %s\n' "$1" "$2" >> "$here/calls"
 case "$1 $2" in
-    "forge open") cat "$here/pr" ;;
-    "forge head") cat "$here/head" ;;
-    "forge checks")
+    "pr list") printf '%s\thttp://forge.example/pull/%s\n' "$(cat "$here/pr")" "$(cat "$here/pr")" ;;
+    "pr view") cat "$here/head" ;;
+    "pr checks")
+        if [ -f "$here/checks-fail" ]; then
+            echo "HTTP 502: the forge is down" >&2
+            exit 1
+        fi
         cat "$here/checks"
-        [ ! -f "$here/checks-fail" ]
         ;;
     *) echo "unexpected: $*" >&2; exit 97 ;;
 esac
@@ -200,8 +205,8 @@ fn unversioned_project() -> Project {
     write(&root, "scratch.txt", "the Engineer's\n");
 
     let forge = forge_dir(&project);
-    write(&forge, "zaf", FORGE);
-    fs::set_permissions(forge.join("zaf"), fs::Permissions::from_mode(0o755)).expect("mode");
+    write(&forge, "gh", FORGE);
+    fs::set_permissions(forge.join("gh"), fs::Permissions::from_mode(0o755)).expect("mode");
     write(&forge, "pr", &format!("{PR}\n"));
     write(
         &forge,
@@ -339,9 +344,9 @@ fn release_squashes_tags_and_pushes_to_origin_then_the_mirror() {
     assert_eq!(
         forge_calls(&project),
         [
-            format!("forge open -- {BASE} main zaf 0.4.1: the fixes "),
-            format!("forge head {PR}"),
-            format!("forge checks {PR}"),
+            "pr list".to_owned(),
+            "pr view".to_owned(),
+            "pr checks".to_owned(),
         ]
     );
     // The checkout is where it was, its own file with it.

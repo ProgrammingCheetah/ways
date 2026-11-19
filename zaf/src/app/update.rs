@@ -13,7 +13,14 @@ use std::process::Command;
 
 use semver::Version;
 
-use crate::ports::{PortError, Releases};
+use crate::app::actions::ACTIONS_DIR;
+use crate::app::doctor::Commands;
+use crate::app::profile;
+use crate::app::setup::{PackActions, changed_actions};
+use crate::composition::{STATE_DIR, zaf_home};
+use crate::domain::screen::{PlanRow, Text, Verb};
+use crate::manifest::{FOLDER_FILE, LEGACY_FILE, Manifest, ROOT_FILE};
+use crate::ports::{PortError, Releases, Shell};
 
 /// The repository zaf is released from.
 pub const HOME_REPO: &str = "ProgrammingCheetah/ways";
@@ -41,6 +48,59 @@ pub fn newest(tags: &[String]) -> Option<(Version, String)> {
             version.pre.is_empty().then(|| (version, tag.clone()))
         })
         .max_by(|a, b| a.0.cmp(&b.0))
+}
+
+/// Every stable release among `tags` newer than `current`, newest first, each with its tag
+/// (the same parse as [`newest`]).
+pub fn skipped(tags: &[String], current: &Version) -> Vec<(Version, String)> {
+    let mut found: Vec<(Version, String)> = tags
+        .iter()
+        .filter_map(|tag| {
+            let version = Version::parse(tag.strip_prefix(TAG_PREFIX)?).ok()?;
+            (version.pre.is_empty() && version > *current).then(|| (version, tag.clone()))
+        })
+        .collect();
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    found
+}
+
+/// The most lines `what_is_new` gives for a release.
+const WHAT_IS_NEW_LINES: usize = 5;
+
+/// What a release's notes say is new: the lines under a line reading `What is new` (a Markdown
+/// heading of any level, or the bare words), past any blank lines after it, up to the next blank
+/// line, each with a leading `- `, `* ` or `• ` taken off, at most five. Notes with no such section give their first
+/// non-blank line; empty notes give nothing.
+pub fn what_is_new(notes: &str) -> Vec<Text> {
+    let mut lines = notes.lines();
+    let found = lines.by_ref().any(|line| {
+        line.trim()
+            .trim_start_matches('#')
+            .trim()
+            .eq_ignore_ascii_case("what is new")
+    });
+    if found {
+        return lines
+            .skip_while(|line| line.trim().is_empty())
+            .take_while(|line| !line.trim().is_empty())
+            .take(WHAT_IS_NEW_LINES)
+            .map(|line| Text::from(unbullet(line.trim())))
+            .collect();
+    }
+    notes
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| vec![Text::from(line)])
+        .unwrap_or_default()
+}
+
+/// `line` without a leading `- `, `* ` or `• `.
+fn unbullet(line: &str) -> &str {
+    ["- ", "* ", "• "]
+        .iter()
+        .find_map(|bullet| line.strip_prefix(bullet))
+        .map_or(line, str::trim_start)
 }
 
 /// The release archive for `tag` and `target`, as the release workflow names it.
@@ -257,6 +317,542 @@ fn probe(fresh: &Path, version: &Version) -> Result<(), String> {
     } else {
         Err(format!("the new binary says `{said}`, not `zaf {version}`"))
     }
+}
+
+/// The marketplace the teams plugin comes from.
+const MARKETPLACE: &str = "ways";
+
+/// The teams plugin as Claude Code names it.
+pub const PLUGIN: &str = "teams@ways";
+
+/// One step of `zaf update`, in the order they run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    /// The binary is replaced.
+    Binary,
+    /// The teams plugin in the Engineer's Claude home is brought to the marketplace's newest.
+    Plugin,
+    /// The machine's actions are brought to the installed plugin's.
+    Actions,
+    /// The project's `[pack] tag` is raised and its profiles made again.
+    Pack,
+}
+
+/// The plugin row: what is installed and what the marketplace declares.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginRow {
+    /// The installed version, `None` when the plugin is not installed.
+    pub installed: Option<String>,
+    /// The version `main` declares.
+    pub to: Version,
+}
+
+/// The actions row: what differs between the installed plugin's actions and the machine's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionsRow {
+    /// The names new to the machine or different from its copy; empty when only the plugin's
+    /// own update may bring new ones.
+    pub changed: Vec<String>,
+    /// How many actions the installed plugin carries.
+    pub total: usize,
+}
+
+/// What one release says is new.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct News {
+    /// The release.
+    pub version: Version,
+    /// Its lines, as [`what_is_new`] reads them.
+    pub lines: Vec<Text>,
+}
+
+/// Where `zaf update` looks, for its plan.
+#[derive(Debug, Clone, Copy)]
+pub struct Places<'a> {
+    /// The binary to replace.
+    pub exe: &'a Path,
+    /// The Engineer's Claude home (`~/.claude`).
+    pub claude_home: Option<&'a Path>,
+    /// The zaf home (`~/.zaf`).
+    pub zaf_home: Option<&'a Path>,
+    /// The project's root and manifest, inside one.
+    pub project: Option<(&'a Path, &'a Manifest)>,
+}
+
+/// What `zaf update` would do, worked out first; making it changes nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Plan {
+    /// The running version.
+    pub current: Version,
+    /// The newest release.
+    pub newest: Version,
+    /// The newest release's tag.
+    pub tag: String,
+    /// The binary to replace, when a newer release is out.
+    pub binary: Option<PathBuf>,
+    /// The plugin row, when the plugin is not at the marketplace's version.
+    pub plugin: Option<PluginRow>,
+    /// The actions row, with the zaf home it concerns.
+    pub actions: Option<(ActionsRow, PathBuf)>,
+    /// The line of the project's manifest the pack row raises.
+    pub pack: Option<PackChange>,
+    /// What each release newer than the running one says is new, newest first.
+    pub news: Vec<News>,
+}
+
+impl Plan {
+    /// The steps to run, in order, each with its row.
+    pub fn rows(&self) -> Vec<(Step, PlanRow)> {
+        let mut rows = Vec::new();
+        if let Some(exe) = &self.binary {
+            let folder = exe.parent().map(tilde).unwrap_or_default();
+            rows.push((
+                Step::Binary,
+                row(
+                    "Replace",
+                    format!("zaf {} → {}", self.current, self.newest),
+                    format!("the program itself, in {folder}"),
+                ),
+            ));
+        }
+        if let Some(plugin) = &self.plugin {
+            let (verb, noun) = match &plugin.installed {
+                Some(installed) => (
+                    "Update",
+                    format!("teams plugin {installed} → {}", plugin.to),
+                ),
+                None => ("Install", format!("teams plugin {}", plugin.to)),
+            };
+            rows.push((
+                Step::Plugin,
+                row(
+                    verb,
+                    noun,
+                    "the roles zaf starts inside Claude Code".to_owned(),
+                ),
+            ));
+        }
+        if let Some((actions, home)) = &self.actions {
+            let home = tilde(home);
+            let noun = if actions.changed.is_empty() {
+                format!("actions in {home}")
+            } else {
+                format!(
+                    "{} of {} actions in {home}",
+                    actions.changed.len(),
+                    actions.total
+                )
+            };
+            rows.push((
+                Step::Actions,
+                row(
+                    "Update",
+                    noun,
+                    "the steps zaf runs; each change is shown first".to_owned(),
+                ),
+            ));
+        }
+        if let Some(change) = &self.pack {
+            let file = change
+                .file
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            rows.push((
+                Step::Pack,
+                row(
+                    "Update",
+                    format!("pack tag in {file}"),
+                    "the project's pack; its profiles are made again".to_owned(),
+                ),
+            ));
+        }
+        rows
+    }
+}
+
+fn row(verb: &str, noun: String, why: String) -> PlanRow {
+    PlanRow {
+        verb: Verb::from(verb),
+        noun: Text::from(noun),
+        why: Text::from(why),
+    }
+}
+
+/// `path` with the Engineer's home folder written `~`.
+pub fn tilde(path: &Path) -> String {
+    let shown = path.display().to_string();
+    match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() && home != "/" => match shown.strip_prefix(&home) {
+            Some(rest) if rest.is_empty() || rest.starts_with('/') => format!("~{rest}"),
+            _ => shown,
+        },
+        _ => shown,
+    }
+}
+
+/// The `actions/` folder of the teams plugin installed in `claude_home`.
+pub fn pack_actions_dir(claude_home: &Path) -> Option<PathBuf> {
+    profile::installed_path(claude_home, PLUGIN).map(|path| path.join(ACTIONS_DIR))
+}
+
+/// Works out what `zaf update` would do at `places`, changing nothing: the binary when a newer
+/// release is out for `target`, the plugin when it is not at the version `main` declares, the
+/// machine's actions that differ from the installed plugin's, and inside a project its stale pack.
+/// A row with nothing to do is left out. A plugin version that cannot be read leaves out the
+/// plugin and pack rows; a release's notes that cannot be read leave out its lines.
+pub fn plan(
+    releases: &dyn Releases,
+    current: &Version,
+    target: Option<&str>,
+    places: &Places<'_>,
+) -> Result<Plan, UpdateError> {
+    let tags = releases.tags()?;
+    let (newest, tag) = newest(&tags).ok_or(UpdateError::NoRelease)?;
+    let newer = newest > *current;
+    if newer && target.is_none() {
+        return Err(UpdateError::NoArchive {
+            platform: format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
+            tag,
+        });
+    }
+    let news = if newer {
+        skipped(&tags, current)
+            .into_iter()
+            .map(|(version, tag)| News {
+                version,
+                lines: releases
+                    .notes(&tag)
+                    .ok()
+                    .flatten()
+                    .map(|notes| what_is_new(&notes))
+                    .unwrap_or_default(),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let declared = releases.plugin_version().ok();
+    let plugin = declared.as_ref().and_then(|to| {
+        let installed = places
+            .claude_home
+            .and_then(|home| profile::installed_version(home, PLUGIN));
+        (installed.as_deref() != Some(to.to_string().as_str())).then(|| PluginRow {
+            installed,
+            to: to.clone(),
+        })
+    });
+    let actions = places.zaf_home.and_then(|home| {
+        let (changed, total) = places
+            .claude_home
+            .and_then(pack_actions_dir)
+            .map(|folder| changed_actions(home, &folder))
+            .unwrap_or_default();
+        (!changed.is_empty() || plugin.is_some())
+            .then(|| (ActionsRow { changed, total }, home.to_owned()))
+    });
+    let pack = match (&declared, places.project) {
+        (Some(to), Some((root, manifest))) => stale_pack(root, manifest, to),
+        _ => None,
+    };
+    Ok(Plan {
+        current: current.clone(),
+        newest,
+        tag,
+        binary: newer.then(|| places.exe.to_owned()),
+        plugin,
+        actions,
+        pack,
+        news,
+    })
+}
+
+/// A word on what the actions step did.
+pub fn actions_summary(done: &PackActions) -> String {
+    let mut parts = Vec::new();
+    if !done.installed.is_empty() {
+        parts.push(format!("{} new", done.installed.len()));
+    }
+    if !done.replaced.is_empty() {
+        parts.push(format!("{} replaced", done.replaced.len()));
+    }
+    if parts.is_empty() {
+        "actions as they were".to_owned()
+    } else {
+        format!("actions: {}", parts.join(", "))
+    }
+}
+
+/// How the plugin step of `zaf update` ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StepOutcome {
+    /// The step did its work.
+    Done(String),
+    /// The step had nothing to do, or left the plugin as it is.
+    Skipped(String),
+    /// The step failed; the text names the command and its first error line.
+    Failed(String),
+}
+
+/// Where `ways` stands in `claude plugin marketplace list`.
+#[derive(Debug, PartialEq, Eq)]
+enum Marketplace {
+    Missing,
+    Remote,
+    Local,
+}
+
+/// Brings the teams plugin in the Engineer's own Claude home to the marketplace's newest.
+///
+/// The commands run in the environment as it is (no profile `CLAUDE_CONFIG_DIR`). A
+/// marketplace that is not added yet is added and the plugin installed; one added from a
+/// local folder is left as it is. No `claude`, or a command that fails, is a [`StepOutcome::Failed`]
+/// naming the command and its first error line; it never stops the caller.
+pub fn update_plugin(commands: &dyn Commands) -> StepOutcome {
+    let listing = match claude(commands, &["plugin", "marketplace", "list"]) {
+        Ok(text) => text,
+        Err(failed) => return StepOutcome::Failed(failed),
+    };
+    let steps: (&[&[&str]], &str) = match marketplace_state(&listing) {
+        Marketplace::Local => {
+            return StepOutcome::Skipped(format!(
+                "{MARKETPLACE} was added from a local folder; left as it is"
+            ));
+        }
+        Marketplace::Remote => (
+            &[
+                &["plugin", "marketplace", "update", MARKETPLACE],
+                &["plugin", "update", PLUGIN],
+            ],
+            "teams plugin updated",
+        ),
+        Marketplace::Missing => (
+            &[
+                &["plugin", "marketplace", "add", HOME_REPO],
+                &["plugin", "install", PLUGIN],
+            ],
+            "teams plugin installed",
+        ),
+    };
+    for args in steps.0 {
+        if let Err(failed) = claude(commands, args) {
+            return StepOutcome::Failed(failed);
+        }
+    }
+    StepOutcome::Done(steps.1.to_owned())
+}
+
+/// Why a project with `[pack] path` keeps its pack as it is.
+pub const PACK_FROM_FOLDER: &str = "pack from a folder; left as it is";
+
+/// The one line of a manifest that raises a project's `[pack] tag`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackChange {
+    /// The manifest file holding the line.
+    pub file: PathBuf,
+    /// The line as it is, without its line end.
+    pub old: String,
+    /// The line as it would be.
+    pub new: String,
+}
+
+/// The reason a project's pack is left as it is: `[pack] path` names a folder.
+pub fn skip_reason(manifest: &Manifest) -> Option<&'static str> {
+    manifest
+        .pack
+        .as_ref()
+        .is_some_and(|pack| pack.path.is_some())
+        .then_some(PACK_FROM_FOLDER)
+}
+
+/// The change that raises the `[pack] tag` of the project at `root` to `newest`, keeping the
+/// tag's prefix form and the line's quoting and spacing; changes nothing. `None` when the
+/// project has no `[pack] tag` (none, or a `path`), or its tag is at or past `newest`.
+pub fn stale_pack(root: &Path, manifest: &Manifest, newest: &Version) -> Option<PackChange> {
+    let pack = manifest.pack.as_ref()?;
+    if pack.path.is_some() {
+        return None;
+    }
+    let (_, version) = split_tag(pack.tag.as_deref()?)?;
+    if version >= *newest {
+        return None;
+    }
+    [ROOT_FILE, FOLDER_FILE, LEGACY_FILE]
+        .iter()
+        .map(|name| root.join(name))
+        .find_map(|file| {
+            let text = std::fs::read_to_string(&file).ok()?;
+            let (_, old) = tag_line(&text)?;
+            let new = raised_line(old, newest)?;
+            Some(PackChange {
+                file,
+                old: old.to_owned(),
+                new,
+            })
+        })
+}
+
+/// A tag's prefix (everything before its first digit, as in `teams-v`) and its version.
+fn split_tag(tag: &str) -> Option<(&str, Version)> {
+    let tag = tag.trim();
+    let at = tag.find(|c: char| c.is_ascii_digit())?;
+    let version = Version::parse(&tag[at..]).ok()?;
+    Some((&tag[..at], version))
+}
+
+/// The `tag = "..."` line of the `[pack]` table with its byte offset in `text`.
+fn tag_line(text: &str) -> Option<(usize, &str)> {
+    let mut in_pack = false;
+    let mut offset = 0;
+    for raw in text.split_inclusive('\n') {
+        let start = offset;
+        offset += raw.len();
+        let line = raw.trim_end_matches(['\n', '\r']);
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_pack = trimmed == "[pack]"
+                || trimmed
+                    .strip_prefix("[pack]")
+                    .is_some_and(|rest| rest.trim_start().starts_with('#'));
+        } else if in_pack && quoted_tag(line).is_some() {
+            return Some((start, line));
+        }
+    }
+    None
+}
+
+/// The span of the tag's text between its quotes on a `tag = "..."` line.
+fn quoted_tag(line: &str) -> Option<std::ops::Range<usize>> {
+    let after_key = line.trim_start().strip_prefix("tag")?;
+    let value = after_key.trim_start().strip_prefix('=')?.trim_start();
+    let quote = value.chars().next().filter(|c| matches!(c, '"' | '\''))?;
+    let start = line.len() - value.len() + 1;
+    let length = line[start..].find(quote)?;
+    Some(start..start + length)
+}
+
+/// `line` with its tag's version replaced by `newest`, the prefix kept.
+fn raised_line(line: &str, newest: &Version) -> Option<String> {
+    let span = quoted_tag(line)?;
+    let (prefix, _) = split_tag(&line[span.clone()])?;
+    Some(format!(
+        "{}{prefix}{newest}{}",
+        &line[..span.start],
+        &line[span.end..]
+    ))
+}
+
+/// Rewrites the one line of `change` (every other byte of the file stays) and regenerates the
+/// profiles from the manifest as it then reads. A refused generation is a failure naming it;
+/// the rewritten line stays.
+pub fn apply_pack(root: &Path, change: &PackChange, shell: &dyn Shell) -> StepOutcome {
+    apply_pack_with(
+        root,
+        change,
+        shell,
+        zaf_home().as_deref(),
+        profile::claude_home().as_deref(),
+    )
+}
+
+/// [`apply_pack`] with the zaf home and the Claude home given.
+fn apply_pack_with(
+    root: &Path,
+    change: &PackChange,
+    shell: &dyn Shell,
+    home: Option<&Path>,
+    claude_home: Option<&Path>,
+) -> StepOutcome {
+    if let Err(failed) = rewrite_line(change) {
+        return StepOutcome::Failed(failed);
+    }
+    let manifest = match Manifest::load_layers(root, home) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            return StepOutcome::Failed(format!(
+                "{} after the rewrite: {error}",
+                change.file.display()
+            ));
+        }
+    };
+    match profile::init_with(root, &root.join(STATE_DIR), &manifest, shell, claude_home) {
+        Ok(_) => StepOutcome::Done(format!("{}; profiles regenerated", change.new.trim())),
+        Err(error) => StepOutcome::Failed(format!(
+            "{} is rewritten, but the profiles were refused: {error}",
+            change.file.display()
+        )),
+    }
+}
+
+/// Replaces the line `change.old` of its file with `change.new`, through a temporary file
+/// renamed over it; nothing else in the file moves.
+fn rewrite_line(change: &PackChange) -> Result<(), String> {
+    let file = &change.file;
+    let shown = file.display();
+    let text = std::fs::read_to_string(file).map_err(|error| format!("{shown}: {error}"))?;
+    let (start, line) = tag_line(&text)
+        .filter(|(_, line)| *line == change.old)
+        .ok_or_else(|| format!("{shown}: the line `{}` is no longer there", change.old))?;
+    let end = start + line.len();
+    let raised = format!("{}{}{}", &text[..start], change.new, &text[end..]);
+    let name = file.file_name().unwrap_or_default().to_string_lossy();
+    let temp = file.with_file_name(format!(".{name}.zaf-new"));
+    let written = std::fs::write(&temp, raised)
+        .and_then(|()| std::fs::set_permissions(&temp, std::fs::metadata(file)?.permissions()))
+        .and_then(|()| std::fs::rename(&temp, file));
+    written.map_err(|error| {
+        let _ = std::fs::remove_file(&temp);
+        format!("{shown}: {error}")
+    })
+}
+
+/// Runs `claude` with `args`; an error is the command and its first error line.
+fn claude(commands: &dyn Commands, args: &[&str]) -> Result<String, String> {
+    let shown = format!("claude {}", args.join(" "));
+    match commands.run("claude", args) {
+        Err(error) => Err(format!("{shown}: {error}")),
+        Ok(output) if output.success => Ok(output.text),
+        Ok(output) => {
+            let line = output
+                .text
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+                .unwrap_or("failed without a message");
+            Err(format!("{shown}: {line}"))
+        }
+    }
+}
+
+/// Reads `ways` out of the marketplace listing: a name line, then an indented
+/// `Source: <kind> (<where>)` line; a `Directory` or `File` source is a local folder.
+fn marketplace_state(listing: &str) -> Marketplace {
+    let mut lines = listing.lines();
+    let named = lines.by_ref().any(|line| {
+        line.trim_start_matches(|c: char| !c.is_alphanumeric())
+            .trim_end()
+            == MARKETPLACE
+    });
+    if !named {
+        return Marketplace::Missing;
+    }
+    for line in lines {
+        let line = line.trim();
+        let Some(source) = line.strip_prefix("Source:") else {
+            if line.is_empty() || !line.contains(':') {
+                break; // the next marketplace's name, or the end of this entry
+            }
+            continue;
+        };
+        let source = source.trim().to_lowercase();
+        let local = source.starts_with("directory") || source.starts_with("file");
+        return if local {
+            Marketplace::Local
+        } else {
+            Marketplace::Remote
+        };
+    }
+    Marketplace::Remote
 }
 
 #[cfg(test)]

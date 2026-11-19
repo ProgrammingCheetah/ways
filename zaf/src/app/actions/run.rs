@@ -31,6 +31,7 @@ use super::resolve::{
     resolve, resolve_in, same_file,
 };
 use super::slice_env::{SliceContext, SliceEnv, VERSION_VAR};
+use crate::app::schedule::binary;
 use crate::composition::{STATE_DIR, ZAF_HOME_VAR};
 use crate::domain::TicketId;
 
@@ -982,6 +983,7 @@ fn spawn_body(request: &RunRequest<'_>, body: Body<'_>, slice_env: &SliceEnv) ->
     command.args(request.args).current_dir(request.cwd);
     // Before every zaf variable, so nothing in the table can stand in for one.
     apply_manifest_env(&mut command, &request.env);
+    put_running_zaf_first(&mut command);
     command
         .env(ZAF_HOME_VAR, request.home)
         .env(ACTION_VAR, name)
@@ -1053,6 +1055,32 @@ fn apply_manifest_env(command: &mut Command, env: &BTreeMap<String, String>) {
         if !name.to_ascii_uppercase().starts_with(RESERVED_PREFIX) {
             command.env(name, value);
         }
+    }
+}
+
+/// Puts the folder of the running zaf first on the `PATH` the action gets (the manifest's `PATH`, if
+/// it set one, else the inherited one), so `zaf` in a body is this binary and not an older one
+/// found earlier. When the running binary's path cannot be read, `PATH` is passed unchanged.
+fn put_running_zaf_first(command: &mut Command) {
+    let Some(folder) = std::env::current_exe()
+        .map(binary::without_deleted)
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+    else {
+        return;
+    };
+    let set = command
+        .get_envs()
+        .find(|(name, _)| *name == "PATH")
+        .map(|(_, value)| value.map(OsString::from));
+    let rest = match set {
+        Some(value) => value,
+        None => std::env::var_os("PATH"),
+    }
+    .unwrap_or_default();
+    let paths = std::iter::once(folder).chain(std::env::split_paths(&rest));
+    if let Ok(joined) = std::env::join_paths(paths) {
+        command.env("PATH", joined);
     }
 }
 

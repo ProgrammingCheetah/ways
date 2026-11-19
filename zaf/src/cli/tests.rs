@@ -27,7 +27,10 @@ fn every_verb_is_listed() {
         .get_subcommands()
         .map(clap::Command::get_name)
         .collect();
-    assert_eq!(forge_actions, ["open", "merge", "checks", "head", "log"]);
+    assert_eq!(
+        forge_actions,
+        ["open", "merge", "checks", "head", "default-branch", "log"]
+    );
     let board = command.find_subcommand("board").expect("board");
     let board_actions: Vec<&str> = board
         .get_subcommands()

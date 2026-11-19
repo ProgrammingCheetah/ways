@@ -1,0 +1,44 @@
+#!/bin/sh
+# zaf description: open a pull request for a slice's branch against the base, handing back its number; a slice with an open one hands back that number
+# zaf 1: refused: the arguments are not <slice> <base> <title> <body>, or the slice or base is not a usable branch name
+# zaf 2: a backend failed (the manifest names no forge, or the forge is unreachable, refused, or gave no pull request number)
+# zaf mode: 750
+# zaf group: team, release, implement, fix
+slice=$1
+base=$2
+title=$3
+body=$4
+
+if [ -z "$ZAF_ROOT" ] || [ "$#" -ne 4 ]; then
+    echo "usage: pr-open <slice> <base> <title> <body>, with ZAF_ROOT set" >&2
+    exit 1
+fi
+case $slice in
+    "" | -*)
+        echo "slice $slice is not a usable branch name" >&2
+        exit 1
+        ;;
+esac
+case $base in
+    "" | -*)
+        echo "base $base is not a usable branch name" >&2
+        exit 1
+        ;;
+esac
+if [ -z "$title" ]; then
+    echo "a pull request needs a title" >&2
+    exit 1
+fi
+
+# zaf reads the forge from the manifest at the project root; a slice's workspace has none.
+cd "$ZAF_ROOT" || exit 2
+
+# A slice with an open pull request hands that one back, and opens nothing; zaf says so on stderr.
+number=$(zaf forge open -- "$slice" "$base" "$title" "$body") || exit 2
+case $number in
+    "" | *[!0-9]*)
+        echo "the forge gave no pull request number: $number" >&2
+        exit 2
+        ;;
+esac
+echo "$number"

@@ -29,6 +29,16 @@
       "node": false
     },
     {
+      "name": "built.rs",
+      "role": "a version built and its release pull request, for the scheduler's loop after a tick: is_built (every epic of the version done, at least one; worked out on each read), version_built (the board read now) and open_release (the action `release-open` through the one action runner, the pull request it handed back or its refusal or failure as one sentence)",
+      "node": false
+    },
+    {
+      "name": "built/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
       "name": "digest.rs",
       "role": "the text block a real tick prints (header, who asked for a scheduler's tick, slots, each move and the count line, what it did, what runs, what was skipped, what waits on the Engineer, nothing to do) and the scheduler's next-tick and lock-held lines; pure, time injected",
       "node": false

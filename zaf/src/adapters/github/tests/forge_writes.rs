@@ -4,7 +4,7 @@
 use super::*;
 use crate::ports::{
     BranchName, CheckBucket, CheckLink, CheckLog, CheckRun, JobId, MergeOutcome, MergeStrategy,
-    NewPullRequest, Opened, PrBody, PrTitle,
+    NewPullRequest, Opened, PrBody, PrRef, PrTitle,
 };
 
 const SLICE: &str = "feature/v1-1-2";
@@ -31,12 +31,22 @@ fn list_call() -> Vec<String> {
         "--state",
         "open",
         "--json",
-        "number",
+        "number,url",
         "--jq",
-        ".[].number",
+        ".[] | [.number, .url] | @tsv",
         "--repo",
         REPO,
     ])
+}
+
+/// The page GitHub shows pull request `number` on.
+fn page(number: u64) -> String {
+    format!("https://github.com/{REPO}/pull/{number}")
+}
+
+/// A pull request as the port hands it back.
+fn handed(number: u64) -> PrRef {
+    PrRef::new(pr(number), page(number))
 }
 
 fn state_call(number: &str) -> Vec<String> {
@@ -46,26 +56,55 @@ fn state_call(number: &str) -> Vec<String> {
 }
 
 #[test]
-fn open_hands_back_the_open_pull_request_of_the_slice() {
+fn open_hands_back_the_open_pull_request_of_the_slice_with_its_link() {
     let fake = FakeGh::new();
-    fake.on("pr list *", "5\n");
+    fake.on("pr list *", &format!("5\t{}\n", page(5)));
     assert_eq!(
         fake.forge().open_pull_request(&request()),
-        Ok(Opened::AlreadyOpen(pr(5)))
+        Ok(Opened::AlreadyOpen(handed(5)))
     );
     assert_eq!(fake.calls(), [list_call()]);
 }
 
 #[test]
-fn open_creates_one_and_reads_its_number_from_the_url_gh_prints_last() {
+fn the_default_branch_is_the_repositorys_own() {
+    let fake = FakeGh::new();
+    fake.on("api *", "trunk\n");
+    assert_eq!(fake.forge().default_branch(), Ok(BranchName::from("trunk")));
+    assert_eq!(
+        fake.calls(),
+        [argv(&[
+            "api",
+            &format!("repos/{REPO}"),
+            "--jq",
+            ".default_branch"
+        ])]
+    );
+}
+
+#[test]
+fn a_repository_with_no_default_branch_or_a_failed_read_is_a_backend_failure() {
+    for (status, said) in [(0, "no default branch"), (1, "HTTP 502")] {
+        let fake = FakeGh::new();
+        fake.rule("api *", status, if status == 0 { "\n" } else { said });
+        let error = fake.forge().default_branch().expect_err(said);
+        assert!(
+            matches!(&error, PortError::Backend(message) if message.contains(said)),
+            "{said}: {error:?}"
+        );
+    }
+}
+
+#[test]
+fn open_creates_one_and_reads_its_number_and_link_from_the_url_gh_prints_last() {
     let fake = FakeGh::new();
     fake.on("pr list *", "").on(
         "pr create *",
-        &format!("Creating pull request\nhttps://github.com/{REPO}/pull/7\n"),
+        &format!("Creating pull request\n{}\n", page(7)),
     );
     assert_eq!(
         fake.forge().open_pull_request(&request()),
-        Ok(Opened::New(pr(7)))
+        Ok(Opened::New(handed(7)))
     );
     assert_eq!(
         fake.calls(),

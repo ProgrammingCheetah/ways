@@ -72,7 +72,7 @@ jobs:
           tar -czf "dist/$name.tar.gz" -C "$RUNNER_TEMP" "$name"
           (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
           cat "dist/$name.tar.gz.sha256"
-      - name: Create the release if absent, then upload the archive and its sum
+      - name: Create the release as a draft, upload the archive, its sum and install.sh, then publish
         shell: bash
         env:
           API: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}
@@ -81,10 +81,34 @@ jobs:
           # The token goes to curl in a config read from stdin, never on a command line.
           call() { printf 'header = "Authorization: token %s"\n' "$FORGEJO_TOKEN" | curl --config - -sS "$@"; }
           first_id() { grep -o '"id":[0-9]*' | head -n 1 | cut -d: -f2; }
+          version="${TAG#zaf-v}"
+          case "$version" in
+            ''|*[!0-9A-Za-z.+-]*) echo "tag '$TAG' holds a version that cannot go into install.sh" >&2; exit 1 ;;
+          esac
+          # install.sh carries the tag's version; a script without the line is not shipped.
+          if ! grep -qx 'ZAF_VERSION="0.0.0-dev"' zaf/install.sh; then
+            echo 'zaf/install.sh has no line ZAF_VERSION="0.0.0-dev" to rewrite' >&2
+            exit 1
+          fi
+          sed "s/^ZAF_VERSION=\"0.0.0-dev\"\$/ZAF_VERSION=\"$version\"/" zaf/install.sh > dist/install.sh
+          grep -qx "ZAF_VERSION=\"$version\"" dist/install.sh
+          # The notes are the tag's commit message, put into the request by a JSON encoder, never
+          # pasted into a string.
+          git log -1 --format=%B HEAD > "$RUNNER_TEMP/notes.txt"
+          if command -v jq >/dev/null 2>&1; then
+            jq -n --arg tag "$TAG" --rawfile body "$RUNNER_TEMP/notes.txt" \
+              '{tag_name: $tag, name: $tag, body: $body, "draft": true}' > "$RUNNER_TEMP/release.json"
+          elif command -v python3 >/dev/null 2>&1; then
+            python3 -c 'import json, sys; print(json.dumps({"tag_name": sys.argv[1], "name": sys.argv[1], "body": open(sys.argv[2]).read(), "draft": True}))' \
+              "$TAG" "$RUNNER_TEMP/notes.txt" > "$RUNNER_TEMP/release.json"
+          else
+            echo "neither jq nor python3 is on this runner to encode the release notes" >&2
+            exit 1
+          fi
           id=$(call "$API/releases/tags/$TAG" | first_id || true)
           if [ -z "$id" ]; then
             id=$(call -f -X POST -H 'Content-Type: application/json' \
-              -d "{\"tag_name\":\"$TAG\",\"name\":\"$TAG\"}" "$API/releases" | first_id)
+              --data "@$RUNNER_TEMP/release.json" "$API/releases" | first_id)
           fi
           if [ -z "$id" ]; then
             echo "no release for $TAG and none could be made" >&2
@@ -100,3 +124,6 @@ jobs:
             call -f -X POST -F "attachment=@$file" "$API/releases/$id/assets?name=$name" >/dev/null
             echo "uploaded $name"
           done
+          # Every file is up: only now is the release published.
+          call -f -X PATCH -H 'Content-Type: application/json' -d '{"draft":false}' "$API/releases/$id" >/dev/null
+          echo "published $TAG"

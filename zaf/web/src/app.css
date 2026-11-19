@@ -7,7 +7,7 @@
   --line: #d6dbe1;
   --warn: #a4262c;
   --sq-done: #c99a06;
-  --sq-question: #f0d93a;
+  --sq-question: #8b5cf6;
   --sq-working: #2e9e4f;
   --sq-working-rest: #bfe3c9;
   --sq-blocked: #cf3b3b;
@@ -23,7 +23,7 @@
     --line: #2c313a;
     --warn: #ff8b8b;
     --sq-done: #e0b020;
-    --sq-question: #f5e050;
+    --sq-question: #af87ff;
     --sq-working: #3fb868;
     --sq-working-rest: #2a4a36;
     --sq-blocked: #e55a5a;
@@ -682,7 +682,7 @@ h2 {
   white-space: pre-wrap;
 }
 
-/* The prompt a yellow block opens: a native modal dialog. */
+/* The prompt a purple block opens: a native modal dialog. */
 button.hit {
   padding: 0;
   border: 0;

@@ -215,12 +215,12 @@ fn old_star_gitignore_is_replaced() {
         ALLOW_LIST
     );
 
-    // Anything else is the Engineer's: kept, with a worksheet step to merge by hand.
+    // Anything else is the Engineer's: kept, with a fix to merge by hand.
     let mine = "# mine\n*\n!notes/\n";
     write(&project.root, ".zaf/.gitignore", mine);
     let (code, stdout, _) = outcome(&project.zaf(&["setup"]));
     assert_eq!(code, 1, "{stdout}");
-    assert!(stdout.contains("Merge these lines"), "{stdout}");
+    assert!(stdout.contains("merge these lines"), "{stdout}");
     assert!(stdout.contains("!actions/**"), "{stdout}");
     assert_eq!(
         fs::read_to_string(project.root.join(".zaf/.gitignore")).expect(".gitignore"),
@@ -255,13 +255,17 @@ fn first_run_keeps_an_old_gitignore() {
 }
 
 #[test]
-fn root_gitignore_makes_a_worksheet_step() {
+fn root_gitignore_makes_a_fix() {
     let project = project();
     write(&project.root, ".gitignore", ".zaf/\n");
     let (code, stdout, _) = outcome(&project.zaf(&["setup"]));
     assert_eq!(code, 1, "{stdout}");
     assert!(stdout.contains("root `.gitignore`"), "{stdout}");
-    assert!(stdout.contains("Done when:"), "{stdout}");
+    assert!(
+        stdout.contains("Fix it, then run zaf setup again:")
+            && stdout.contains("git cannot track actions"),
+        "{stdout}"
+    );
     assert_eq!(
         fs::read_to_string(project.root.join(".gitignore")).expect("root ignore"),
         ".zaf/\n",
@@ -382,8 +386,7 @@ fn setup_writes_dot_zaf_toml() {
     let answers = "bookshelf\nexample/b\n\n\n";
     let (code, stdout, stderr) = outcome(&init_in(&dir, &home, answers));
     assert_ne!(code, 2, "{stdout}{stderr}");
-    // The prompts end without a newline, so the confirmation closes the line.
-    assert!(stdout.contains("wrote .zaf.toml\n"), "{stdout}");
+    assert!(stdout.contains("  ✓ Write .zaf.toml\n"), "{stdout}");
     let text = fs::read_to_string(dir.join(".zaf.toml")).expect(".zaf.toml");
     assert!(text.contains("name = \"bookshelf\""), "{text}");
     assert!(
@@ -394,7 +397,7 @@ fn setup_writes_dot_zaf_toml() {
 
     // It asks nothing where a manifest file exists, and leaves it as it is.
     let (_, stdout, stderr) = outcome(&init_in(&dir, &home, answers));
-    assert!(!stdout.contains("project name"), "{stdout}{stderr}");
+    assert!(!stdout.contains("Project name"), "{stdout}{stderr}");
     assert_eq!(
         fs::read_to_string(dir.join(".zaf.toml")).expect(".zaf.toml"),
         text
@@ -407,7 +410,7 @@ fn setup_writes_dot_zaf_toml() {
         write(&other, existing, "# mine\n");
         let (_, stdout, stderr) = outcome(&init_in(&other, &home, answers));
         assert!(
-            !stdout.contains("project name"),
+            !stdout.contains("Project name"),
             "{existing}: {stdout}{stderr}"
         );
         assert!(!other.join(".zaf.toml").exists(), "{existing}");
@@ -432,8 +435,8 @@ fn setup_asks_without_manifest() {
     let (code, stdout, stderr) =
         outcome(&verb_in("setup", &dir, &home, "bookshelf\nexample/b\n\n\n"));
     assert_ne!(code, 2, "{stdout}{stderr}");
-    assert!(stdout.contains("project name"), "{stdout}");
-    assert!(stdout.contains("wrote .zaf.toml"), "{stdout}");
+    assert!(stdout.contains("Project name"), "{stdout}");
+    assert!(stdout.contains("  ✓ Write .zaf.toml\n"), "{stdout}");
     let text = fs::read_to_string(dir.join(".zaf.toml")).expect(".zaf.toml");
     assert!(text.contains("name = \"bookshelf\""), "{text}");
     assert!(
@@ -456,7 +459,7 @@ fn setup_with_manifest_asks_nothing() {
         write(&dir, file, MANIFEST);
         // Answers are on stdin: setup must leave them unread.
         let (_, stdout, stderr) = outcome(&verb_in("setup", &dir, &home, "other\nexample/o\n\n\n"));
-        assert!(!stdout.contains("project name"), "{file}: {stdout}");
+        assert!(!stdout.contains("Project name"), "{file}: {stdout}");
         assert!(!stderr.contains("input ended"), "{file}: {stderr}");
         assert_eq!(
             fs::read_to_string(dir.join(file)).expect("manifest"),

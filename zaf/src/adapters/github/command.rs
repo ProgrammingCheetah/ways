@@ -96,9 +96,14 @@ impl GhCommand {
         parse_json(&self.text(args)?)
     }
 
-    /// Runs `gh api repos/<repo>/<endpoint>` with the extra arguments; returns stdout.
+    /// Runs `gh api repos/<repo>/<endpoint>` with the extra arguments; returns stdout. An empty
+    /// endpoint is the repository itself, `gh api repos/<repo>`.
     pub fn api_text(&self, endpoint: &str, args: &[&str]) -> Result<String, PortError> {
-        let path = format!("repos/{}/{endpoint}", self.repo);
+        let path = if endpoint.is_empty() {
+            format!("repos/{}", self.repo)
+        } else {
+            format!("repos/{}/{endpoint}", self.repo)
+        };
         let mut argv = vec!["api", path.as_str()];
         argv.extend_from_slice(args);
         self.output(&argv)

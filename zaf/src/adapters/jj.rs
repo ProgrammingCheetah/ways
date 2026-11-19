@@ -58,6 +58,20 @@ impl Vcs for JjVcs {
         Ok(!listed.trim().is_empty())
     }
 
+    fn has_remote(&self, root: &Path) -> Result<bool, PortError> {
+        let listed = Self::workspace_command(root)?.run(&["git", "remote", "list"])?;
+        Ok(!listed.trim().is_empty())
+    }
+
+    fn tags(&self, root: &Path) -> Result<Vec<String>, PortError> {
+        let listed =
+            Self::workspace_command(root)?.run(&["tag", "list", "-T", r#"name ++ "\n""#])?;
+        let mut names: Vec<String> = listed.lines().map(str::to_owned).collect();
+        names.sort();
+        names.dedup();
+        Ok(names)
+    }
+
     fn diff_hunks(
         &self,
         workspace: &Path,

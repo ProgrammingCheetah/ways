@@ -29,7 +29,7 @@ use std::time::{Duration, Instant, SystemTime};
 use crate::adapters::process;
 use crate::app::schedule::lock::{self, LockError, SchedulerLock};
 use crate::app::schedule::request::{self, Request, Requests};
-use crate::app::schedule::scheduler::{self, Asked, Ended, Found, Host, Memory};
+use crate::app::schedule::scheduler::{self, Asked, Ended, Found, Host, Memory, Opened};
 use crate::app::spawn;
 
 /// The variable a tick the hub runs carries: the pid of the scheduler it runs for. A `zaf spawn
@@ -55,6 +55,14 @@ pub trait Tick: Send + Sync {
     fn tick(&self, asked: &Asked) -> u8;
     /// Says a line about the watch, for whoever reads the hub's output.
     fn say(&self, line: &str);
+    /// Whether every epic of the watched version is done, read now; not built by default.
+    fn version_built(&self) -> bool {
+        false
+    }
+    /// Runs `release-open` for the watched version and gives its pull request, or why not.
+    fn open_release(&self) -> Result<Opened, String> {
+        Err("this watch opens no release pull request".to_owned())
+    }
 }
 
 /// Why a watch was not started or stopped.
@@ -411,6 +419,18 @@ impl Host for HubHost {
 
     fn tick(&mut self, _number: u64, asked: &Asked, _memory: &mut Memory) -> u8 {
         self.tick.tick(asked)
+    }
+
+    fn version_built(&mut self) -> bool {
+        self.tick.version_built()
+    }
+
+    fn open_release(&mut self) -> Result<Opened, String> {
+        self.tick.open_release()
+    }
+
+    fn built(&mut self, version: &str, number: &str, link: Option<&str>) {
+        self.say(&scheduler::built_line(version, number, link));
     }
 
     fn next_tick(&mut self, _interval: Duration) {}

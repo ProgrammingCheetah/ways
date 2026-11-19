@@ -286,7 +286,7 @@ fn setup_writes_a_forgejo_manifest_from_origin() {
     scene.env.push(("FORGEJO_TOKEN".to_owned(), String::new()));
     let (code, stdout, stderr) = outcome(&scene.zaf(&["setup"], Some("\n\n\n\n\n")));
     assert!(
-        stdout.contains("forge url [http://yagdrassyl.local:3000]: "),
+        stdout.contains("  › [http://yagdrassyl.local:3000] "),
         "{stdout}{stderr}"
     );
     let manifest = fs::read_to_string(scene.root.join(".zaf.toml")).expect("manifest");
@@ -374,16 +374,164 @@ fn setup_without_a_terminal_keeps_differing_actions() {
         !scene.home.join("actions-replaced").exists(),
         "nothing was replaced"
     );
-    let kept: Vec<&str> = stdout
-        .lines()
-        .filter(|line| line.starts_with("differs from the pack, kept:"))
-        .collect();
-    assert_eq!(
-        kept,
-        ["differs from the pack, kept: commit, push; run zaf setup in a terminal to review"],
+    assert!(!stdout.contains("replace commit?"), "{stdout}");
+}
+
+/// The words of a run's screen with every escape sequence taken out.
+fn stripped(text: &str) -> String {
+    let mut out = String::new();
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            for end in chars.by_ref() {
+                if end.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// A run whose checks pass ends with the heading and the first `zaf begin`, in a folder with no
+/// tag or release folder; each plan row is one step line and no doctor line is printed.
+#[test]
+fn a_green_setup_names_the_next_begin() {
+    let scene = Scene::new();
+    let (code, stdout, stderr) = outcome(&scene.zaf(&["setup"], Some("\n\n\n\n")));
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    let lines: Vec<&str> = stdout.lines().filter(|line| !line.is_empty()).collect();
+    assert!(
+        lines.iter().any(|line| line.starts_with("  ✓ Ask ")),
         "{stdout}"
     );
-    assert!(!stdout.contains("replace commit?"), "{stdout}");
+    assert!(
+        lines.iter().any(|line| line.starts_with("  ✓ Write ")),
+        "{stdout}"
+    );
+    assert!(
+        lines.iter().any(|line| line.starts_with("  ✓ Make ")),
+        "{stdout}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("  ✓ Install ") && line.ends_with(" standard actions")),
+        "{stdout}"
+    );
+    assert!(
+        lines.contains(&"  ✓ Check your tools and access"),
+        "{stdout}"
+    );
+    assert!(lines.contains(&"zaf is set up here. Next:"), "{stdout}");
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("  zaf begin --version 0.1.0 ")
+                && line
+                    .ends_with("you say what you want; it becomes objectives, a design, tickets")),
+        "{stdout}"
+    );
+    for printed in ["wrote .zaf.toml", "claude:", "gh:", "ok"] {
+        assert!(
+            !lines.iter().any(|line| line.starts_with(printed)),
+            "{printed}:\n{stdout}"
+        );
+    }
+}
+
+/// A run with a failing check ends with the fixes alone: one line each, no doctor line.
+#[test]
+fn a_failed_setup_shows_only_its_fixes() {
+    // A Forgejo project with its token unset: the one failing check this scene can make.
+    let mut scene = Scene::forgejo();
+    scene.env.push(("FORGEJO_TOKEN".to_owned(), String::new()));
+    let (code, stdout, stderr) = outcome(&scene.zaf(&["setup"], Some("\n\n\n\n\n")));
+    assert_eq!(code, 1, "{stdout}{stderr}");
+    let lines: Vec<&str> = stdout.lines().collect();
+    let heading = lines
+        .iter()
+        .position(|line| *line == "Fix it, then run zaf setup again:")
+        .unwrap_or_else(|| panic!("no heading:\n{stdout}"));
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("  ✗ Check ") && line.ends_with(" to fix")),
+        "{stdout}"
+    );
+    let fixes: Vec<&&str> = lines[heading + 1..]
+        .iter()
+        .filter(|line| !line.is_empty())
+        .collect();
+    assert!(!fixes.is_empty(), "{stdout}");
+    assert!(fixes.iter().all(|line| line.starts_with("  ")), "{stdout}");
+    assert!(
+        fixes
+            .iter()
+            .any(|line| line.contains("`FORGEJO_TOKEN` is not set")
+                && line.contains("export FORGEJO_TOKEN=…")
+                && line.contains("read and write on the repository's issues and pull requests")),
+        "{stdout}"
+    );
+    for passed in ["claude:", "git:", "jj:", "workspaces dir:", "manifest:"] {
+        assert!(
+            !stdout.lines().any(|line| line.starts_with(passed)),
+            "{passed}:\n{stdout}"
+        );
+    }
+    assert!(!stdout.contains("is set up here"), "{stdout}");
+    assert!(!stdout.contains("fix:"), "{stdout}");
+}
+
+/// With `NO_COLOR` and piped, a run holds no escape byte and no carriage return.
+#[test]
+fn no_color_gives_the_same_words_with_no_codes() {
+    let mut scene = Scene::new();
+    scene.env.push(("NO_COLOR".to_owned(), "1".to_owned()));
+    let (code, stdout, stderr) = outcome(&scene.zaf(&["setup"], Some("\n\n\n\n")));
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert!(
+        !stdout.contains('\x1b') && !stdout.contains('\r'),
+        "{stdout:?}"
+    );
+    assert_eq!(stripped(&stdout), stdout);
+    assert!(stdout.contains("zaf is set up here. Next:"), "{stdout}");
+}
+
+/// A piped run neither colours nor redraws, with `NO_COLOR` unset.
+#[test]
+fn a_piped_setup_neither_colours_nor_redraws() {
+    let scene = Scene::new();
+    let (code, stdout, stderr) = outcome(&scene.zaf(&["setup"], Some("\n\n\n\n")));
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert!(
+        !stdout.contains('\x1b') && !stdout.contains('\r'),
+        "{stdout:?}"
+    );
+}
+
+/// `--json` keeps what setup printed before the steps: the `wrote` line, the doctor's lines, and
+/// no step line or heading.
+#[test]
+fn setup_json_is_unchanged() {
+    let scene = Scene::new();
+    let (code, stdout, stderr) = outcome(&scene.zaf(&["--json", "setup"], Some("\n\n\n\n")));
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert!(
+        // The last prompt's line is open when the answers are piped, so the line ends with it.
+        stdout.lines().any(|line| line.ends_with("wrote .zaf.toml")),
+        "{stdout}"
+    );
+    assert!(
+        stdout.lines().any(|line| line.starts_with("gh: ")),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains('✓') && !stdout.contains("Next:"),
+        "{stdout}"
+    );
 }
 
 /// `zaf doctor` exits 0 on a copy of ways' own `.zaf.toml` and `.zaf/actions/` with an empty zaf

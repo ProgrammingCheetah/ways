@@ -34,7 +34,9 @@ fi
 cd "$ZAF_ROOT" || exit 2
 
 # A slice with an open pull request hands that one back, and opens nothing; zaf says so on stderr.
-number=$(zaf forge open -- "$slice" "$base" "$title" "$body") || exit 2
+# Its number is line 1; line 2, the link, is not this action's to hand back.
+opened=$(zaf forge open -- "$slice" "$base" "$title" "$body") || exit 2
+number=$(printf '%s\n' "$opened" | head -n 1)
 case $number in
     "" | *[!0-9]*)
         echo "the forge gave no pull request number: $number" >&2

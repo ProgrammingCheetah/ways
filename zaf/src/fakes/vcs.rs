@@ -28,6 +28,7 @@ struct State {
     slices: BTreeMap<SliceName, Slice>,
     next_commit: u64,
     tags: BTreeSet<String>,
+    remote: bool,
 }
 
 /// A VCS held in memory. Arrange a slice with [`FakeVcs::open`], [`FakeVcs::place`],
@@ -99,6 +100,11 @@ impl FakeVcs {
         self.state().tags.insert(tag.to_owned());
     }
 
+    /// Records that the repository has a remote.
+    pub fn add_remote(&self) {
+        self.state().remote = true;
+    }
+
     /// Whether a slice exists.
     pub fn has_slice(&self, slice: &SliceName) -> bool {
         self.state().slices.contains_key(slice)
@@ -154,6 +160,14 @@ impl Vcs for FakeVcs {
 
     fn has_tag(&self, _root: &Path, tag: &str) -> Result<bool, PortError> {
         Ok(self.state().tags.contains(tag))
+    }
+
+    fn has_remote(&self, _root: &Path) -> Result<bool, PortError> {
+        Ok(self.state().remote)
+    }
+
+    fn tags(&self, _root: &Path) -> Result<Vec<String>, PortError> {
+        Ok(self.state().tags.iter().cloned().collect())
     }
 
     fn diff_hunks(

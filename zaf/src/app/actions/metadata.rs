@@ -264,6 +264,19 @@ pub fn parse(file: &Path, text: &str) -> Result<ParsedAction, MetadataError> {
         })
 }
 
+/// The index in `text`'s lines of the first line after its metadata block: past a `#!` line
+/// and every metadata line that follows. It is the line [`parse`] calls the body, as an index;
+/// `None` when the file holds no block (no metadata line after the optional `#!` line).
+pub fn block_end(text: &str) -> Option<usize> {
+    let lines: Vec<&str> = text.lines().collect();
+    let first = usize::from(lines.first().is_some_and(|line| line.starts_with("#!")));
+    let count = lines[first..]
+        .iter()
+        .take_while(|line| metadata_line(line).is_some())
+        .count();
+    (count > 0).then_some(first + count)
+}
+
 /// The key and value of a metadata line; none when the line is not one.
 ///
 /// A line is metadata when it is a comment marker (a run of characters that

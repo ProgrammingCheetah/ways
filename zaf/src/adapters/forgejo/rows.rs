@@ -98,11 +98,15 @@ impl CommentRow {
     }
 }
 
-/// The repository as `GET /repos/{owner}/{repo}` prints it, read only for what its caller may do.
+/// The repository as `GET /repos/{owner}/{repo}` prints it, read for what its caller may do and
+/// the branch it opens on.
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct RepositoryRow {
     #[serde(default)]
     pub permissions: Option<PermissionRow>,
+    /// The branch the repository opens on.
+    #[serde(default, deserialize_with = "or_default")]
+    pub default_branch: String,
 }
 
 /// What the caller may do in a repository.
@@ -130,6 +134,9 @@ pub(super) struct PullRow {
     pub state: String,
     #[serde(default)]
     pub merged: bool,
+    /// The page a person opens.
+    #[serde(default, deserialize_with = "or_default")]
+    pub html_url: String,
     #[serde(default)]
     pub created_at: Option<String>,
     #[serde(default)]

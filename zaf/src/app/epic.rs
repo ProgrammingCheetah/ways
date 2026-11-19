@@ -15,7 +15,7 @@ use super::spawn::SpawnError;
 use super::spawn::runs::{self, Run};
 use crate::domain::{
     BodyHash, Epic, EpicStage, EpicTask, GroupName, NewEpic, Signature, Standing, TicketBody,
-    TicketId, TicketState, TicketTitle, TicketType, of_version, with_release,
+    TicketId, TicketState, TicketTitle, TicketType, all_signed, of_version, with_release,
 };
 use crate::ports::{Board, Holder, PortError};
 
@@ -319,6 +319,28 @@ pub fn sign(
     }
     board.sign(epic, &signature).map_err(EpicError::Board)?;
     Ok(SignOutcome::Signed(signature.hash))
+}
+
+/// The version whose build a signature just written makes ready to start: the version `epic`
+/// is of, when every open epic of it is signed with `signature` counted for `epic` (a board that
+/// lists its comments a moment late does not hide it). `None` for an epic of no version, or while
+/// another epic of its version is unsigned.
+///
+/// Interface: consumes [`all_signed`] (I8); used by `zaf epic sign` (M19).
+pub fn build_ready(
+    board: &dyn Board,
+    epic: TicketId,
+    signature: Signature,
+) -> Result<Option<String>, EpicError> {
+    let mut epics = board.epics().map_err(EpicError::Board)?;
+    let Some(signed) = epics.iter_mut().find(|open| open.id == epic) else {
+        return Ok(None);
+    };
+    signed.signature = Some(signature);
+    let Some(version) = signed.release().map(str::to_owned) else {
+        return Ok(None);
+    };
+    Ok(all_signed(&epics, &version).then_some(version))
 }
 
 #[cfg(test)]

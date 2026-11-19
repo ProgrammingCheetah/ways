@@ -32,6 +32,7 @@ pub mod profile;
 pub mod progress;
 pub mod report;
 pub mod scheduler;
+pub mod screen;
 pub mod setup;
 pub mod slice;
 pub mod spawn;
@@ -39,7 +40,9 @@ pub mod spawn_phase;
 pub mod spawn_stop;
 pub mod spawn_trace;
 pub mod status;
+pub mod steps;
 pub mod update;
+pub mod watch_view;
 
 pub use exit::NOT_IMPLEMENTED;
 
@@ -220,19 +223,24 @@ pub enum Verb {
 #[derive(Debug, clap::Subcommand, strum::IntoStaticStr)]
 #[strum(serialize_all = "kebab-case")]
 pub enum ForgeAction {
-    /// Open a pull request for a branch into a base and print its number; one already open for
-    /// the branch is handed back instead, and nothing is opened.
+    /// Open a pull request for a branch into a base and print its number alone, or with `--link`
+    /// its number and then its link; one already open for the branch is handed back instead, and
+    /// nothing is opened. The arguments are `<head> [<base>] <title> <body>`: with no base the
+    /// pull request goes into the forge's default branch.
     Open {
-        /// The branch the pull request carries.
-        head: String,
-        /// The branch it merges into.
-        base: String,
-        /// Its title.
-        #[arg(allow_hyphen_values = true)]
-        title: String,
-        /// Its body; may be empty.
-        #[arg(allow_hyphen_values = true)]
-        body: String,
+        /// Print the pull request's link on line 2, after its number.
+        #[arg(long)]
+        link: bool,
+        /// `<head> [<base>] <title> <body>`: the branch the pull request carries, the branch it
+        /// merges into (the forge's default branch when left out), its title and its body, which
+        /// may be empty.
+        #[arg(
+            required = true,
+            num_args = 3..=4,
+            allow_hyphen_values = true,
+            value_name = "ARG"
+        )]
+        args: Vec<String>,
     },
     /// Merge a pull request with a merge commit, or squashed; one already merged is quiet. A
     /// merge the forge cannot make yet exits 1 saying `not mergeable yet`.
@@ -256,6 +264,8 @@ pub enum ForgeAction {
         /// The pull request, `7` or `#7`.
         pr: PrNumber,
     },
+    /// The forge's default branch, its name alone on one line.
+    DefaultBranch,
     /// What a person reads of a failed check's log: the job's failed lines, or the check's link
     /// on a forge with no log API; nothing when the link names no job.
     Log {

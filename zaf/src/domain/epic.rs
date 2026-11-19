@@ -28,14 +28,15 @@ text_newtype! {
 pub const RELEASE_PREFIX: &str = "Release: ";
 
 /// The version an epic's body names: the text after `Release: ` on its first line, and only
-/// there. A body whose first line is anything else, or that has the line second, is of no
-/// version.
+/// there. A body whose first line is anything else, that has the line second, or whose
+/// version holds a control character (the board's words are not trusted with the terminal), is
+/// of no version.
 ///
 /// Interface: `release_of(body)`, the function [`Epic::release`] reads through.
 pub fn release_of(body: &str) -> Option<&str> {
     let first = body.lines().next()?;
     let version = first.strip_prefix(RELEASE_PREFIX)?;
-    (!version.is_empty()).then_some(version)
+    (!version.is_empty() && !version.chars().any(char::is_control)).then_some(version)
 }
 
 /// `body` with the `Release: <version>` line as its first line, a blank line, then `body`.
@@ -50,6 +51,14 @@ pub fn of_version<'a>(epics: &'a [Epic], version: &'a str) -> impl Iterator<Item
     epics
         .iter()
         .filter(move |epic| epic.release() == Some(version))
+}
+
+/// Whether at least one open epic is of `version` and every one of them is signed (a signature
+/// edited since does not count).
+///
+/// Interface: `all_signed(epics, version)`; consumed by the release stage and epic signing.
+pub fn all_signed(epics: &[Epic], version: &str) -> bool {
+    of_version(epics, version).next().is_some() && of_version(epics, version).all(Epic::signed)
 }
 
 /// A task of an epic as the epic lists it, closed ones included.

@@ -233,33 +233,33 @@ fn setup_replaces_an_old_star_gitignore_and_keeps_another() {
     let commands = FakeCommands::new();
     let report = setup(&root, Some(&home), &manifest(""), &commands).expect("sets up");
     assert_eq!(report.homes.ignore, Some(IgnoreState::Replaced));
-    assert!(report.is_ready(), "{:?}", report.worksheet);
+    assert!(report.is_ready(), "{:?}", report.fixes());
     assert_eq!(read(&root.join(".zaf/.gitignore")), ignore_text());
 
     fs::write(root.join(".zaf/.gitignore"), "# mine\n*\n").expect("a foreign file");
     let report = setup(&root, Some(&home), &manifest(""), &commands).expect("sets up again");
     assert_eq!(report.homes.ignore, Some(IgnoreState::Foreign));
     assert_eq!(read(&root.join(".zaf/.gitignore")), "# mine\n*\n");
-    let lines = report.worksheet_lines().join("\n");
-    assert!(lines.contains("Merge these lines"), "{lines}");
+    let lines = format!("{:?}", report.fixes());
+    assert!(lines.contains("merge these lines"), "{lines}");
     assert!(lines.contains("!actions/**"), "{lines}");
 }
 
 #[test]
-fn a_root_gitignore_of_the_whole_folder_is_a_step_but_a_star_is_not() {
+fn a_root_gitignore_of_the_whole_folder_is_a_fix_but_a_star_is_not() {
     let (_dir, root, home) = places();
     let commands = FakeCommands::new();
     for ignoring in [".zaf/\n", "/.zaf\n", "target/\n.zaf\n"] {
         fs::write(root.join(".gitignore"), ignoring).expect("a root ignore file");
         let report = setup(&root, Some(&home), &manifest(""), &commands).expect("sets up");
-        let lines = report.worksheet_lines().join("\n");
+        let lines = format!("{:?}", report.fixes());
         assert!(lines.contains("root `.gitignore`"), "{ignoring:?} {lines}");
         assert!(!report.is_ready());
     }
     for fine in [".zaf/*\n", "target/\n", ".zaf/runs/\n"] {
         fs::write(root.join(".gitignore"), fine).expect("a root ignore file");
         let report = setup(&root, Some(&home), &manifest(""), &commands).expect("sets up");
-        assert!(report.worksheet.is_empty(), "{fine:?}");
+        assert!(report.pending.is_empty(), "{fine:?}");
     }
 }
 
@@ -275,7 +275,7 @@ fn setup_is_idempotent() {
     fs::write(root.join(".zaf/roles/keep.md"), "mine").expect("a role file");
     let second = setup(&root, Some(&home), &manifest, &commands).expect("sets up again");
     assert!(second.homes.made.is_empty());
-    assert_eq!(first.worksheet, second.worksheet);
+    assert_eq!(first.fixes(), second.fixes());
     assert_eq!(
         read(&root.join(".zaf/roles/keep.md")),
         "mine",
@@ -284,7 +284,7 @@ fn setup_is_idempotent() {
 }
 
 #[test]
-fn the_worksheet_names_each_missing_tool() {
+fn the_fixes_name_each_failing_tool() {
     let (_dir, root, home) = places();
     let manifest = manifest("[requires]\njj = \"*\"\ngh = \"*\"\nnodes = \">=1\"\nagy = \"*\"\n");
     let commands = FakeCommands::new()
@@ -292,15 +292,15 @@ fn the_worksheet_names_each_missing_tool() {
         .with("agy", "agy dev");
     let report = setup(&root, Some(&home), &manifest, &commands).expect("sets up");
     assert!(!report.is_ready());
-    let lines = report.worksheet_lines().join("\n");
-    assert_eq!(report.worksheet.len(), 4, "{lines}");
-    assert!(lines.contains("2. Install `gh`"), "{lines}");
-    assert!(lines.contains("3. Install `jj`"), "{lines}");
-    assert!(lines.contains("`nodes` from 0.9.0"), "{lines}");
+    let fixes = report.fixes();
+    let lines = format!("{fixes:?}");
+    assert_eq!(fixes.len(), 4, "{lines}");
+    assert!(lines.contains("`gh` is not installed"), "{lines}");
+    assert!(lines.contains("`jj` is not installed"), "{lines}");
+    assert!(lines.contains("`nodes` is 0.9.0"), "{lines}");
     assert!(lines.contains("`agy --version`"), "{lines}");
-    assert!(lines.contains("Done when: `jj --version`"), "{lines}");
     assert!(
-        lines.ends_with("Tell me: the output of `zaf doctor`."),
+        lines.contains("zaf opens pull requests through gh"),
         "{lines}"
     );
     assert!(
@@ -345,7 +345,7 @@ fn a_declared_sibling_design_repo_is_cloned_when_missing() {
 }
 
 #[test]
-fn a_failed_clone_becomes_a_worksheet_step() {
+fn a_failed_clone_becomes_a_fix() {
     let (_dir, root, home) = places();
     let manifest = manifest(
         "[design]\nkind = \"git-sibling\"\nrepo = \"example/b-design\"\npath = \"../b-design\"\n",
@@ -356,7 +356,7 @@ fn a_failed_clone_becomes_a_worksheet_step() {
         report.clone,
         Some(CloneOutcome::Failed("not logged in".into()))
     );
-    let lines = report.worksheet_lines().join("\n");
+    let lines = format!("{:?}", report.fixes());
     assert!(lines.contains("gh repo clone example/b-design"), "{lines}");
     assert!(lines.contains("not logged in"), "{lines}");
 }
@@ -598,22 +598,24 @@ fn setup_rerun_issues_no_plugin_command() {
 }
 
 #[test]
-fn setup_pack_refusal_is_a_step() {
+fn setup_pack_refusal_is_a_fix() {
     let (_dir, root, home) = places();
     let manifest = manifest(TAGGED);
     let commands = FakeCommands::new();
     let shell = RecordingShell::installing("2.0.3");
 
     let report = super::setup_with(&root, Some(&home), &manifest, &commands, &shell, None, None)
-        .expect("a refusal is a step, not an error");
+        .expect("a refusal is a fix, not an error");
 
     assert!(report.profiles.is_none());
     assert!(!report.is_ready(), "setup exits 1");
-    let lines = report.worksheet_lines();
-    assert!(lines[0].starts_with("1. "), "{lines:?}");
+    let fixes = report.fixes();
     assert!(
-        lines[0].contains("pack teams is 2.0.3, manifest asks teams-v2.1.0"),
-        "the step names what it said: {lines:?}"
+        fixes[0]
+            .problem
+            .as_str()
+            .contains("pack teams is 2.0.3, manifest asks teams-v2.1.0"),
+        "the fix names what it said: {fixes:?}"
     );
 }
 
@@ -952,7 +954,7 @@ impl Asker {
 }
 
 impl ReplaceAction for Asker {
-    fn replace(&mut self, name: &str, difference: &str) -> bool {
+    fn replace(&mut self, name: &str, _why: Option<&Text>, difference: &str) -> bool {
         self.asked.push((name.to_owned(), difference.to_owned()));
         self.answer
     }
@@ -1216,4 +1218,204 @@ fn setup_keeps_an_action_whose_difference_cannot_be_shown() {
         "{:?}",
         report.actions.lines()
     );
+}
+
+/// An asker that records the why it was given with each question.
+struct WhyAsker {
+    answer: bool,
+    asked: Vec<(String, Option<Text>, String)>,
+}
+
+impl ReplaceAction for WhyAsker {
+    fn replace(&mut self, name: &str, why: Option<&Text>, difference: &str) -> bool {
+        self.asked
+            .push((name.to_owned(), why.cloned(), difference.to_owned()));
+        self.answer
+    }
+}
+
+const NEW: &str = "#!/bin/sh\n# zaf description: new\n# zaf 1: failed\ntrue\n";
+const EQUAL: &str = "#!/bin/sh\n# zaf description: equal\n# zaf 1: failed\ntrue\n";
+const PACKS_CHANGED: &str =
+    "#!/bin/sh\n# zaf description: moved\n# zaf 1: failed\n# changed: it waits now\ntrue\n";
+const OLD_CHANGED: &str = "#!/bin/sh\n# zaf description: moved\n# zaf 1: failed\ntrue\n";
+
+/// A pack folder of three actions (one new, one equal, one differing with a `# changed:` line)
+/// and a zaf home that holds the last two as the machine had them.
+fn machine_and_pack() -> (tempfile::TempDir, PathBuf, PathBuf) {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let pack = dir.path().join("pack-actions");
+    let home = dir.path().join("zaf-home");
+    fs::create_dir_all(&pack).expect("pack");
+    fs::create_dir_all(home.join("actions")).expect("home");
+    for (name, text) in [
+        ("brand-new", NEW),
+        ("equal", EQUAL),
+        ("moved", PACKS_CHANGED),
+    ] {
+        fs::write(pack.join(name), text).expect("pack action");
+    }
+    fs::write(home.join("actions/equal"), EQUAL).expect("equal");
+    fs::write(home.join("actions/moved"), OLD_CHANGED).expect("moved");
+    (dir, pack, home)
+}
+
+#[test]
+fn changed_actions_counts_without_changing() {
+    let (_dir, pack, home) = machine_and_pack();
+
+    let (names, total) = changed_actions(&home, &pack);
+
+    assert_eq!(names, ["brand-new", "moved"]);
+    assert_eq!(total, 3);
+    assert!(!home.join("actions/brand-new").exists());
+    assert_eq!(read(&home.join("actions/moved")), OLD_CHANGED);
+    assert!(!home.join("actions-replaced").exists());
+}
+
+#[test]
+fn machine_actions_offer_the_why_and_difference() {
+    let (_dir, pack, home) = machine_and_pack();
+    let mut asker = WhyAsker {
+        answer: true,
+        asked: Vec::new(),
+    };
+
+    let done = install_machine_actions(
+        &home,
+        &pack,
+        &FakeCommands::new().failing("git", DIFF),
+        Some(&mut asker),
+        SystemTime::now(),
+    )
+    .expect("installed");
+
+    assert_eq!(done.installed, ["brand-new"]);
+    assert_eq!(done.kept, ["equal"]);
+    assert_eq!(
+        asker.asked,
+        [(
+            "moved".to_owned(),
+            Some(Text::from("it waits now")),
+            DIFF.to_owned()
+        )]
+    );
+    let (name, old) = &done.replaced[0];
+    assert_eq!(name, "moved");
+    assert_eq!(old.parent(), Some(home.join("actions-replaced").as_path()));
+    assert_eq!(read(old), OLD_CHANGED);
+    assert_eq!(read(&home.join("actions/moved")), PACKS_CHANGED);
+    assert_eq!(read(&home.join("actions/brand-new")), NEW);
+}
+
+#[test]
+fn a_refused_replacement_keeps_the_file() {
+    let (_dir, pack, home) = machine_and_pack();
+    let mut asker = WhyAsker {
+        answer: false,
+        asked: Vec::new(),
+    };
+
+    let done = install_machine_actions(
+        &home,
+        &pack,
+        &FakeCommands::new().failing("git", DIFF),
+        Some(&mut asker),
+        SystemTime::now(),
+    )
+    .expect("installed");
+
+    assert_eq!(asker.asked.len(), 1);
+    assert!(done.replaced.is_empty());
+    assert_eq!(done.kept, ["equal", "moved"]);
+    assert_eq!(read(&home.join("actions/moved")), OLD_CHANGED);
+    assert!(!home.join("actions-replaced").exists());
+}
+
+#[test]
+fn setup_install_still_reads_the_profiles_pack() {
+    let (dir, root, home) = places();
+    let pack = pack_with_actions(dir.path());
+    let shell = RecordingShell::installing_at(&pack);
+
+    let report = super::setup_with(
+        &root,
+        Some(&home),
+        &manifest(TAGGED),
+        &FakeCommands::new(),
+        &shell,
+        None,
+        None,
+    )
+    .expect("setup");
+
+    assert_eq!(report.actions.installed.len(), PACK_ACTIONS);
+    assert!(home.join("actions/action-00").is_file());
+}
+
+fn verbs(rows: &[PlanRow]) -> Vec<&str> {
+    rows.iter().map(|row| row.verb.as_str()).collect()
+}
+
+#[test]
+fn an_empty_folder_plans_five_steps() {
+    let (_dir, root, home) = places();
+    let rows = plan(&root, Some(&home), false);
+    let shown: Vec<(&str, &str)> = rows
+        .iter()
+        .map(|row| (row.verb.as_str(), row.noun.as_str()))
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            ("Ask", "4 questions"),
+            ("Write", ".zaf.toml"),
+            ("Make", "~/.zaf and .zaf/"),
+            ("Install", "the standard actions"),
+            ("Check", "your tools and access"),
+        ]
+    );
+    assert!(rows.iter().all(|row| !row.why.as_str().is_empty()));
+    assert!(writes(&rows));
+}
+
+#[test]
+fn a_set_up_folder_plans_only_install_and_check() {
+    let (_dir, root, home) = places();
+    fs::write(root.join(".zaf.toml"), HEAD).expect("manifest");
+    ensure_homes(Some(&root), Some(&home)).expect("homes");
+    let rows = plan(&root, Some(&home), false);
+    assert_eq!(verbs(&rows), ["Install", "Check"]);
+    assert!(!writes(&rows));
+
+    // Only what is missing is made: the home alone, then the project's folder alone.
+    fs::remove_dir_all(&home).expect("home gone");
+    let rows = plan(&root, Some(&home), false);
+    assert_eq!(rows[0].noun.as_str(), "~/.zaf");
+    ensure_homes(None, Some(&home)).expect("home back");
+    fs::remove_dir_all(root.join(".zaf/logs")).expect("logs gone");
+    let rows = plan(&root, Some(&home), false);
+    assert_eq!(rows[0].noun.as_str(), ".zaf/");
+    assert_eq!(verbs(&rows), ["Make", "Install", "Check"]);
+}
+
+#[test]
+fn a_legacy_manifest_plans_its_move_outside_an_instance_only() {
+    let (_dir, root, home) = places();
+    fs::write(root.join("ZAF.toml"), HEAD).expect("legacy");
+    ensure_homes(Some(&root), Some(&home)).expect("homes");
+    let rows = plan(&root, Some(&home), false);
+    assert_eq!(verbs(&rows), ["Move", "Install", "Check"]);
+    assert_eq!(rows[0].noun.as_str(), "ZAF.toml to .zaf.toml");
+    assert!(writes(&rows));
+    assert_eq!(verbs(&plan(&root, Some(&home), true)), ["Install", "Check"]);
+}
+
+#[test]
+fn an_old_star_gitignore_is_part_of_what_is_made() {
+    let (_dir, root, home) = places();
+    fs::write(root.join(".zaf.toml"), HEAD).expect("manifest");
+    ensure_homes(Some(&root), Some(&home)).expect("homes");
+    fs::write(root.join(".zaf/.gitignore"), "*\n").expect("old file");
+    assert_eq!(verbs(&plan(&root, Some(&home), false))[0], "Make");
 }

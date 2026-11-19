@@ -76,16 +76,46 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
     steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.ref }}
+          persist-credentials: false
       - uses: actions/download-artifact@v5
         with:
           path: dist
           pattern: dist-*
           merge-multiple: true
-      - name: Create the release if absent, then upload archives and sums
+      - name: Check the tag's version can go into install.sh
+        shell: bash
+        run: |
+          version="${TAG#zaf-v}"
+          case "$version" in
+            ''|*[!0-9A-Za-z.+-]*) echo "tag '$TAG' holds a version that cannot go into install.sh" >&2; exit 1 ;;
+          esac
+      - name: Write install.sh with the tag's version
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#zaf-v}"
+          if ! grep -q '^ZAF_VERSION="0.0.0-dev"$' zaf/install.sh; then
+            echo 'zaf/install.sh has no line ZAF_VERSION="0.0.0-dev"' >&2
+            exit 1
+          fi
+          sed "s/^ZAF_VERSION=\"0.0.0-dev\"\$/ZAF_VERSION=\"$version\"/" zaf/install.sh > dist/install.sh
+          if ! grep -qx "ZAF_VERSION=\"$version\"" dist/install.sh; then
+            echo "dist/install.sh does not carry ZAF_VERSION=\"$version\"" >&2
+            exit 1
+          fi
+          chmod 755 dist/install.sh
+      - name: Write the release notes from the tag's commit message
+        shell: bash
+        run: git log -1 --format=%B > "$RUNNER_TEMP/notes.md"
+      - name: Create a draft release, upload every file, then publish it
         shell: bash
         run: |
           if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes
+            gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md"
           fi
           gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          gh release edit "$GITHUB_REF_NAME" --draft=false --latest

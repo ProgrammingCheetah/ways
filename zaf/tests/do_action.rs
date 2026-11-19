@@ -232,6 +232,45 @@ fn do_sets_the_environment() {
     assert!(!env.contains_key("ZAF_VERSION"), "{env:?}");
 }
 
+#[test]
+fn an_action_finds_the_running_zaf_first_on_path() {
+    let project = project();
+    let fake = project.root.join("fake-bin");
+    executable(&fake, "zaf", "#!/bin/sh\necho fake\n");
+    action(
+        &project,
+        "which-zaf",
+        "",
+        "command -v zaf > \"$ZAF_ROOT/which\"\necho \"$PATH\" > \"$ZAF_ROOT/path\"",
+    );
+
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    let given = std::env::join_paths(
+        std::iter::once(fake.clone()).chain(std::env::split_paths(&inherited)),
+    )
+    .expect("search path");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_zaf"));
+    command
+        .args(["do", "which-zaf"])
+        .current_dir(&project.root)
+        .env("PATH", &given)
+        .env("ZAF_HOME", &project.home);
+    for var in CALLER_VARS {
+        command.env_remove(var);
+    }
+    let run = command.output().expect("run zaf");
+    assert_eq!(outcome(&run).0, 0, "{}", said(&run));
+
+    let found = PathBuf::from(read(&project.root.join("which")).trim());
+    assert_eq!(real(&found), real(Path::new(env!("CARGO_BIN_EXE_zaf"))));
+
+    // The rest of PATH follows the prepended folder unchanged.
+    let path = read(&project.root.join("path"));
+    let seen: Vec<PathBuf> = std::env::split_paths(path.trim_end_matches('\n')).collect();
+    let rest: Vec<PathBuf> = std::env::split_paths(&given).collect();
+    assert_eq!(seen[1..], rest[..], "{seen:?}");
+}
+
 /// A project whose manifest has an `[env]` table, set up like [`project`].
 fn project_with_env(table: &str) -> Project {
     let project = Project::new(&format!("{MANIFEST}\n[env]\n{table}"));

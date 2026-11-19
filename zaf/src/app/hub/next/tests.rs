@@ -53,6 +53,7 @@ fn epic(number: u64, stage: EpicStage, done: u32, total: u32) -> EpicState {
         number,
         title: format!("Epic {number}"),
         stage,
+        release: None,
         url: Some(format!("https://board.invalid/issues/{number}")),
         done,
         total,

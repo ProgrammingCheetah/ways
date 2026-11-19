@@ -71,6 +71,16 @@
       "node": false
     },
     {
+      "name": "begin_build_stage.rs",
+      "role": "zaf begin at the build stage (signed documents, every open epic signed, one not done): on a pty under NO_COLOR it shows Build as the fourth stage and asks Q5's question; n prints the spawn line and exits 0, y execs `zaf spawn --watch --version <v>` (a stub zaf on PATH sees it)",
+      "node": false
+    },
+    {
+      "name": "epic_sign_build.rs",
+      "role": "zaf epic sign asks to start the build when its signature is the last of the version's epics: on a pty, answered n and y (a stub zaf on PATH sees the exec), and quiet with another epic unsigned, inside an instance, with --json and with stdin closed",
+      "node": false
+    },
+    {
       "name": "doctor_actions.rs",
       "role": "doctor reports every action with its validity and mode; an invalid file fails the report by file and line",
       "node": false
@@ -96,6 +106,11 @@
       "node": false
     },
     {
+      "name": "ways_forgejo_release.rs",
+      "role": "Forgejo's release workflow makes the release a draft from an encoder's JSON of the tag's message, attaches install.sh with the tag's version and publishes last",
+      "node": false
+    },
+    {
       "name": "hub_dashboard.rs",
       "role": "zaf hub --port <n>: a port that is taken is refused by name",
       "node": false
@@ -111,13 +126,18 @@
       "node": false
     },
     {
+      "name": "install_script.rs",
+      "role": "install.sh under sh with fake uname, sysctl, git, curl, tar and claude on a PATH of its own and a temp HOME: the first screen, each step 1 refusal, a script cut in half",
+      "node": false
+    },
+    {
       "name": "local_manifest.rs",
       "role": ".zaf/local.toml as the manifest's top layer: its slots win, any other manifest setting fails a verb",
       "node": false
     },
     {
       "name": "pack_actions.rs",
-      "role": "the teams pack's 21 standard actions: every file executable and a valid action",
+      "role": "the teams pack's 24 standard actions: every file executable and a valid action",
       "node": false
     },
     {
@@ -138,6 +158,11 @@
     {
       "name": "projects_list.rs",
       "role": "the zaf home's project list: a project joins once, on its first verb or on setup",
+      "node": false
+    },
+    {
+      "name": "release_open.rs",
+      "role": "the release-open action: opens the version's release pull request through a fake forge, hands an open one back, refuses without the branch on the remote",
       "node": false
     },
     {
@@ -196,8 +221,13 @@
       "node": false
     },
     {
+      "name": "watch_view.rs",
+      "role": "`spawn --watch` under a pseudo-terminal: piped and --json stream as today and write no log; in a terminal frames are redrawn in place (cursor up, clear) with no tick text block, the tick's text and warnings land in .zaf/logs/scheduler.log, a failed tick is one line naming it, and Ctrl-C leaves the terminal's settings as they were",
+      "node": false
+    },
+    {
       "name": "spawn_watch.rs",
-      "role": "the scheduler (`spawn --watch`): ticks at once and when asked, never on the timer here; one lock, a second scheduler named and refused, a dead one's line taken over; `--once` and the verbs ask it, and a ruling or a signature that cannot ask still stands and says so; a new binary restarted into as the same pid, one that does not run named and kept out; SIGINT and SIGTERM end it after its tick with the lock released",
+      "role": "the scheduler (`spawn --watch`): a fresh one opens the build first (refused on an unsigned design or no remote, the lock freed; a restart skips it), then ticks at once and when asked, never on the timer here; one lock, a second scheduler named and refused, a dead one's line taken over; `--once` and the verbs ask it, and a ruling or a signature that cannot ask still stands and says so; a new binary restarted into as the same pid, one that does not run named and kept out; SIGINT and SIGTERM end it after its tick with the lock released; a built version (every epic done) says `zaf built <v>: release pull request #<n>, <link>` once, piped, and the watch goes on",
       "node": false
     },
     {
@@ -278,6 +308,11 @@
     {
       "name": "ways_release.rs",
       "role": "the release action: checks zaf/Cargo.toml, then the three steps it composes",
+      "node": false
+    },
+    {
+      "name": "ways_release_workflow.rs",
+      "role": "the GitHub release workflow: a draft with the tag's commit message as notes, install.sh uploaded with the tag's version, then published",
       "node": false
     },
     {

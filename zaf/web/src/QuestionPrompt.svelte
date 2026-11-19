@@ -1,5 +1,5 @@
 <script>
-  // The prompt a yellow block on the line opens: the question, a field for the answer, a Send button
+  // The prompt a purple block on the line opens: the question, a field for the answer, a Send button
   // and a link to the question's issue. A native modal dialog: focus moves in, Escape and Close shut it.
   import Action from './Action.svelte';
   import { answer } from './controls.js';

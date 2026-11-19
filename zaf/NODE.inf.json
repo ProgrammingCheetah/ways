@@ -42,6 +42,11 @@
       "node": false
     },
     {
+      "name": "install.sh",
+      "role": "the install script: POSIX sh, every line in functions and one call last; shows its plan, runs step 1 (checks) and refuses before changing anything; ZAF_VERSION is rewritten by the release workflows",
+      "node": false
+    },
+    {
       "name": "assets/",
       "role": "prompts, briefs and profile settings compiled into the binary",
       "node": true

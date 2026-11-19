@@ -174,7 +174,8 @@ fi
 
 # The branch's pull request into main: the open one is handed back, and one is opened when there is
 # none, whose checks are then not there yet. Its checks count only at the head the squash takes.
-pr=$(zaf forge open -- "$branch" main "$title" "") || exit 2
+opened=$(zaf forge open -- "$branch" main "$title" "") || exit 2
+pr=$(printf '%s\n' "$opened" | head -n 1)
 case $pr in
     "" | *[!0-9]*)
         echo "the forge named $pr, not a pull request number" >&2

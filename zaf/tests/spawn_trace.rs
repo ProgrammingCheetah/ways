@@ -503,6 +503,8 @@ fn a_tick_that_cannot_read_the_facts_keeps_the_last_placement_and_starts_nothing
             .map(|text| text.lines().count())
             .unwrap_or(0)
     };
+    // A fresh scheduler opens the build first.
+    project.ready_to_build("0.1", true);
     let running = Running::start(
         project.command_in(&project.root, &["spawn", "--watch", "--version", "0.1"]),
     );

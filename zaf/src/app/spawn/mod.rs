@@ -54,6 +54,7 @@
 //! `.zaf/runs/`.
 
 pub mod blockers;
+pub mod built;
 pub mod digest;
 pub mod inline;
 pub mod outcome;
@@ -65,6 +66,7 @@ pub mod start;
 mod state;
 pub mod stop;
 pub mod tick;
+pub mod view;
 pub mod waits;
 pub mod watch;
 

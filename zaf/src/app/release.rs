@@ -3,9 +3,12 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::domain::{DocumentSignature, Epic, SignatureState, of_version};
+use semver::Version;
+
+use super::epic::EpicLine;
+use crate::domain::{DocumentSignature, Epic, EpicStage, SignatureState, of_version};
 use crate::manifest::Manifest;
-use crate::ports::Vcs;
+use crate::ports::{Board, PortError, Vcs};
 
 /// The placeholder `[release] folder` holds for the version.
 const VERSION_PLACEHOLDER: &str = "{version}";
@@ -78,9 +81,9 @@ impl ReleaseFolder {
 pub enum Phase {
     /// The objectives document is missing, unsigned, or edited since it was signed.
     Objectives,
-    /// The objectives are signed; the design is unsigned or no open epic is of the version.
+    /// The objectives are signed; the design is unsigned.
     Design,
-    /// Both documents are signed and an open epic is of the version.
+    /// Both documents are signed.
     Nothing,
 }
 
@@ -152,10 +155,12 @@ impl PhaseDue {
 /// and the board's open `epics` each time and stored nowhere.
 ///
 /// Objectives are due while the objectives document is missing or not signed (an edit below its
-/// block unsigns it). Design is due once they are signed, while `design.md` is not signed or no
-/// epic of `version` is open. Nothing is due after that. A malformed block counts as not signed
-/// and comes back with its path and line.
-pub fn phase_due(folder: &ReleaseFolder, epics: &[Epic], version: &str) -> PhaseDue {
+/// block unsigns it). Design is due once they are signed, while `design.md` is not signed.
+/// Nothing is due after that, whether or not an epic of `version` is open: signing the design
+/// takes an open epic of the version, so a signed design with none means every epic of it is
+/// closed and the version is built ([`stage`]). A malformed block counts as not signed and comes
+/// back with its path and line.
+pub fn phase_due(folder: &ReleaseFolder, _epics: &[Epic], _version: &str) -> PhaseDue {
     let objectives = folder
         .objectives_document()
         .map_or(Standing::Unsigned, |path| standing(&path));
@@ -163,10 +168,90 @@ pub fn phase_due(folder: &ReleaseFolder, epics: &[Epic], version: &str) -> Phase
         return PhaseDue::of(Phase::Objectives, objectives);
     }
     let design = standing(&folder.design_document());
-    if !matches!(design, Standing::Signed) || of_version(epics, version).next().is_none() {
+    if !matches!(design, Standing::Signed) {
         return PhaseDue::of(Phase::Design, design);
     }
     PhaseDue::of(Phase::Nothing, Standing::Signed)
+}
+
+/// An open epic of the version, as `zaf begin` prints it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct EpicToSign {
+    /// The epic's line: its id, stage and tally.
+    #[serde(flatten)]
+    pub epic: EpicLine,
+    /// Whether it still wants the Engineer's signature (not signed, or edited since).
+    pub unsigned: bool,
+}
+
+impl EpicToSign {
+    /// The lines printed: the epic's line, then for an epic not signed `  zaf epic sign <id>`.
+    pub fn render(&self) -> String {
+        if self.unsigned {
+            format!(
+                "{}\n  zaf epic sign {}",
+                self.epic.render(),
+                self.epic.number
+            )
+        } else {
+            self.epic.render()
+        }
+    }
+}
+
+/// Where a version stands, worked out on each read and stored nowhere.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Stage {
+    /// The objectives are missing, unsigned, or edited since they were signed.
+    Objectives,
+    /// The objectives are signed; the design is not.
+    Design,
+    /// Both documents are signed and an open epic of the version is unsigned: every open epic of
+    /// the version, each marked as signed or not.
+    Epics(Vec<EpicToSign>),
+    /// Every open epic of the version is signed and one is not done.
+    Build,
+    /// Every open epic of the version is done, or none is open.
+    Built,
+}
+
+/// `stage(root, manifest, board, version)`: the stage `version` stands at, read from its release
+/// folder and the board's open epics.
+///
+/// Objectives and design are as [`phase_due`] says. Past them it is [`Stage::Epics`] while an
+/// open epic of the version is unsigned, [`Stage::Build`] once every one is signed and one is not
+/// done, and [`Stage::Built`] once every one is done or none is open.
+pub fn stage(
+    root: &Path,
+    manifest: &Manifest,
+    board: &dyn Board,
+    version: &str,
+) -> Result<Stage, PortError> {
+    let folder = ReleaseFolder::of(root, manifest, version);
+    let epics = board.epics()?;
+    Ok(match phase_due(&folder, &epics, version).phase {
+        Phase::Objectives => Stage::Objectives,
+        Phase::Design => Stage::Design,
+        Phase::Nothing => stage_of_epics(&epics, version),
+    })
+}
+
+fn stage_of_epics(epics: &[Epic], version: &str) -> Stage {
+    let open: Vec<&Epic> = of_version(epics, version).collect();
+    if open.iter().any(|epic| !epic.signed()) {
+        let lines = open
+            .into_iter()
+            .map(|epic| EpicToSign {
+                epic: EpicLine::from(epic),
+                unsigned: !epic.signed(),
+            })
+            .collect();
+        Stage::Epics(lines)
+    } else if open.iter().all(|epic| epic.stage() == EpicStage::Done) {
+        Stage::Built
+    } else {
+        Stage::Build
+    }
 }
 
 /// `release_versions(root, manifest)`: the versions of the release folders under `root`, the
@@ -224,6 +309,41 @@ pub fn is_released(root: &Path, manifest: &Manifest, vcs: Option<&dyn Vcs>, vers
     };
     let tag = pattern.replace(VERSION_PLACEHOLDER, version);
     vcs.has_tag(root, &tag).unwrap_or(false)
+}
+
+/// `next_version(root, manifest, vcs)`: the minor after the highest version among the release
+/// tags and the release folders, with patch 0 (0.5.2 gives 0.6.0), or 0.1.0 with neither.
+///
+/// The tags are those of `vcs` that match `[release] tag`, the `{version}` segment read as the
+/// version; with no such key, or no `vcs`, or one that cannot list its tags, only the folders
+/// count. A name that does not parse as a version is skipped. The one place setup, begin and the
+/// build view ask for the next version.
+pub fn next_version(root: &Path, manifest: &Manifest, vcs: Option<&dyn Vcs>) -> Version {
+    let from_folders = release_versions(root, manifest);
+    let from_tags = tag_versions(root, manifest, vcs);
+    from_folders
+        .iter()
+        .chain(&from_tags)
+        .filter_map(|text| Version::parse(text).ok())
+        .max()
+        .map_or(Version::new(0, 1, 0), |highest| {
+            Version::new(highest.major, highest.minor + 1, 0)
+        })
+}
+
+/// The version text of each tag of `vcs` that the `[release] tag` pattern matches.
+fn tag_versions(root: &Path, manifest: &Manifest, vcs: Option<&dyn Vcs>) -> Vec<String> {
+    let (Some(pattern), Some(vcs)) = (&manifest.release.tag, vcs) else {
+        return Vec::new();
+    };
+    let (prefix, suffix) = pattern
+        .split_once(VERSION_PLACEHOLDER)
+        .unwrap_or((pattern, ""));
+    let tags = vcs.tags(root).unwrap_or_default();
+    tags.iter()
+        .filter_map(|tag| tag.strip_prefix(prefix)?.strip_suffix(suffix))
+        .map(str::to_owned)
+        .collect()
 }
 
 /// A release whose objectives or design are due.

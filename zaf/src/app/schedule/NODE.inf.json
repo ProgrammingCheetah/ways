@@ -57,7 +57,7 @@
     },
     {
       "name": "scheduler.rs",
-      "role": "the loop, pure behind a Host: one tick at a time for who asked, the timer, restart only between ticks with no request waiting, stop on a signal; Memory keeps the placement as a cache",
+      "role": "the loop, pure behind a Host: one tick at a time for who asked, the timer, restart only between ticks with no request waiting, stop on a signal; Memory keeps the placement as a cache; after a tick, a built version opens its release pull request once a run (Host::version_built, open_release, built), a refusal or failure one warning and tried again after the next tick",
       "node": false
     },
     {

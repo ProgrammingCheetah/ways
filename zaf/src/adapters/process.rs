@@ -296,6 +296,55 @@ pub fn exec(program: &Path, args: &[std::ffi::OsString]) -> std::io::Error {
     std::io::Error::last_os_error()
 }
 
+/// A copy of the open file `fd` of this process, made close-on-exec so no child or new image
+/// keeps it: what a view holds of the terminal while the process's own output goes elsewhere.
+pub fn duplicate_fd(fd: std::os::fd::RawFd) -> std::io::Result<std::fs::File> {
+    use std::os::fd::FromRawFd;
+    // SAFETY: `fcntl` with `F_DUPFD_CLOEXEC` only reads `fd` and returns a new descriptor, or -1.
+    let copy = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 3) };
+    if copy < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `copy` is a descriptor this call just made and nothing else owns.
+    Ok(unsafe { std::fs::File::from_raw_fd(copy) })
+}
+
+/// Makes descriptor `fd` (1 for stdout, 2 for stderr) another name for `file`, so what the process
+/// writes there lands in it, children included. `file` is not closed.
+pub fn replace_fd(fd: std::os::fd::RawFd, file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: `dup2` only reads `file`'s descriptor, which is open for the call, and replaces `fd`.
+    let done = unsafe { libc::dup2(file.as_raw_fd(), fd) };
+    if done < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// Throws away what was typed on this terminal (descriptor 0) and not yet read, so keys pressed
+/// while nothing asked for them are not taken for an answer. Harmless on anything but a terminal.
+pub fn flush_typed() {
+    flush_typed_on(0);
+}
+
+/// [`flush_typed`] for the terminal on descriptor `fd`.
+pub fn flush_typed_on(fd: std::os::fd::RawFd) {
+    // SAFETY: `tcflush` only drops the input queued on `fd`, and fails with an error code,
+    // changing nothing, when it is not a terminal.
+    unsafe { libc::tcflush(fd, libc::TCIFLUSH) };
+}
+
+/// Whether input is queued on this terminal (descriptor 0) and not yet read: what a paste leaves
+/// after the line a reader took. False on anything but a terminal, or when it cannot tell.
+pub fn typed_waiting() -> bool {
+    let mut queued: libc::c_int = 0;
+    // SAFETY: `ioctl` with `FIONREAD` writes one `c_int` through the pointer, which is to a live
+    // local, and fails with -1, writing nothing, when descriptor 0 does not answer it.
+    let done = unsafe { libc::ioctl(0, libc::FIONREAD, &mut queued as *mut libc::c_int) };
+    done == 0 && queued > 0
+}
+
 /// The stop signal that arrived since [`catch_stop`], by name (`SIGINT`, `SIGTERM`); none while
 /// none has.
 pub fn stop_signal() -> Option<&'static str> {

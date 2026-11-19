@@ -15,7 +15,7 @@ use std::time::SystemTime;
 
 use super::actions::{PhaseEnv, RunOutcome, RunResult, Terminal};
 use super::epic::{EpicError, EpicLine, SignGuard, instance_above};
-use super::release::{MalformedBlock, Phase, ReleaseFolder, phase_due};
+use super::release::{EpicToSign, MalformedBlock, Phase, ReleaseFolder, phase_due};
 use super::spawn::runs;
 use crate::domain::{DocumentSignature, Epic, SignatureState, of_version};
 use crate::ports::{Board, PortError};
@@ -50,31 +50,6 @@ pub enum BeginRefusal {
     /// The design was asked for while the objectives are not signed.
     #[error("the design cannot be opened while the objectives are not signed")]
     ObjectivesNotSigned,
-}
-
-/// An open epic of the version, as `zaf begin` prints it.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct EpicToSign {
-    /// The epic's line: its id, stage and tally.
-    #[serde(flatten)]
-    pub epic: EpicLine,
-    /// Whether it still wants the Engineer's signature (not signed, or edited since).
-    pub unsigned: bool,
-}
-
-impl EpicToSign {
-    /// The lines printed: the epic's line, then for an epic not signed `  zaf epic sign <id>`.
-    pub fn render(&self) -> String {
-        if self.unsigned {
-            format!(
-                "{}\n  zaf epic sign {}",
-                self.epic.render(),
-                self.epic.number
-            )
-        } else {
-            self.epic.render()
-        }
-    }
 }
 
 /// What `zaf begin` found.
@@ -230,9 +205,27 @@ fn document_body(path: &Path) -> Option<String> {
     Some(DocumentSignature::body(&text).to_owned())
 }
 
-/// Whether the Engineer's answer is a yes: only `y` or `yes` signs.
-fn is_yes(answer: &str) -> bool {
-    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+/// What one line typed at `Sign <path>? [Y/n]` comes to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Answer {
+    /// Enter (a line holding only its newline), `y` or `yes`.
+    Yes,
+    /// An answer starting with `n`, or a closed input (no line at all, so an empty string).
+    No,
+    /// Anything else: ask again.
+    Again,
+}
+
+/// Reads the Engineer's line the way `ask_yes` does, with yes as the default.
+fn read_answer(answer: &str) -> Answer {
+    if answer.is_empty() {
+        return Answer::No;
+    }
+    match answer.trim().to_ascii_lowercase().as_str() {
+        "" | "y" | "yes" => Answer::Yes,
+        other if other.starts_with('n') => Answer::No,
+        _ => Answer::Again,
+    }
 }
 
 /// Whether an epic's body holds anything past its `Release:` line.
@@ -283,10 +276,12 @@ pub fn missing_after(
 }
 
 /// Checks what `phase` left and, when it is all there and its document is not signed, asks the
-/// Engineer `Sign <path>? [y/N]` through `ask` (given the prompt, it returns the one line
-/// answered) and, on `y`, writes the block at `at`, replacing one already there, provided the
-/// document is as it was read before the prompt; one changed meanwhile is left as it is. Any other
-/// answer leaves the document as it is. A document already signed is not asked about.
+/// Engineer `Sign <path>? [Y/n]` through `ask` (given the prompt, it returns the one line
+/// answered, newline included; dropping what was typed ahead is the asker's job). On Enter, `y` or
+/// `yes` it writes the block at `at`, replacing one already there, provided the document is as it
+/// was read before the prompt; one changed meanwhile is left as it is. An answer starting with `n`,
+/// and a closed input, leave the document as it is; any other answer asks again. A document
+/// already signed is not asked about.
 pub fn complete_phase(
     board: &dyn Board,
     folder: &ReleaseFolder,
@@ -318,9 +313,13 @@ pub fn complete_phase(
     ) {
         return Ok(Completion::Signed(path));
     }
-    let answer = ask(&format!("Sign {}? [y/N] ", path.display())).map_err(io_error)?;
-    if !is_yes(&answer) {
-        return Ok(Completion::NotSigned(path));
+    let prompt = format!("Sign {}? [Y/n] ", path.display());
+    loop {
+        match read_answer(&ask(&prompt).map_err(io_error)?) {
+            Answer::Yes => break,
+            Answer::No => return Ok(Completion::NotSigned(path)),
+            Answer::Again => {}
+        }
     }
     // Sign what is on disk now, never the reading from before the prompt.
     if std::fs::read_to_string(&path).map_err(io_error)? != text {

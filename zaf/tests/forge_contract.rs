@@ -191,14 +191,20 @@ fn a_forgejo_pull_request_opens_reports_its_checks_takes_a_handoff_and_merges() 
     let opened = forge
         .open_pull_request(&request)
         .expect("the pull request opens");
-    let Opened::New(pr) = opened else {
+    let Opened::New(opened_pr) = opened else {
         panic!("a fresh branch had a pull request open already: {opened:?}");
     };
+    let pr = opened_pr.number;
+    assert!(
+        opened_pr.link.as_str().starts_with("http"),
+        "its link: {opened_pr:?}"
+    );
     cleanup.pr.set(Some(pr.get()));
     assert_eq!(
         forge.open_pull_request(&request),
-        Ok(Opened::AlreadyOpen(pr))
+        Ok(Opened::AlreadyOpen(opened_pr))
     );
+    assert_eq!(forge.default_branch(), Ok(BranchName::from(base.as_str())));
 
     // 3 and 4. The head, then a pending and a passing status, each read back as the check.
     assert_eq!(forge.head(pr), Ok(Some(sha.clone())));

@@ -18,7 +18,7 @@ use crate::domain::Location;
 use crate::ports::{
     Author, BranchChecks, BranchName, Check, CheckBucket, CheckLink, CheckLog, CheckName, CheckRun,
     CheckState, CommitId, Forge, JobId, MergeOutcome, MergeStrategy, NewPullRequest, Opened,
-    PortError, PrNumber, PullRequest, ReviewComment, RuleId, ScanningAlert,
+    PortError, PrNumber, PrRef, PullRequest, ReviewComment, RuleId, ScanningAlert,
 };
 
 /// The author shown for a comment whose account was deleted, as GitHub shows it.
@@ -34,6 +34,8 @@ const NOT_FOUND: &str = "HTTP 404";
 const JOB_SEGMENT: &str = "/job/";
 /// The jq program that prints one tab-separated line per check: bucket, name and link.
 const CHECKS_JQ: &str = ".[] | [.bucket, .name, .link] | @tsv";
+/// The jq program that prints one tab-separated line per open pull request: number and URL.
+const OPEN_JQ: &str = ".[] | [.number, .url] | @tsv";
 
 /// The pull requests of one GitHub repository.
 #[derive(Debug, Clone, PartialEq, Eq, derive_more::From)]
@@ -329,7 +331,7 @@ impl Forge for GithubForge {
     }
 
     /// `pr list --head <head> --state open`, then `pr create` when it lists none: the number is
-    /// the last part of the URL gh prints last.
+    /// the last part of the URL gh prints last, and that URL is the link.
     fn open_pull_request(&self, request: &NewPullRequest) -> Result<Opened, PortError> {
         let head = request.head.as_str();
         let listed = self
@@ -342,16 +344,23 @@ impl Forge for GithubForge {
                 "--state",
                 "open",
                 "--json",
-                "number",
+                "number,url",
                 "--jq",
-                ".[].number",
+                OPEN_JQ,
             ])
             .map_err(PortError::into_backend)?;
-        if let Some(first) = listed.split_whitespace().next() {
-            let number = first.parse::<u64>().map_err(|_| {
+        if let Some(first) = listed.lines().find(|line| !line.trim().is_empty()) {
+            let (number, url) = first.split_once('\t').unwrap_or((first, ""));
+            let number = number.trim().parse::<u64>().map_err(|_| {
                 PortError::Backend(format!("gh listed {first}, not a pull request number"))
             })?;
-            return Ok(Opened::AlreadyOpen(PrNumber::from(number)));
+            let url = url.trim();
+            if url.is_empty() {
+                return Err(PortError::Backend(format!(
+                    "pull request #{number}: gh listed no link"
+                )));
+            }
+            return Ok(Opened::AlreadyOpen(PrRef::new(PrNumber::from(number), url)));
         }
         let created = self
             .gh
@@ -383,7 +392,22 @@ impl Forge for GithubForge {
                     created.trim()
                 ))
             })?;
-        Ok(Opened::New(PrNumber::from(number)))
+        Ok(Opened::New(PrRef::new(PrNumber::from(number), url)))
+    }
+
+    /// `gh api repos/{repo} --jq .default_branch`.
+    fn default_branch(&self) -> Result<BranchName, PortError> {
+        let text = self
+            .gh
+            .api_text("", &["--jq", ".default_branch"])
+            .map_err(PortError::into_backend)?;
+        let branch = BranchName::from(text.trim());
+        if !branch.is_usable() || branch.as_str() == "null" {
+            return Err(PortError::Backend(
+                "gh printed no default branch for the repository".to_owned(),
+            ));
+        }
+        Ok(branch)
     }
 
     /// `pr view --json state --jq .state`, then `pr merge <n> --merge|--squash

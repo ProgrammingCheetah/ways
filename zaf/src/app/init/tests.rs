@@ -181,7 +181,10 @@ fn scripted_answers_write_a_manifest_the_loader_accepts() {
     let (result, prompts) = run(dir.path(), "bookshelf\nexample/shelf\n\ncargo test --all\n");
     let path = result.expect("written");
     assert_eq!(path, dir.path().join(MANIFEST_FILE));
-    assert!(prompts.contains("project name ["), "{prompts}");
+    assert!(
+        prompts.contains("  Project name   what zaf calls this project\n  › ["),
+        "{prompts}"
+    );
     let manifest = Manifest::load(&path).expect("loads");
     assert_eq!(manifest.project.name.as_ref(), "bookshelf");
     assert_eq!(
@@ -294,11 +297,8 @@ fn init_defaults_from_folder_and_remote() {
             "{url}"
         );
         assert!(manifest.gate.is_none(), "{url}");
-        assert!(prompts.contains("project name [zabo]: "), "{prompts}");
-        assert!(
-            prompts.contains("board repo (owner/name) [o/zabo]: "),
-            "{prompts}"
-        );
+        assert!(prompts.contains("  › [zabo] "), "{prompts}");
+        assert!(prompts.contains("  › [o/zabo] "), "{prompts}");
     }
 }
 
@@ -322,7 +322,7 @@ fn init_no_remote_requires_repo() {
     let (_root, dir) = repo_folder(None);
     let (result, _) = run(&dir, "\n\n\n\n");
     assert!(
-        matches!(result, Err(InitError::Blank(question)) if question.starts_with("board repo")),
+        matches!(result, Err(InitError::Blank("Board"))),
         "a blank board repo is refused by name"
     );
     assert!(!dir.join(MANIFEST_FILE).exists());
@@ -469,6 +469,7 @@ fn run_with_probe(
         None,
         &mut learn,
         &mut probe,
+        &Question::plain,
         &mut Cursor::new(answers.to_owned()),
         &mut output,
     );
@@ -488,7 +489,7 @@ fn a_forgejo_origin_asks_the_url_and_writes_forgejo_kinds() {
         "probing stops at the first answer"
     );
     assert!(
-        prompts.contains("forge url [http://yagdrassyl.local:3000]: "),
+        prompts.contains("  › [http://yagdrassyl.local:3000] "),
         "{prompts}"
     );
     let manifest = Manifest::load(&path).expect("loads");
@@ -531,7 +532,7 @@ fn a_forgejo_origin_with_no_answering_instance_needs_the_url_typed() {
     let (_root, dir) = repo_folder(Some(FORGEJO_ORIGIN));
     let (result, prompts, _) = run_with_probe(&dir, "\n\n\n\n\n", "");
     assert!(
-        matches!(result, Err(InitError::Blank("forge url"))),
+        matches!(result, Err(InitError::Blank("Forge address"))),
         "{prompts}"
     );
     assert!(!dir.join(MANIFEST_FILE).exists());
@@ -551,5 +552,107 @@ fn no_origin_asks_no_url() {
     let (result, prompts, asked) = run_with_probe(&dir, "\nx/y\n\n\n", "");
     result.expect("written");
     assert!(asked.is_empty());
-    assert!(!prompts.contains("forge url"), "{prompts}");
+    assert!(!prompts.contains("Forge address"), "{prompts}");
+}
+
+fn labels(questions: &[Question]) -> Vec<&str> {
+    questions.iter().map(|question| question.label).collect()
+}
+
+fn meaning<'a>(questions: &'a [Question], label: &str) -> &'a str {
+    &questions
+        .iter()
+        .find(|question| question.label == label)
+        .unwrap_or_else(|| panic!("{label}"))
+        .meaning
+}
+
+#[test]
+fn a_github_origin_asks_four_explained_questions() {
+    for url in [Some("git@github.com:o/zabo.git"), None] {
+        let (_root, dir) = repo_folder(url);
+        let list = questions(&dir);
+        assert_eq!(
+            labels(&list),
+            ["Project name", "Board", "Forge", "Check command"]
+        );
+        assert_eq!(
+            meaning(&list, "Project name"),
+            "what zaf calls this project"
+        );
+        assert_eq!(
+            meaning(&list, "Forge"),
+            "where pull requests open: owner/name"
+        );
+        assert_eq!(
+            meaning(&list, "Check command"),
+            "the command that proves the code is good, e.g. cargo test (empty: none)"
+        );
+        assert_eq!(list[0].default.as_deref(), Some("zabo"));
+        assert_eq!(list[3].default, None);
+        assert!(!list[3].required);
+        let expected = url.map(|_| "o/zabo".to_owned());
+        assert_eq!(list[1].default, expected);
+        assert_eq!(list[2].default, expected);
+    }
+}
+
+#[test]
+fn a_forgejo_origin_asks_five() {
+    let (_root, dir) = repo_folder(Some(FORGEJO_ORIGIN));
+    let list = questions(&dir);
+    assert_eq!(
+        labels(&list),
+        [
+            "Project name",
+            "Board",
+            "Forge",
+            "Forge address",
+            "Check command"
+        ]
+    );
+    assert_eq!(list[1].default.as_deref(), Some("zuri/ways"));
+    assert_eq!(list[3].default, None, "the address is found when asked");
+    assert!(list[3].required);
+}
+
+#[test]
+fn the_board_question_names_its_kind() {
+    let (_root, dir) = repo_folder(Some("git@github.com:o/zabo.git"));
+    assert_eq!(
+        meaning(&questions(&dir), "Board"),
+        "where your tickets live: GitHub issues of owner/name"
+    );
+    let (_root, dir) = repo_folder(Some(FORGEJO_ORIGIN));
+    assert_eq!(
+        meaning(&questions(&dir), "Board"),
+        "where your tickets live: Forgejo issues of owner/name"
+    );
+}
+
+#[test]
+fn a_question_is_drawn_plain_as_the_mock() {
+    let (_root, dir) = repo_folder(None);
+    let list = questions(&dir);
+    assert_eq!(
+        list[0].plain(),
+        "  Project name   what zaf calls this project\n  › [zabo] "
+    );
+    assert_eq!(
+        list[1].plain(),
+        "  Board          where your tickets live: GitHub issues of owner/name\n  › "
+    );
+}
+
+#[test]
+fn explained_questions_write_the_same_manifest() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = run_standard(dir.path());
+    let text = fs::read_to_string(&path).expect("text");
+    assert!(text.starts_with(
+        "[project]\nname = \"bookshelf\"\n\n[board]\nkind = \"github-issues\"\n\
+         repo = \"example/shelf\"\n\n[vcs]\nkind = \"jj\"\n\n[forge]\nkind = \"github\"\n\
+         repo = \"example/shelf\"\n\n[gate]\nfull = \"cargo test\"\n\n[runners.claude]\n"
+    ));
+    assert!(text.ends_with("\n[pack]\ntag = \"teams-v2.0.0\"\n"));
 }

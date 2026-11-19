@@ -1,4 +1,4 @@
-//! The teams pack carries the 21 standard actions a project copies into its `.zaf/actions/`
+//! The teams pack carries the 24 standard actions a project copies into its `.zaf/actions/`
 //! (docs/zaf-actions.md §2, §7). Every file in `plugins/teams/actions/` is executable, parses as an
 //! action, and has the mode, group and phases of the ways repository's copy. Outside the ways
 //! repository, where the pack is not beside the crate, nothing runs.
@@ -9,7 +9,8 @@ use std::path::PathBuf;
 
 use zaf::app::actions::{ActionMode, PhaseEnd, parse};
 
-const NAMES: [&str; 21] = [
+const NAMES: [&str; 24] = [
+    "base-open",
     "ci",
     "ci-wait",
     "commit",
@@ -19,9 +20,11 @@ const NAMES: [&str; 21] = [
     "merge",
     "merge-base",
     "objectives",
+    "papers-commit",
     "pr-merge",
     "pr-open",
     "push",
+    "release-open",
     "review",
     "review-epic",
     "slice-drop",
@@ -45,7 +48,7 @@ fn pack_actions_parse() {
         .map(|entry| entry.expect("entry").file_name().to_string_lossy().into())
         .collect();
     found.sort();
-    assert_eq!(found, NAMES, "the pack holds exactly the 21 actions");
+    assert_eq!(found, NAMES, "the pack holds exactly the 24 actions");
 
     for name in NAMES {
         let file = pack.join(name);

@@ -55,3 +55,13 @@ fn diffs_come_as_stat_first_and_hunks_on_request() {
         Err(PortError::NotFound(_))
     ));
 }
+
+#[test]
+fn a_repository_says_whether_it_has_a_remote() {
+    let vcs = FakeVcs::default();
+    let port: &dyn Vcs = &vcs;
+    let root = Path::new("/project");
+    assert_eq!(port.has_remote(root), Ok(false));
+    vcs.add_remote();
+    assert_eq!(port.has_remote(root), Ok(true));
+}
