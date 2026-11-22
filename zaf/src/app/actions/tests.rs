@@ -1057,8 +1057,8 @@ fn pty_pair() -> (std::os::fd::OwnedFd, std::os::fd::OwnedFd) {
             &raw mut master,
             &raw mut slave,
             std::ptr::null_mut(),
-            std::ptr::null(),
-            std::ptr::null(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
         )
     };
     assert_eq!(made, 0, "openpty: {}", std::io::Error::last_os_error());

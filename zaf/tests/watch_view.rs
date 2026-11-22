@@ -243,8 +243,8 @@ fn open_pty() -> (File, File) {
             &raw mut master,
             &raw mut slave,
             std::ptr::null_mut(),
-            std::ptr::null(),
-            &raw const size,
+            std::ptr::null_mut(),
+            (&raw const size).cast_mut(),
         );
         assert_eq!(made, 0, "openpty");
         (File::from_raw_fd(master), File::from_raw_fd(slave))

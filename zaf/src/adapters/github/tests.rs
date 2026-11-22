@@ -2568,12 +2568,19 @@ fn fake_gh_concurrent_calls_get_distinct_numbers() {
                     .args(["issue", "view", &format!("{round}-{call}")])
                     .env("FAKE_GH_DIR", fake.scene.path())
                     .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::piped())
                     .spawn()
                     .expect("fake gh")
             })
             .collect();
-        for mut child in children {
-            assert!(child.wait().expect("fake gh ends").success());
+        for child in children {
+            let ended = child.wait_with_output().expect("fake gh ends");
+            assert!(
+                ended.status.success(),
+                "fake gh: {:?}: {}",
+                ended.status,
+                String::from_utf8_lossy(&ended.stderr)
+            );
         }
         let calls = fake.calls();
         assert_eq!(calls.len(), before + 8, "two calls wrote one file");

@@ -1473,7 +1473,7 @@ dependencies = [
 
 [[package]]
 name = "zaf"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "clap",
  "crossterm",

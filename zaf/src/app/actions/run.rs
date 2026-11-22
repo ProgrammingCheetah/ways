@@ -1069,7 +1069,10 @@ fn take_pty_as_terminal(limit: libc::c_int) -> io::Result<()> {
         if libc::setsid() < 0 {
             return Err(io::Error::last_os_error());
         }
-        if libc::ioctl(0, libc::TIOCSCTTY, 0) < 0 {
+        // The request's type differs by platform (c_ulong on macOS, where the constant is a u32).
+        #[allow(clippy::unnecessary_cast)]
+        let request = libc::TIOCSCTTY as _;
+        if libc::ioctl(0, request, 0) < 0 {
             return Err(io::Error::last_os_error());
         }
     }
