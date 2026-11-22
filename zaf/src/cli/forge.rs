@@ -16,6 +16,7 @@
 use serde_json::json;
 
 use super::exit::{self, OK, REFUSED};
+use super::screen::Screen;
 use super::{Cli, ForgeAction};
 use crate::app::forge::{self, ForgeError};
 use crate::composition::Composition;
@@ -112,9 +113,8 @@ pub fn run(cli: &Cli, action: &ForgeAction) -> u8 {
                         .collect();
                     println!("{}", json!(rows));
                 } else {
-                    for run in &runs {
-                        println!("{}", forge::check_line(run));
-                    }
+                    let lines: Vec<_> = runs.iter().map(forge::check_line).collect();
+                    print!("{}", Screen::detect().draw(&lines));
                 }
             })
             .map_err(ForgeError::from),
@@ -154,8 +154,11 @@ pub fn run(cli: &Cli, action: &ForgeAction) -> u8 {
         Ok(()) => OK,
         Err(ForgeError::Port(error)) => exit::fail(&path, &error),
         Err(error) => {
-            eprintln!("zaf {path}: {error}");
+            crate::eprintln_zaf!("zaf {path}: {error}");
             REFUSED
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

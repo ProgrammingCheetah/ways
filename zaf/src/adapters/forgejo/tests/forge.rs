@@ -2,11 +2,13 @@
 //! statuses, reviews, the hand-off comment, opening and merging, and what `zaf doctor` asks.
 
 use super::*;
+use crate::adapters::forgejo::forge::MAX_FILE_PAGES;
 use crate::adapters::notes::{HANDOFF_MARKER, marked};
-use crate::domain::Location;
+use crate::domain::{ChangedFiles, Location, PullRequestFilter, RepoPath, WorkflowFilter};
 use crate::ports::{
-    BranchName, CheckBucket, CheckLink, CheckLog, CheckName, CheckRun, CheckState, CommitId, Forge,
-    MergeOutcome, MergeStrategy, NewPullRequest, Opened, PrBody, PrNumber, PrRef, PrTitle,
+    BranchName, CheckBucket, CheckLink, CheckLog, CheckName, CheckRun, CheckState, CiFilter,
+    CommitId, Forge, MergeOutcome, MergeStrategy, NewPullRequest, Opened, PrBody, PrNumber, PrRef,
+    PrTitle,
 };
 
 /// The pull request's head commit.
@@ -222,6 +224,34 @@ fn a_pull_request_reads_its_times_its_head_and_whether_it_merged() {
 }
 
 #[test]
+fn forgejo_pull_reads_mergeable() {
+    let fake = FakeCurl::new();
+    let with = |number: u64, mergeable: Option<Value>| {
+        let mut row = pull(number, "feature/v1-1-3", "open", false);
+        if let Some(value) = mergeable {
+            row["mergeable"] = value;
+        }
+        fake.on(&format!("GET {API}/pulls/{number}"), 200, &row);
+    };
+    with(1, Some(json!(true)));
+    with(2, Some(json!(false)));
+    with(3, Some(Value::Null));
+    with(4, None);
+    let forge = the_forge(&fake);
+
+    assert_eq!(
+        forge.pull_request(pr(1)).expect("true").mergeable,
+        Some(true)
+    );
+    assert_eq!(
+        forge.pull_request(pr(2)).expect("false").mergeable,
+        Some(false)
+    );
+    assert_eq!(forge.pull_request(pr(3)).expect("null").mergeable, None);
+    assert_eq!(forge.pull_request(pr(4)).expect("absent").mergeable, None);
+}
+
+#[test]
 fn review_comments_are_posted_reviews_and_their_line_comments_each_with_its_commit() {
     let fake = FakeCurl::new();
     fake.on(
@@ -309,7 +339,7 @@ fn review_comments_are_posted_reviews_and_their_line_comments_each_with_its_comm
 }
 
 #[test]
-fn the_last_changed_file_is_the_last_listed_and_there_are_no_scanning_alerts() {
+fn changed_files_are_listed_in_order_and_there_are_no_scanning_alerts() {
     let fake = FakeCurl::new();
     fake.on(
         &format!("GET {API}/pulls/7/files*"),
@@ -319,14 +349,119 @@ fn the_last_changed_file_is_the_last_listed_and_there_are_no_scanning_alerts() {
     fake.on(&format!("GET {API}/pulls/8/files*"), 200, &json!([]));
     let forge = the_forge(&fake);
     assert_eq!(
-        forge.last_changed_file(pr(7)),
-        Ok(Some("src/b.rs".to_owned()))
+        forge.changed_files(pr(7)),
+        Ok(ChangedFiles::of(&["src/a.rs", "src/b.rs"]))
     );
-    assert_eq!(forge.last_changed_file(pr(8)), Ok(None));
+    assert_eq!(forge.changed_files(pr(8)), Ok(ChangedFiles::default()));
 
     let quiet = FakeCurl::new();
     assert_eq!(the_forge(&quiet).scanning_alerts(pr(7)), Ok(Vec::new()));
     assert_eq!(quiet.asked(), Vec::<String>::new());
+}
+
+/// A scene whose instance pages `size` items at a time.
+fn paging(size: u32) -> FakeCurl {
+    let fake = FakeCurl::new();
+    fs::write(fake.scene.path().join("rules"), "").expect("rules reset");
+    fake.on(
+        "GET */api/v1/settings/api",
+        200,
+        &json!({ "max_response_items": size }),
+    );
+    fake
+}
+
+#[test]
+fn changed_files_lists_a_rename_under_both_names() {
+    let fake = FakeCurl::new();
+    fake.on(
+        &format!("GET {API}/pulls/7/files*"),
+        200,
+        &json!([
+            { "filename": "README.md", "status": "changed" },
+            { "filename": "docs/x.rs", "status": "renamed", "previous_filename": "zaf/x.rs" },
+        ]),
+    );
+    let listed = the_forge(&fake)
+        .changed_files(pr(7))
+        .expect("the files read");
+    assert_eq!(
+        listed,
+        ChangedFiles::of(&["README.md", "zaf/x.rs", "docs/x.rs"])
+    );
+    assert_eq!(listed.last().map(RepoPath::as_str), Some("docs/x.rs"));
+}
+
+#[test]
+fn changed_files_reads_past_one_page() {
+    let fake = paging(2);
+    fake.on(
+        &format!("GET {API}/pulls/7/files?page=1&limit=2"),
+        200,
+        &json!([{ "filename": "a.rs" }, { "filename": "b.rs" }]),
+    );
+    fake.on(
+        &format!("GET {API}/pulls/7/files?page=2&limit=2"),
+        200,
+        &json!([{ "filename": "c.rs" }, { "filename": "d.rs" }]),
+    );
+    fake.on(
+        &format!("GET {API}/pulls/7/files?page=3&limit=2"),
+        200,
+        &json!([{ "filename": "e.rs", "previous_filename": "old.rs" }]),
+    );
+    let listed = the_forge(&fake)
+        .changed_files(pr(7))
+        .expect("the files read");
+    assert_eq!(
+        listed,
+        ChangedFiles::of(&["a.rs", "b.rs", "c.rs", "d.rs", "old.rs", "e.rs"])
+    );
+    assert_eq!(fake.asked().len(), 3, "three pages, then stop");
+}
+
+#[test]
+fn changed_files_cut_short_when_capped() {
+    // Every page is full, so the list never ends: the pages read stop at the cap.
+    let fake = paging(2);
+    fake.on(
+        &format!("GET {API}/pulls/7/files*"),
+        200,
+        &json!([{ "filename": "a.rs" }, { "filename": "b.rs" }]),
+    );
+    let listed = the_forge(&fake)
+        .changed_files(pr(7))
+        .expect("the files read");
+    assert!(listed.cut_short, "{listed:?}");
+    assert_eq!(listed.paths.len(), 2 * MAX_FILE_PAGES);
+    assert_eq!(fake.asked().len(), MAX_FILE_PAGES);
+}
+
+#[test]
+fn changed_files_cut_short_when_a_later_page_fails_and_fail_when_the_first_does() {
+    let fake = paging(1);
+    fake.on(
+        &format!("GET {API}/pulls/7/files?page=1&limit=1"),
+        200,
+        &json!([{ "filename": "a.rs" }]),
+    );
+    fake.on(
+        &format!("GET {API}/pulls/7/files?page=2&limit=1"),
+        500,
+        &json!({ "message": "boom" }),
+    );
+    let listed = the_forge(&fake)
+        .changed_files(pr(7))
+        .expect("the files read");
+    assert_eq!(listed.paths, ChangedFiles::of(&["a.rs"]).paths);
+    assert!(listed.cut_short);
+
+    let broken = FakeCurl::new();
+    broken.on(&format!("GET {API}/pulls/7/files*"), 500, &json!({}));
+    assert!(matches!(
+        the_forge(&broken).changed_files(pr(7)),
+        Err(PortError::Backend(_))
+    ));
 }
 
 #[test]
@@ -750,7 +885,10 @@ fn integration_branch(fake: &FakeCurl) {
     fake.on(
         &format!("GET {API}/branches/feature/v1"),
         200,
-        &json!({ "name": "feature/v1", "commit": { "id": SHA } }),
+        &json!({
+            "name": "feature/v1",
+            "commit": { "id": SHA, "timestamp": "2027-01-15T08:00:00+02:00" },
+        }),
     );
 }
 
@@ -772,6 +910,11 @@ fn a_branchs_checks_are_the_latest_status_of_each_context_at_the_commit_it_is_at
         .branch_checks(&BranchName::from("feature/v1"))
         .expect("the branch reads");
     assert_eq!(read.head, Some(CommitId::from(SHA)));
+    assert_eq!(
+        read.reached_at,
+        humantime::parse_rfc3339("2027-01-15T06:00:00Z").ok(),
+        "the commit's time, read with its offset"
+    );
     let checks: Vec<(&str, CheckState, bool)> = read
         .checks
         .iter()
@@ -860,4 +1003,375 @@ fn a_branch_that_cannot_be_read_or_carries_an_unknown_status_is_a_backend_failur
             if message.contains("branch feature/v1") && message.contains("`skipped`")),
         "{error:?}"
     );
+}
+
+/// Pull request 7 with a file, a posted review and two checks, as a gather reads them.
+fn arrange_gather(fake: &FakeCurl) {
+    open_seven(fake);
+    fake.on(
+        &format!("GET {API}/pulls/7/files*"),
+        200,
+        &json!([{ "filename": "src/export.rs" }]),
+    );
+    fake.on(
+        &format!("GET {API}/pulls/7/reviews[?]*"),
+        200,
+        &json!([{
+            "id": 1,
+            "user": { "login": "reviewer" },
+            "body": "Fine.",
+            "state": "APPROVED",
+            "commit_id": SHA,
+            "submitted_at": "2026-11-12T10:10:00Z",
+            "comments_count": 0,
+        }]),
+    );
+    fake.on(
+        &format!("GET {API}/commits/{SHA}/statuses*"),
+        200,
+        &json!([
+            status(1, "ci / test (push)", "success", ""),
+            status(2, "ci / lint (push)", "pending", ""),
+        ]),
+    );
+}
+
+/// How many times the fake was asked for the pull request itself, `pulls/7`, and not for what
+/// hangs under it.
+fn pull_reads(fake: &FakeCurl) -> usize {
+    let own = format!("GET {API}/pulls/7");
+    fake.asked().iter().filter(|asked| **asked == own).count()
+}
+
+#[test]
+fn pull_facts_fetch_pull_once() {
+    let fake = FakeCurl::new();
+    arrange_gather(&fake);
+    let forge = the_forge(&fake);
+
+    crate::app::schedule::gather::read_pull(&forge, pr(7)).expect("the facts");
+
+    assert_eq!(pull_reads(&fake), 1, "{:?}", fake.asked());
+}
+
+#[test]
+fn pull_facts_unchanged() {
+    let fake = FakeCurl::new();
+    arrange_gather(&fake);
+    let forge = the_forge(&fake);
+
+    let facts = crate::app::schedule::gather::read_pull(&forge, pr(7)).expect("the facts");
+
+    assert_eq!(facts.opened_at, at(1_794_474_000));
+    assert_eq!(facts.merged_at, None);
+    assert_eq!(facts.head, Some(CommitId::from(SHA)));
+    assert_eq!(facts.mergeable, None);
+    assert_eq!(facts.changed_files.paths, [RepoPath::from("src/export.rs")]);
+    let names: Vec<&str> = facts
+        .checks
+        .iter()
+        .map(|check| check.name.as_str())
+        .collect();
+    assert_eq!(names, ["ci / lint (push)", "ci / test (push)"]);
+    assert_eq!(facts.reviews.len(), 1);
+    assert_eq!(facts.reviews[0].head, Some(CommitId::from(SHA)));
+
+    // A merged pull request reads its merge time from the same one read.
+    fake.on(
+        &format!("GET {API}/pulls/8"),
+        200,
+        &pull(8, "feature/v1-1-3", "closed", true),
+    );
+    fake.on(&format!("GET {API}/pulls/8/files*"), 200, &json!([]));
+    fake.on(&format!("GET {API}/pulls/8/reviews[?]*"), 200, &json!([]));
+    let merged = crate::app::schedule::gather::read_pull(&forge, pr(8)).expect("merged facts");
+    assert_eq!(merged.merged_at, Some(at(1_794_481_200)));
+}
+
+#[test]
+fn pull_facts_not_kept_between_reads() {
+    let fake = FakeCurl::new();
+    arrange_gather(&fake);
+    let forge = the_forge(&fake);
+
+    crate::app::schedule::gather::read_pull(&forge, pr(7)).expect("the first read");
+    crate::app::schedule::gather::read_pull(&forge, pr(7)).expect("the second read");
+
+    assert_eq!(pull_reads(&fake), 2, "{:?}", fake.asked());
+}
+
+/// The contents API's reply for a file whose text is `text`.
+fn file_reply(text: &str) -> Value {
+    json!({ "type": "file", "encoding": "base64", "content": encode_base64(text.as_bytes()) })
+}
+
+/// Standard base64, as the contents API prints a file's bytes, in lines of 60 characters.
+fn encode_base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut text = String::new();
+    for chunk in bytes.chunks(3) {
+        let word = chunk.iter().enumerate().fold(0u32, |word, (at, byte)| {
+            word | u32::from(*byte) << (16 - 8 * at)
+        });
+        for at in 0..4 {
+            if at <= chunk.len() {
+                text.push(char::from(
+                    ALPHABET[((word >> (18 - 6 * at)) & 0x3f) as usize],
+                ));
+            } else {
+                text.push('=');
+            }
+        }
+    }
+    text.as_bytes()
+        .chunks(60)
+        .map(|line| String::from_utf8_lossy(line).into_owned())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn entry(name: &str, kind: &str) -> Value {
+    json!({ "name": name, "path": format!(".forgejo/workflows/{name}"), "type": kind })
+}
+
+fn workflow_at(path: &str, filter: PullRequestFilter) -> WorkflowFilter {
+    WorkflowFilter {
+        path: RepoPath::from(path),
+        filter,
+    }
+}
+
+const WORKFLOWS: &str = ".forgejo/workflows";
+
+#[test]
+fn ci_filter_reads_yml_and_yaml_files_at_the_base_and_nothing_else() {
+    let fake = FakeCurl::new();
+    fake.on(
+        &format!("GET {API}/contents/{WORKFLOWS}?ref=feature%2Fv1"),
+        200,
+        &json!([
+            entry("b.yaml", "file"),
+            entry("a.yml", "file"),
+            entry("notes.md", "file"),
+            entry("nested.yml", "dir"),
+        ]),
+    );
+    fake.on(
+        &format!("GET {API}/contents/{WORKFLOWS}/a.yml?ref=feature%2Fv1"),
+        200,
+        &file_reply("on: pull_request\njobs: {}\n"),
+    );
+    fake.on(
+        &format!("GET {API}/contents/{WORKFLOWS}/b.yaml?ref=feature%2Fv1"),
+        200,
+        &file_reply("on: push\njobs: {}\n"),
+    );
+    let found = ForgejoCiFilter::from(fake.api())
+        .workflows(&BranchName::from("feature/v1"))
+        .expect("the workflows read");
+    assert_eq!(
+        found,
+        [
+            workflow_at(".forgejo/workflows/a.yml", PullRequestFilter::AnyChange),
+            workflow_at(".forgejo/workflows/b.yaml", PullRequestFilter::AnyChange),
+        ]
+    );
+    // Every read names the base's ref; no call reaches for a pull request or its head.
+    for asked in fake.asked() {
+        assert!(asked.ends_with("?ref=feature%2Fv1"), "{asked}");
+    }
+}
+
+#[test]
+fn ci_filter_marks_a_refused_file_unreadable() {
+    let fake = FakeCurl::new();
+    fake.on(
+        &format!("GET {API}/contents/{WORKFLOWS}?ref=main"),
+        200,
+        &json!([
+            entry("a.yml", "file"),
+            entry("b.yml", "file"),
+            entry("c.yml", "symlink"),
+            entry("odd name.yml", "file"),
+        ]),
+    );
+    fake.on(
+        &format!("GET {API}/contents/{WORKFLOWS}/a.yml?ref=main"),
+        403,
+        &json!({ "message": "refused" }),
+    );
+    fake.on(
+        &format!("GET {API}/contents/{WORKFLOWS}/b.yml?ref=main"),
+        200,
+        &file_reply("on: pull_request\n"),
+    );
+    let found = ForgejoCiFilter::from(fake.api())
+        .workflows(&BranchName::from("main"))
+        .expect("the list reads");
+    assert_eq!(
+        found,
+        [
+            workflow_at(".forgejo/workflows/a.yml", PullRequestFilter::Unsure),
+            workflow_at(".forgejo/workflows/b.yml", PullRequestFilter::AnyChange),
+            workflow_at(".forgejo/workflows/c.yml", PullRequestFilter::Unsure),
+            workflow_at(".forgejo/workflows/odd name.yml", PullRequestFilter::Unsure),
+        ]
+    );
+}
+
+#[test]
+fn ci_filter_marks_a_file_that_is_not_base64_text_unreadable() {
+    let fake = FakeCurl::new();
+    fake.on(
+        &format!("GET {API}/contents/{WORKFLOWS}?ref=main"),
+        200,
+        &json!([entry("a.yml", "file"), entry("b.yml", "file")]),
+    );
+    fake.on(
+        &format!("GET {API}/contents/{WORKFLOWS}/a.yml?ref=main"),
+        200,
+        &json!({ "type": "file", "encoding": "base64", "content": "!!!!" }),
+    );
+    fake.on(
+        &format!("GET {API}/contents/{WORKFLOWS}/b.yml?ref=main"),
+        200,
+        &json!({ "type": "file", "encoding": "none", "content": "" }),
+    );
+    let found = ForgejoCiFilter::from(fake.api())
+        .workflows(&BranchName::from("main"))
+        .expect("the list reads");
+    assert_eq!(found.len(), 2);
+    assert!(
+        found
+            .iter()
+            .all(|workflow| workflow.filter == PullRequestFilter::Unsure),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn ci_filter_has_no_workflows_in_a_base_with_no_folder_but_fails_on_a_missing_base() {
+    let fake = FakeCurl::new();
+    fake.on(
+        &format!("GET {API}/contents/{WORKFLOWS}?ref=main"),
+        404,
+        &json!({ "message": "not found" }),
+    );
+    fake.on(
+        &format!("GET {API}/branches/main"),
+        200,
+        &json!({ "commit": { "id": SHA } }),
+    );
+    fake.on(
+        &format!("GET {API}/contents/{WORKFLOWS}?ref=gone"),
+        404,
+        &json!({ "message": "not found" }),
+    );
+    fake.on(
+        &format!("GET {API}/branches/gone"),
+        404,
+        &json!({ "message": "not found" }),
+    );
+    let filter = ForgejoCiFilter::from(fake.api());
+    assert_eq!(filter.workflows(&BranchName::from("main")), Ok(Vec::new()));
+    assert!(matches!(
+        filter.workflows(&BranchName::from("gone")),
+        Err(PortError::Backend(_))
+    ));
+    assert!(matches!(
+        filter.workflows(&BranchName::from("-main")),
+        Err(PortError::Rejected(_))
+    ));
+}
+
+#[test]
+fn ci_filter_fails_when_the_list_cannot_be_read() {
+    let fake = FakeCurl::new();
+    fake.on(
+        &format!("GET {API}/contents/{WORKFLOWS}?ref=main"),
+        500,
+        &json!({ "message": "boom" }),
+    );
+    let error = ForgejoCiFilter::from(fake.api())
+        .workflows(&BranchName::from("main"))
+        .expect_err("a failed list");
+    assert!(matches!(error, PortError::Backend(_)), "{error:?}");
+}
+
+/// The filter the Forgejo adapter reads from the one workflow `text` at the base of a fake
+/// Forgejo.
+fn forgejo_workflows(text: &str) -> Vec<WorkflowFilter> {
+    let fake = FakeCurl::new();
+    fake.on(
+        &format!("GET {API}/contents/{WORKFLOWS}?ref=main"),
+        200,
+        &json!([entry("a.yml", "file")]),
+    );
+    fake.on(
+        &format!("GET {API}/contents/{WORKFLOWS}/a.yml?ref=main"),
+        200,
+        &file_reply(text),
+    );
+    ForgejoCiFilter::from(fake.api())
+        .workflows(&BranchName::from("main"))
+        .expect("the workflows read")
+}
+
+/// Whether a check is expected on a pull request from `branch` that changes a doc.
+fn forgejo_ci_expected(text: &str, branch: &str) -> bool {
+    crate::domain::checks_expected(
+        &forgejo_workflows(text),
+        &[RepoPath::from("docs/a.md")],
+        false,
+        Some(branch),
+    )
+}
+
+#[test]
+fn ci_filter_push_no_branches_expected_forgejo() {
+    assert!(forgejo_ci_expected("on: push\n", "feature/x"));
+    assert!(forgejo_ci_expected("on:\n  push:\n", "feature/x"));
+}
+
+#[test]
+fn ci_filter_push_matching_branch_expected_forgejo() {
+    let text = "on:\n  push:\n    branches: ['feature/**']\n";
+    assert!(forgejo_ci_expected(text, "feature/x"));
+}
+
+#[test]
+fn ci_filter_push_other_branch_not_expected_forgejo() {
+    let text = "on:\n  push:\n    branches: [main]\n";
+    assert!(!forgejo_ci_expected(text, "feature/x"));
+}
+
+#[test]
+fn ci_filter_pull_request_target_expected_forgejo() {
+    assert!(forgejo_ci_expected(
+        "on: pull_request_target\n",
+        "feature/x"
+    ));
+}
+
+#[test]
+fn ci_filter_unreadable_unsure_forgejo() {
+    assert!(forgejo_ci_expected(
+        "on:\n  push:\n    branches-ignore: [wip]\n",
+        "feature/x"
+    ));
+    assert_eq!(
+        forgejo_workflows("on: [unclosed")[0].filter,
+        PullRequestFilter::Unsure
+    );
+}
+
+#[test]
+fn base64_reads_the_standard_alphabet_with_line_breaks() {
+    use crate::adapters::forgejo::ci_filter::decode_base64;
+
+    assert_eq!(decode_base64(""), Some(Vec::new()));
+    assert_eq!(decode_base64("Zm9v\nYmFy"), Some(b"foobar".to_vec()));
+    assert_eq!(decode_base64("Zm8="), Some(b"fo".to_vec()));
+    assert_eq!(decode_base64("Zm8=Zg"), None);
+    assert_eq!(decode_base64("Z$8="), None);
 }

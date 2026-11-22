@@ -9,9 +9,9 @@ mod command;
 
 use std::path::Path;
 
-use command::{JjCommand, bookmark, quoted};
+use command::{JjCommand, bookmark, commit_id_revset, is_commit_id, quoted};
 
-use crate::ports::{BaseName, CommitId, DiffStat, FileStat, PortError, Vcs};
+use crate::ports::{BaseName, CommitId, DiffStat, FileStat, PortError, TreeId, Vcs};
 
 /// Slice workspaces read through jj.
 #[derive(Debug, Clone, Copy, Default)]
@@ -30,6 +30,42 @@ impl JjVcs {
         Ok(JjCommand::new(workspace))
     }
 
+    /// The runner for the project's root, which reads without a snapshot of the Engineer's working
+    /// copy; [`PortError::NotFound`] when the directory holds no jj workspace.
+    fn root_command(root: &Path) -> Result<JjCommand, PortError> {
+        if !root.join(".jj").is_dir() {
+            return Err(PortError::NotFound(format!("workspace {}", root.display())));
+        }
+        Ok(JjCommand::read_only(root))
+    }
+
+    /// The git folder jj keeps its commits in, where a commit names its tree.
+    fn git_store(jj: &JjCommand) -> Result<String, PortError> {
+        Ok(jj.run(&["git", "root"])?.trim().to_owned())
+    }
+
+    /// The tree of `id` in the git folder `store`.
+    fn tree_in(store: &str, id: &str) -> Result<TreeId, PortError> {
+        // The commit comes from the forge: only a full commit id is let in, and anything else is
+        // a commit this repository does not hold.
+        if !is_commit_id(id) {
+            return Err(PortError::NotFound(format!("commit {id}")));
+        }
+        // jj itself has no template that prints a tree.
+        let output = std::process::Command::new("git")
+            .arg("--git-dir")
+            .arg(store)
+            .args(["rev-parse", "--verify", "--quiet"])
+            .arg(format!("{id}^{{tree}}"))
+            .output()
+            .map_err(|error| PortError::Unavailable(format!("git: {error}")))?;
+        let tree = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if !output.status.success() || tree.is_empty() {
+            return Err(PortError::NotFound(format!("commit {id}")));
+        }
+        Ok(TreeId::from(tree))
+    }
+
     /// The revset of where the slice forked from its base.
     fn fork_point(base: &BaseName) -> String {
         format!("fork_point({} | @)", bookmark(base.as_ref()))
@@ -44,6 +80,50 @@ impl Vcs for JjVcs {
         Self::workspace_command(workspace)?.commit_id("(@ & merges()) | (@- ~ (@ & merges())-)")
     }
 
+    fn holds(&self, workspace: &Path, head: &CommitId) -> Result<bool, PortError> {
+        let jj = Self::workspace_command(workspace)?;
+        let latest = self.latest_commit(workspace)?;
+        // The head comes from the forge and goes into a revset: only a full commit id is let in,
+        // and anything else is a head this repository does not hold.
+        let head = head.as_str();
+        if !is_commit_id(head) {
+            return Ok(false);
+        }
+        // Held when the latest commit is the head or one of its ancestors. A head the repository
+        // does not have names nothing, so it is not held.
+        let from = commit_id_revset(latest.as_str());
+        let to = commit_id_revset(head);
+        if jj.commit_ids(&format!("{from} & ::{to}"))?.is_empty() {
+            return Ok(false);
+        }
+        // The same tree: nothing differs between the two commits.
+        let changes = jj.run(&["diff", "--summary", "--from", &from, "--to", &to])?;
+        Ok(changes.trim().is_empty())
+    }
+
+    fn tree_of(&self, root: &Path, commit: &CommitId) -> Result<TreeId, PortError> {
+        let jj = Self::root_command(root)?;
+        let id = commit.as_str();
+        if !is_commit_id(id) {
+            return Err(PortError::NotFound(format!("commit {id}")));
+        }
+        Self::tree_in(&Self::git_store(&jj)?, id)
+    }
+
+    fn trees_of(&self, root: &Path, commits: &[&CommitId]) -> Vec<(CommitId, TreeId)> {
+        // The git folder is the same for every commit: found once.
+        let Ok(store) = Self::root_command(root).and_then(|jj| Self::git_store(&jj)) else {
+            return Vec::new();
+        };
+        commits
+            .iter()
+            .filter_map(|commit| {
+                let tree = Self::tree_in(&store, commit.as_str()).ok()?;
+                Some(((*commit).clone(), tree))
+            })
+            .collect()
+    }
+
     fn diff_stat(&self, workspace: &Path, base: &BaseName) -> Result<DiffStat, PortError> {
         let jj = Self::workspace_command(workspace)?;
         let fork_point = Self::fork_point(base);
@@ -54,18 +134,17 @@ impl Vcs for JjVcs {
 
     fn has_tag(&self, root: &Path, tag: &str) -> Result<bool, PortError> {
         let names = format!("exact:{}", quoted(tag));
-        let listed = Self::workspace_command(root)?.run(&["tag", "list", &names])?;
+        let listed = Self::root_command(root)?.run(&["tag", "list", &names])?;
         Ok(!listed.trim().is_empty())
     }
 
     fn has_remote(&self, root: &Path) -> Result<bool, PortError> {
-        let listed = Self::workspace_command(root)?.run(&["git", "remote", "list"])?;
+        let listed = Self::root_command(root)?.run(&["git", "remote", "list"])?;
         Ok(!listed.trim().is_empty())
     }
 
     fn tags(&self, root: &Path) -> Result<Vec<String>, PortError> {
-        let listed =
-            Self::workspace_command(root)?.run(&["tag", "list", "-T", r#"name ++ "\n""#])?;
+        let listed = Self::root_command(root)?.run(&["tag", "list", "-T", r#"name ++ "\n""#])?;
         let mut names: Vec<String> = listed.lines().map(str::to_owned).collect();
         names.sort();
         names.dedup();

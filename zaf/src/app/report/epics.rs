@@ -17,6 +17,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use super::ledger::LedgerRow;
 use super::{PriceTable, median};
+use crate::domain::screen::{self, Line, Meaning, Text, clean};
 use crate::domain::{TaskSize, TicketId, TicketState};
 use crate::ports::{Board, PortError};
 
@@ -429,60 +430,95 @@ fn row_of(epic: u64, runs: &[&LedgerRow], done: &DoneTasks, prices: &PriceTable)
     }
 }
 
-/// The rows as text: the note that the dollars are estimates, then one line per epic.
-pub fn render_text(rows: &[EpicRow]) -> String {
-    let mut out = format!("{ESTIMATE_NOTE}\n");
+/// `cell`, a padded column, as its padding in plain words around its text in `meaning`, so the
+/// colour never covers a space.
+fn cell(meaning: Meaning, cell: &str, line: &mut Line) {
+    let text = cell.trim();
+    let start = cell.len() - cell.trim_start().len();
+    line.push((Meaning::Plain, Text::from(&cell[..start])));
+    line.push((meaning, Text::from(text)));
+    line.push((Meaning::Plain, Text::from(&cell[start + text.len()..])));
+}
+
+/// The rows as lines: the note that the dollars are estimates, the column headings in bold,
+/// then one line per epic, its id a noun and its done count done (dim at zero).
+pub fn lines(rows: &[EpicRow]) -> Vec<Line> {
+    let plain = |text: String| vec![(Meaning::Plain, Text::from(text))];
+    let mut lines = vec![plain(ESTIMATE_NOTE.to_owned())];
     if rows.is_empty() {
-        out.push_str("no epic runs in the ledger\n");
-        return out;
+        lines.push(plain("no epic runs in the ledger".to_owned()));
+        return lines;
     }
     let none = || "-".to_owned();
     let thousands = |value: Option<f64>| value.map_or_else(none, |v| format!("{:.0}k", v / 1e3));
-    out.push_str(&format!(
-        "{:<6} {:>5} {:>8} {:>7} {:>7} {:>7} {:>9} {:>9} {:>10} {:>6} {:>6} {:>8} {:>8} {:>9} {:>8}  roles\n",
-        "epic",
-        "done",
-        "est $",
-        "$/task",
-        "med S $",
-        "med M $",
-        "S vs last",
-        "M vs last",
-        "turns/task",
-        "ctx1",
-        "ctxN",
-        "input",
-        "cache wr",
-        "cache rd",
-        "output"
-    ));
+    lines.push(vec![(
+        Meaning::Bold,
+        Text::from(format!(
+            "{:<6} {:>5} {:>8} {:>7} {:>7} {:>7} {:>9} {:>9} {:>10} {:>6} {:>6} {:>8} {:>8} {:>9} {:>8}  roles",
+            "epic",
+            "done",
+            "est $",
+            "$/task",
+            "med S $",
+            "med M $",
+            "S vs last",
+            "M vs last",
+            "turns/task",
+            "ctx1",
+            "ctxN",
+            "input",
+            "cache wr",
+            "cache rd",
+            "output"
+        )),
+    )]);
     for row in rows {
         let roles: Vec<String> = row
             .roles
             .iter()
-            .map(|role| format!("{} {:.0}%", role.role, role.share_percent))
+            .map(|role| format!("{} {:.0}%", clean(&role.role), role.share_percent))
             .collect();
-        out.push_str(&format!(
-            "{:<6} {:>5} {:>8.2} {:>7} {:>7} {:>7} {:>9} {:>9} {:>10} {:>6} {:>6} {:>7.2}M {:>7.1}M {:>8.1}M {:>7.2}M  {}\n",
-            format!("#{}", row.epic),
-            row.tasks_done,
-            row.est_usd,
-            row.usd_per_task.map_or_else(none, |v| format!("{v:.2}")),
-            row.median_usd.s.map_or_else(none, |v| format!("{v:.2}")),
-            row.median_usd.m.map_or_else(none, |v| format!("{v:.2}")),
-            row.versus_last.s.map_or_else(none, |v| v.word().to_owned()),
-            row.versus_last.m.map_or_else(none, |v| v.word().to_owned()),
-            row.turns_per_task.map_or_else(none, |v| format!("{v:.0}")),
-            thousands(row.context_first),
-            thousands(row.context_last),
-            row.tokens.input as f64 / 1e6,
-            row.tokens.cache_write as f64 / 1e6,
-            row.tokens.cache_read as f64 / 1e6,
-            row.tokens.output as f64 / 1e6,
-            roles.join(", ")
+        let mut line = Line::new();
+        cell(
+            Meaning::Noun,
+            &format!("{:<6}", format!("#{}", row.epic)),
+            &mut line,
+        );
+        line.push((Meaning::Plain, Text::from(" ")));
+        let done = if row.tasks_done == 0 {
+            Meaning::Dim
+        } else {
+            Meaning::Done
+        };
+        cell(done, &format!("{:>5}", row.tasks_done), &mut line);
+        line.push((
+            Meaning::Plain,
+            Text::from(format!(
+                " {:>8.2} {:>7} {:>7} {:>7} {:>9} {:>9} {:>10} {:>6} {:>6} {:>7.2}M {:>7.1}M {:>8.1}M {:>7.2}M  {}",
+                row.est_usd,
+                row.usd_per_task.map_or_else(none, |v| format!("{v:.2}")),
+                row.median_usd.s.map_or_else(none, |v| format!("{v:.2}")),
+                row.median_usd.m.map_or_else(none, |v| format!("{v:.2}")),
+                row.versus_last.s.map_or_else(none, |v| v.word().to_owned()),
+                row.versus_last.m.map_or_else(none, |v| v.word().to_owned()),
+                row.turns_per_task.map_or_else(none, |v| format!("{v:.0}")),
+                thousands(row.context_first),
+                thousands(row.context_last),
+                row.tokens.input as f64 / 1e6,
+                row.tokens.cache_write as f64 / 1e6,
+                row.tokens.cache_read as f64 / 1e6,
+                row.tokens.output as f64 / 1e6,
+                roles.join(", ")
+            )),
         ));
+        lines.push(line);
     }
-    out
+    lines
+}
+
+/// The rows as text, with no colour.
+pub fn render_text(rows: &[EpicRow]) -> String {
+    screen::plain(&lines(rows))
 }
 
 /// The rows as JSON, with the note that the dollars are estimates.
@@ -500,16 +536,25 @@ fn json_of(rows: &[EpicRow], outside: Option<&Outside>) -> String {
 }
 
 impl EpicView {
-    /// The rows as text, then one line for what ran outside any epic, when anything did.
-    pub fn render_text(&self) -> String {
-        let mut out = render_text(&self.rows);
+    /// The rows as lines, then one line for what ran outside any epic, when anything did.
+    pub fn lines(&self) -> Vec<Line> {
+        let mut lines = lines(&self.rows);
         if let Some(outside) = &self.outside {
-            out.push_str(&format!(
-                "outside any epic: {} runs, {} turns, est ${:.2}\n",
-                outside.runs, outside.turns, outside.est_usd
-            ));
+            lines.push(vec![(
+                Meaning::Plain,
+                Text::from(format!(
+                    "outside any epic: {} runs, {} turns, est ${:.2}",
+                    outside.runs, outside.turns, outside.est_usd
+                )),
+            )]);
         }
-        out
+        lines
+    }
+
+    /// The rows as text with no colour, then one line for what ran outside any epic, when
+    /// anything did.
+    pub fn render_text(&self) -> String {
+        screen::plain(&self.lines())
     }
 
     /// The rows as JSON, with `outside_any_epic` holding the line's figures, or null.

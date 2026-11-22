@@ -4,6 +4,8 @@
 # zaf 2: a backend failed or the call was refused (the arguments are not <slice> <base> [--keep | --probe], the slice is not open on that base, it has uncommitted work (without `--keep`) or unresolved conflicts, jj is missing or the fetch failed); the slice is unchanged
 # zaf mode: 750
 # zaf group: team, release, implement, fix, merge
+# zaf vcs: jj
+# changed: marked `vcs: jj`: a git project takes a `merge-base.git` and never this file
 slice=$1
 base=$2
 

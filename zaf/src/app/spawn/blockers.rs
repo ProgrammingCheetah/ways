@@ -11,7 +11,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use crate::domain::{Standing, Ticket, TicketId};
+use crate::domain::{Epic, Standing, StandingAt, Ticket, TicketId};
 use crate::ports::{Board, PortError};
 
 /// The field of a task body that names its blockers.
@@ -74,9 +74,39 @@ pub struct Blockers {
     pub dead: BTreeMap<TicketId, DeadReason>,
 }
 
+/// Where the blocker `number` stands, its epic read in: an open epic of `epics` that is done by
+/// [`Epic::finished_done`] stands as [`Standing::Done`], with the close time of the last of its
+/// tasks to close (none when no task's close is timed). Any other `at` is returned as it is, so
+/// an epic labelled `done` by hand, one with a task open and one whose every task was dropped
+/// stand as the board read them. Nothing is written to the epic: it stays open.
+///
+/// Interface: `finished_epic_standing(number, at, epics) -> StandingAt`; consumed by the
+/// scheduler's gather and labels, the lane's walk ([`read`]) and the hub's line.
+pub fn finished_epic_standing(number: TicketId, at: StandingAt, epics: &[Epic]) -> StandingAt {
+    if at.standing != Standing::Open {
+        return at;
+    }
+    match epics
+        .iter()
+        .find(|epic| epic.id == number && epic.finished_done())
+    {
+        Some(epic) => StandingAt {
+            standing: Standing::Done,
+            closed_at: epic
+                .tasks
+                .iter()
+                .filter(|task| task.done())
+                .filter_map(|task| task.closed_at)
+                .max(),
+        },
+        None => at,
+    }
+}
+
 /// Walks the blockers of `ready` through the board: each open blocker's own body is read in
-/// turn, each other one is classed as done or dead.
-pub fn read(board: &dyn Board, ready: &[Ticket]) -> Result<Blockers, PortError> {
+/// turn, each other one is classed as done or dead. An open epic among them that is finished
+/// (see [`finished_epic_standing`], read from `epics`) is done.
+pub fn read(board: &dyn Board, ready: &[Ticket], epics: &[Epic]) -> Result<Blockers, PortError> {
     let mut found = Blockers::default();
     let mut pending: Vec<TicketId> = Vec::new();
     for ticket in ready {
@@ -91,7 +121,8 @@ pub fn read(board: &dyn Board, ready: &[Ticket]) -> Result<Blockers, PortError> 
         {
             continue;
         }
-        match board.standing(number)? {
+        let standing = finished_epic_standing(number, board.standing(number)?.into(), epics);
+        match standing.standing {
             Standing::Done => {
                 found.closed.insert(number);
             }

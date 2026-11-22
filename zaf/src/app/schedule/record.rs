@@ -68,6 +68,9 @@ pub const TASK_FILE: &str = "task";
 pub const ACTION_FILE: &str = "action";
 /// The file of a phase run folder that holds the pull request's head when it started.
 pub const HEAD_FILE: &str = "head";
+/// The file of a phase run folder that holds the head Land was derived at, written only for a run
+/// of the land phase: the launcher sets it on the action as `ZAF_HEAD`.
+pub const LAND_HEAD_FILE: &str = "land-head";
 /// The file of a phase run folder that names the size the action runs at (`ZAF_SIZE`).
 pub const SIZE_FILE: &str = "size";
 /// The file of a phase run folder that names the instance the action runs as (`ZAF_INSTANCE`).
@@ -134,6 +137,21 @@ pub fn open(phases_dir: &Path, opening: &Opening<'_>) -> Result<PathBuf, String>
     // Last: its time is when the run started.
     write(TASK_FILE, &opening.task.get().to_string())?;
     Ok(run_dir)
+}
+
+/// Marks the run folder as a run of the land phase at `head`: the head Land was derived at, which
+/// the launcher reads back and sets on the action as `ZAF_HEAD`.
+pub fn mark_land(run_dir: &Path, head: &CommitId) -> Result<(), String> {
+    let path = run_dir.join(LAND_HEAD_FILE);
+    std::fs::write(&path, head.as_str())
+        .map_err(|source| format!("cannot write {}: {source}", path.display()))
+}
+
+/// The head a run folder was marked with ([`mark_land`]); none for a run of any other phase.
+pub fn land_head(run_dir: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(run_dir.join(LAND_HEAD_FILE)).ok()?;
+    let head = text.trim();
+    (!head.is_empty()).then(|| head.to_owned())
 }
 
 /// Writes `text` to the run folder's `name` whole: staged under a name of its own, then renamed

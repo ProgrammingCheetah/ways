@@ -15,10 +15,13 @@ fn task(standing: Standing, state: Option<TicketState>) -> EpicTask {
     EpicTask {
         number: id(118),
         title: "A task".into(),
+        body: "".into(),
+        url: "".into(),
         state,
         standing,
         group: None,
         kind: None,
+        closed_at: None,
     }
 }
 
@@ -53,6 +56,7 @@ fn facts() -> TicketFacts {
         ready_since: None,
         merging: Default::default(),
         no_check_ruled: None,
+        trees: Default::default(),
     }
 }
 

@@ -3,18 +3,20 @@
 //! Everything here is worked out on read from what the state gather already reads: the board's
 //! epic trees, the questions, where the core places each ticket and the facts that placement read
 //! (`StateInputs::places`, `StateInputs::gathered`). Nothing is stored. A task's body is the one
-//! thing read per task, for its size and its `Blocked by:` line: from the tickets already read
-//! (the ready ones, the gather's open ones), and from the board for each other task, a done one
-//! included.
+//! thing read per task, for its size and its `Blocked by:` line, and it comes from the epic's own
+//! task row (`EpicTask::body`, `EpicTask::url`), so no task is asked of the board. A blocker that
+//! is no task of a read epic is asked once, for where it stands.
 
 use std::collections::{BTreeSet, HashMap};
 
-use super::{LineBlocker, LineQuestion, LineTask, QuestionState, StateInputs};
-use crate::app::hub::gather::{LineState, has_begun, line_state};
+use super::{
+    LineBlocker, LineQuestion, LineTask, QuestionState, StateInputs, TicketCost, WaitState,
+};
+use crate::app::hub::gather::{LineState, cost_by_task, has_begun, line_state};
 use crate::app::schedule::shadow::current_phase_name;
-use crate::app::spawn::blockers::blockers;
+use crate::app::spawn::blockers::{DeadLine, DeadReason, blockers, finished_epic_standing};
 use crate::domain::schedule::{Place, TicketFacts, end_fact_holds};
-use crate::domain::{DEFAULT_TASK_TYPE, Epic, EpicTask, Standing, Ticket, TicketId};
+use crate::domain::{DEFAULT_TASK_TYPE, Epic, EpicTask, Standing, TaskTemplate, Ticket, TicketId};
 use crate::ports::Board;
 
 /// One epic's line.
@@ -27,18 +29,27 @@ pub(super) struct EpicLine {
     pub tasks: Vec<LineTask>,
 }
 
-/// The tickets already read, and the board for each other one asked once.
+/// What the line holds besides the epics' task rows: the tickets already read.
 struct Tickets<'a> {
-    board: &'a dyn Board,
+    /// The open epics, whose finished ones clear the blockers they are (see
+    /// [`finished_epic_standing`]).
+    epics: &'a [Epic],
     read: HashMap<TicketId, Option<Ticket>>,
+    /// Where each task of the open epics stands, by number.
+    standings: HashMap<u64, Standing>,
+    /// Where each blocker outside every open epic stands, by number, asked of the board once.
+    outside: HashMap<u64, Option<Standing>>,
+    /// What the ledger's runs cost each task, by number.
+    costs: HashMap<u64, TicketCost>,
+    /// The blockers open tasks name that never close, as the line's reads found them.
+    dead: Vec<DeadLine>,
 }
 
 impl Tickets<'_> {
-    fn get(&mut self, id: TicketId) -> Option<&Ticket> {
-        self.read
-            .entry(id)
-            .or_insert_with(|| self.board.task(id).ok())
-            .as_ref()
+    /// A ticket already read (a ready one, one the gather found open); none for any other, which
+    /// the board is not asked for.
+    fn get(&self, id: TicketId) -> Option<&Ticket> {
+        self.read.get(&id).and_then(Option::as_ref)
     }
 }
 
@@ -54,8 +65,9 @@ fn first_on(questions: &[QuestionState], issue: u64) -> Option<LineQuestion> {
         })
 }
 
-/// The line of every epic of `trees`, by the epic's number. `ready` are the tickets the board
-/// listed ready, whose bodies are already read; `titles` is every epic's and task's title.
+/// The line of every epic of `trees`, by the epic's number, and the blockers its open tasks name
+/// that never close. `ready` are the tickets the board listed ready, whose bodies are already
+/// read; `titles` is every epic's and task's title.
 pub(super) fn read(
     inputs: &StateInputs,
     board: &dyn Board,
@@ -63,7 +75,7 @@ pub(super) fn read(
     questions: &[QuestionState],
     titles: &HashMap<u64, String>,
     ready: Vec<Ticket>,
-) -> HashMap<u64, EpicLine> {
+) -> (HashMap<u64, EpicLine>, Vec<DeadLine>) {
     let facts: HashMap<TicketId, &TicketFacts> = inputs
         .gathered
         .into_iter()
@@ -71,7 +83,7 @@ pub(super) fn read(
         .map(|facts| (facts.ticket, facts))
         .collect();
     let mut tickets = Tickets {
-        board,
+        epics: trees,
         read: ready
             .into_iter()
             .chain(
@@ -82,6 +94,14 @@ pub(super) fn read(
             )
             .map(|ticket| (ticket.id, Some(ticket)))
             .collect(),
+        standings: trees
+            .iter()
+            .flat_map(|tree| &tree.tasks)
+            .map(|task| (task.number.get(), task.standing))
+            .collect(),
+        outside: HashMap::new(),
+        costs: cost_by_task(inputs.ledger, inputs.project, inputs.root),
+        dead: Vec::new(),
     };
     // Every task's colour first: a blocker's is read from its own epic's tasks.
     let mut states: HashMap<u64, LineState> = HashMap::new();
@@ -101,7 +121,7 @@ pub(super) fn read(
             states.insert(task.number.get(), state);
         }
     }
-    trees
+    let lines = trees
         .iter()
         .map(|tree| {
             let question = first_on(questions, tree.id.get());
@@ -132,7 +152,8 @@ pub(super) fn read(
                 },
             )
         })
-        .collect()
+        .collect();
+    (lines, tickets.dead)
 }
 
 /// An epic's own colour: `question` while one is open on the epic itself, else `done` when every
@@ -182,14 +203,15 @@ fn line_task(
 ) -> LineTask {
     let place = inputs.places.and_then(|places| places.get(&task.number));
     let (phase, phases_done, phases_total) = phases(inputs, task, place, facts.get(&task.number));
-    let (size, blocked_by, issue_url) = match tickets.get(task.number) {
-        Some(ticket) => (
-            ticket.template().ok().map(|template| template.size.name()),
-            blockers(ticket.body.as_str()),
-            Some(ticket.url.to_string()).filter(|url| !url.is_empty()),
-        ),
-        None => (None, Vec::new(), None),
-    };
+    // The epic's own row holds the body and the link: no read of the task.
+    let size = task
+        .body
+        .as_str()
+        .parse::<TaskTemplate>()
+        .ok()
+        .map(|template| template.size.name());
+    let blocked_by = blockers(task.body.as_str());
+    let issue_url = Some(task.url.to_string()).filter(|url| !url.is_empty());
     let mut named = Vec::new();
     for blocker in blocked_by {
         if named
@@ -202,14 +224,36 @@ fn line_task(
             .get(&blocker.get())
             .cloned()
             .or_else(|| tickets.get(blocker).map(|ticket| ticket.title.to_string()));
-        let state =
-            states
-                .get(&blocker.get())
-                .copied()
-                .unwrap_or_else(|| match board.standing(blocker) {
-                    Ok(Standing::Done) => LineState::Done,
-                    _ => LineState::NotStarted,
+        // A task of an open epic stands as its epic listed it; any other blocker is asked once.
+        let (state, standing) = match states.get(&blocker.get()) {
+            Some(state) => (*state, tickets.standings.get(&blocker.get()).copied()),
+            None => {
+                let epics = tickets.epics;
+                let standing = *tickets.outside.entry(blocker.get()).or_insert_with(|| {
+                    board.standing(blocker).ok().map(|standing| {
+                        finished_epic_standing(blocker, standing.into(), epics).standing
+                    })
                 });
+                let state = if standing == Some(Standing::Done) {
+                    LineState::Done
+                } else {
+                    LineState::NotStarted
+                };
+                (state, standing)
+            }
+        };
+        let reason = match standing {
+            Some(Standing::ClosedNotPlanned) => Some(DeadReason::ClosedNotPlanned),
+            Some(Standing::Missing) => Some(DeadReason::NotAnIssue),
+            _ => None,
+        };
+        if let Some(reason) = reason.filter(|_| task.standing == Standing::Open) {
+            tickets.dead.push(DeadLine {
+                blocker: blocker.get(),
+                on: task.number.get(),
+                reason: reason.to_string(),
+            });
+        }
         named.push(LineBlocker {
             number: blocker.get(),
             title,
@@ -230,6 +274,11 @@ fn line_task(
         blocked_by: named,
         question: first_on(questions, task.number.get()),
         issue_url,
+        waits: place.map(|place| match place {
+            Place::Waiting(waits) => waits.iter().map(WaitState::from).collect(),
+            Place::Running(_) | Place::InLane { .. } | Place::Done => Vec::new(),
+        }),
+        cost: tickets.costs.get(&task.number.get()).copied(),
     }
 }
 

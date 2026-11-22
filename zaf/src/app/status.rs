@@ -23,6 +23,8 @@ use std::time::SystemTime;
 
 use super::epic::EpicLine;
 use super::guard::{self, GuardError, GuardState};
+use super::hub::next::{Inbox, InboxEpic, InboxTask, NextItem, NextKind, items};
+use super::hub::state::{Problem, QuestionState, ReleaseDueState, WaitState, WatchState};
 use super::profile::{StaleProfile, stale_line};
 use super::release::DueRelease;
 use super::schedule::gather::Gathered;
@@ -30,9 +32,10 @@ use super::schedule::shadow;
 use super::schedule::trace::ShortPlace;
 use super::spawn::{self, blockers, blockers::DeadLine};
 use crate::domain::schedule::Place;
+use crate::domain::screen::{Line, Meaning, Text, clean};
 use crate::domain::{
-    Budget, DEFAULT_RESERVE, Mebibytes, SLOTS_DIR, SizeTable, SlotRecord, TaskTemplate, Ticket,
-    TicketId, TicketSummary, Units,
+    Budget, DEFAULT_RESERVE, Epic, EpicStage, Mebibytes, SLOTS_DIR, SizeTable, SlotRecord,
+    TaskTemplate, Ticket, TicketId, TicketSummary, Units,
 };
 use crate::ports::{Board, ClaimRecord, Holder, MachineInstance, NewQuestion, PortError, live_use};
 
@@ -248,12 +251,20 @@ pub struct Status {
     pub cycles: Vec<Vec<u64>>,
     /// Blockers those tasks name that never close.
     pub dead_blockers: Vec<DeadLine>,
+    /// What the Engineer must look at on the board, as the hub's Problems read it: an open epic
+    /// whose every task was dropped (`kind` `every_task_dropped`).
+    pub problems: Vec<Problem>,
     /// Every live zaf instance on the machine, from any project; empty until
     /// [`Status::with_machine`] gives the process table's read.
     pub machine: Machine,
     /// The machine budget against the live use; no machine cap until
     /// [`Status::with_budget`] gives the manifest's.
     pub budget: BudgetLine,
+    /// What the item rules of the Next for you list read, gathered as the screen is: the epics
+    /// with their links, releases and waits, the questions with their doors and links, the
+    /// scheduler's state and the releases due. [`Status::needs_you`] builds the items from it.
+    #[serde(skip)]
+    inbox: Inbox,
 }
 
 /// The machine budget and how much of it the live instances use, read when asked and never
@@ -360,6 +371,19 @@ fn spawn_error(error: spawn::SpawnError) -> StatusError {
     }
 }
 
+/// [`status`] over the open epics and questions `board` lists, read here once: what a test that
+/// has no verb above it to read them uses.
+#[cfg(test)]
+pub(crate) fn status_listing(
+    board: &dyn Board,
+    state_dir: &Path,
+    slots: u32,
+    alive: &dyn Fn(&Holder) -> bool,
+) -> Result<Status, StatusError> {
+    let (epics, questions) = super::schedule::gather::read_lists(board)?;
+    status(board, state_dir, slots, alive, &epics, &questions)
+}
+
 /// Reads the board, the run folders and `guard.json` into one screen; `alive` says whether a
 /// recorded process still runs.
 pub fn status(
@@ -367,15 +391,17 @@ pub fn status(
     state_dir: &Path,
     slots: u32,
     alive: &dyn Fn(&Holder) -> bool,
+    trees: &[Epic],
+    open_questions: &[Ticket],
 ) -> Result<Status, StatusError> {
     let (state, runs) = read_spawn_state(state_dir, alive)?;
-    let epics = match board.epics() {
-        Ok(epics) => epics.iter().map(EpicLine::from).collect(),
-        Err(PortError::Rejected(_)) => Vec::new(),
-        Err(error) => return Err(error.into()),
-    };
+    let epics = trees.iter().map(EpicLine::from).collect();
+    let problems: Vec<Problem> = trees
+        .iter()
+        .filter_map(Problem::every_task_dropped)
+        .collect();
     let ready_tickets = board.ready()?;
-    let found = blockers::read(board, &ready_tickets)?;
+    let found = blockers::read(board, &ready_tickets, trees)?;
     let cycles = blockers::cycles(&found.graph)
         .iter()
         .map(|cycle| blockers::cycle_numbers(cycle))
@@ -412,9 +438,25 @@ pub fn status(
         .map(claim_line)
         .collect();
     let orphaned = orphaned_claims.into_iter().map(claim_line).collect();
-    let open_questions = board.questions()?;
     let questions = open_questions.iter().map(Ticket::summary).collect();
     let question_details = open_questions.iter().map(QuestionDetail::of).collect();
+    // A board that cannot tell the doors shows every question as a two-way one.
+    let doors = board.open_doors().unwrap_or_default();
+    let inbox = Inbox {
+        epics: trees.iter().map(|tree| inbox_epic(board, tree)).collect(),
+        questions: open_questions
+            .iter()
+            .map(|ticket| QuestionState {
+                number: ticket.id.get(),
+                raised_on: NewQuestion::raised_on(ticket.body.as_str()).map(TicketId::get),
+                text: NewQuestion::text_of(ticket).trim().to_owned(),
+                door: doors.contains(&ticket.id),
+                url: Some(ticket.url.to_string()).filter(|url| !url.is_empty()),
+            })
+            .collect(),
+        watch: Some(WatchState::read(state_dir, alive)),
+        ..Inbox::default()
+    };
     // A batch of tasks shares one instance and one slot; the state counts them.
     let phases: Vec<PhaseLine> = spawn::live_phases(state_dir, alive)
         .map_err(spawn_error)?
@@ -459,9 +501,43 @@ pub fn status(
         stale: Vec::new(),
         cycles,
         dead_blockers,
+        problems,
         machine: Machine::default(),
         budget: BudgetLine::default(),
+        inbox,
     })
+}
+
+/// An epic as the item rules read it. An unsigned epic carries the link its signer opens, which
+/// the board gives for one read of the epic's issue; a read that fails shows none.
+fn inbox_epic(board: &dyn Board, tree: &Epic) -> InboxEpic {
+    let (done, total) = tree.tally();
+    let stage = tree.stage();
+    InboxEpic {
+        number: tree.id.get(),
+        title: tree.title.to_string(),
+        stage,
+        release: tree.release().map(str::to_owned),
+        url: (stage == EpicStage::Unsigned)
+            .then(|| {
+                board
+                    .task(tree.id)
+                    .ok()
+                    .map(|ticket| ticket.url.to_string())
+            })
+            .flatten()
+            .filter(|url| !url.is_empty()),
+        done: u32::try_from(done).unwrap_or(u32::MAX),
+        total: u32::try_from(total).unwrap_or(u32::MAX),
+        tasks: tree
+            .tasks
+            .iter()
+            .map(|task| InboxTask {
+                number: task.number.get(),
+                waits: Vec::new(),
+            })
+            .collect(),
+    }
 }
 
 /// The live records of `.zaf/slots/`, oldest first. A record whose process is gone is
@@ -498,13 +574,43 @@ fn read_slots(state_dir: &Path, alive: &dyn Fn(&Holder) -> bool) -> Vec<SlotLine
     live
 }
 
-fn numbers(lines: impl Iterator<Item = u64>) -> String {
-    let list: Vec<String> = lines.map(|number| format!("#{number}")).collect();
-    if list.is_empty() {
-        String::new()
+/// A piece of a line: `text`, meaning `meaning`.
+fn piece(meaning: Meaning, text: impl Into<Text>) -> (Meaning, Text) {
+    (meaning, text.into())
+}
+
+/// The word that opens a line, with the spaces that align what follows.
+fn label(text: &str) -> (Meaning, Text) {
+    piece(Meaning::Bold, text)
+}
+
+/// A count: dim when it is zero.
+fn count(number: impl std::fmt::Display) -> (Meaning, Text) {
+    let text = number.to_string();
+    let meaning = if text == "0" {
+        Meaning::Dim
     } else {
-        format!(" ({})", list.join(" "))
+        Meaning::Noun
+    };
+    piece(meaning, text)
+}
+
+/// A task's id, `#12`.
+fn task_id(number: u64) -> (Meaning, Text) {
+    piece(Meaning::Noun, format!("#{number}"))
+}
+
+/// ` (#1 #2)` as pieces, or none for no number.
+fn numbers(lines: impl Iterator<Item = u64>) -> Vec<(Meaning, Text)> {
+    let mut out = Vec::new();
+    for (index, number) in lines.enumerate() {
+        out.push(piece(Meaning::Dim, if index == 0 { " (" } else { " " }));
+        out.push(task_id(number));
     }
+    if !out.is_empty() {
+        out.push(piece(Meaning::Dim, ")"));
+    }
+    out
 }
 
 impl Status {
@@ -559,10 +665,22 @@ impl Status {
                         self.ready.push(ticket.summary());
                     }
                 }
-                Place::Waiting(_) => waiting.push(WaitingLine {
-                    task: placed.ticket.get(),
-                    on: ShortPlace::of(&placed.place).to_string(),
-                }),
+                Place::Waiting(waits) => {
+                    waiting.push(WaitingLine {
+                        task: placed.ticket.get(),
+                        on: ShortPlace::of(&placed.place).to_string(),
+                    });
+                    let waits: Vec<WaitState> = waits.iter().map(WaitState::from).collect();
+                    for task in self
+                        .inbox
+                        .epics
+                        .iter_mut()
+                        .flat_map(|epic| &mut epic.tasks)
+                        .filter(|task| task.number == placed.ticket.get())
+                    {
+                        task.waits.clone_from(&waits);
+                    }
+                }
                 Place::Running(_) | Place::Done => {}
             }
         }
@@ -575,7 +693,33 @@ impl Status {
     #[must_use]
     pub fn with_releases(mut self, due: &[DueRelease]) -> Self {
         self.releases = due.iter().map(ReleaseLine::from).collect();
+        self.inbox.releases_due = due.iter().map(ReleaseDueState::from).collect();
         self
+    }
+
+    /// The screen with the project's name and root, which the items' titles and commands name.
+    #[must_use]
+    pub fn with_project(mut self, name: &str, root: &Path) -> Self {
+        name.clone_into(&mut self.inbox.project);
+        root.clone_into(&mut self.inbox.root);
+        self
+    }
+
+    /// What waits on the Engineer, from what the screen already read and nothing more: the same
+    /// items, in the same order, as the chair's inbox gives for the project
+    /// ([`next_for_project`](crate::app::hub::next::next_for_project)). The ready queue is the
+    /// screen's `ready` (the tickets in the lane once the placement is read, else the labelled
+    /// ones that parse or not); the problems stay empty, `zaf status` shows them in its own block.
+    pub fn needs_you(&self) -> Vec<NextItem> {
+        let mut inbox = self.inbox.clone();
+        inbox.ready = self.ready.iter().map(|task| task.number.get()).collect();
+        if self.waiting.is_none() {
+            inbox
+                .ready
+                .extend(self.unparsed.iter().map(|task| task.number));
+            inbox.ready.sort_unstable();
+        }
+        items(&inbox)
     }
 
     /// The screen with the profiles `profile::stale` names.
@@ -585,170 +729,416 @@ impl Status {
         self
     }
 
-    /// The screen as text.
+    /// The screen as text: [`Self::lines`] with no colour.
     pub fn render_text(&self) -> String {
         self.render(false)
     }
 
     /// The screen as text; with `more`, each open question in full, where it was raised and the
-    /// command that rules it.
+    /// command that rules it. It is [`Self::lines`] drawn with no colour: each line's pieces
+    /// joined and ended by a newline.
     pub fn render(&self, more: bool) -> String {
         let mut out = String::new();
-        let mut line = |text: String| {
-            out.push_str(&text);
+        for line in self.lines(more) {
+            for (_, text) in &line {
+                out.push_str(text.as_str());
+            }
             out.push('\n');
+        }
+        out
+    }
+
+    /// The screen as lines, each piece with what it means: ids and paths are nouns, commands
+    /// verbs, zero counts dim, questions, a due release and unsigned epics waiting, problems
+    /// failed and done epics done. Every piece holds its own spaces, so a plain line is its
+    /// pieces joined. Text the board wrote goes through [`clean`].
+    ///
+    /// The blocks come in D23's order: what needs the Engineer (the lines of
+    /// [`Self::needs_you`]'s items, in its order), the problems, what is running, the ready,
+    /// waiting and claimed tasks, then the epics, slots, machine, budget and guard.
+    pub fn lines(&self, more: bool) -> Vec<Line> {
+        let mut out: Vec<Line> = Vec::new();
+        let placed = self.needs_you_lines(more, &mut out);
+        self.orphaned_lines(&mut out);
+        self.unparsed_lines(&mut out);
+        self.trouble_lines(&mut out);
+        self.running_lines(&mut out);
+        self.ready_lines(more, &mut out);
+        self.waiting_lines(more, &mut out);
+        self.claimed_lines(&mut out);
+        for epic in self
+            .epics
+            .iter()
+            .filter(|epic| !placed.contains(&epic.number.get()))
+        {
+            out.push(Self::epic_line(epic));
+        }
+        self.board_lines(&mut out);
+        out
+    }
+
+    /// The first block: the open questions' count, then the line of each of
+    /// [`Self::needs_you`]'s items in its order (an epic to sign, a question or a door, a release
+    /// phase due), each line as it always read. A question or a release no item names follows, so
+    /// no line is lost. It returns the epics it drew.
+    fn needs_you_lines(&self, more: bool, out: &mut Vec<Line>) -> BTreeSet<u64> {
+        let asked = if self.questions.is_empty() {
+            Meaning::Bold
+        } else {
+            Meaning::Waiting
         };
-        for epic in &self.epics {
-            line(format!("epic      {}", epic.render()));
+        let mut line = vec![piece(asked, "questions "), count(self.questions.len())];
+        line.extend(numbers(self.questions.iter().map(|q| q.number.get())));
+        out.push(line);
+        let mut epics = BTreeSet::new();
+        let mut questions = BTreeSet::new();
+        let mut releases = BTreeSet::new();
+        for item in self.needs_you() {
+            match item.kind {
+                NextKind::Sign => {
+                    let epic = self
+                        .epics
+                        .iter()
+                        .find(|epic| Some(epic.number.get()) == item.number);
+                    if let Some(epic) = epic.filter(|epic| epics.insert(epic.number.get())) {
+                        out.push(Self::epic_line(epic));
+                    }
+                }
+                NextKind::Question | NextKind::Door | NextKind::Failed => {
+                    let question = self
+                        .questions
+                        .iter()
+                        .find(|question| Some(question.number.get()) == item.number);
+                    if let Some(question) =
+                        question.filter(|question| questions.insert(question.number.get()))
+                    {
+                        self.question_lines(question, more, out);
+                    }
+                }
+                NextKind::Phase => {
+                    let release = self.releases.iter().enumerate().find(|(index, release)| {
+                        !releases.contains(index)
+                            && item
+                                .title
+                                .starts_with(&format!("Release {}:", release.version))
+                    });
+                    if let Some((index, release)) = release {
+                        releases.insert(index);
+                        out.push(Self::release_line(release));
+                    }
+                }
+                NextKind::Unticked | NextKind::Broken => {}
+            }
         }
-        for release in &self.releases {
-            line(format!(
-                "release {}: {} due, run {}",
-                release.version, release.phase, release.command
-            ));
+        for question in &self.questions {
+            if questions.insert(question.number.get()) {
+                self.question_lines(question, more, out);
+            }
         }
-        line(format!(
-            "ready     {}{}",
-            self.ready.len(),
-            numbers(self.ready.iter().map(|t| t.number.get()))
-        ));
+        for (index, release) in self.releases.iter().enumerate() {
+            if releases.insert(index) {
+                out.push(Self::release_line(release));
+            }
+        }
+        epics
+    }
+
+    /// An epic's line: its number, stage and progress, its title.
+    fn epic_line(epic: &EpicLine) -> Line {
+        let stage = match epic.stage {
+            EpicStage::Unsigned => Meaning::Waiting,
+            EpicStage::Done => Meaning::Done,
+            _ => Meaning::Dim,
+        };
+        let mut line = vec![
+            label("epic      "),
+            piece(Meaning::Noun, epic.number.to_string()),
+            piece(Meaning::Dim, " "),
+            piece(stage, epic.stage.to_string()),
+        ];
+        if epic.signature_void {
+            line.push(piece(Meaning::Waiting, " (edited since signed)"));
+        }
+        line.extend([
+            piece(Meaning::Dim, " "),
+            count(epic.done),
+            piece(Meaning::Dim, " of "),
+            count(epic.total),
+            piece(Meaning::Dim, "  "),
+            piece(Meaning::Noun, clean(epic.title.as_str())),
+        ]);
+        line
+    }
+
+    /// A due release's line.
+    fn release_line(release: &ReleaseLine) -> Line {
+        vec![
+            piece(Meaning::Waiting, "release "),
+            piece(Meaning::Noun, release.version.clone()),
+            piece(Meaning::Waiting, ": "),
+            piece(Meaning::Waiting, release.phase.clone()),
+            piece(Meaning::Waiting, " due, run "),
+            piece(Meaning::Verb, release.command.clone()),
+        ]
+    }
+
+    /// The ready tasks, and with `more` what each does next.
+    fn ready_lines(&self, more: bool, out: &mut Vec<Line>) {
+        let mut line = vec![label("ready     "), count(self.ready.len())];
+        line.extend(numbers(self.ready.iter().map(|t| t.number.get())));
+        out.push(line);
         if more {
             for lane in &self.lane {
-                line(format!("  #{} {}", lane.task, lane.next));
+                out.push(vec![
+                    piece(Meaning::Dim, "  "),
+                    task_id(lane.task),
+                    piece(Meaning::Dim, " "),
+                    piece(Meaning::Verb, lane.next.clone()),
+                ]);
             }
         }
+    }
+
+    /// The ready tasks that do not parse, each with what is wrong.
+    fn unparsed_lines(&self, out: &mut Vec<Line>) {
         if !self.unparsed.is_empty() {
-            line("Ready, does not parse:".to_owned());
+            out.push(vec![piece(Meaning::Failed, "Ready, does not parse:")]);
             for task in &self.unparsed {
-                line(format!("  #{} {}", task.number, task.title));
+                out.push(vec![
+                    piece(Meaning::Dim, "  "),
+                    task_id(task.number),
+                    piece(Meaning::Dim, " "),
+                    piece(Meaning::Noun, clean(&task.title)),
+                ]);
                 for problem in &task.problems {
-                    line(format!("    {problem}"));
+                    out.push(vec![
+                        piece(Meaning::Dim, "    "),
+                        piece(Meaning::Failed, clean(problem)),
+                    ]);
                 }
             }
         }
+    }
+
+    /// The waiting tasks, and with `more` what each waits on.
+    fn waiting_lines(&self, more: bool, out: &mut Vec<Line>) {
         if let Some(waiting) = &self.waiting {
-            line(format!(
-                "waiting   {}{}",
-                waiting.len(),
-                numbers(waiting.iter().map(|w| w.task))
-            ));
+            let mut line = vec![label("waiting   "), count(waiting.len())];
+            line.extend(numbers(waiting.iter().map(|w| w.task)));
+            out.push(line);
             if more {
                 for wait in waiting {
-                    line(format!("  #{} {}", wait.task, wait.on));
+                    out.push(vec![
+                        piece(Meaning::Dim, "  "),
+                        task_id(wait.task),
+                        piece(Meaning::Dim, " "),
+                        piece(Meaning::Dim, wait.on.clone()),
+                    ]);
                 }
             }
         }
-        line(format!(
-            "claimed   {}{}",
-            self.claimed.len(),
-            numbers(self.claimed.iter().map(|c| c.task))
-        ));
+    }
+
+    /// The claimed tasks.
+    fn claimed_lines(&self, out: &mut Vec<Line>) {
+        let mut line = vec![label("claimed   "), count(self.claimed.len())];
+        line.extend(numbers(self.claimed.iter().map(|c| c.task)));
+        out.push(line);
+    }
+
+    /// The claims whose instance is gone.
+    fn orphaned_lines(&self, out: &mut Vec<Line>) {
         if !self.orphaned.is_empty() {
-            line(format!(
-                "orphaned  {}{}",
-                self.orphaned.len(),
-                numbers(self.orphaned.iter().map(|c| c.task))
-            ));
+            let mut line = vec![
+                piece(Meaning::Failed, "orphaned  "),
+                count(self.orphaned.len()),
+            ];
+            line.extend(numbers(self.orphaned.iter().map(|c| c.task)));
+            out.push(line);
         }
-        line(format!(
-            "questions {}{}",
-            self.questions.len(),
-            numbers(self.questions.iter().map(|q| q.number.get()))
-        ));
-        line(format!("running   {}", self.running_count));
+    }
+
+    /// What runs now: the count, each phase and each instance.
+    fn running_lines(&self, out: &mut Vec<Line>) {
+        out.push(vec![label("running   "), count(self.running_count)]);
         for phase in &self.phases {
-            let epic = phase
-                .epic
-                .map_or_else(String::new, |epic| format!(" (epic #{epic})"));
-            line(format!("  {} #{}{epic}", phase.action, phase.task));
+            let mut line = vec![
+                piece(Meaning::Dim, "  "),
+                piece(Meaning::Verb, phase.action.to_string()),
+                piece(Meaning::Dim, " "),
+                task_id(phase.task),
+            ];
+            if let Some(epic) = phase.epic {
+                line.push(piece(Meaning::Dim, " (epic "));
+                line.push(task_id(epic));
+                line.push(piece(Meaning::Dim, ")"));
+            }
+            out.push(line);
         }
         for instance in &self.instances {
-            let tasks: Vec<String> = instance
-                .tasks
-                .iter()
-                .map(|task| format!("#{task}"))
-                .collect();
-            if tasks.is_empty() {
-                line(format!("  {}", instance.instance));
-            } else {
-                line(format!("  {}: {}", instance.instance, tasks.join(" ")));
+            let mut line = vec![
+                piece(Meaning::Dim, "  "),
+                piece(Meaning::Noun, instance.instance.to_string()),
+            ];
+            for (index, task) in instance.tasks.iter().enumerate() {
+                line.push(piece(Meaning::Dim, if index == 0 { ": " } else { " " }));
+                line.push(task_id(*task));
             }
+            out.push(line);
         }
-        line(format!(
-            "slots     {} free of {}",
-            self.slots.free, self.slots.total
-        ));
+    }
+
+    /// The slots, the machine, the budget and the guard (a red guard went with the problems).
+    fn board_lines(&self, out: &mut Vec<Line>) {
+        out.push(vec![
+            label("slots     "),
+            count(self.slots.free),
+            piece(Meaning::Dim, " free of "),
+            count(self.slots.total),
+        ]);
         for held in &self.held_slots {
-            line(format!(
-                "slot: {} {} since {}",
-                held.holder, held.level, held.since
-            ));
+            out.push(vec![
+                label("slot: "),
+                piece(Meaning::Noun, held.holder.to_string()),
+                piece(Meaning::Dim, " "),
+                piece(Meaning::Dim, held.level.to_string()),
+                piece(Meaning::Dim, " since "),
+                piece(Meaning::Noun, held.since.to_string()),
+            ]);
         }
-        line(format!(
-            "machine: {} instances in {} projects, {} units in use",
-            self.machine.instances.len(),
-            self.machine.projects,
-            self.machine.in_use
-        ));
-        line(match self.budget.units {
-            Some(units) => format!(
-                "budget {} of {units} units, reserve {}",
-                self.budget.in_use, self.budget.reserve
-            ),
-            None => "budget: no machine cap".to_owned(),
+        out.push(vec![
+            label("machine: "),
+            count(self.machine.instances.len()),
+            piece(Meaning::Dim, " instances in "),
+            count(self.machine.projects),
+            piece(Meaning::Dim, " projects, "),
+            count(self.machine.in_use),
+            piece(Meaning::Dim, " units in use"),
+        ]);
+        out.push(match self.budget.units {
+            Some(units) => vec![
+                label("budget "),
+                count(self.budget.in_use),
+                piece(Meaning::Dim, " of "),
+                piece(Meaning::Noun, units.to_string()),
+                piece(Meaning::Dim, " units, reserve "),
+                count(self.budget.reserve),
+            ],
+            None => vec![label("budget: "), piece(Meaning::Dim, "no machine cap")],
         });
-        line(format!(
-            "guard     {}",
-            self.guard.as_ref().map_or(
-                "not computed (run `zaf guard`)".to_owned(),
-                GuardState::line
-            )
-        ));
+        if !self.guard_stopped() {
+            out.push(self.guard_line());
+        }
+    }
+
+    /// Whether the guard is red: its line is a problem and goes with them.
+    fn guard_stopped(&self) -> bool {
+        self.guard
+            .as_ref()
+            .is_some_and(|guard| guard.level == guard::Level::Red)
+    }
+
+    /// The guard's line.
+    fn guard_line(&self) -> Line {
+        let mut line = vec![label("guard     ")];
+        match &self.guard {
+            Some(guard) => {
+                let meaning = if guard.level == guard::Level::Red {
+                    Meaning::Failed
+                } else {
+                    Meaning::Noun
+                };
+                line.push(piece(meaning, guard.line()));
+            }
+            None => line.extend([
+                piece(Meaning::Dim, "not computed (run "),
+                piece(Meaning::Verb, "`zaf guard`"),
+                piece(Meaning::Dim, ")"),
+            ]),
+        }
+        line
+    }
+
+    /// The problems that are not an orphan or a ready task that does not parse: stale profiles,
+    /// cycles, dead blockers, the board's problems and the guard's stop.
+    fn trouble_lines(&self, out: &mut Vec<Line>) {
         if let Some(stale) = stale_line(&self.stale) {
-            line(stale);
+            out.push(vec![piece(Meaning::Failed, stale)]);
         }
         for cycle in &self.cycles {
             let tasks: Vec<TicketId> = cycle.iter().copied().map(TicketId::from).collect();
-            line(format!("blocker cycle: {}", blockers::render_cycle(&tasks)));
+            out.push(vec![
+                piece(Meaning::Failed, "blocker cycle: "),
+                piece(Meaning::Failed, blockers::render_cycle(&tasks)),
+            ]);
         }
         for dead in &self.dead_blockers {
-            line(format!(
-                "dead blocker #{} on #{}: {}",
-                dead.blocker, dead.on, dead.reason
-            ));
+            out.push(vec![
+                piece(Meaning::Failed, "dead blocker "),
+                task_id(dead.blocker),
+                piece(Meaning::Failed, " on "),
+                task_id(dead.on),
+                piece(Meaning::Failed, ": "),
+                piece(Meaning::Failed, clean(&dead.reason)),
+            ]);
         }
-        for question in &self.questions {
-            let detail = self
-                .question_details
-                .iter()
-                .find(|detail| detail.number == question.number.get());
-            let cut = detail.is_some_and(|detail| detail.text != question.title.as_str());
-            if !more {
-                let mark = if cut { " …" } else { "" };
-                line(format!(
-                    "question  {} {}{mark}",
-                    question.number, question.title
-                ));
-                continue;
-            }
-            line(format!("question  {}", question.number));
-            let text = detail.map_or(question.title.as_str(), |detail| detail.text.as_str());
-            for text_line in text.lines() {
-                line(if text_line.is_empty() {
-                    String::new()
-                } else {
-                    format!("  {text_line}")
-                });
-            }
-            if let Some(on) = detail.and_then(|detail| detail.raised_on) {
-                line(format!("  raised on #{on}"));
-            }
-            line(format!(
-                "  rule it: zaf board ruling {} '<answer>'",
-                question.number.get()
-            ));
+        for problem in &self.problems {
+            out.push(vec![
+                piece(Meaning::Failed, "problem   "),
+                piece(Meaning::Failed, clean(&problem.detail)),
+            ]);
         }
-        out
+        if self.guard_stopped() {
+            out.push(self.guard_line());
+        }
+    }
+
+    /// One open question: its line, or with `more` its whole text, where it was raised and the
+    /// command that rules it.
+    fn question_lines(&self, question: &TicketSummary, more: bool, out: &mut Vec<Line>) {
+        let detail = self
+            .question_details
+            .iter()
+            .find(|detail| detail.number == question.number.get());
+        let cut = detail.is_some_and(|detail| detail.text != question.title.as_str());
+        if !more {
+            let mut line = vec![
+                piece(Meaning::Waiting, "question  "),
+                piece(Meaning::Noun, question.number.to_string()),
+                piece(Meaning::Dim, " "),
+                piece(Meaning::Waiting, clean(question.title.as_str())),
+            ];
+            if cut {
+                line.push(piece(Meaning::Dim, " …"));
+            }
+            out.push(line);
+            return;
+        }
+        out.push(vec![
+            piece(Meaning::Waiting, "question  "),
+            piece(Meaning::Noun, question.number.to_string()),
+        ]);
+        let text = detail.map_or(question.title.as_str(), |detail| detail.text.as_str());
+        for text_line in text.lines() {
+            out.push(if text_line.is_empty() {
+                Vec::new()
+            } else {
+                vec![
+                    piece(Meaning::Dim, "  "),
+                    piece(Meaning::Waiting, clean(text_line)),
+                ]
+            });
+        }
+        if let Some(on) = detail.and_then(|detail| detail.raised_on) {
+            out.push(vec![piece(Meaning::Dim, "  raised on "), task_id(on)]);
+        }
+        out.push(vec![
+            piece(Meaning::Dim, "  rule it: "),
+            piece(
+                Meaning::Verb,
+                format!("zaf board ruling {} '<answer>'", question.number.get()),
+            ),
+        ]);
     }
 
     /// The whole screen as JSON for the spawner.

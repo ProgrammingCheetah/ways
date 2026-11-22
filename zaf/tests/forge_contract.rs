@@ -15,11 +15,13 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
-use zaf::adapters::forgejo::{ForgejoApi, ForgejoForge, Method};
+use zaf::adapters::forgejo::{ForgejoApi, ForgejoCiFilter, ForgejoForge, Method};
+use zaf::domain::{PullRequestFilter, RepoPath};
+use zaf::fakes::{FakeCiFilter, FakeForge};
 use zaf::manifest::{EnvVarName, ForgeUrl, RepoName};
 use zaf::ports::{
-    BranchName, CheckBucket, CheckLink, CheckLog, CheckState, CommitId, Forge, MergeOutcome,
-    MergeStrategy, NewPullRequest, Opened, PortError, PrBody, PrTitle,
+    BranchName, ChangedFiles, CheckBucket, CheckLink, CheckLog, CheckState, CiFilter, CommitId,
+    Forge, MergeOutcome, MergeStrategy, NewPullRequest, Opened, PortError, PrBody, PrTitle,
 };
 
 /// The environment variable naming the Forgejo instance.
@@ -234,8 +236,14 @@ fn a_forgejo_pull_request_opens_reports_its_checks_takes_a_handoff_and_merges() 
 
     let open = forge.pull_request(pr).expect("the pull request reads");
     assert_eq!(open.merged_at, None);
+    assert_eq!(open.head, Some(sha.clone()), "the one read gives the head");
+    assert!(!open.merged);
+    assert_eq!(forge.checks_at(pr, open.head.as_deref()), forge.checks(pr));
     assert_eq!(forge.merged(pr), Ok(false));
-    assert_eq!(forge.last_changed_file(pr), Ok(Some(path.clone())));
+    assert_eq!(
+        forge.changed_files(pr),
+        Ok(ChangedFiles::complete(vec![RepoPath::from(path.as_str())]))
+    );
     assert_eq!(forge.review_comments(pr), Ok(Vec::new()));
     assert_eq!(forge.scanning_alerts(pr), Ok(Vec::new()));
 
@@ -283,6 +291,7 @@ fn a_forgejo_pull_request_opens_reports_its_checks_takes_a_handoff_and_merges() 
     );
     assert_eq!(forge.merged(pr), Ok(true));
     let merged = forge.pull_request(pr).expect("the pull request reads");
+    assert!(merged.merged);
     assert!(merged.merged_at.is_some());
     assert!(merged.merged_at >= Some(merged.opened_at));
 
@@ -292,6 +301,47 @@ fn a_forgejo_pull_request_opens_reports_its_checks_takes_a_handoff_and_merges() 
     assert!(matches!(gone, Err(PortError::NotFound(_))), "{gone:?}");
 }
 
+/// A pull request on the fake forge.
+fn fake_pull(forge: &FakeForge) -> zaf::ports::PrNumber {
+    let request = NewPullRequest {
+        head: BranchName::from("feature/v1-1-2"),
+        base: BranchName::from("main"),
+        title: PrTitle::from("a change"),
+        body: PrBody::from("a body"),
+    };
+    match forge.open_pull_request(&request).expect("it opens") {
+        Opened::New(pr) | Opened::AlreadyOpen(pr) => pr.number,
+    }
+}
+
+#[test]
+fn changed_files_lists_a_rename_under_both_names() {
+    let forge = FakeForge::default();
+    let pr = fake_pull(&forge);
+    forge
+        .set_changed_files(pr, &["README.md", "zaf/x.rs", "docs/x.rs"])
+        .expect("files");
+    let listed = forge.changed_files(pr).expect("the files read");
+    let names: Vec<&str> = listed.paths.iter().map(RepoPath::as_str).collect();
+    assert_eq!(names, ["README.md", "zaf/x.rs", "docs/x.rs"]);
+    assert!(!listed.cut_short);
+    assert_eq!(listed.last().map(RepoPath::as_str), Some("docs/x.rs"));
+}
+
+#[test]
+fn changed_files_reads_past_one_page() {
+    let forge = FakeForge::default();
+    let pr = fake_pull(&forge);
+    let names: Vec<String> = (0..130).map(|at| format!("src/file{at}.rs")).collect();
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    forge.set_changed_files(pr, &refs).expect("files");
+    let listed = forge.changed_files(pr).expect("the files read");
+    assert_eq!(listed.paths.len(), 130);
+    assert!(!listed.cut_short);
+    forge.set_changed_files_cut_short(pr, true).expect("cut");
+    assert!(forge.changed_files(pr).expect("read").cut_short);
+}
+
 #[test]
 fn base64_is_the_standard_alphabet_with_padding() {
     assert_eq!(base64(b""), "");
@@ -299,4 +349,183 @@ fn base64_is_the_standard_alphabet_with_padding() {
     assert_eq!(base64(b"fo"), "Zm8=");
     assert_eq!(base64(b"foo"), "Zm9v");
     assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+}
+
+/// The folder Forgejo Actions reads workflows from.
+const WORKFLOWS: &str = ".forgejo/workflows";
+
+/// Two branches the contract made on the scratch repository, removed when it ends: a base with a
+/// `.yml` and a `.yaml` workflow, and a head off it that adds a third file the base does not have.
+struct Scene {
+    api: ForgejoApi,
+    base: String,
+    head: String,
+    base_paths: [String; 2],
+    head_path: String,
+}
+
+impl Drop for Scene {
+    fn drop(&mut self) {
+        for branch in [&self.head, &self.base] {
+            let _ = self
+                .api
+                .probe(Method::Delete, &format!("branches/{branch}"), None);
+        }
+    }
+}
+
+/// Writes `path` on `from`, on a new branch named `new_branch` when one is given.
+fn write_file(api: &ForgejoApi, path: &str, text: &str, from: &str, new_branch: Option<&str>) {
+    let mut body = json!({
+        "content": base64(text.as_bytes()),
+        "message": "zaf forge contract: a workflow",
+        "branch": from,
+    });
+    if let Some(name) = new_branch {
+        body["new_branch"] = json!(name);
+    }
+    let reply = api
+        .probe(Method::Post, &format!("contents/{path}"), Some(&body))
+        .expect("the file posts");
+    assert_eq!(reply.status, 201, "writing {path}: {}", reply.message());
+}
+
+fn forgejo_scene(api: &ForgejoApi) -> Scene {
+    let default = api
+        .get::<Value>("")
+        .expect("the repository reads")
+        .get("default_branch")
+        .and_then(Value::as_str)
+        .expect("a default branch")
+        .to_owned();
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("after the epoch")
+        .as_nanos();
+    let id = format!("{}-{stamp}", std::process::id());
+    let scene = Scene {
+        api: api.clone(),
+        base: format!("zaf-ci-contract-base-{id}"),
+        head: format!("zaf-ci-contract-head-{id}"),
+        base_paths: [
+            format!("{WORKFLOWS}/zaf-contract-{id}.yml"),
+            format!("{WORKFLOWS}/zaf-contract-{id}.yaml"),
+        ],
+        head_path: format!("{WORKFLOWS}/zaf-contract-head-{id}.yml"),
+    };
+    write_file(
+        api,
+        &scene.base_paths[0],
+        "on: pull_request\njobs: {}\n",
+        &default,
+        Some(&scene.base),
+    );
+    write_file(
+        api,
+        &scene.base_paths[1],
+        "on: push\njobs: {}\n",
+        &scene.base,
+        None,
+    );
+    write_file(
+        api,
+        &scene.head_path,
+        "on: pull_request\njobs: {}\n",
+        &scene.base,
+        Some(&scene.head),
+    );
+    scene
+}
+
+/// The workflow paths `filter` finds at `branch`.
+fn paths_at(filter: &dyn CiFilter, branch: &str) -> Vec<String> {
+    filter
+        .workflows(&BranchName::from(branch))
+        .expect("the workflows read")
+        .into_iter()
+        .map(|workflow| workflow.path.as_str().to_owned())
+        .collect()
+}
+
+#[test]
+fn ci_filter_reads_the_base_not_the_head() {
+    // The fake: a workflow at the base and a different one added on the head.
+    let fake = FakeCiFilter::default();
+    fake.set_workflow(
+        "main",
+        ".forgejo/workflows/base.yml",
+        PullRequestFilter::AnyChange,
+    );
+    fake.set_workflow(
+        "feature/x",
+        ".forgejo/workflows/base.yml",
+        PullRequestFilter::AnyChange,
+    );
+    fake.set_workflow(
+        "feature/x",
+        ".forgejo/workflows/head.yml",
+        PullRequestFilter::NoTrigger,
+    );
+    assert_eq!(paths_at(&fake, "main"), [".forgejo/workflows/base.yml"]);
+
+    // Forgejo, against a real instance when one is named. The GitHub adapter has no scratch
+    // repository to run against: its unit test holds that it reads the base's ref alone.
+    let Some(api) = api_from_env() else {
+        return;
+    };
+    let scene = forgejo_scene(&api);
+    let filter = ForgejoCiFilter::from(api);
+    let at_base = paths_at(&filter, &scene.base);
+    assert!(
+        !at_base.contains(&scene.head_path),
+        "the head's workflow came through: {at_base:?}"
+    );
+    assert!(
+        at_base.contains(&scene.base_paths[0]),
+        "the base's own is missing: {at_base:?}"
+    );
+    let at_head = paths_at(&filter, &scene.head);
+    assert!(at_head.contains(&scene.head_path), "{at_head:?}");
+}
+
+#[test]
+fn ci_filter_reads_yml_and_yaml() {
+    let fake = FakeCiFilter::default();
+    fake.set_workflow(
+        "main",
+        ".forgejo/workflows/a.yml",
+        PullRequestFilter::AnyChange,
+    );
+    fake.set_workflow(
+        "main",
+        ".forgejo/workflows/b.yaml",
+        PullRequestFilter::NoTrigger,
+    );
+    assert_eq!(
+        paths_at(&fake, "main"),
+        [".forgejo/workflows/a.yml", ".forgejo/workflows/b.yaml"]
+    );
+
+    let Some(api) = api_from_env() else {
+        return;
+    };
+    let scene = forgejo_scene(&api);
+    let filter = ForgejoCiFilter::from(api);
+    let found = filter
+        .workflows(&BranchName::from(scene.base.as_str()))
+        .expect("the workflows read");
+    let filter_of = |path: &str| {
+        found
+            .iter()
+            .find(|workflow| workflow.path.as_str() == path)
+            .map(|workflow| workflow.filter.clone())
+    };
+    assert_eq!(
+        filter_of(&scene.base_paths[0]),
+        Some(PullRequestFilter::AnyChange)
+    );
+    assert_eq!(
+        filter_of(&scene.base_paths[1]),
+        Some(PullRequestFilter::NoTrigger)
+    );
 }

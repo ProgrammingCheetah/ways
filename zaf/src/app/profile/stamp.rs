@@ -29,7 +29,7 @@ use std::path::Path;
 
 use super::{GENERATION, generated, home, read_project_rules};
 use crate::domain::Profile;
-use crate::manifest::Manifest;
+use crate::manifest::{Manifest, VcsKind};
 
 /// The stamp file, under a profile's home.
 pub const STAMP_FILE: &str = ".zaf-stamp.json";
@@ -72,7 +72,16 @@ fn digest(text: &str) -> String {
 /// reads counts: the `[requires]` tool names, the gate lines, the forbidden commands, each
 /// role's profile, model and effort, the `[pack]` section and the project's rules.
 pub(super) fn parts(manifest: &Manifest, project_rules: Option<&str>) -> BTreeMap<String, String> {
-    let requires: Vec<String> = manifest.requires.keys().map(ToString::to_string).collect();
+    let mut requires: Vec<String> = manifest.requires.keys().map(ToString::to_string).collect();
+    // A git project's rules differ from a jj or plain one's, so its profile is stale when the
+    // kind changes. Only git adds a word, so every other project's digest stays what it was.
+    if manifest
+        .vcs
+        .as_ref()
+        .is_some_and(|vcs| vcs.kind == VcsKind::Git)
+    {
+        requires.push("[vcs] git".to_owned());
+    }
     let gate = manifest
         .gate
         .as_ref()

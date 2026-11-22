@@ -239,3 +239,66 @@ fn the_fake_board_files_tasks_from_many_threads_with_distinct_ids() {
     let distinct: std::collections::BTreeSet<_> = ids.iter().collect();
     assert_eq!(distinct.len(), 8);
 }
+
+#[test]
+fn fake_epic_task_carries_body_and_url() {
+    let board = FakeBoard::default();
+    board.add_epic(TicketId::from(1), "epic");
+    let mut task = ticket(2);
+    task.epic = Some(TicketId::from(1));
+    task.url = "https://board.invalid/tickets/2".into();
+    board.add_ticket(task);
+    let epics = board.epics().expect("epics");
+    let read = &epics[0].tasks[0];
+    assert_eq!(read.body, "Goal: export the list".into());
+    assert_eq!(read.url, "https://board.invalid/tickets/2".into());
+}
+
+#[test]
+fn fake_board_counts_calls_by_method() {
+    let board = FakeBoard::default();
+    board.add_ticket(ticket(2));
+    board.epics().expect("epics");
+    board.epics().expect("epics");
+    board.task(TicketId::from(2)).expect("task");
+    assert_eq!(board.calls("epics"), 2);
+    assert_eq!(board.calls("task"), 1);
+    assert_eq!(board.calls("claims"), 0);
+    // A scene's own arranging is no port call, and one port call counts once.
+    board.add_epic(TicketId::from(5), "epic");
+    board.epic(TicketId::from(5)).expect("epic");
+    board.standing(TicketId::from(2)).expect("standing");
+    assert_eq!(board.calls("epic"), 1);
+    assert_eq!(board.calls("epics"), 2);
+    assert_eq!(board.calls("standing"), 1);
+    assert_eq!(board.calls("standing_at"), 0);
+}
+
+#[test]
+fn fake_board_reset_clears_counts() {
+    let board = FakeBoard::default();
+    board.add_ticket(ticket(2));
+    board.epics().expect("epics");
+    board.task(TicketId::from(2)).expect("task");
+    board.ready().expect("ready");
+    board.reset_calls();
+    for method in ["epics", "task", "ready"] {
+        assert_eq!(board.calls(method), 0, "{method}");
+    }
+}
+
+#[test]
+fn fake_board_counts_calls_from_threads() {
+    let board = FakeBoard::default();
+    board.add_ticket(ticket(2));
+    std::thread::scope(|scope| {
+        for _ in 0..2 {
+            scope.spawn(|| {
+                for _ in 0..500 {
+                    board.task(TicketId::from(2)).expect("task");
+                }
+            });
+        }
+    });
+    assert_eq!(board.calls("task"), 1000);
+}

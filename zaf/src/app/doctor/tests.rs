@@ -242,7 +242,8 @@ fn a_missing_design_index_fails_and_names_the_path() {
         dir.path().join("docs/index.md").display()
     );
     assert!(report.lines().contains(&missing), "{:?}", report.lines());
-    assert!(report.lines()[0].starts_with("design dir: ok"));
+    assert_eq!(report.lines()[0], missing);
+    assert!(report.lines()[1].starts_with("design dir: ok"));
 }
 
 #[test]
@@ -338,7 +339,7 @@ fn the_workspaces_dir_must_be_creatable() {
     assert!(
         report
             .lines()
-            .last()
+            .first()
             .expect("a line")
             .contains("not creatable")
     );
@@ -973,7 +974,7 @@ fn the_boards_answers_are_lines_and_a_failed_one_fails_the_report() {
 }
 
 #[test]
-fn the_forges_answers_are_lines_after_the_boards_and_a_failed_one_fails_the_report() {
+fn the_forges_answers_are_lines_and_a_failed_one_comes_first_and_fails_the_report() {
     let dir = tempfile::tempdir().expect("temp dir");
     let mut report = doctor(dir.path(), &manifest(""), &FakeCommands::new());
     report.forge = forge_checks(&crate::fakes::FakeForge::default());
@@ -1005,7 +1006,7 @@ fn the_forges_answers_are_lines_after_the_boards_and_a_failed_one_fails_the_repo
                      Forgejo answered 403 forbidden"
         })
         .expect("the forge's token line");
-    assert!(board < forge, "{lines:?}");
+    assert!(forge < board, "{lines:?}");
     assert!(!report.passed());
     let json = serde_json::to_value(&report).expect("serializes");
     assert_eq!(json["forge"][0]["what"], "token");
@@ -1122,4 +1123,61 @@ fn hub_not_installed() {
             .iter()
             .any(|line| line.contains("zaf hub service install"))
     );
+}
+
+/// A report whose design dir (ok) runs before its design index (missing).
+fn passing_then_failing() -> (tempfile::TempDir, Report) {
+    let dir = tempfile::tempdir().expect("temp dir");
+    fs::create_dir(dir.path().join("docs")).expect("design dir");
+    let manifest = manifest("[design]\nkind = \"repo-dir\"\npath = \"docs\"\n");
+    let report = doctor(dir.path(), &manifest, &FakeCommands::new());
+    (dir, report)
+}
+
+#[test]
+fn failures_come_first() {
+    let (dir, report) = passing_then_failing();
+    let lines = report.lines();
+    let missing = format!(
+        "design index not found: {}",
+        dir.path().join("docs/index.md").display()
+    );
+    assert_eq!(lines[0], missing, "{lines:?}");
+    assert!(lines[1].starts_with("design dir: ok"), "{lines:?}");
+}
+
+#[test]
+fn a_failed_checks_problems_stay_under_it() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let manifest = manifest("");
+    let mut report = doctor(dir.path(), &manifest, &FakeCommands::new());
+    report.needed.push(NeededCheck {
+        name: "gone".to_owned(),
+        tier: None,
+        needed_by: vec!["a step".to_owned()],
+        ok: false,
+        problems: vec!["no file".to_owned()],
+    });
+    let lines = report.lines();
+    assert!(
+        lines[0].starts_with("needed gone: no provider"),
+        "{lines:?}"
+    );
+    assert_eq!(lines[1], "  no file", "{lines:?}");
+}
+
+#[test]
+fn reordering_keeps_every_line() {
+    let (_dir, report) = passing_then_failing();
+    let mut shown = report.lines();
+    let mut ran: Vec<String> = report
+        .groups()
+        .iter()
+        .flat_map(|group| &group.lines)
+        .map(plain)
+        .collect();
+    assert_eq!(shown.len(), ran.len());
+    shown.sort();
+    ran.sort();
+    assert_eq!(shown, ran);
 }

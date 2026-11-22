@@ -53,13 +53,13 @@ use crate::app::actions::forbidden_action;
 use crate::app::brief::INTERFACE_PAGE;
 use crate::composition::HOME_VAR;
 use crate::domain::Profile;
-use crate::manifest::{CommandLine, Effort, Manifest, PackSection, RoleSection, ToolName};
+use crate::manifest::{CommandLine, Effort, Manifest, PackSection, RoleSection, ToolName, VcsKind};
 use crate::ports::{GateVerdict, Shell};
 
 /// The generation of what `zaf profile init` writes: raised by hand, and only when that changes
 /// (the settings, the denies, the pack step). Each stamp records it, and a stamp of another
 /// generation, or of none, is stale; a new zaf with the same number leaves profiles current.
-pub const GENERATION: u32 = 1;
+pub const GENERATION: u32 = 5;
 
 /// The folder under the state folder that holds the profiles.
 pub const PROFILES_DIR: &str = "profiles";
@@ -750,10 +750,75 @@ pub const READ_ONLY: [&str; 22] = [
 
 /// The `git` read verbs a colocated repo (a manifest that requires `jj`) allows besides `jj`.
 /// A writing verb (`push`, `commit`, `checkout`, `reset`, ...) is never in this list.
+///
+/// `log`, `show` and `diff` stay although each takes `--output=<file>`, which writes a file;
+/// [`GIT_DENY`] closes that and the global options that move git elsewhere. Why a deny rule can
+/// be trusted to do it, from Claude Code's permissions page (code.claude.com/docs/en/permissions):
+///
+/// - Its "Wildcard patterns" section says a `*` can go anywhere in a rule, at the start, in the
+///   middle or at the end, and its own example `Bash(git log * main)` matches
+///   `git log --output=<file> main`. So `Bash(git * --output*)` matches the flag after any verb,
+///   in `--output=x` and in `--output x`. The same section says a trailing ` *` also matches the
+///   bare command, so `Bash(git status *)` allows a plain `git status`.
+/// - Its "Bash rule" section says a deny rule matches past any leading variable assignment,
+///   while an allow rule does not match past an assignment it does not know. So
+///   `GIT_CONFIG_COUNT=1 git log` is not allowed, and `FOO=1 git log --output=x` is denied.
+/// - A deny rule beats an allow rule, so each allow rule here can stay the plain
+///   `Bash(git <verb> *)`.
+///
+/// git refuses an abbreviated `--outp=x` on log, show and diff (git 2.56: "unrecognized
+/// argument"), so the full spelling is the only one to deny. An allow rule needs the verb right
+/// after `git`, so `git -C /tmp status` and `git --git-dir=x log` are not allowed to begin with;
+/// [`GIT_DENY`] names them anyway, so the profile does not rest on that alone.
 pub const GIT_READ_ONLY: [&str; 5] = ["log", "show", "diff", "status", "blame"];
+
+/// The deny rules a colocated profile carries with [`GIT_READ_ONLY`]: the flag that writes a
+/// file, and each global option of git(1) that changes where git reads or what it runs,
+/// matched as a prefix so `--git-dir=x` and `--git-dir x` both fall under it.
+const GIT_DENY: [&str; 7] = [
+    "Bash(git * --output*)",
+    "Bash(git -C *)",
+    "Bash(git -c *)",
+    "Bash(git --git-dir*)",
+    "Bash(git --work-tree*)",
+    "Bash(git --exec-path*)",
+    "Bash(git --config-env*)",
+];
+
+/// The `git` verbs a git project's models may run, each one an exact rule: git's read verbs and
+/// nothing else (the Engineer's ruling on #521, 2026-11-19, amending Q6: `add`, `commit` and
+/// `restore` are not here, commits go through the `commit.git` action, as jj's go through
+/// `commit`). `push`, merges, fetches, checkouts and worktree commands are not here either: the
+/// actions do them. Never `Bash(git *)`. The same [`GIT_DENY`] rules close `--output` and the
+/// global options on every one of these; a deny rule beats an allow rule.
+///
+/// The spike on #479 (`docs/git-lane-spike.md`) found no further hole open: an env prefix
+/// (`GIT_CONFIG_COUNT=1 git log`) is matched by a deny rule and not by an allow rule, and
+/// `.git/config` and `.git/hooks/` are protected paths that prompt under `acceptEdits`. So it
+/// proposed no further rule for either, only for the case a real run shows the hole open.
+pub const GIT_PROJECT_VERBS: [&str; 6] = ["status", "diff", "log", "show", "blame", "rev-parse"];
+
+/// The tool a git project never gets a `Bash(<tool> *)` rule for: its verbs are exact rules.
+const GIT_TOOL: &str = "git";
+
+/// Whether the manifest's `[vcs]` is `git`: a git project, whose models get
+/// [`GIT_PROJECT_VERBS`] and never a wildcard `git` rule.
+fn is_git_project(manifest: &Manifest) -> bool {
+    manifest
+        .vcs
+        .as_ref()
+        .is_some_and(|vcs| vcs.kind == VcsKind::Git)
+}
 
 /// The tool whose requirement makes the repo colocated, so `git` reads are allowed.
 const COLOCATED_TOOL: &str = "jj";
+
+/// Whether the manifest requires the colocated tool, so `git` reads are allowed.
+fn is_colocated(manifest: &Manifest) -> bool {
+    manifest
+        .requires
+        .contains_key(&ToolName::from(COLOCATED_TOOL))
+}
 
 /// The fixed read-only allow rules: the shell basics, and the `git` read verbs when the
 /// manifest requires `jj`.
@@ -762,10 +827,13 @@ fn read_only_rules(manifest: &Manifest) -> Vec<String> {
         .iter()
         .map(|word| format!("Bash({word} *)"))
         .collect();
-    if manifest
-        .requires
-        .contains_key(&ToolName::from(COLOCATED_TOOL))
-    {
+    if is_git_project(manifest) {
+        rules.extend(
+            GIT_PROJECT_VERBS
+                .iter()
+                .map(|verb| format!("Bash(git {verb} *)")),
+        );
+    } else if is_colocated(manifest) {
         rules.extend(
             GIT_READ_ONLY
                 .iter()
@@ -773,6 +841,11 @@ fn read_only_rules(manifest: &Manifest) -> Vec<String> {
         );
     }
     rules
+}
+
+/// Whether `rule` is the wildcard `Bash(git *)`, which a git project never allows.
+fn is_git_wildcard(manifest: &Manifest, rule: &str) -> bool {
+    is_git_project(manifest) && rule == format!("Bash({GIT_TOOL} *)")
 }
 
 /// The template with the manifest's parts merged in: `zaf`, every `[requires]` tool and the
@@ -808,11 +881,16 @@ fn settings_for(
         manifest
             .requires
             .keys()
-            .map(|tool| format!("Bash({tool} *)")),
+            .map(|tool| format!("Bash({tool} *)"))
+            .filter(|rule| !is_git_wildcard(manifest, rule)),
     );
     for command in gate_commands(manifest) {
         allow.push(allow_rule(command));
-        allow.extend(tool_rules(command));
+        allow.extend(
+            tool_rules(command)
+                .into_iter()
+                .filter(|rule| !is_git_wildcard(manifest, rule)),
+        );
     }
     allow.extend(read_only_rules(manifest));
     let mut seen = Vec::new();
@@ -935,7 +1013,20 @@ const DO_FORMS: [&str; 4] = ["zaf do", "zaf -* do", "zaf do -*", "zaf -* do -*"]
 /// program every script runs in. `npm run <script>`, `npm test`, `npm ci` and `npm install`
 /// stay: they run what `package.json` and the lockfile name, which a frontend task needs.
 const HATCHES: [(&str, &[&str]); 4] = [
-    ("jj", &["util", "config set", "config edit"]),
+    (
+        "jj",
+        &[
+            "util",
+            "config set",
+            "config edit",
+            "run",
+            "workspace add",
+            "gerrit",
+            "git clone",
+            "git init",
+            "git remote",
+        ],
+    ),
     ("gh", &["alias", "extension"]),
     ("yarn", &["exec", "node", "dlx"]),
     (
@@ -956,8 +1047,10 @@ const HATCHES: [(&str, &[&str]); 4] = [
     ),
 ];
 
-/// The tools whose config flag can define an alias, so the flag is denied anywhere on the line.
-const CONFIG_FLAG_TOOLS: [&str; 1] = ["jj"];
+/// Flags denied anywhere on a tool's line: jj's `--config` and `--config-file` can define an
+/// alias, `--tool` names a program a diff or merge runs, and `-R` / `--repository` point the
+/// command at a repository outside the project. A text match, not a boundary (0.6.0 adds one).
+const HATCH_FLAGS: [(&str, &[&str]); 1] = [("jj", &["--config", "--tool", "--repository", "-R"])];
 
 /// The four deny rules of `<tool> <sub...>`: bare, with arguments, and each with flags between
 /// the tool and the subcommand (`jj --no-pager git push`, `gh -R owner/repo pr merge 12`).
@@ -968,6 +1061,62 @@ fn flag_forms(tool: &str, sub: &str) -> [String; 4] {
         format!("Bash({tool} -* {sub})"),
         format!("Bash({tool} -* {sub} *)"),
     ]
+}
+
+/// The deny rule of `<tool> <sub...>` with options between any two of its words and after the
+/// last (`jj git --no-pager push`, `gh pr -R owner/repo merge 12`): `Bash(jj *git *push)` and
+/// `Bash(jj *git *push *)`. The last word ends at a space or the line, so `zaf do land` does not
+/// deny `zaf do landing`. A text match, wider than the four forms of [`flag_forms`].
+fn between_words(tool: &str, sub: &str) -> [String; 2] {
+    let words: Vec<&str> = sub.split_whitespace().collect();
+    let bare = format!("{tool} *{}", words.join(" *"));
+    [format!("Bash({bare})"), format!("Bash({bare} *)")]
+}
+
+/// The deny rules of a forbidden `zaf <sub...>` with a flag in one gap between its words: for
+/// `zaf forge merge`, `Bash(zaf forge -* merge)` and `Bash(zaf forge -* merge *)`, so
+/// `zaf forge --json merge 12` is denied. zaf's global flags (`--json`, `--more`) stand there.
+/// No rule starts `Bash(zaf *`, so the free text of `zaf board question`, `zaf board report` and
+/// `zaf ask` is never matched.
+fn zaf_gap_forms(sub: &str) -> Vec<String> {
+    let words: Vec<&str> = sub.split_whitespace().collect();
+    let mut rules = Vec::new();
+    for gap in 1..words.len() {
+        let line = format!(
+            "zaf {} -* {}",
+            words[..gap].join(" "),
+            words[gap..].join(" ")
+        );
+        rules.push(format!("Bash({line})"));
+        rules.push(format!("Bash({line} *)"));
+    }
+    rules
+}
+
+/// The methods `gh api` writes with; `GET` is the read and stays allowed.
+const GH_API_METHODS: [&str; 4] = ["POST", "PUT", "PATCH", "DELETE"];
+
+/// The flags that give `gh api` a body, which turns the call into a POST unless the method says
+/// GET. A text match: `gh api -X GET -f q=x` is denied with them.
+const GH_API_FIELD_FLAGS: [&str; 5] = ["-f", "-F", "--field", "--raw-field", "--input"];
+
+/// The denies of `gh api` writes: a method other than GET (`-X`, `--method`, spelled with a
+/// space, attached or after `=`, in either case) and the field flags. `gh api <endpoint>` and
+/// `gh api -X GET <endpoint>` stay allowed.
+fn gh_api_write_rules() -> Vec<String> {
+    let mut rules = Vec::new();
+    for method in GH_API_METHODS {
+        for method in [method.to_owned(), method.to_lowercase()] {
+            for flag in ["-X ", "-X", "--method ", "--method="] {
+                rules.push(format!("Bash(gh *api *{flag}{method}*)"));
+            }
+        }
+    }
+    for flag in GH_API_FIELD_FLAGS {
+        rules.push(format!("Bash(gh *api {flag}*)"));
+        rules.push(format!("Bash(gh *api * {flag}*)"));
+    }
+    rules
 }
 
 /// The tools the profile allows with a `Bash(<tool> *)` rule: every `[requires]` tool and every
@@ -987,11 +1136,15 @@ fn allowed_tools(manifest: &Manifest) -> Vec<String> {
     tools
 }
 
+/// The generated profile's `permissions.deny` entries.
+///
 /// Each forbidden command, bare and with any arguments, and again with flags between its tool
 /// and its subcommand, plus the escape hatches ([`HATCHES`]) of every allowed tool, sorted. A
 /// forbidden `zaf do <name>` is denied again with flags before `do` or before the name
 /// (`zaf --more do land 12`, `zaf do --json land 12`, `zaf do --tier=machine land 12`), so a
-/// flag cannot walk round it.
+/// flag cannot walk round it. Another forbidden zaf verb gets a flag-shaped gap between its words
+/// ([`zaf_gap_forms`]) and no between-words rule, which would deny free text holding the words;
+/// every other tool gets [`between_words`].
 fn deny_rules(manifest: &Manifest) -> Vec<String> {
     let mut rules: Vec<String> = Vec::new();
     for command in &manifest.forbidden.commands {
@@ -1008,6 +1161,11 @@ fn deny_rules(manifest: &Manifest) -> Vec<String> {
             && !sub.trim().is_empty()
         {
             rules.extend(flag_forms(tool, sub.trim()));
+            if tool == "zaf" {
+                rules.extend(zaf_gap_forms(sub.trim()));
+            } else {
+                rules.extend(between_words(tool, sub.trim()));
+            }
         }
         if let Some(name) = forbidden_action(command.as_ref()) {
             for form in DO_FORMS {
@@ -1015,6 +1173,9 @@ fn deny_rules(manifest: &Manifest) -> Vec<String> {
                 rules.push(format!("Bash({form} {name} *)"));
             }
         }
+    }
+    if is_colocated(manifest) || is_git_project(manifest) {
+        rules.extend(GIT_DENY.iter().map(|rule| (*rule).to_owned()));
     }
     let allowed = allowed_tools(manifest);
     for (tool, subs) in HATCHES {
@@ -1024,8 +1185,13 @@ fn deny_rules(manifest: &Manifest) -> Vec<String> {
         for sub in subs {
             rules.extend(flag_forms(tool, sub));
         }
-        if CONFIG_FLAG_TOOLS.contains(&tool) {
-            rules.push(format!("Bash({tool} *--config*)"));
+        if tool == "gh" {
+            rules.extend(gh_api_write_rules());
+        }
+        for (flag_tool, flags) in HATCH_FLAGS {
+            if flag_tool == tool {
+                rules.extend(flags.iter().map(|flag| format!("Bash({tool} *{flag}*)")));
+            }
         }
     }
     rules.sort();

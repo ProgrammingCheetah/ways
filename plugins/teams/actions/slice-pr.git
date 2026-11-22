@@ -1,0 +1,109 @@
+#!/bin/sh
+# zaf description: publish a task's slice: `commit` what is left (skipped when nothing is), refuse a slice with no change against its base or a merge with unmerged paths, `push`, then `pr-open` titled `<title> (#<task>)`, handing back the pull request number
+# zaf 1: refused: the arguments are not <task>, ZAF_VCS is not git, nothing to publish (the slice has no change against its base, or a merge left open still holds unmerged paths, or the head merge commit holds conflict markers, named, so nothing is pushed and no pull request opened), or a step refused (the slice is not open, origin has work the slice lacks, or the forge refused)
+# zaf 2: a backend failed (git or gh is missing or refused)
+# zaf mode: 750
+# zaf group: team, release, implement, fix
+# zaf target: task
+# zaf phases: build, check, publish, review
+# changed: a head that is a merge commit holding conflict markers in a file the merge touched is refused, named, before anything is pushed
+# changed: the git version of `slice-pr`: a git project takes this file for that name
+# changed: a merge left open is read from its unmerged paths, not from jj's conflict state
+
+# The task as a bare number; zaf has already read it as one.
+task=${1#\#}
+# zaf sets ZAF_SLICE, ZAF_BASE and ZAF_TASK_TITLE on a `target: task` run; a hand-written call has none.
+if [ "$#" -ne 1 ] || [ -z "$ZAF_ROOT" ] || [ -z "$ZAF_SLICE" ] || [ -z "$ZAF_BASE" ] || [ -z "$ZAF_TASK_TITLE" ]; then
+    echo "usage: slice-pr <task>, run by zaf with ZAF_SLICE, ZAF_BASE and ZAF_TASK_TITLE set" >&2
+    exit 1
+fi
+if [ "$ZAF_VCS" != "git" ]; then
+    echo "slice-pr.git is for a git project; ZAF_VCS is '$ZAF_VCS'" >&2
+    exit 1
+fi
+case $task in
+    "" | *[!0-9]*)
+        echo "task $1 is not an issue number" >&2
+        exit 1
+        ;;
+esac
+
+title="$ZAF_TASK_TITLE (#$task)"
+dir=$ZAF_ROOT/.zaf/workspaces/$ZAF_SLICE
+
+if [ ! -e "$dir/.git" ]; then
+    echo "slice $ZAF_SLICE is not open" >&2
+    exit 1
+fi
+
+# A merge left open with paths still unmerged is published only once they are resolved: the forge
+# would get conflict markers, and `git commit` would make the merge commit over them. The unmerged
+# paths are the sign, whatever left them (`MERGE_HEAD` says a merge is open); they are named.
+if ! unmerged=$(git -C "$dir" diff --name-only --diff-filter=U); then
+    exit 2
+fi
+if [ -n "$unmerged" ]; then
+    echo "nothing to publish: $ZAF_SLICE has unmerged paths; resolve them first:" >&2
+    printf '%s\n' "$unmerged" >&2
+    exit 1
+fi
+
+# What is left is everything in the workspace but .zaf/. `commit` refuses nothing to commit, so a
+# clean workspace is skipped here rather than told from a real refusal.
+if ! left=$(git -C "$dir" status --porcelain -- . ':(exclude).zaf'); then
+    exit 2
+fi
+if [ -n "$left" ]; then
+    zaf do commit "$ZAF_SLICE" "$title" || exit $?
+fi
+
+# A slice that changes nothing against its base has nothing to publish: an empty pull request would
+# read as work done. The change is the slice's own since it left the base, so a base that moved on
+# since the slice opened does not count as one.
+base=refs/remotes/origin/$ZAF_BASE
+if ! git -C "$dir" rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
+    echo "origin/$ZAF_BASE is not known here; fetch it first" >&2
+    exit 2
+fi
+git -C "$dir" diff --quiet "$base...HEAD"
+case $? in
+    0)
+        echo "nothing to publish: $ZAF_SLICE has no change against $ZAF_BASE" >&2
+        exit 1
+        ;;
+    1) ;;
+    *) exit 2 ;;
+esac
+
+# A head that is a merge commit is published only without conflict markers in the files the merge
+# touched (changed against every parent): an earlier commit may have made it over them. They are
+# named, and nothing is pushed.
+if git -C "$dir" rev-parse --verify --quiet 'HEAD^2^{commit}' >/dev/null; then
+    if ! touched=$(git -C "$dir" -c core.quotePath=false diff-tree --cc --no-commit-id --name-only -r HEAD); then
+        exit 2
+    fi
+    marked=$(printf '%s\n' "$touched" | while IFS= read -r path; do
+        if [ -n "$path" ] && git -C "$dir" show "HEAD:$path" 2>/dev/null | grep -I -q -E '^(<<<<<<<|>>>>>>>)( |$)'; then
+            printf '%s\n' "$path"
+        fi
+    done)
+    if [ -n "$marked" ]; then
+        echo "nothing to publish: the merge at the head of $ZAF_SLICE holds conflict markers; resolve them first:" >&2
+        printf '%s\n' "$marked" >&2
+        exit 1
+    fi
+fi
+
+zaf do push "$ZAF_SLICE" || exit $?
+
+# A successful `zaf do` prints nothing, so `--more` brings the step's whole log back; its last
+# non-empty line is the pull request number.
+log=$(zaf do --more pr-open "$ZAF_SLICE" "$ZAF_BASE" "$title" "Refs #$task.") || exit $?
+number=$(printf '%s\n' "$log" | awk 'NF { line = $0 } END { print line }')
+if [ -z "$number" ]; then
+    echo "pr-open handed back no pull request number" >&2
+    exit 2
+fi
+
+# The hand-back: zaf keeps this line as the task's pull request record.
+echo "$number"

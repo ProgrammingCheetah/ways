@@ -34,6 +34,7 @@ pub(crate) fn facts(
         ready_since: Some(ready_since),
         merging: Default::default(),
         no_check_ruled: None,
+        trees: Default::default(),
     }
 }
 

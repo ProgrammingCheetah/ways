@@ -63,9 +63,11 @@ fn at_review(task: u64) -> (TicketFacts, Vec<ListedPhase>) {
         opened_at: time(10),
         merged_at: None,
         head: Some(CommitId::from("head")),
-        changed_file: Some(crate::domain::RepoPath::from("src/lib.rs")),
+        changed_files: crate::domain::ChangedFiles::of(&["src/lib.rs"]),
         checks: Vec::new(),
         reviews: Vec::new(),
+        mergeable: None,
+        checks_expected: true,
     };
     let facts = support::facts(
         task,

@@ -100,7 +100,7 @@ pub fn resolve(
 }
 
 /// Fills a branch pattern's placeholders; a placeholder without a value is an error.
-fn fill(
+pub(crate) fn fill(
     pattern: &BranchPattern,
     ticket: &Ticket,
     version: Option<&str>,

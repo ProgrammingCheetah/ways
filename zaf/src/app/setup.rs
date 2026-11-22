@@ -258,7 +258,7 @@ pub fn move_legacy_manifest(
 
 /// The verbs of a plan row that write into the project or the homes: a plan with none of them
 /// changes nothing and is run without a question.
-const WRITING_VERBS: [&str; 4] = ["Ask", "Write", "Move", "Make"];
+const WRITING_VERBS: [&str; 7] = ["Ask", "Write", "Move", "Make", "Clone", "Refresh", "Add"];
 
 /// What this run of `setup` will do, worked out from what is there; nothing is written.
 ///
@@ -266,8 +266,11 @@ const WRITING_VERBS: [&str; 4] = ["Ask", "Write", "Move", "Make"];
 /// name (n is init's question list for this folder); "Move ZAF.toml to .zaf.toml" for a
 /// lone legacy manifest, and only outside an instance (`as_instance`), which never moves it;
 /// "Make" only for the project's `.zaf/` and the zaf `home` that are missing something
-/// (`~/.zaf and .zaf/` when both are); then always "Install the standard actions" and "Check your
-/// tools and access".
+/// (`~/.zaf and .zaf/` when both are); then, from the manifest on disk when it loads: "Clone"
+/// the design repository the manifest names when it is not cloned yet, "Refresh" the profiles that
+/// would differ from what is on disk, and "Add" the pack's actions new to the machine, named with
+/// their count; then always "Install the standard actions" and "Check your tools and access".
+/// Each of Make, Clone, Refresh and Add writes, so the Engineer is asked first.
 pub fn plan(root: &Path, home: Option<&Path>, as_instance: bool) -> Vec<PlanRow> {
     let row = |verb: &str, noun: &str, why: &str| PlanRow {
         verb: verb.into(),
@@ -309,6 +312,9 @@ pub fn plan(root: &Path, home: Option<&Path>, as_instance: bool) -> Vec<PlanRow>
     if let Some(noun) = noun {
         rows.push(row("Make", noun, "where zaf keeps its state"));
     }
+    if let Ok(manifest) = Manifest::load_layers(root, home) {
+        rows.extend(manifest_rows(root, home, &manifest, &row));
+    }
     rows.push(row(
         "Install",
         "the standard actions",
@@ -319,6 +325,58 @@ pub fn plan(root: &Path, home: Option<&Path>, as_instance: bool) -> Vec<PlanRow>
         "your tools and access",
         "so the first real run does not fail halfway",
     ));
+    rows
+}
+
+/// The rows for the changes the run makes from the manifest: the design clone, the profiles that
+/// would differ and the pack's actions the machine lacks. Reads the disk and writes nothing.
+fn manifest_rows(
+    root: &Path,
+    home: Option<&Path>,
+    manifest: &Manifest,
+    row: &dyn Fn(&str, &str, &str) -> PlanRow,
+) -> Vec<PlanRow> {
+    let mut rows = Vec::new();
+    if manifest.design.kind == DesignKind::GitSibling
+        && let (Some(repo), Some(dir)) = (
+            manifest.design.repo.as_ref(),
+            design_dir(root, &manifest.design),
+        )
+        && !dir.is_dir()
+    {
+        rows.push(row(
+            "Clone",
+            repo.as_ref(),
+            "the design repository the manifest names",
+        ));
+    }
+    let state_dir = root.join(STATE_DIR);
+    let stale = profile::stale_homes(&state_dir, manifest);
+    if !stale.is_empty() {
+        let names: Vec<String> = stale
+            .iter()
+            .map(|stale| stale.profile.to_string())
+            .collect();
+        rows.push(row(
+            "Refresh",
+            &format!("the profiles: {}", names.join(", ")),
+            "they would differ from the manifest",
+        ));
+    }
+    if let (Some(home), Some(actions)) = (home, pack_actions_dir(root, &state_dir, manifest)) {
+        let new = new_actions(home, &actions);
+        if !new.is_empty() {
+            let count = match new.len() {
+                1 => "1 new action".to_owned(),
+                n => format!("{n} new actions"),
+            };
+            rows.push(row(
+                "Add",
+                &format!("{count}: {}", new.join(", ")),
+                "the pack has actions this machine lacks",
+            ));
+        }
+    }
     rows
 }
 
@@ -571,31 +629,37 @@ fn install_into(
     let Some(home) = home else {
         return Ok(());
     };
-    let Some(pack) = manifest
+    let Some(pack_actions) = pack_actions_dir(root, state_dir, manifest) else {
+        return Ok(());
+    };
+    install_from(done, &pack_actions, home, commands, asker, now)
+}
+
+/// The `actions/` folder of the pack installed in the first generated profile that carries it;
+/// none without a pack, a profile that carries it or an installed pack.
+fn pack_actions_dir(root: &Path, state_dir: &Path, manifest: &Manifest) -> Option<PathBuf> {
+    let pack = manifest
         .pack
         .as_ref()
-        .and_then(|pack| profile::pack_ref(root, pack).ok().flatten())
-    else {
-        return Ok(());
-    };
-    let Some(profile) = profile::generated(manifest)
+        .and_then(|pack| profile::pack_ref(root, pack).ok().flatten())?;
+    let profile = profile::generated(manifest)
         .into_iter()
-        .find(|profile| profile::carries_pack(*profile))
-    else {
-        return Ok(());
-    };
+        .find(|profile| profile::carries_pack(*profile))?;
     let profile_home = profile::home(state_dir, profile);
-    let Some(installed) = profile::installed_path(&profile_home, &pack.to_string()) else {
-        return Ok(());
-    };
-    install_from(
-        done,
-        &installed.join(ACTIONS_DIR),
-        home,
-        commands,
-        asker,
-        now,
-    )
+    let installed = profile::installed_path(&profile_home, &pack.to_string())?;
+    Some(installed.join(ACTIONS_DIR))
+}
+
+/// The names in `pack_actions` that the zaf `home`'s `actions/` holds nothing under (not even a
+/// link), sorted: what an install would copy. Changes nothing.
+fn new_actions(home: &Path, pack_actions: &Path) -> Vec<String> {
+    let target = home.join(ACTIONS_DIR);
+    pack_files(pack_actions)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(name, _)| name)
+        .filter(|name| fs::symlink_metadata(target.join(name)).is_err())
+        .collect()
 }
 
 /// The regular files of the pack's `actions/` folder whose names an action may have, sorted by

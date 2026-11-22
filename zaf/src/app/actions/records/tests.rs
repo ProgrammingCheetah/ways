@@ -67,6 +67,7 @@ impl Place {
             terminal: Terminal::Absent,
             run: None,
             phase: None,
+            vcs: None,
         })
     }
 

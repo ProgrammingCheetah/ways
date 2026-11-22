@@ -2,7 +2,7 @@
   "path": "zaf/src/adapters",
   "charted": "2026-11-15",
   "short": "live adapters over external CLIs and APIs",
-  "is": "The live port implementations: a directory design source, a shell gate, the GitHub board and forge through gh, the Forgejo board and forge over its REST API through curl, a jj VCS, a process runner, the system shell and the machine's build slot; what both issue boards share (kind labels, state rules, comment notes) lives once beside them.",
+  "is": "The live port implementations: a directory design source, a shell gate, the GitHub board and forge through gh, the Forgejo board and forge over its REST API through curl, a jj VCS and a git VCS, a process runner, the system shell and the machine's build slot; what both issue boards share (kind labels, state rules, comment notes) lives once beside them.",
   "type": "code",
   "tags": [
     "category:source",
@@ -18,7 +18,8 @@
   "entry_points": [
     "../adapters.rs",
     "github.rs",
-    "jj.rs"
+    "jj.rs",
+    "git.rs"
   ],
   "fs": [
     {
@@ -64,6 +65,16 @@
     {
       "name": "github/",
       "role": "board on issues or a Project (state in labels or a Project field, github/state.rs), forge on PRs and their writes (pr list/create, pr view/merge, pr checks, run view --log-failed, through GhCommand::run where the exit code alone does not decide), GhCommand with gh api graphql, gh JSON rows; PublicReleases (github/public_releases.rs) reads zaf's own releases for `zaf update` over curl from api.github.com with no gh, the GITHUB_TOKEN on curl's stdin alone",
+      "node": false
+    },
+    {
+      "name": "git.rs",
+      "role": "GitVcs, the Vcs adapter of `[vcs] kind = \"git\"`: `git -C <root>` under a fixed environment answers has_remote, tags and has_tag, and in a workspace (a linked worktree) latest_commit, holds, tree_of, diff_stat and diff_hunks",
+      "node": false
+    },
+    {
+      "name": "git/",
+      "role": "the git adapter's tests",
       "node": false
     },
     {
@@ -125,7 +136,7 @@
   "notes": [
     "Claims and heartbeats are plain issue comments; reports and rulings open with a hidden HTML marker (notes.rs, shared by both issue boards)",
     "github/tests.rs puts zaf/tests/fixtures/gh first on PATH, forgejo/tests.rs puts zaf/tests/fixtures/forgejo (a fake curl) first; jj/tests.rs drives a real jj",
-    "One adapter per kind today: board github-issues, github-projects or forgejo-issues, forge github or forgejo, vcs jj, design repo-dir or git-sibling; a git Vcs adapter is a named later use case",
+    "One adapter per kind today: board github-issues, github-projects or forgejo-issues, forge github or forgejo, vcs jj or git, design repo-dir or git-sibling; tests/git_e2e.rs takes one ticket from ready to merged in a plain git repository with the fake curl and a fake claude",
     "The gate's run folder carries a .gitignore of `*`, so gate logs never show as uncommitted work",
     "A GraphQL call GitHub calls transient (two writes to one Project at once) is tried three more times; unit tests zero the pauses",
     "Forgejo lets two labels share a name and its label filter then matches neither: the board creates a label only when the list lacks it, and deletes its own when an older one of the name turned up"

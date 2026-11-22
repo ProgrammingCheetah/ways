@@ -35,13 +35,13 @@ pub fn code_for_composition(error: &CompositionError) -> u8 {
 
 /// Says the verb is not built and returns its code.
 pub fn not_built(path: &str) -> u8 {
-    eprintln!("zaf {path}: not implemented");
+    crate::eprintln_zaf!("zaf {path}: not implemented");
     NOT_IMPLEMENTED
 }
 
 /// Prints an error the way every verb does and returns its code.
 pub fn fail(path: &str, error: &PortError) -> u8 {
-    eprintln!("zaf {path}: {error}");
+    crate::eprintln_zaf!("zaf {path}: {error}");
     code_for(error)
 }
 
@@ -49,13 +49,13 @@ pub fn fail(path: &str, error: &PortError) -> u8 {
 /// it could not be read; says nothing for a project without a design source.
 pub fn note_design_paths(path: &str, composition: &Composition) {
     if let Some(tried) = composition.design_paths_tried() {
-        eprintln!("zaf {path}: the design source could not be read; tried {tried}");
+        crate::eprintln_zaf!("zaf {path}: the design source could not be read; tried {tried}");
     }
 }
 
 /// Prints a composition error the way every verb does and returns its code.
 pub fn fail_composition(path: &str, error: &CompositionError) -> u8 {
-    eprintln!("zaf {path}: {error}");
+    crate::eprintln_zaf!("zaf {path}: {error}");
     code_for_composition(error)
 }
 

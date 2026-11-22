@@ -17,8 +17,12 @@
 
 use std::path::{Path, PathBuf};
 
-use super::metadata::ActionMode;
+use super::metadata::{ActionMode, marks_jj};
 use crate::composition::STATE_DIR;
+use crate::manifest::VcsKind;
+
+/// The suffix of an action's git version: on a git project `push.git` stands for `push`.
+pub const GIT_SUFFIX: &str = ".git";
 
 /// The folder under a tier's home that holds its actions.
 pub const ACTIONS_DIR: &str = "actions";
@@ -67,6 +71,9 @@ pub enum ResolveError {
     /// The name is under the `hooks` folder: a hook runs on its event, not as an action.
     #[error("a hook runs on its event, not as an action")]
     Hook,
+    /// A git project has the name only as files marked `vcs: jj`, and no `<name>.git`.
+    #[error("no git version of `{0}`")]
+    NoGitVersion(String),
     /// An actions folder or a file in it could not be read.
     #[error("cannot read {path}: {source}")]
     Read {
@@ -172,8 +179,7 @@ pub fn resolve_in(
     machine_home: &Path,
     name: &str,
 ) -> Result<Option<Resolved>, ResolveError> {
-    check_name(name)?;
-    file_in(tier, project_root, machine_home, name)
+    resolve_in_for(None, tier, project_root, machine_home, name)
 }
 
 /// The file `name` resolves to: the project's, else the machine's; none when
@@ -183,8 +189,96 @@ pub fn resolve(
     machine_home: &Path,
     name: &str,
 ) -> Result<Option<Resolved>, ResolveError> {
+    resolve_for(None, project_root, machine_home, name)
+}
+
+/// Whether a project of `vcs` takes the git version of an action: only a git project does. A jj
+/// project, and one with no `[vcs]`, look up a name as the file of that name alone.
+fn takes_git(vcs: Option<VcsKind>) -> bool {
+    vcs == Some(VcsKind::Git)
+}
+
+/// Whether the file at `path` carries the metadata line `vcs: jj`. A file that cannot be read is
+/// not marked: it is found, and the run says what is wrong with it.
+fn marked_jj(path: &Path) -> bool {
+    std::fs::read(path).is_ok_and(|bytes| marks_jj(&String::from_utf8_lossy(&bytes)))
+}
+
+/// What `name` is in one tier for a project of `vcs`. On a git project that is the tier's
+/// `<name>.git` when it has one, else its `<name>` unless that is marked `vcs: jj`; otherwise
+/// the file of that name alone. The second field is whether the tier holds a `vcs: jj` file that
+/// was passed over. The file's name is `name`, as asked, whichever file stands for it.
+fn pick_in(
+    vcs: Option<VcsKind>,
+    tier: Tier,
+    project_root: &Path,
+    machine_home: &Path,
+    name: &str,
+) -> Result<(Option<Resolved>, bool), ResolveError> {
+    if !takes_git(vcs) {
+        return Ok((file_in(tier, project_root, machine_home, name)?, false));
+    }
+    let git = format!("{name}{GIT_SUFFIX}");
+    if let Some(found) = file_in(tier, project_root, machine_home, &git)? {
+        return Ok((
+            Some(Resolved {
+                name: name.to_owned(),
+                ..found
+            }),
+            false,
+        ));
+    }
+    Ok(match file_in(tier, project_root, machine_home, name)? {
+        Some(found) if marked_jj(&found.path) => (None, true),
+        found => (found, false),
+    })
+}
+
+/// [`resolve_in`] for a project of `vcs`. A name every file of which is marked `vcs: jj`, on a
+/// git project, is [`ResolveError::NoGitVersion`], not none: the tier has the action and not a
+/// version of it that runs on git.
+pub fn resolve_in_for(
+    vcs: Option<VcsKind>,
+    tier: Tier,
+    project_root: &Path,
+    machine_home: &Path,
+    name: &str,
+) -> Result<Option<Resolved>, ResolveError> {
     check_name(name)?;
-    file_in_tiers(project_root, machine_home, name)
+    match pick_in(vcs, tier, project_root, machine_home, name)? {
+        (Some(found), _) => Ok(Some(found)),
+        (None, true) => Err(ResolveError::NoGitVersion(name.to_owned())),
+        (None, false) => Ok(None),
+    }
+}
+
+/// [`resolve`] for a project of `vcs`: on a git project, for each tier in order the `<name>.git`,
+/// else the `<name>` unless it is marked `vcs: jj`, else the next tier; with no tier left, the
+/// name is [`ResolveError::NoGitVersion`] when some tier had a marked file, else none. The file it
+/// shadows is the one the other tier would give.
+pub fn resolve_for(
+    vcs: Option<VcsKind>,
+    project_root: &Path,
+    machine_home: &Path,
+    name: &str,
+) -> Result<Option<Resolved>, ResolveError> {
+    check_name(name)?;
+    if !takes_git(vcs) {
+        return file_in_tiers(project_root, machine_home, name);
+    }
+    let (project, skipped_project) = pick_in(vcs, Tier::Project, project_root, machine_home, name)?;
+    let (machine, skipped_machine) = pick_in(vcs, Tier::Machine, project_root, machine_home, name)?;
+    match (project, machine) {
+        (Some(project), machine) => Ok(Some(Resolved {
+            shadows: machine.map(|_| Tier::Machine),
+            ..project
+        })),
+        (None, Some(machine)) => Ok(Some(machine)),
+        (None, None) if skipped_project || skipped_machine => {
+            Err(ResolveError::NoGitVersion(name.to_owned()))
+        }
+        (None, None) => Ok(None),
+    }
 }
 
 /// `hook(root, home, event) -> Option<ResolvedAction>`, where the ticket's `ResolvedAction` is
@@ -245,10 +339,36 @@ pub fn same_file(one: &Path, other: &Path) -> bool {
 /// shadows. Entries whose names `check_name` refuses, and anything that is not
 /// a file, are skipped: they cannot be named.
 pub fn list(project_root: &Path, machine_home: &Path) -> Result<Vec<Resolved>, ResolveError> {
+    list_for(None, project_root, machine_home)
+}
+
+/// [`list`] for a project of `vcs`. A `<name>.git` file is never an action of its own: on a git
+/// project it stands for `<name>`, which is listed with the tier and file the lookup gives, and a
+/// name with no version that runs on git is left out; on any other project it is skipped.
+pub fn list_for(
+    vcs: Option<VcsKind>,
+    project_root: &Path,
+    machine_home: &Path,
+) -> Result<Vec<Resolved>, ResolveError> {
+    let git = takes_git(vcs);
+    let mut names = std::collections::BTreeSet::new();
+    for entry in entry_names(project_root, machine_home, None)? {
+        match entry.strip_suffix(GIT_SUFFIX) {
+            Some(stem) if git && !stem.is_empty() => {
+                names.insert(stem.to_owned());
+            }
+            Some(_) => {}
+            None => {
+                names.insert(entry);
+            }
+        }
+    }
     let mut resolved = Vec::new();
-    for name in entry_names(project_root, machine_home, None)? {
-        if let Some(found) = resolve(project_root, machine_home, &name)? {
-            resolved.push(found);
+    for name in names {
+        match resolve_for(vcs, project_root, machine_home, &name) {
+            Ok(Some(found)) => resolved.push(found),
+            Ok(None) | Err(ResolveError::NoGitVersion(_)) => {}
+            Err(error) => return Err(error),
         }
     }
     Ok(resolved)

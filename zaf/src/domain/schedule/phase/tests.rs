@@ -37,12 +37,12 @@ fn pr_open_holds_only_for_a_pull_request_that_changes_a_file() {
     let mut facts = facts(pack());
     assert!(!end_fact_holds(&implement, &facts));
     facts.pull = Some(PullFacts {
-        changed_file: None,
+        changed_files: crate::domain::ChangedFiles::default(),
         ..pull("h1", 20)
     });
     assert!(!end_fact_holds(&implement, &facts));
     edit_pull(&mut facts, |pull| {
-        pull.changed_file = Some(crate::domain::RepoPath::from("src/lib.rs"));
+        pull.changed_files = crate::domain::ChangedFiles::of(&["src/lib.rs"]);
     });
     assert!(end_fact_holds(&implement, &facts));
 }

@@ -1,5 +1,6 @@
 //! `zaf begin --version <v>` on the built binary: its stdout is a pipe here, so there is no
-//! terminal, and it refuses with one sentence and exit 2 before it reads the board.
+//! terminal, and it refuses with one sentence and exit 2 before it reads the board. `zaf begin
+//! ready` writes the file `ZAF_READY` names, and refuses with exit 1 when it is unset.
 
 mod common;
 
@@ -44,6 +45,38 @@ fn begin_refuses_a_phase_that_is_not_objectives_or_design() {
         outcome(&project.zaf(&["begin", "--version", "0.6.0", "--phase", "review"]));
     assert_eq!(code, 2, "{stdout}{stderr}");
     assert_eq!(stdout, "");
+}
+
+#[test]
+fn begin_ready_writes_zaf_ready_and_refuses_without_it() {
+    let project = Project::new(MANIFEST);
+    let (code, stdout, stderr) = outcome(&project.zaf(&["do"]));
+    assert_eq!(code, 0, "{stdout}{stderr}");
+
+    let unset = project
+        .command_in(&project.root, &["begin", "ready"])
+        .env_remove("ZAF_READY")
+        .output()
+        .expect("run zaf");
+    let (code, stdout, stderr) = outcome(&unset);
+    assert_eq!(code, 1, "{stdout}{stderr}");
+    assert_eq!(stdout, "");
+    assert!(stderr.contains("ZAF_READY is unset"), "{stderr}");
+    assert_eq!(stderr.trim().lines().count(), 1, "{stderr}");
+
+    let ready = project.root.join(".zaf/begin/0.6.0/objectives.ready");
+    let set = project
+        .command_in(&project.root, &["begin", "ready"])
+        .env("ZAF_READY", &ready)
+        .output()
+        .expect("run zaf");
+    let (code, stdout, stderr) = outcome(&set);
+    assert_eq!((code, stdout.as_str(), stderr.as_str()), (0, "", ""));
+    assert!(ready.is_file(), "the ready file is written");
+
+    // `ready` takes no --version, and --version alone still begins.
+    let (code, _, stderr) = outcome(&project.zaf(&["begin", "--version", "0.6.0", "ready"]));
+    assert_eq!(code, 2, "{stderr}");
 }
 
 /// The fallback list (nothing due, the stage unreadable) draws a title with an ESC byte without

@@ -270,7 +270,38 @@ fn terminal_takes_only_yes_and_only_once() {
     assert!(error.reason.contains("twice"), "{error}");
     // The unknown-key refusal names it among the keys.
     let error = refusal(&block("# zaf terminals: yes\n"));
-    assert!(error.reason.contains("on-fail and terminal"), "{error}");
+    assert!(error.reason.contains("terminal and vcs"), "{error}");
+}
+
+#[test]
+fn vcs_takes_only_jj_and_only_once() {
+    let parsed = parse(Path::new(".zaf/actions/land"), &block("# zaf vcs: jj\n"))
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert!(parsed.metadata.jj_only);
+
+    let error = refusal(&block("# zaf vcs: git\n"));
+    assert!(error.reason.contains("is not `jj`"), "{error}");
+    let error = refusal(&block("# zaf vcs: jj\n# zaf vcs: jj\n"));
+    assert!(error.reason.contains("twice"), "{error}");
+}
+
+#[test]
+fn only_the_metadata_line_marks_jj() {
+    use crate::app::actions::marks_jj;
+    assert!(marks_jj(
+        "#!/bin/sh\n# zaf description: x\n# zaf vcs: jj\n# zaf 1: no\nbody\n"
+    ));
+    assert!(marks_jj("// zaf vcs: jj\n"));
+    // Not a mark: a comment, the body, a description that says it, another value, no `zaf`.
+    assert!(!marks_jj(
+        "#!/bin/sh\n# zaf description: vcs: jj\n# jj\n# zaf 1: no\n"
+    ));
+    assert!(!marks_jj(
+        "#!/bin/sh\n# zaf description: x\nbody\n# zaf vcs: jj\n"
+    ));
+    assert!(!marks_jj("# zaf description: x\n# vcs: jj\n"));
+    assert!(!marks_jj("# zaf description: x\n# zaf vcs: jjx\n"));
+    assert!(!marks_jj("# zaf description: x\n# zaf vcs:jj-ish\n"));
 }
 
 #[test]
@@ -315,7 +346,17 @@ fn the_stdio_plan_follows_the_file_and_the_caller() {
         stdio_plan(&terminal, RunsAs::Action, Terminal::Absent),
         Err("it needs a terminal, and this run has none")
     );
-    for caller in [Terminal::Present, Terminal::Absent] {
+    let side = PtySide::new(7);
+    assert_eq!(
+        stdio_plan(&terminal, RunsAs::Action, Terminal::Pty(side)),
+        Ok(StdioPlan::OnPty(side))
+    );
+    assert_eq!(
+        stdio_plan(&logged, RunsAs::Action, Terminal::Pty(side)),
+        Ok(StdioPlan::Logged),
+        "a file that asks for no terminal is logged, whoever holds one"
+    );
+    for caller in [Terminal::Present, Terminal::Absent, Terminal::Pty(side)] {
         assert_eq!(
             stdio_plan(&terminal, RunsAs::Hook, caller),
             Err(HOOK_HAS_NO_TERMINAL),
@@ -330,6 +371,9 @@ fn only_a_logged_run_takes_the_manifests_bound() {
     assert_eq!(StdioPlan::Logged.time_bound(Some(5), 30), Some(5));
     assert_eq!(StdioPlan::OnTerminal.time_bound(None, 30), None);
     assert_eq!(StdioPlan::OnTerminal.time_bound(Some(5), 30), Some(5));
+    let on_pty = StdioPlan::OnPty(PtySide::new(7));
+    assert_eq!(on_pty.time_bound(None, 30), None);
+    assert_eq!(on_pty.time_bound(Some(5), 30), Some(5));
 }
 
 #[test]
@@ -891,6 +935,7 @@ fn request<'a>(
         terminal,
         run: None,
         phase: None,
+        vcs: None,
     }
 }
 
@@ -1000,6 +1045,127 @@ fn a_terminal_action_keeps_the_callers_group_and_logs_one_line() {
     );
 }
 
+/// A pseudo-terminal pair made with the C library, as the chair's adapter makes one: (master,
+/// slave), both closed when dropped.
+fn pty_pair() -> (std::os::fd::OwnedFd, std::os::fd::OwnedFd) {
+    use std::os::fd::FromRawFd;
+    let (mut master, mut slave) = (-1, -1);
+    // SAFETY: openpty writes two descriptors it opened into the pointers; no name, termios or size
+    // is passed.
+    let made = unsafe {
+        libc::openpty(
+            &raw mut master,
+            &raw mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    };
+    assert_eq!(made, 0, "openpty: {}", std::io::Error::last_os_error());
+    // SAFETY: both descriptors were just opened by openpty and are owned by nothing else.
+    unsafe {
+        (
+            std::os::fd::OwnedFd::from_raw_fd(master),
+            std::os::fd::OwnedFd::from_raw_fd(slave),
+        )
+    }
+}
+
+#[test]
+fn a_pty_action_runs_on_the_callers_side_in_a_session_of_its_own() {
+    use std::io::Read;
+    use std::os::fd::AsRawFd;
+    let place = Tiers::new();
+    let file = place.root.join(".zaf/actions/talk");
+    script(
+        &file,
+        "# zaf terminal: yes\n",
+        "[ -t 0 ] && [ -t 1 ] && [ -t 2 ] && : > \"$ZAF_ROOT/on-a-terminal\"\n\
+         ps -o sid= -p $$ | tr -d ' ' > \"$ZAF_ROOT/session\"\n\
+         echo $$ > \"$ZAF_ROOT/pid\"\n\
+         echo hello there",
+    );
+    let (master, slave) = pty_pair();
+
+    let outcome = run_action(&request(
+        &place,
+        "talk",
+        Terminal::Pty(PtySide::new(slave.as_raw_fd())),
+        MINUTE,
+    ));
+
+    assert_eq!(outcome.result, RunResult::Ok, "{outcome:?}");
+    assert!(outcome.on_terminal, "its output went to the pty");
+    assert!(
+        place.root.join("on-a-terminal").exists(),
+        "stdio is the pty"
+    );
+    let read = |name: &str| {
+        std::fs::read_to_string(place.root.join(name))
+            .expect("the body wrote it")
+            .trim()
+            .to_owned()
+    };
+    assert_eq!(
+        read("session"),
+        read("pid"),
+        "the body leads its own session"
+    );
+    drop(slave);
+    let mut said = Vec::new();
+    let _ = std::fs::File::from(master).read_to_end(&mut said);
+    assert!(
+        String::from_utf8_lossy(&said).contains("hello there"),
+        "{:?}",
+        String::from_utf8_lossy(&said)
+    );
+    assert_eq!(
+        std::fs::read_to_string(outcome.log.expect("a log")).expect("the log"),
+        "zaf: talk ran on a pseudo-terminal zaf drew; its output went there and is not kept here\n"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_pty_action_inherits_no_descriptor_of_its_callers_beyond_its_stdio() {
+    use std::os::fd::AsRawFd;
+    let place = Tiers::new();
+    let file = place.root.join(".zaf/actions/talk");
+    script(
+        &file,
+        "# zaf terminal: yes\n",
+        "ls -l /proc/$$/fd > \"$ZAF_ROOT/descriptors\"",
+    );
+    let held = std::fs::File::create(place.root.join("held-by-the-caller")).expect("a file");
+    // SAFETY: dup takes a plain descriptor that is open; the copy is closed below. A plain dup is
+    // not close-on-exec, as the chair's copy of the terminal once was.
+    let leaked = unsafe { libc::dup(held.as_raw_fd()) };
+    assert!(leaked >= 0);
+    let (master, slave) = pty_pair();
+
+    let outcome = run_action(&request(
+        &place,
+        "talk",
+        Terminal::Pty(PtySide::new(slave.as_raw_fd())),
+        MINUTE,
+    ));
+
+    // SAFETY: `leaked` is the copy dup returned.
+    unsafe { libc::close(leaked) };
+    drop((master, slave));
+    assert_eq!(outcome.result, RunResult::Ok, "{outcome:?}");
+    let listing = std::fs::read_to_string(place.root.join("descriptors")).expect("listed");
+    assert!(listing.contains(" 0 -> "), "{listing}");
+    assert!(
+        !listing.contains("held-by-the-caller"),
+        "descriptor {leaked} is the caller's own:\n{listing}"
+    );
+    assert!(
+        !listing.contains("/dev/ptmx"),
+        "the pseudo-terminal's master stays with the caller:\n{listing}"
+    );
+}
+
 #[test]
 fn a_terminal_action_keeps_a_bound_it_declares() {
     let place = Tiers::new();
@@ -1061,14 +1227,14 @@ fn a_hook_never_takes_the_terminal() {
     assert!(!place.root.join("ran").exists(), "the hook never ran");
 }
 
-/// Runs the project action `probe` with `phase` and returns what it saw of the four phase
+/// Runs the project action `probe` with `phase` and returns what it saw of the five phase
 /// variables, `unset` for one the body did not have, one per line.
 fn phase_env_seen(place: &Tiers, phase: Option<PhaseEnv>) -> Vec<String> {
     let file = place.root.join(".zaf/actions/probe");
     script(
         &file,
         "",
-        "printf '%s\\n' \"${ZAF_VERSION-unset}\" \"${ZAF_PHASE-unset}\" \"${ZAF_RELEASE_DIR-unset}\" \"${ZAF_PHASE_INPUT-unset}\" > \"$ZAF_ROOT/seen\"",
+        "printf '%s\\n' \"${ZAF_VERSION-unset}\" \"${ZAF_PHASE-unset}\" \"${ZAF_RELEASE_DIR-unset}\" \"${ZAF_PHASE_INPUT-unset}\" \"${ZAF_READY-unset}\" > \"$ZAF_ROOT/seen\"",
     );
     let mut request = request(place, "probe", Terminal::Absent, MINUTE);
     if let Some(phase) = phase {
@@ -1093,6 +1259,7 @@ fn phase_env_reaches_the_action() {
             phase: "design".to_owned(),
             release_dir: PathBuf::from(".teams/releases/0.5.0"),
             input: Some(PathBuf::from("/in/brief.md")),
+            ready: None,
         }),
     );
     assert_eq!(seen[0], "0.5.0");
@@ -1112,15 +1279,37 @@ fn objectives_phase_has_no_input() {
             phase: "objectives".to_owned(),
             release_dir: place.root.join("release"),
             input: None,
+            ready: None,
         }),
     );
     assert_eq!(seen[1], "objectives");
     assert_eq!(seen[3], "unset", "{seen:?}");
+    assert_eq!(seen[4], "unset", "no one watches: {seen:?}");
+}
+
+#[test]
+fn the_ready_file_reaches_the_action_when_someone_watches() {
+    let place = Tiers::new();
+    let ready = place.root.join(".zaf/begin/0.5.0/objectives.ready");
+    let seen = phase_env_seen(
+        &place,
+        Some(
+            PhaseEnv {
+                version: "0.5.0".to_owned(),
+                phase: "objectives".to_owned(),
+                release_dir: place.root.join("release"),
+                input: None,
+                ready: None,
+            }
+            .with_ready(ready.clone()),
+        ),
+    );
+    assert_eq!(Path::new(&seen[4]), ready, "{seen:?}");
 }
 
 #[test]
 fn plain_run_has_no_phase_env() {
     let place = Tiers::new();
     let seen = phase_env_seen(&place, None);
-    assert_eq!(&seen[1..], ["unset", "unset", "unset"], "{seen:?}");
+    assert_eq!(&seen[1..], ["unset", "unset", "unset", "unset"], "{seen:?}");
 }

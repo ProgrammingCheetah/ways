@@ -1,3 +1,5 @@
+use std::time::{Duration, SystemTime};
+
 use super::*;
 use crate::domain::TicketState;
 use crate::fakes::FakeBoard;
@@ -111,7 +113,7 @@ fn read_walks_open_blockers_and_classes_the_rest() {
     board.close(number(8));
     let ready = board.ready().expect("ready");
 
-    let found = read(&board, &ready).expect("reads");
+    let found = read(&board, &ready, &[]).expect("reads");
 
     assert_eq!(
         found.graph.keys().copied().collect::<Vec<_>>(),
@@ -129,6 +131,120 @@ fn read_walks_open_blockers_and_classes_the_rest() {
             (number(99), DeadReason::NotAnIssue),
         ])
     );
+}
+
+/// Epic #20 and its tasks, each `(number, label, closed as not planned, closed at)`, with ready
+/// #3 blocked by the epic; the epic as the board lists it.
+fn epic_blocking_three(tasks: &[(u64, TicketState, bool, Option<u64>)]) -> (FakeBoard, Vec<Epic>) {
+    let board = FakeBoard::default();
+    board.add_challenged_epic(number(20), "Epic");
+    board.add_ticket(ticket(3, "Blocked by: #20", TicketState::Ready));
+    for &(task, label, dropped, closed_at) in tasks {
+        board.add_ticket(Ticket {
+            epic: Some(number(20)),
+            ..ticket(task, "", label)
+        });
+        if dropped {
+            board.close_not_planned(number(task));
+        } else if let Some(secs) = closed_at {
+            board.close_at(
+                number(task),
+                SystemTime::UNIX_EPOCH + Duration::from_secs(secs),
+            );
+        }
+    }
+    let epics = board.epics().expect("epics");
+    (board, epics)
+}
+
+#[test]
+fn lane_takes_ticket_blocked_by_finished_epic() {
+    let (board, epics) = epic_blocking_three(&[
+        (21, TicketState::Done, false, Some(100)),
+        (22, TicketState::Done, false, Some(300)),
+    ]);
+    let ready = board.ready().expect("ready");
+
+    let found = read(&board, &ready, &epics).expect("reads");
+
+    assert_eq!(found.closed, BTreeSet::from([number(20)]));
+    assert!(found.dead.is_empty(), "{:?}", found.dead);
+    assert_eq!(
+        found.graph.keys().copied().collect::<Vec<_>>(),
+        numbers(&[3]),
+        "the epic is not an open task the ticket waits on"
+    );
+    // Nothing is written: the epic stays open and gets no label.
+    assert_eq!(board.closed_as(number(20)), None);
+    assert_eq!(board.task(number(20)).expect("reads").state, None);
+    assert_eq!(board.epics().expect("epics").len(), 1);
+}
+
+#[test]
+fn the_finished_epic_stands_done_at_its_last_close() {
+    let (_, epics) = epic_blocking_three(&[
+        (21, TicketState::Done, false, Some(100)),
+        (22, TicketState::Done, false, Some(300)),
+        (23, TicketState::Ready, true, None),
+    ]);
+
+    let at = finished_epic_standing(number(20), Standing::Open.into(), &epics);
+
+    assert_eq!(at.standing, Standing::Done);
+    assert_eq!(
+        at.closed_at,
+        Some(SystemTime::UNIX_EPOCH + Duration::from_secs(300))
+    );
+    // Another number, and a standing that is not open, are read as they are.
+    let other = finished_epic_standing(number(21), Standing::Open.into(), &epics);
+    assert_eq!(other.standing, Standing::Open);
+    let dropped = finished_epic_standing(number(20), Standing::ClosedNotPlanned.into(), &epics);
+    assert_eq!(dropped.standing, Standing::ClosedNotPlanned);
+}
+
+#[test]
+fn all_dropped_epic_keeps_blocker_waiting() {
+    let (board, epics) = epic_blocking_three(&[
+        (21, TicketState::Claimed, true, None),
+        (22, TicketState::Claimed, true, None),
+    ]);
+    let ready = board.ready().expect("ready");
+
+    let found = read(&board, &ready, &epics).expect("reads");
+
+    assert!(found.closed.is_empty(), "{:?}", found.closed);
+    assert_eq!(
+        found.graph.keys().copied().collect::<Vec<_>>(),
+        numbers(&[3, 20]),
+        "the epic is still an open blocker"
+    );
+}
+
+#[test]
+fn an_epic_with_a_task_open_keeps_blocker_waiting() {
+    let (board, epics) = epic_blocking_three(&[
+        (21, TicketState::Done, false, Some(100)),
+        (22, TicketState::Ready, false, None),
+    ]);
+    let ready = board.ready().expect("ready");
+
+    let found = read(&board, &ready, &epics).expect("reads");
+
+    assert!(found.closed.is_empty(), "{:?}", found.closed);
+}
+
+#[test]
+fn hand_labelled_done_epic_still_clears() {
+    // Labelled `done` by hand with a task still open: the board's own read says done.
+    let (board, epics) = epic_blocking_three(&[(21, TicketState::Ready, false, None)]);
+    board
+        .set_state(number(20), TicketState::Done)
+        .expect("labelled");
+    let ready = board.ready().expect("ready");
+
+    let found = read(&board, &ready, &epics).expect("reads");
+
+    assert_eq!(found.closed, BTreeSet::from([number(20)]));
 }
 
 #[test]

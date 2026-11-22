@@ -25,13 +25,14 @@ use std::path::{Path, PathBuf};
 use super::actions::{Caller, ListedAction, ResolveError, list_actions};
 use crate::composition::STATE_DIR;
 use crate::domain::{Instance, PageId, TaskTemplate, Ticket, TicketId};
+use crate::manifest::VcsKind;
 use crate::ports::{Board, Design, NewQuestion, Page, PortError};
 
 mod phase;
 mod why;
 
 pub use phase::PhaseView;
-pub use why::{FailedRun, Ruling, WHY_HEADING, WhyThisRun, why_this_run};
+pub use why::{Conflict, FailedRun, Ruling, WHY_HEADING, WhyThisRun, why_this_run};
 
 /// The interface help page every brief ends with.
 pub const INTERFACE_PAGE: &str = include_str!("../../../assets/interface.md");
@@ -70,6 +71,8 @@ pub struct ActionsView<'a> {
     pub home: Option<&'a Path>,
     /// Who reads the pack: an action their mode hides from them is not listed.
     pub caller: &'a Caller,
+    /// The project's `[vcs]` kind: on a git project each name is listed as its git version.
+    pub vcs: Option<VcsKind>,
 }
 
 /// What the pack is built for.
@@ -193,7 +196,7 @@ pub fn brief_for_run(
     // from the machine.
     let project_state = view.project_root.join(STATE_DIR);
     let home = view.home.unwrap_or(&project_state);
-    let actions = list_actions(Some(view.project_root), home, view.caller)
+    let actions = list_actions(view.vcs, Some(view.project_root), home, view.caller)
         .map_err(BriefActionsError::Actions)?;
     Ok(build(query, ports, &actions, phase, why)?)
 }

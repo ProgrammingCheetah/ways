@@ -209,7 +209,7 @@ fn build_start_opens_and_commits() {
 
     let started = start_of(&project).expect("started");
 
-    assert_eq!(started.branch, BRANCH);
+    assert_eq!(started.branch, BranchName::from(BRANCH));
     assert!(started.made);
     let commit = started.commit.expect("a commit");
     assert_eq!(remote_ref(&project, BRANCH), Some(commit));
@@ -223,7 +223,7 @@ fn build_start_again_changes_nothing() {
 
     let again = start_of(&project).expect("started again");
 
-    assert_eq!(again.branch, BRANCH);
+    assert_eq!(again.branch, BranchName::from(BRANCH));
     assert!(!again.made, "the branch is handed back");
     assert_eq!(again.commit, None);
     assert_eq!(remote_ref(&project, BRANCH), head);
@@ -327,7 +327,7 @@ fn build_open_release_hands_back_number_and_link() {
 
     let opened = open_of(&project).expect("opened");
 
-    assert_eq!(opened.number, "41");
+    assert_eq!(opened.number, PrNumber::from(41));
     assert_eq!(
         opened.link.as_deref(),
         Some("https://forge.example/pulls/41")
@@ -364,7 +364,7 @@ fn open_release_skips_trailing_blank_lines() {
 
     let opened = open_of(&project).expect("opened");
 
-    assert_eq!(opened.number, "41");
+    assert_eq!(opened.number, PrNumber::from(41));
     assert_eq!(
         opened.link.as_deref(),
         Some("https://forge.example/pulls/41")

@@ -397,6 +397,9 @@ pub enum Cause {
         head: CommitId,
         /// The checks that failed there, in the forge's order.
         checks: Vec<CheckName>,
+        /// The project's `[merge] per_tick`: how many merges one tick may have landed there
+        /// before the branch went red (Q3).
+        per_tick: u32,
     },
 }
 
@@ -575,6 +578,7 @@ impl Cause {
                 branch,
                 head,
                 checks,
+                per_tick,
             } => {
                 let (noun, verb) = if checks.len() == 1 {
                     ("check", "has")
@@ -585,7 +589,8 @@ impl Cause {
                     "The integration branch {branch} is red: the {noun} {} {verb} failed at {}. \
                      The tickets of epic {epic} merge into it, so they wait on this question. \
                      File a fix, or rule to carry on: once this is ruled they go on, merges \
-                     included, though the branch is still red at that commit. {}",
+                     included, though the branch is still red at that commit. Up to {per_tick} merges may have \
+                     landed in one tick, so the suspects are the branch's latest merges. {}",
                     checks
                         .iter()
                         .map(|check| check.as_str())
@@ -669,7 +674,12 @@ fn listed(tickets: &[TicketId]) -> String {
 /// tickets' dependencies, its lowest ticket first; then each open epic planned and not challenged
 /// past its deadline that has no open question on it; then the red integration branch, once for
 /// each epic ([`red_base`]).
-pub fn waiting_causes(gathered: &Gathered, placement: &Placement, now: SystemTime) -> Vec<Cause> {
+pub fn waiting_causes(
+    gathered: &Gathered,
+    placement: &Placement,
+    now: SystemTime,
+    per_tick: u32,
+) -> Vec<Cause> {
     let waiting_tickets: BTreeSet<TicketId> =
         placement.waiting.values().flatten().copied().collect();
     let waiting: Vec<TicketFacts> = gathered
@@ -693,7 +703,7 @@ pub fn waiting_causes(gathered: &Gathered, placement: &Placement, now: SystemTim
                 file: facts
                     .pull
                     .as_ref()
-                    .and_then(|pull| pull.changed_file.clone()),
+                    .and_then(|pull| pull.changed_files.last().cloned()),
                 overdue: found,
             });
         }
@@ -723,7 +733,7 @@ pub fn waiting_causes(gathered: &Gathered, placement: &Placement, now: SystemTim
             });
         }
     }
-    causes.extend(red_base(gathered, placement));
+    causes.extend(red_base(gathered, placement, per_tick));
     causes
 }
 
@@ -732,7 +742,7 @@ pub fn waiting_causes(gathered: &Gathered, placement: &Placement, now: SystemTim
 /// the branch `gathered` read ([`Gathered::base`]). None when the branch is unknown or no check
 /// failed there. The epic is where the question stops the work: a question open on an epic makes
 /// every ticket of it wait.
-pub fn red_base(gathered: &Gathered, placement: &Placement) -> Vec<Cause> {
+pub fn red_base(gathered: &Gathered, placement: &Placement, per_tick: u32) -> Vec<Cause> {
     let Some(Base { branch, facts }) = &gathered.base else {
         return Vec::new();
     };
@@ -754,8 +764,19 @@ pub fn red_base(gathered: &Gathered, placement: &Placement) -> Vec<Cause> {
             branch: branch.clone(),
             head: head.clone(),
             checks: checks.clone(),
+            per_tick,
         })
         .collect()
+}
+
+/// Whether a check failed at the head of the integration branch `gathered` read, as the forge says
+/// now: the branch is red (R29). A head with no check, and a branch that is unknown, are not red.
+/// Nothing is stored: the next tick reads it again.
+pub fn is_red(gathered: &Gathered) -> bool {
+    gathered
+        .base
+        .as_ref()
+        .is_some_and(|base| base.facts.head.is_some() && !base.facts.failed_checks().is_empty())
 }
 
 /// Why step 5 stopped.

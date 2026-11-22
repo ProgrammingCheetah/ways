@@ -277,11 +277,123 @@ fn open_release_reads_the_number_past_stderr_lines() {
         scene.display()
     );
     fs::write(project.root.join(".zaf.toml"), manifest).expect("manifest");
+    common::no_zaf_link_folder(&project.home);
 
     let composition =
         Composition::load_with_home(&project.root, Some(&project.home)).expect("the manifest");
     let opened = open_release_with_home(&composition, VERSION, &project.home).expect("opened");
 
-    assert_eq!(opened.number, "5");
+    assert_eq!(opened.number, zaf::ports::PrNumber::from(5));
     assert_eq!(opened.link.as_deref(), Some(url.as_str()));
+}
+
+/// The action as the teams pack ships its git version.
+fn git_action_text() -> String {
+    let file = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the crate sits inside the repository")
+        .join("plugins/teams/actions/release-open.git");
+    fs::read_to_string(&file).unwrap_or_else(|error| panic!("{}: {error}", file.display()))
+}
+
+/// A project whose root is a plain git repository (no jj) with a bare `origin`, the fake `gh`
+/// first on `PATH` and the git action in its actions folder. The integration branch is pushed to
+/// `origin` when `pushed` says so.
+fn git_project(pushed: bool) -> Project {
+    let manifest = MANIFEST.replace("kind = \"jj\"", "kind = \"git\"");
+    let mut project = Project::new(&manifest);
+    let temp = project.temp.path().to_owned();
+    let root = project.root.clone();
+    run(&temp, "git", &["init", "-q", "--bare", "remote.git"]);
+    run(&root, "git", &["init", "-q", "-b", "main"]);
+    run(&root, "git", &["config", "user.name", "Test Author"]);
+    run(
+        &root,
+        "git",
+        &["config", "user.email", "author@example.com"],
+    );
+    let remote = temp.join("remote.git");
+    run(
+        &root,
+        "git",
+        &["remote", "add", "origin", &remote.to_string_lossy()],
+    );
+    write(&root, ".gitignore", ".zaf/*\n");
+    write(&root, "notes.txt", "one\ntwo\n");
+    run(&root, "git", &["add", "-A"]);
+    run(&root, "git", &["commit", "-q", "-m", "Start the project"]);
+    run(&root, "git", &["branch", BRANCH]);
+    if pushed {
+        run(&root, "git", &["push", "-q", "origin", BRANCH]);
+    }
+
+    project.env("ZAF_VERSION", VERSION);
+    project.env("PATH", &path_with_zaf(&[&fixtures()]));
+    // Any verb makes the missing homes and says so; do it now so the notice stays out of a run.
+    let (code, stdout, stderr) = outcome(&project.zaf(&["do"]));
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    let actions = root.join(".zaf/actions");
+    write(&actions, "release-open.git", &git_action_text());
+    fs::set_permissions(
+        actions.join("release-open.git"),
+        fs::Permissions::from_mode(0o750),
+    )
+    .expect("mode");
+    project
+}
+
+#[test]
+fn git_opens_the_release_pull_request() {
+    let mut project = git_project(true);
+    let url = format!("https://github.com/{REPO}/pull/9");
+    project
+        .on("api *", "main\n")
+        .on("pr list *", "")
+        .on("pr create *", &format!("{url}\n"));
+
+    let (code, stdout, stderr) = release_open(&project);
+
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert_eq!(handed_back(&stdout), ("9".to_owned(), url), "{stdout}");
+    let made = creates(&project);
+    assert_eq!(made.len(), 1, "{made:?}");
+    assert!(
+        made[0].starts_with(&format!(
+            "pr create --head {BRANCH} --base main --title Release"
+        )),
+        "{made:?}"
+    );
+}
+
+#[test]
+fn git_hands_back_the_open_one() {
+    let mut project = git_project(true);
+    let url = format!("https://github.com/{REPO}/pull/5");
+    project
+        .on("api *", "main\n")
+        .on("pr list *", &format!("5\t{url}\n"));
+
+    for _ in 0..2 {
+        let (code, stdout, stderr) = release_open(&project);
+        assert_eq!(code, 0, "{stdout}{stderr}");
+        assert_eq!(
+            handed_back(&stdout),
+            ("5".to_owned(), url.clone()),
+            "{stdout}"
+        );
+    }
+    assert_eq!(creates(&project), Vec::<String>::new());
+}
+
+#[test]
+fn git_refuses_without_the_branch_on_origin() {
+    let mut project = git_project(false);
+    project.on("api *", "main\n").on("pr list *", "");
+
+    let (code, stdout, stderr) = release_open(&project);
+
+    assert_eq!(code, 1, "{stdout}{stderr}");
+    assert!(stdout.contains("is not on the remote"), "{stdout}{stderr}");
+    // The forge was never asked.
+    assert_eq!(project.gh_calls(), Vec::<String>::new());
 }

@@ -9,7 +9,7 @@ use std::os::fd::RawFd;
 use std::process::{Command, Stdio};
 
 use crate::adapters::process;
-use crate::domain::screen::Meaning;
+use crate::domain::screen::{Line, Meaning};
 
 /// The rows and columns taken when the terminal's size cannot be read.
 const DEFAULT_SIZE: (u16, u16) = (24, 80);
@@ -20,7 +20,8 @@ const PROGRAM: &str = "zaf";
 /// What decides colour and redraw, read once: tests pass these in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Environment<'a> {
-    /// Whether stdout is a terminal.
+    /// Whether the stream drawn on is a terminal: stdout for [`Screen::detect`], stderr for
+    /// [`Screen::detect_stderr`].
     pub stdout_is_terminal: bool,
     /// `NO_COLOR`, when set.
     pub no_color: Option<&'a str>,
@@ -60,6 +61,19 @@ impl Screen {
         screen
     }
 
+    /// The screen of this process's stderr: its own terminal check, the same `NO_COLOR` and `TERM`
+    /// rules as [`Screen::detect`], and the default size. Stdout being a pipe or a terminal does
+    /// not change it.
+    pub fn detect_stderr() -> Self {
+        let no_color = std::env::var("NO_COLOR").ok();
+        let term = std::env::var("TERM").ok();
+        Self::from_environment(Environment {
+            stdout_is_terminal: std::io::stderr().is_terminal(),
+            no_color: no_color.as_deref(),
+            term: term.as_deref(),
+        })
+    }
+
     /// The screen the three inputs give, at the default size. Pure.
     pub fn from_environment(environment: Environment<'_>) -> Self {
         let dumb = environment.term == Some("dumb");
@@ -74,10 +88,35 @@ impl Screen {
 
     /// `text` in the colour of `meaning`, closed with a reset; unchanged when colour is off.
     pub fn paint(&self, meaning: Meaning, text: &str) -> String {
-        if !self.colour {
+        if !self.colour || meaning == Meaning::Plain {
             return text.to_owned();
         }
         format!("\x1b[{}m{text}\x1b[0m", code(meaning))
+    }
+
+    /// `lines` as one string: each line's pieces left to right, each painted by [`Screen::paint`],
+    /// every line ended by `\n`. With colour off it is the pieces' text and holds no escape byte.
+    pub fn draw(&self, lines: &[Line]) -> String {
+        let mut out = String::new();
+        for line in lines {
+            for (meaning, text) in line {
+                out.push_str(&self.paint(*meaning, text.as_ref()));
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    /// An error or warning `line` whose leading `zaf` is painted as [`Meaning::Program`]; the
+    /// rest of the line keeps its text. A line that does not start with the program's name, or a
+    /// screen with no colour, gives the line as it is.
+    pub fn error_line(&self, line: &str) -> String {
+        match line.strip_prefix(PROGRAM) {
+            Some(rest) if names_program(line, 0, PROGRAM.len()) => {
+                format!("{}{rest}", self.program(PROGRAM))
+            }
+            _ => line.to_owned(),
+        }
     }
 
     /// `text` with each whole word `zaf` naming the program painted as [`Meaning::Program`].
@@ -103,8 +142,23 @@ impl Screen {
     }
 }
 
-/// The SGR parameters of a meaning, from the mocks.
-fn code(meaning: Meaning) -> &'static str {
+/// Writes `line` to stderr, its leading `zaf` painted when stderr is a colour terminal, and a
+/// newline. [`eprintln_zaf!`] is the call sites' way in.
+pub fn eprint_error_line(line: &str) {
+    eprintln!("{}", Screen::detect_stderr().error_line(line));
+}
+
+/// `eprintln!` for an error or warning line that starts with `zaf`: the same arguments, the
+/// program's name painted on a colour terminal and the line otherwise byte for byte.
+#[macro_export]
+macro_rules! eprintln_zaf {
+    ($($arg:tt)*) => {
+        $crate::cli::screen::eprint_error_line(&format!($($arg)*))
+    };
+}
+
+/// The SGR parameters of a meaning, from the mocks: the chair builds its styles from them too.
+pub(crate) fn code(meaning: Meaning) -> &'static str {
     match meaning {
         Meaning::Program => "1;38;5;201",
         Meaning::Verb => "1;36",
@@ -114,7 +168,33 @@ fn code(meaning: Meaning) -> &'static str {
         Meaning::Waiting => "1;38;5;141",
         Meaning::Dim => "2",
         Meaning::Bold => "1",
+        Meaning::Plain => "0",
     }
+}
+
+/// `text` without any SGR sequence (`ESC [ <digits and ;> m`): what a coloured draw looks like
+/// plain. Any other escape, and an SGR sequence cut short, stays as it is. Only the tests that run
+/// a screen twice, in colour and plain, use it.
+#[cfg(test)]
+pub(crate) fn strip_escapes(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("\x1b[") {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + 2..];
+        let params = after
+            .bytes()
+            .take_while(|b| b.is_ascii_digit() || matches!(b, b';' | b':'))
+            .count();
+        if after.as_bytes().get(params) == Some(&b'm') {
+            rest = &after[params + 1..];
+        } else {
+            out.push_str("\x1b[");
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Whether the `zaf` at `text[start..end]` is the program's name: no word or path character

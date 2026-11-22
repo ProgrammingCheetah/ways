@@ -1,0 +1,110 @@
+#!/bin/sh
+# zaf description: commit a slice's work in its git worktree, on the slice's branch, and hand back the commit id; everything in the workspace is committed, nothing under .zaf/
+# zaf 1: refused: ZAF_VCS is not git, nothing to commit, a merge open or paths unmerged while a file the merge changes still holds a conflict marker (named, nothing staged), the slice is not an open slice workspace, or the slice name leaves the workspaces directory; with --empty, the workspace holds uncommitted work or its latest commit is already empty
+# zaf 2: a backend failed (git is missing or refused)
+# zaf mode: 750
+# zaf group: team, release, implement, fix
+# changed: a merge open or paths unmerged is not committed while a file it changes holds a conflict marker: those files are named and nothing is staged
+# changed: the git version of `commit`: a git project takes this file for that name
+# changed: --empty commits nothing but the message on the latest commit, refused with uncommitted work or when that commit is already empty
+slice=$1
+message=$2
+empty_commit=false
+
+if [ "$#" -eq 3 ] && [ "$3" = "--empty" ]; then
+    empty_commit=true
+    set -- "$1" "$2"
+fi
+
+if [ -z "$ZAF_ROOT" ] || [ "$#" -ne 2 ]; then
+    echo "usage: commit <slice> <message>, or commit <slice> <message> --empty, with ZAF_ROOT set" >&2
+    exit 1
+fi
+
+if [ "$ZAF_VCS" != "git" ]; then
+    echo "commit.git is for a git project; ZAF_VCS is '$ZAF_VCS'" >&2
+    exit 1
+fi
+
+# A slice name is a relative path of plain parts, below the workspaces directory.
+case "/$slice/" in
+    *//* | */./* | */../*)
+        echo "slice name $slice is not a relative path inside the workspaces directory" >&2
+        exit 1
+        ;;
+esac
+case $slice in
+    "" | /* | -*)
+        echo "slice name $slice is not a relative path inside the workspaces directory" >&2
+        exit 1
+        ;;
+esac
+
+dir=$ZAF_ROOT/.zaf/workspaces/$slice
+
+# Only a worktree of this repository, on the slice's branch, is an open slice.
+open=false
+if [ -e "$dir/.git" ]; then
+    here=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+    root=$(git -C "$ZAF_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+    branch=$(git -C "$dir" symbolic-ref --short --quiet HEAD 2>/dev/null)
+    if [ -n "$here" ] && [ "$here" = "$root" ] && [ "$branch" = "$slice" ]; then
+        open=true
+    fi
+fi
+if [ "$open" != "true" ]; then
+    echo "slice $slice is not open" >&2
+    exit 1
+fi
+
+cd "$dir" || exit 2
+
+# Nothing under .zaf/ is the slice's work.
+exclude=':(exclude).zaf'
+
+if [ "$empty_commit" = "true" ]; then
+    # An empty commit holds only the message: refused over work, and over a latest commit with none.
+    if ! work=$(git status --porcelain -- . "$exclude"); then
+        exit 2
+    fi
+    if [ -n "$work" ]; then
+        echo "uncommitted work in $slice: --empty commits nothing but the message" >&2
+        exit 1
+    fi
+    if git rev-parse --verify --quiet 'HEAD~1^{commit}' >/dev/null; then
+        previous=HEAD~1
+    else
+        previous=$(git hash-object -t tree /dev/null) || exit 2
+    fi
+    if git diff --quiet "$previous" HEAD; then
+        echo "the latest commit of $slice is already empty" >&2
+        exit 1
+    fi
+    git commit --quiet --allow-empty -m "$message" || exit 2
+else
+    # A merge left open (MERGE_HEAD) or paths still unmerged: git would make the merge commit over
+    # a file that still holds a conflict marker, so each path the merge changes is scanned first,
+    # before anything is staged. The files holding one are named and nothing is staged.
+    if git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1 || [ -n "$(git diff --name-only --diff-filter=U)" ]; then
+        marked=$(git -c core.quotePath=false diff --name-only HEAD -- . "$exclude" | while IFS= read -r path; do
+            if [ -f "$path" ] && grep -I -q -E '^(<<<<<<<|>>>>>>>)( |$)' -- "$path"; then
+                printf '%s\n' "$path"
+            fi
+        done)
+        if [ -n "$marked" ]; then
+            echo "not committed: $slice has a merge whose files still hold conflict markers; resolve them first:" >&2
+            printf '%s\n' "$marked" >&2
+            exit 1
+        fi
+    fi
+    git reset --quiet -- .zaf >/dev/null 2>&1
+    git add -A -- . "$exclude" || exit 2
+    if git diff --cached --quiet; then
+        echo "nothing to commit for $message" >&2
+        exit 1
+    fi
+    git commit --quiet -m "$message" || exit 2
+fi
+
+git rev-parse HEAD || exit 2
+exit 0

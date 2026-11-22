@@ -141,7 +141,7 @@ fn end_time(
                 .min()
         }
         PhaseEnd::CiDone => pull?.checks_passed_at().or_else(|| {
-            if facts.ruled_no_check() {
+            if facts.ruled_no_check() || facts.none_expected() {
                 ruled_no_check_at(phase, facts)
             } else {
                 None
@@ -166,10 +166,11 @@ fn end_time(
     }
 }
 
-/// When `ci-done` holds at a head the Engineer ruled through with no check, a time that never
-/// moves: the latest end, at that head, of a run of a phase listed before `phase`, or else the
-/// pull request's opening. It is never [`check_clock`](super::wait::check_clock), which moves when
-/// the review's run ends. None without a pull request.
+/// When `ci-done` holds at a head the Engineer ruled through with no check, or where none is
+/// expected, a time that never moves: the latest end, at that head, of a run of a phase listed
+/// before `phase`, or else the pull request's opening. It is never
+/// [`check_clock`](super::wait::check_clock), which moves when the review's run ends. None
+/// without a pull request.
 fn ruled_no_check_at(phase: &Phase, facts: &TicketFacts) -> Option<SystemTime> {
     let pull = facts.pull.as_ref()?;
     let head = facts.head();
@@ -228,8 +229,8 @@ pub(super) fn ended_at(
 /// - `pr-open`: a pull request is recorded and changes at least one file.
 /// - `review-posted`: a review was made on the head.
 /// - `ci-done`: at least one check at the head, every one passed; or no check at all at a head
-///   [`TicketFacts::no_check_ruled`] names. Pending or failed checks are never passed by the
-///   ruling.
+///   [`TicketFacts::no_check_ruled`] names, or where none is expected
+///   ([`TicketFacts::none_expected`]). Pending or failed checks are never passed by either.
 /// - `merged`: the pull request is merged.
 /// - `exit`, for a phase listed after the one that carries `pr-open`: a run of the phase left the
 ///   head (its recorded end head, or its start head for a folder that recorded none) with exit 0

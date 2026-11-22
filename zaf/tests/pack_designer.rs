@@ -224,6 +224,7 @@ fn objectives_opens_the_designer_with_the_phase_header() {
         "scope.md",
         "zaf takes the Engineer's signature",
         "no sign-off",
+        "say \"Ready for Exit.\" and run 'zaf begin ready'",
     ] {
         assert!(prompt.contains(words), "{words}: {prompt}");
     }
@@ -267,6 +268,7 @@ fn design_in_its_phase_names_its_input_and_outputs() {
         "zaf takes the Engineer's signature",
         "no sign-off",
         "objectives document",
+        "say \"Ready for Exit.\" and run 'zaf begin ready'",
     ] {
         assert!(prompt.contains(words), "{words}: {prompt}");
     }

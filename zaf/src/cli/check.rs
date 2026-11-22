@@ -11,6 +11,7 @@ use std::time::{Duration, SystemTime};
 
 use super::Cli;
 use super::exit::{self, BACKEND, REFUSED};
+use super::screen::Screen;
 use super::slice::{VERSION_VAR, refuse_not_open};
 use crate::adapters::gate::RUNS_DIR;
 use crate::app::actions::{RunOutcome, SliceRecords, Terminal};
@@ -18,6 +19,7 @@ use crate::app::check::{
     CheckRecord, Engine, EngineSettings, Shell, Step, StepPorts, Target, TaskInputs, check_task,
 };
 use crate::composition::{Composition, CompositionError};
+use crate::domain::screen::{Line, Meaning, Text, clean};
 use crate::domain::{SecurityTrigger, TaskTemplate, TicketId};
 use crate::manifest::{CheckTarget, CommandLine, RunnerName};
 use crate::ports::{Board, Forge, Gate, GateRun, PortError, PrNumber, Runner, Shell as ShellPort};
@@ -27,7 +29,7 @@ pub fn run(cli: &Cli, target: &str, status: bool) -> u8 {
     match target.parse::<Target>() {
         Ok(target) => check(cli, target, status),
         Err(error) => {
-            eprintln!("zaf {}: {error}", cli.verb.path());
+            crate::eprintln_zaf!("zaf {}: {error}", cli.verb.path());
             REFUSED
         }
     }
@@ -56,7 +58,7 @@ fn check(cli: &Cli, target: Target, status: bool) -> u8 {
     let env = match composition.project_env(version.as_deref()) {
         Ok(env) => env,
         Err(error) => {
-            eprintln!("zaf {path}: {error}; set {VERSION_VAR}");
+            crate::eprintln_zaf!("zaf {path}: {error}; set {VERSION_VAR}");
             return BACKEND;
         }
     };
@@ -73,7 +75,7 @@ fn check(cli: &Cli, target: Target, status: bool) -> u8 {
         }
     };
     if let Err(error) = store(&stored, &record) {
-        eprintln!("zaf {path}: the result was not stored for --status: {error}");
+        crate::eprintln_zaf!("zaf {path}: the result was not stored for --status: {error}");
     }
     if let Some(line) = slice_line.filter(|_| !cli.json) {
         println!("{line}");
@@ -152,7 +154,7 @@ fn check_task_in_slice(
         .task(task)
         .map_err(|error| exit::fail(path, &error))?;
     let template = ticket.template().map_err(|error| {
-        eprintln!("zaf {path}: {task} is not a task ticket: {error}");
+        crate::eprintln_zaf!("zaf {path}: {task} is not a task ticket: {error}");
         REFUSED
     })?;
     let gate = match (ports.gate_in)(&dir) {
@@ -198,7 +200,7 @@ fn check_pr_target(
         .map(|text| text.parse::<Step>())
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| {
-            eprintln!("zaf {path}: [check.pr] {error}");
+            crate::eprintln_zaf!("zaf {path}: [check.pr] {error}");
             BACKEND
         })?;
     // Without the task, a `?flagged` step runs: a security review is never skipped by omission.
@@ -250,7 +252,7 @@ fn task_template(
         .map_err(|error| exit::fail_composition(path, &error))?;
     let ticket = board.task(task).map_err(|error| exit::fail(path, &error))?;
     ticket.template().map_err(|error| {
-        eprintln!("zaf {path}: {task} is not a task ticket: {error}");
+        crate::eprintln_zaf!("zaf {path}: {task} is not a task ticket: {error}");
         REFUSED
     })
 }
@@ -323,11 +325,11 @@ fn show_stored(cli: &Cli, path: &str, stored: &std::path::Path) -> u8 {
     let text = match std::fs::read_to_string(stored) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            eprintln!("zaf {path}: no stored result at {}", stored.display());
+            crate::eprintln_zaf!("zaf {path}: no stored result at {}", stored.display());
             return REFUSED;
         }
         Err(error) => {
-            eprintln!("zaf {path}: cannot read {}: {error}", stored.display());
+            crate::eprintln_zaf!("zaf {path}: cannot read {}: {error}", stored.display());
             return BACKEND;
         }
     };
@@ -337,7 +339,7 @@ fn show_stored(cli: &Cli, path: &str, stored: &std::path::Path) -> u8 {
             record.verdict.code()
         }
         Err(error) => {
-            eprintln!(
+            crate::eprintln_zaf!(
                 "zaf {path}: {} is not a check result: {error}",
                 stored.display()
             );
@@ -350,11 +352,83 @@ fn print(cli: &Cli, record: &CheckRecord) {
     if cli.json {
         match serde_json::to_string(record) {
             Ok(text) => println!("{text}"),
-            Err(error) => eprintln!("zaf check: cannot print the result as JSON: {error}"),
+            Err(error) => {
+                crate::eprintln_zaf!("zaf check: cannot print the result as JSON: {error}")
+            }
         }
     } else {
-        println!("{record}");
+        let screen = Screen::detect();
+        print!("{}", screen.draw(&record_lines(record, &screen)));
     }
+}
+
+/// What a status paints as: a pass or a run that went through is `Done`, a failure, a timeout or
+/// a must-fix finding is `Failed`, and a line nobody judged (manual, skipped, a note) is `Dim`.
+fn status_meaning(status: &str) -> Meaning {
+    match status {
+        "pass" | "ran" => Meaning::Done,
+        "fail" | "failed" | "timed-out" | "must" => Meaning::Failed,
+        _ => Meaning::Dim,
+    }
+}
+
+/// The record as screen lines: one per checked line, then the verdict. Joined, the pieces are
+/// what [`CheckRecord`] displays. Words from the task body (a subject, an acceptance line) and
+/// from a finding go through `clean` when painted, so a control character in them cannot reach
+/// the terminal; with colour off the text is as it is, byte for byte.
+fn record_lines(record: &CheckRecord, screen: &Screen) -> Vec<Line> {
+    let words = |text: &str| -> Text {
+        if screen.colour {
+            clean(text).into()
+        } else {
+            text.into()
+        }
+    };
+    let mut lines: Vec<Line> = record
+        .lines
+        .iter()
+        .map(|line| record_line_pieces(line, &words))
+        .collect();
+    let verdict = match record.verdict.code() {
+        0 => Meaning::Done,
+        _ => Meaning::Failed,
+    };
+    lines.push(vec![
+        (Meaning::Noun, words(&record.target)),
+        (Meaning::Dim, ": ".into()),
+        (verdict, record.verdict.to_string().into()),
+    ]);
+    lines
+}
+
+/// One checked line's pieces: the status, the source, the location (a path) and the text, which
+/// is a test name or interface id (`Noun`) unless the line failed (`Failed`).
+fn record_line_pieces(line: &crate::app::check::RecordLine, words: &dyn Fn(&str) -> Text) -> Line {
+    let status = status_meaning(&line.status);
+    let mut pieces: Line = vec![
+        (status, format!("{:<9}", line.status).into()),
+        (Meaning::Dim, " ".into()),
+        (Meaning::Verb, words(&line.source)),
+    ];
+    if let Some(location) = &line.location {
+        pieces.push((Meaning::Dim, " ".into()));
+        pieces.push((Meaning::Noun, words(location)));
+    }
+    if !line.text.is_empty() {
+        let names = matches!(line.source.as_str(), "test" | "interface");
+        let meaning = match status {
+            Meaning::Failed => Meaning::Failed,
+            _ if names => Meaning::Noun,
+            _ => status,
+        };
+        pieces.push((Meaning::Dim, " ".into()));
+        pieces.push((meaning, words(&line.text)));
+    }
+    if !line.also.is_empty() {
+        let also = format!(" (also {})", line.also.join(", "));
+        pieces.push((Meaning::Dim, words(&also)));
+    }
+    pieces
 }
 
 #[cfg(test)]
@@ -629,6 +703,14 @@ HOME = "/overridden"
             self.0.pull_request(pr)
         }
 
+        fn checks_at(
+            &self,
+            pr: PrNumber,
+            head: Option<&str>,
+        ) -> Result<Vec<crate::ports::Check>, PortError> {
+            self.0.checks_at(pr, head)
+        }
+
         fn head(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
             self.0.head(pr)
         }
@@ -637,8 +719,8 @@ HOME = "/overridden"
             self.0.merged(pr)
         }
 
-        fn last_changed_file(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
-            self.0.last_changed_file(pr)
+        fn changed_files(&self, pr: PrNumber) -> Result<crate::domain::ChangedFiles, PortError> {
+            self.0.changed_files(pr)
         }
 
         fn scanning_alerts(
@@ -808,6 +890,92 @@ HOME = "/overridden"
         let record = run_steps(Arc::new(ports), settings, &steps, &target, elsewhere, false);
         assert_eq!(record.head, None);
         assert_eq!(record.verdict, with_head.verdict);
+    }
+
+    fn screen(colour: bool) -> Screen {
+        Screen {
+            colour,
+            live: false,
+            rows: 24,
+            columns: 80,
+        }
+    }
+
+    fn line(status: &str, source: &str, text: &str) -> crate::app::check::RecordLine {
+        crate::app::check::RecordLine {
+            status: status.to_owned(),
+            source: source.to_owned(),
+            location: None,
+            text: text.to_owned(),
+            also: Vec::new(),
+        }
+    }
+
+    /// One passing line and one failing line.
+    fn mixed_record() -> CheckRecord {
+        CheckRecord {
+            target: "task:46".to_owned(),
+            verdict: crate::app::check::Verdict::MustFix,
+            lines: vec![
+                line("pass", "test", "the_gate_holds"),
+                line("fail", "interface", "Missing: not found in the tree"),
+            ],
+            head: None,
+            at: None,
+        }
+    }
+
+    #[test]
+    fn the_coloured_result_stripped_is_the_plain_result() {
+        let record = mixed_record();
+        let on = screen(true);
+        let off = screen(false);
+        let coloured = on.draw(&record_lines(&record, &on));
+        let plain = off.draw(&record_lines(&record, &off));
+        assert!(coloured.contains('\x1b'));
+        assert_eq!(crate::cli::screen::strip_escapes(&coloured), plain);
+        assert_eq!(plain, format!("{record}\n"));
+        assert!(!plain.contains('\x1b'));
+    }
+
+    #[test]
+    fn a_pass_is_green_a_failure_red() {
+        use crate::cli::screen::code;
+        let record = mixed_record();
+        let on = screen(true);
+        let drawn = on.draw(&record_lines(&record, &on));
+        let mut rows = drawn.lines();
+        let pass = rows.next().expect("the pass");
+        let fail = rows.next().expect("the failure");
+        assert!(
+            pass.starts_with(&on.paint(Meaning::Done, "pass     ")),
+            "{pass}"
+        );
+        assert!(
+            fail.starts_with(&on.paint(Meaning::Failed, "fail     ")),
+            "{fail}"
+        );
+        assert!(
+            pass.contains(&on.paint(Meaning::Noun, "the_gate_holds")),
+            "{pass}"
+        );
+        assert!(pass.contains(&format!("\x1b[{}m", code(Meaning::Done))));
+        assert!(fail.contains(&format!("\x1b[{}m", code(Meaning::Failed))));
+    }
+
+    #[test]
+    fn a_control_character_in_the_task_body_is_cleaned_when_painted() {
+        let mut record = mixed_record();
+        record.lines.push(line("manual", "acceptance", "a\x1b[2Jb"));
+        let on = screen(true);
+        let drawn = on.draw(&record_lines(&record, &on));
+        assert!(drawn.contains("a [2Jb"), "{drawn:?}");
+        assert_eq!(
+            drawn.matches('\x1b').count(),
+            drawn.matches("\x1b[").count()
+        );
+        let off = screen(false);
+        assert!(off.draw(&record_lines(&record, &off)).contains("a\x1b[2Jb"));
     }
 
     #[test]

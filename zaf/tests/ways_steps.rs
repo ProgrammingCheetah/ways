@@ -91,6 +91,10 @@ const LAND_STEPS: [&str; 5] = [
 /// release's.
 const RELEASE_ONLY: [&str; 4] = ["base-open", "base-up", "papers-commit", "release"];
 
+/// The actions only the fix phase runs: `ci-rerun` pushes one empty commit onto a slice whose
+/// check failed at the head (D20 of the 0.5.3 addendum), and `fix` is the one that runs it.
+const FIX_ONLY: [&str; 1] = ["ci-rerun"];
+
 /// The actions only the Engineer runs: `ship` merges onto any base, `main` included, and `design`
 /// is the Engineer's own session on the terminal.
 const OWNER_ONLY: [&str; 3] = ["design", "objectives", "ship"];
@@ -144,6 +148,8 @@ fn row(name: &str) -> (&'static str, Vec<&'static str>) {
         ("700", vec![])
     } else if RELEASE_ONLY.contains(&name) {
         ("750", vec!["release"])
+    } else if FIX_ONLY.contains(&name) {
+        ("750", vec!["fix"])
     } else {
         let mut group = vec!["team", "release"];
         if SLICE_STEPS.contains(&name) {

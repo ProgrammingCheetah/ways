@@ -19,19 +19,21 @@ use super::reports::last_report;
 use crate::adapters::process;
 use crate::app::actions::{SliceRecords, derive_phase, gather_phase_facts};
 use crate::app::profile;
+use crate::app::release::{self, DueRelease};
 use crate::app::report::PriceTable;
 use crate::app::report::ledger::{LEDGER_FILE, Ledger, LedgerRow};
 use crate::app::schedule::gather::{Gathered, gather_for};
 use crate::app::schedule::shadow;
 use crate::app::spawn::runs::{self, Run};
 use crate::composition::{Composition, zaf_home};
-use crate::domain::{Epic, EpicStage, EpicTask, Instance, TicketId, TicketState};
+use crate::domain::schedule::WaitingOn;
+use crate::domain::{Epic, EpicStage, EpicTask, Instance, TaskTemplate, TicketId, TicketState};
 use crate::ports::{Board, ClaimRecord, Forge, Holder, NewQuestion, PortError, Vcs};
 
 mod line;
 pub mod machine;
 
-pub use machine::{MachineLine, MachineState, gather_machine};
+pub use machine::{MachineLine, MachineState, gather_machine, gather_one};
 
 /// A project's state as the hub reads it: serialize it with `serde_json`.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
@@ -60,11 +62,72 @@ pub struct ProjectState {
     pub problems: Vec<Problem>,
     /// The instances running now.
     pub instances: Vec<InstanceState>,
+    /// The claims held by an instance this machine launched that no longer runs, as `zaf status`
+    /// counts them orphaned: the next tick releases each, unless its pull request or a running
+    /// phase holds it.
+    pub orphaned: Vec<OrphanedClaim>,
+    /// The releases whose objectives or design are due, oldest first, each with the command that
+    /// runs the phase.
+    pub releases_due: Vec<ReleaseDueState>,
     /// Whether the scheduler (`zaf spawn --watch`) runs, from its lock; absent for a project that
     /// cannot be read.
     pub watch: Option<WatchState>,
     /// The last tick; absent until the tick record lands.
     pub last_tick: Option<TickState>,
+    /// What only `zaf status` showed before: the slots, the guard, the tasks the spawner skips or
+    /// can never start, and the next version; read in the same gather, never by a second read.
+    pub status: StatusState,
+}
+
+/// What `zaf status` shows beside the board, read in the hub's own gather (release 0.5.3, F14).
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+pub struct StatusState {
+    /// The manifest's slots and how many of them are in use; none when the manifest cannot be
+    /// read.
+    pub slots: Option<SlotsState>,
+    /// The guard as `zaf guard` last wrote it; none when it never ran or its file does not read.
+    pub guard: Option<crate::app::guard::GuardState>,
+    /// The tasks the board lists ready whose body does not follow the template, which the
+    /// spawner skips.
+    pub unparsed: Vec<UnparsedTask>,
+    /// The blocker cycles among the open tasks of the open epics, each from its lowest task: the
+    /// first waits on the second, the last on the first.
+    pub cycles: Vec<Vec<u64>>,
+    /// The blockers open tasks name that never close: not an issue, or closed as not planned.
+    pub dead_blockers: Vec<crate::app::spawn::blockers::DeadLine>,
+    /// The version `zaf begin` would begin next (`release::next_version`); none when the
+    /// manifest cannot be read.
+    pub next_version: Option<String>,
+}
+
+/// The slots: the manifest's `[spawn] slots` and how many are in use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct SlotsState {
+    /// The manifest's `[spawn] slots`.
+    pub total: u32,
+    /// The instances that run and the live model runs of the phase run folders, as the tick's
+    /// budget counts them.
+    pub in_use: u32,
+}
+
+/// A task the board lists ready whose body does not follow the template.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct UnparsedTask {
+    /// Its issue number.
+    pub number: u64,
+    /// Its title.
+    pub title: String,
+    /// One line per problem, as `zaf board lint` prints them.
+    pub problems: Vec<String>,
+}
+
+/// What a ticket's runs cost in the ledger, as of its last ingest.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct TicketCost {
+    /// The tokens of every run that named it: fresh input, cache writes, cache reads and output.
+    pub tokens: u64,
+    /// The seconds those runs took, each from its transcript's first time to its last.
+    pub seconds: u64,
 }
 
 /// An open epic.
@@ -133,6 +196,95 @@ pub struct LineTask {
     pub question: Option<LineQuestion>,
     /// Where a person opens its issue.
     pub issue_url: Option<String>,
+    /// What the core says it waits on, from the same placement its colour comes from; empty when
+    /// the core places it anywhere but waiting, `null` when the core does not place it.
+    pub waits: Option<Vec<WaitState>>,
+    /// What its runs cost, as the ledger holds them; none when no run named it.
+    pub cost: Option<TicketCost>,
+}
+
+/// One thing a ticket waits on, as the core names it ([`WaitingOn`]).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct WaitState {
+    /// What kind of thing it waits on.
+    pub on: WaitKind,
+    /// The ticket, question or epic it is, for those kinds.
+    pub number: Option<u64>,
+    /// The commit whose checks it waits on, for a check or the base.
+    pub commit: Option<String>,
+}
+
+/// What kind of thing a ticket waits on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitKind {
+    /// Its epic, not signed or not challenged yet.
+    Epic,
+    /// A question open on it or on its epic: the Engineer's ruling.
+    Question,
+    /// Another ticket it depends on, not done.
+    Ticket,
+    /// The checks at its head.
+    Check,
+    /// The merge of another ticket, which merges first.
+    Merge,
+    /// The checks at the integration branch's head.
+    Base,
+}
+
+impl From<&WaitingOn> for WaitState {
+    fn from(waiting_on: &WaitingOn) -> Self {
+        let (on, number, commit) = match waiting_on {
+            WaitingOn::Epic(epic) => (WaitKind::Epic, Some(epic.get()), None),
+            WaitingOn::Question(question) => (WaitKind::Question, Some(question.get()), None),
+            WaitingOn::Ticket(ticket) => (WaitKind::Ticket, Some(ticket.get()), None),
+            WaitingOn::Check(ticket, commit) => (
+                WaitKind::Check,
+                Some(ticket.get()),
+                Some(commit.to_string()),
+            ),
+            WaitingOn::Merge(ticket) => (WaitKind::Merge, Some(ticket.get()), None),
+            WaitingOn::Base(commit) => (WaitKind::Base, None, Some(commit.to_string())),
+        };
+        Self { on, number, commit }
+    }
+}
+
+impl WaitState {
+    /// Whether it is the question `question`.
+    pub fn is_question(&self, question: u64) -> bool {
+        self.on == WaitKind::Question && self.number == Some(question)
+    }
+}
+
+/// A claim held by an instance that has ended.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct OrphanedClaim {
+    /// The task it holds.
+    pub task: u64,
+    /// The instance that held it, as `<role> instance <n> on #<epic>`.
+    pub instance: String,
+}
+
+/// A release whose objectives or design are due.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ReleaseDueState {
+    /// The version.
+    pub version: String,
+    /// The phase due: `objectives` or `design`.
+    pub phase: String,
+    /// The command that runs it: `zaf begin --version <version>`.
+    pub command: String,
+}
+
+impl From<&DueRelease> for ReleaseDueState {
+    fn from(due: &DueRelease) -> Self {
+        Self {
+            version: due.version.clone(),
+            phase: due.phase.name().to_owned(),
+            command: due.command(),
+        }
+    }
 }
 
 /// A blocker a task's `Blocked by:` line names.
@@ -169,8 +321,31 @@ pub struct Problem {
     pub kind: ProblemKind,
     /// What is wrong, in plain words.
     pub detail: String,
-    /// The command that fixes it, run as written; none when no command does.
+    /// The command that fixes it, as a person runs it; none when no command does.
     pub fix: Option<String>,
+    /// The zaf verb that fixes it, when one does: what the chair runs, never the text above.
+    #[serde(skip)]
+    pub verb: Option<FixVerb>,
+}
+
+/// A zaf verb that fixes a problem, with its words fixed here: the chair runs it in the project's
+/// root and builds its arguments from this, so no text a board or a file gave is ever run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FixVerb {
+    /// `zaf doctor`: says what is wrong with the project.
+    Doctor,
+    /// `zaf profile init`: makes the project's stale profiles again.
+    ProfileInit,
+}
+
+impl FixVerb {
+    /// Its arguments after `zaf`.
+    pub fn args(self) -> &'static [&'static str] {
+        match self {
+            Self::Doctor => &["doctor"],
+            Self::ProfileInit => &["profile", "init"],
+        }
+    }
 }
 
 /// The kinds of fault that keep a project from running.
@@ -188,6 +363,21 @@ pub enum ProblemKind {
     Profile,
     /// The project's folder, or its manifest, is gone from the machine.
     Missing,
+    /// An open epic whose every task was dropped: one problem for each such epic. The Engineer
+    /// decides whether to file new work or drop what it blocks, so it has no fix and no verb.
+    EveryTaskDropped,
+}
+
+impl Problem {
+    /// The problem of an open epic whose every task was dropped; none for any other epic.
+    pub fn every_task_dropped(epic: &Epic) -> Option<Self> {
+        epic.every_task_dropped().then(|| Self {
+            kind: ProblemKind::EveryTaskDropped,
+            detail: format!("epic {} {}: every task dropped", epic.id, epic.title),
+            fix: None,
+            verb: None,
+        })
+    }
 }
 
 /// A group of an epic's tasks.
@@ -292,8 +482,42 @@ pub struct TickState {
     pub at: String,
 }
 
+/// The open epics and the open questions of one board, each read once: [`gather_project`] reads
+/// them at its start and hands them to the placement's gather and to [`gather_state`], so a project
+/// read asks the board for each once.
+pub struct BoardLists {
+    /// The board's open epics, as its read answered.
+    pub epics: Result<Vec<Epic>, PortError>,
+    /// The board's open questions, as its read answered.
+    pub questions: Result<Vec<crate::domain::Ticket>, PortError>,
+}
+
+impl BoardLists {
+    /// One read of each from `board`.
+    pub fn read(board: &dyn Board) -> Self {
+        Self {
+            epics: board.epics(),
+            questions: board.questions(),
+        }
+    }
+
+    /// The lists as the placement's gather takes them: a board that cannot list its epics at all
+    /// ([`PortError::Rejected`]) has none; any other failed read leaves nothing to place.
+    fn for_gather(&self) -> Option<(&[Epic], &[crate::domain::Ticket])> {
+        let epics = match &self.epics {
+            Ok(epics) => epics.as_slice(),
+            Err(PortError::Rejected(_)) => &[],
+            Err(_) => return None,
+        };
+        Some((epics, self.questions.as_deref().ok()?))
+    }
+}
+
 /// What [`gather_state`] reads from.
 pub struct StateInputs<'a> {
+    /// The open epics and questions the caller already read; none has [`gather_state`] read them
+    /// from the board itself.
+    pub lists: Option<&'a BoardLists>,
     /// The project's name.
     pub project: &'a str,
     /// The project's root.
@@ -324,7 +548,13 @@ pub struct StateInputs<'a> {
     /// What the tick's gather read of each open ticket (its facts, its body, the phases of each
     /// type); none when nothing was gathered, and a line then reads its label.
     pub gathered: Option<&'a Gathered>,
+    /// The releases whose objectives or design are due, worked out from the open epics the board
+    /// read; none leaves `releases_due` empty.
+    pub releases: Option<&'a DueReleases<'a>>,
 }
+
+/// What works out the releases due from the open epics: [`release::due_releases`] for a project.
+pub type DueReleases<'a> = dyn Fn(&[Epic]) -> Vec<DueRelease> + 'a;
 
 /// Gathers the state of the project at `root`. It never fails: a project that cannot be read
 /// comes back with its reason.
@@ -338,12 +568,12 @@ pub fn gather_project(root: &Path, now: SystemTime) -> ProjectState {
                 kind: ProblemKind::Manifest,
                 detail: reason,
                 fix: Some(doctor_command(root)),
+                verb: Some(FixVerb::Doctor),
             });
             return state;
         }
     };
     let manifest = composition.manifest();
-    let project = manifest.project.name.to_string();
     // A board with no token is named before anything asks the network: an instance that is down
     // would hide the variable that is missing.
     let mut problems = Vec::new();
@@ -357,6 +587,7 @@ pub fn gather_project(root: &Path, now: SystemTime) -> ProjectState {
                 kind: ProblemKind::Token,
                 detail: reason.clone(),
                 fix: Some(format!("export {variable}=<token>")),
+                verb: None,
             });
             Err(reason)
         }
@@ -366,10 +597,29 @@ pub fn gather_project(root: &Path, now: SystemTime) -> ProjectState {
                 kind: ProblemKind::Board,
                 detail: reason.clone(),
                 fix: Some(doctor_command(root)),
+                verb: Some(FixVerb::Doctor),
             });
             reason
         }),
     };
+    let board = board
+        .as_ref()
+        .map(|board| board.as_ref())
+        .map_err(Clone::clone);
+    read_project(&composition, board, problems, now)
+}
+
+/// [`gather_project`] over a board already built, or the reason there is none, with the problems
+/// found building it. The board's open epics and open questions are read once here and shared by
+/// the placement's gather and the state's own read.
+fn read_project(
+    composition: &Composition,
+    board: Result<&dyn Board, String>,
+    mut problems: Vec<Problem>,
+    now: SystemTime,
+) -> ProjectState {
+    let (root, manifest) = (composition.root(), composition.manifest());
+    let project = manifest.project.name.to_string();
     let forge = composition.forge().ok();
     let vcs = composition.vcs().ok();
     let state_dir = composition.state_dir();
@@ -382,8 +632,10 @@ pub fn gather_project(root: &Path, now: SystemTime) -> ProjectState {
         .unwrap_or_default();
     // Where the core places each ticket, as the tick gathers them; a gather that fails leaves the
     // labels' word.
+    let lists = board.as_ref().ok().map(|board| BoardLists::read(*board));
     let gathered: Option<Gathered> = board.as_ref().ok().and_then(|board| {
-        gather_for(&composition, board.as_ref(), None)
+        let (epics, questions) = lists.as_ref()?.for_gather()?;
+        gather_for(composition, *board, None, epics, questions)
             .ok()
             .flatten()
     });
@@ -403,14 +655,18 @@ pub fn gather_project(root: &Path, now: SystemTime) -> ProjectState {
             crate::manifest::ForgeKind::Github => Some(format!("https://github.com/{repo}/pull/")),
         }
     });
+    // The releases due, as `zaf status` works them out from the epics the board read.
+    let due = |epics: &[Epic]| {
+        release::due_releases(root, manifest, epics, &|version| {
+            release::is_released(root, manifest, vcs.as_deref(), version)
+        })
+    };
     let mut state = gather_state(&StateInputs {
+        lists: lists.as_ref(),
         project: &project,
         root,
         state_dir: &state_dir,
-        board: board
-            .as_ref()
-            .map(|board| board.as_ref())
-            .map_err(Clone::clone),
+        board,
         forge: forge.as_deref(),
         vcs: vcs.as_deref(),
         records: &SliceRecords::new(root),
@@ -421,6 +677,7 @@ pub fn gather_project(root: &Path, now: SystemTime) -> ProjectState {
         now,
         places: places.as_ref(),
         gathered: gathered.as_ref(),
+        releases: Some(&due),
     });
     // The faults that stopped the board's read lead; a stale profile follows.
     problems.append(&mut state.problems);
@@ -430,9 +687,24 @@ pub fn gather_project(root: &Path, now: SystemTime) -> ProjectState {
             kind: ProblemKind::Profile,
             detail,
             fix: Some(format!("cd {} && zaf profile init", root.display())),
+            verb: Some(FixVerb::ProfileInit),
         });
     }
     state.problems = problems;
+    // What `zaf status` shows beside the board, from this same read: the slots the instances and
+    // the live model runs hold (as the tick's budget counts them), the guard `zaf guard` last
+    // wrote, and the version `zaf begin` would begin next.
+    let model_runs = gathered
+        .as_ref()
+        .and_then(|gathered| gathered.model_runs.clone().ok())
+        .unwrap_or(0);
+    state.status.slots = Some(SlotsState {
+        total: manifest.spawn.slots,
+        in_use: u32::try_from(state.instances.len() + model_runs).unwrap_or(u32::MAX),
+    });
+    state.status.guard = crate::app::guard::read(&state_dir).ok().flatten();
+    state.status.next_version =
+        Some(release::next_version(root, manifest, vcs.as_deref()).to_string());
     state
 }
 
@@ -466,8 +738,11 @@ fn unreadable(root: &Path, now: SystemTime, reason: String) -> ProjectState {
         questions: Vec::new(),
         problems: Vec::new(),
         instances: Vec::new(),
+        orphaned: Vec::new(),
+        releases_due: Vec::new(),
         watch: None,
         last_tick: None,
+        status: StatusState::default(),
     }
 }
 
@@ -489,6 +764,11 @@ pub fn gather_state(inputs: &StateInputs) -> ProjectState {
                 state.epics = read.epics;
                 state.queue = read.queue;
                 state.questions = read.questions;
+                state.releases_due = read.releases_due;
+                state.status.unparsed = read.unparsed;
+                state.status.cycles = read.cycles;
+                state.status.dead_blockers = read.dead_blockers;
+                state.problems.extend(read.problems);
             }
             Err(error) => {
                 let reason = format!("the board cannot be reached: {}", plain(&error));
@@ -496,6 +776,7 @@ pub fn gather_state(inputs: &StateInputs) -> ProjectState {
                     kind: ProblemKind::Board,
                     detail: reason.clone(),
                     fix: Some(doctor_command(inputs.root)),
+                    verb: Some(FixVerb::Doctor),
                 });
                 state.reason = Some(reason);
             }
@@ -503,7 +784,10 @@ pub fn gather_state(inputs: &StateInputs) -> ProjectState {
         Err(reason) => state.reason = Some(reason.clone()),
     }
     match runs::read_all(inputs.state_dir) {
-        Ok(runs) => state.instances = instances_of(inputs, &runs, &claims, &titles),
+        Ok(runs) => {
+            state.instances = instances_of(inputs, &runs, &claims, &titles);
+            state.orphaned = orphaned_of(inputs, &runs, &claims);
+        }
         Err(error) => {
             // The board's reason, when there is one, is the one to fix first.
             state
@@ -522,10 +806,51 @@ struct BoardRead {
     claims: Vec<ClaimRecord>,
     /// Every epic's and task's title, by number: what the one read of the epics held.
     titles: HashMap<u64, String>,
+    /// The releases due, from the epics the board listed.
+    releases_due: Vec<ReleaseDueState>,
+    /// The ready tasks whose body does not follow the template.
+    unparsed: Vec<UnparsedTask>,
+    /// The blocker cycles among the open tasks.
+    cycles: Vec<Vec<u64>>,
+    /// The blockers open tasks name that never close.
+    dead_blockers: Vec<crate::app::spawn::blockers::DeadLine>,
+    /// The open epics whose every task was dropped, one problem each.
+    problems: Vec<Problem>,
+}
+
+/// The claims of instances this machine launched that no longer run, as `zaf status` reads them
+/// ([`crate::app::spawn::orphaned`]); none when the phase run folders cannot be read.
+fn orphaned_of(inputs: &StateInputs, runs: &[Run], claims: &[ClaimRecord]) -> Vec<OrphanedClaim> {
+    let (Ok(held), Ok(ended)) = (
+        crate::app::spawn::held(inputs.state_dir, inputs.alive),
+        crate::app::spawn::ended_phases(inputs.state_dir, inputs.alive),
+    ) else {
+        return Vec::new();
+    };
+    crate::app::spawn::orphaned(claims, runs, &ended, inputs.alive, &held)
+        .into_iter()
+        .map(|claim| OrphanedClaim {
+            task: claim.task.get(),
+            instance: claim.instance.to_string(),
+        })
+        .collect()
 }
 
 fn read_board(inputs: &StateInputs, board: &dyn Board) -> Result<BoardRead, PortError> {
-    let trees = board.epics()?;
+    let read;
+    let (trees, open_questions): (&[Epic], &[crate::domain::Ticket]) = match inputs.lists {
+        Some(lists) => (
+            lists.epics.as_deref().map_err(Clone::clone)?,
+            lists.questions.as_deref().map_err(Clone::clone)?,
+        ),
+        None => {
+            read = BoardLists::read(board);
+            (
+                read.epics.as_deref().map_err(Clone::clone)?,
+                read.questions.as_deref().map_err(Clone::clone)?,
+            )
+        }
+    };
     let claims = board.claims()?;
     let ready = board.ready()?;
     let ready_urls: HashMap<TicketId, String> = ready
@@ -563,8 +888,7 @@ fn read_board(inputs: &StateInputs, board: &dyn Board) -> Result<BoardRead, Port
         .collect();
     // A board that cannot tell the doors shows every question as a two-way one.
     let doors = board.open_doors().unwrap_or_default();
-    let questions: Vec<QuestionState> = board
-        .questions()?
+    let questions: Vec<QuestionState> = open_questions
         .iter()
         .map(|ticket| QuestionState {
             number: ticket.id.get(),
@@ -574,10 +898,23 @@ fn read_board(inputs: &StateInputs, board: &dyn Board) -> Result<BoardRead, Port
             url: Some(ticket.url.to_string()).filter(|url| !url.is_empty()),
         })
         .collect();
-    let mut lines = line::read(inputs, board, &trees, &questions, &titles, ready);
+    // The ready tasks the spawner skips, read from the bodies the board already gave.
+    let unparsed = ready
+        .iter()
+        .filter_map(|ticket| {
+            let problems = TaskTemplate::problems(ticket.body.as_str());
+            (!problems.is_empty()).then(|| UnparsedTask {
+                number: ticket.id.get(),
+                title: ticket.title.to_string(),
+                problems: problems.iter().map(ToString::to_string).collect(),
+            })
+        })
+        .collect();
+    let (mut lines, dead_blockers) = line::read(inputs, board, trees, &questions, &titles, ready);
+    let cycles = cycles_of(trees, &lines);
     let mut epics = Vec::new();
     let mut queue = Vec::new();
-    for tree in &trees {
+    for tree in trees {
         let mut epic = epic_state(tree, dollars.get(&tree.id.get()).copied().unwrap_or(0.0));
         if let Some(line) = lines.remove(&tree.id.get()) {
             epic.line_state = line.state;
@@ -609,13 +946,54 @@ fn read_board(inputs: &StateInputs, board: &dyn Board) -> Result<BoardRead, Port
             ));
         }
     }
+    let releases_due = inputs
+        .releases
+        .map(|due| due(trees).iter().map(ReleaseDueState::from).collect())
+        .unwrap_or_default();
     Ok(BoardRead {
         epics,
         queue,
         questions,
         claims,
         titles,
+        releases_due,
+        unparsed,
+        cycles,
+        dead_blockers,
+        problems: trees
+            .iter()
+            .filter_map(Problem::every_task_dropped)
+            .collect(),
     })
+}
+
+/// The blocker cycles among the open tasks of `trees`, each task's blockers as its line read them
+/// from its body: the same walk `zaf status` makes, over the tasks this read already holds.
+fn cycles_of(trees: &[Epic], lines: &HashMap<u64, line::EpicLine>) -> Vec<Vec<u64>> {
+    let open: std::collections::BTreeSet<u64> = trees
+        .iter()
+        .flat_map(|tree| &tree.tasks)
+        .filter(|task| !task.finished())
+        .map(|task| task.number.get())
+        .collect();
+    let graph: crate::app::spawn::blockers::Graph = lines
+        .values()
+        .flat_map(|line| &line.tasks)
+        .filter(|task| open.contains(&task.number))
+        .map(|task| {
+            (
+                TicketId::from(task.number),
+                task.blocked_by
+                    .iter()
+                    .map(|blocker| TicketId::from(blocker.number))
+                    .collect(),
+            )
+        })
+        .collect();
+    crate::app::spawn::blockers::cycles(&graph)
+        .iter()
+        .map(|cycle| crate::app::spawn::blockers::cycle_numbers(cycle))
+        .collect()
 }
 
 fn epic_state(tree: &Epic, dollars: f64) -> EpicState {

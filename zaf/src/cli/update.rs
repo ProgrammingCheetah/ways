@@ -54,7 +54,7 @@ pub fn run(cli: &Cli, check: bool) -> u8 {
     let exe = match std::env::current_exe().map(binary::without_deleted) {
         Ok(exe) => exe,
         Err(error) => {
-            eprintln!("zaf update: cannot find this binary: {error}");
+            crate::eprintln_zaf!("zaf update: cannot find this binary: {error}");
             return BACKEND;
         }
     };
@@ -127,7 +127,7 @@ pub fn run_with(
 
 /// Says why the update could not go on and gives the exit code of that.
 fn failed(error: &UpdateError) -> u8 {
-    eprintln!("zaf update: {error}");
+    crate::eprintln_zaf!("zaf update: {error}");
     match error {
         UpdateError::NoRelease => REFUSED,
         UpdateError::Port(_) | UpdateError::NoArchive { .. } | UpdateError::Install { .. } => {

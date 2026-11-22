@@ -460,6 +460,28 @@ fn colon_dir_flag_is_refused() {
 }
 
 #[test]
+fn a_home_with_a_colon_stops_at_the_default_folder() {
+    let mut install = Install::new();
+    let home = format!("{}/a:home", install.temp.path().display());
+    install.env.push(("HOME".into(), home));
+    // `mkdir` is a recording fake, so an attempt on an empty folder would show.
+    install.remove("mkdir");
+    install.fake("mkdir", "echo \"mkdir $*\" >> \"$FAKE_CALLS\"; exit 1");
+    let output = install.run(&[], Terminal::Answers("\n"));
+    let shown = text(&output);
+    assert_eq!(output.status.code(), Some(1), "{shown}");
+    assert!(
+        shown.contains("a folder in PATH cannot hold `:`"),
+        "{shown}"
+    );
+    assert!(!shown.contains("mkdir"), "{shown}");
+    assert!(
+        !install.calls().exists(),
+        "mkdir or another tool was called"
+    );
+}
+
+#[test]
 fn tilde_folder_is_expanded() {
     let mut install = Install::new();
     install.serve("zaf 0.0.0-dev", true);

@@ -41,6 +41,7 @@
 //! trace's count, the done tasks of the open epics whose type has a phase list. Nothing here
 //! writes, and nothing here decides.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -50,16 +51,17 @@ use crate::adapters::process;
 use crate::app::actions::{
     ActionKind, ListedPhase, SliceRecords, VERSION_VAR, live_phases, parse, resolve,
 };
-use crate::app::spawn::blockers::blockers;
+use crate::app::spawn::blockers::{blockers, finished_epic_standing};
 use crate::app::spawn::phase::{Ports, listed};
 use crate::composition::{Composition, STATE_DIR, zaf_home};
 use crate::domain::schedule::{
-    ActionName, BaseFacts, CheckFact, CheckResult, Dependency, EpicFacts, MergeFacts,
-    NO_CHECK_DEADLINE, NOWHERE_LIMIT, Phase, PullFacts, ReviewFact, RuledMarker, TicketFacts,
-    at_merge, order_merges,
+    ActionName, BaseFacts, CheckFact, CheckResult, Dependency, EpicFacts, GroupBase, HeadEnd,
+    MergeFacts, NO_CHECK_DEADLINE, NOWHERE_LIMIT, Phase, PullFacts, ReviewFact, RuledMarker,
+    RunRecord, TicketFacts, Trees, at_merge, order_merges,
 };
 use crate::domain::{
-    CommitId, DEFAULT_TASK_TYPE, Epic, EpicTask, OpenTicket, Standing, StandingAt, Ticket, TicketId,
+    ChangedFiles, CommitId, DEFAULT_TASK_TYPE, Epic, EpicTask, OpenTicket, Standing, StandingAt,
+    Ticket, TicketId, WorkflowFilter, checks_expected,
 };
 use crate::manifest::BranchesSection;
 use crate::ports::{Board, BranchName, Check, CheckState, Forge, PortError, PrNumber};
@@ -194,17 +196,24 @@ struct Shared {
     tasks: Vec<EpicTask>,
     /// The open epics as listed.
     listed: Vec<Epic>,
+    /// The workflows read at each base so far, none for a base whose read failed: each base is
+    /// read once per gather ([`expects_a_check`]).
+    workflows: RefCell<BTreeMap<BranchName, Option<Vec<WorkflowFilter>>>>,
 }
 
 /// Reads the facts of every open ticket whose type has a phase list (see the module above).
 ///
-/// The open tickets, the open epics and the open questions are each read once; a board that
-/// fails one of those reads is the error, and nothing is gathered. A board that cannot list its
-/// epics at all ([`PortError::Rejected`]) gives every ticket no epic facts, which holds nothing
-/// back. The live model runs are counted from the run folders ([`model_runs`]).
-pub fn gather(ports: &Ports<'_>) -> Result<Gathered, PortError> {
+/// The open tickets are read once; the open epics and the open questions are the ones given, read
+/// by the caller once for everything it does ([`read_lists`]), so a gather never asks the board
+/// for them. A board that fails the read of the tickets is the error, and nothing is gathered.
+/// The live model runs are counted from the run folders ([`model_runs`]).
+pub fn gather(
+    ports: &Ports<'_>,
+    epics: &[Epic],
+    questions: &[Ticket],
+) -> Result<Gathered, PortError> {
     let open = ports.board.open_tickets()?;
-    let shared = shared(ports.board)?;
+    let shared = shared(epics, questions);
     let mut standings = BTreeMap::new();
     let done = shared
         .tasks
@@ -250,7 +259,7 @@ pub fn gather(ports: &Ports<'_>) -> Result<Gathered, PortError> {
     gathered
         .unreadable
         .sort_by_key(|unreadable| unreadable.ticket);
-    let (base, warnings) = merging(ports, &mut gathered.tickets);
+    let (base, warnings) = merging(ports, &mut gathered.tickets, None);
     gathered.base = base;
     gathered.warnings.extend(warnings);
     gathered.open = OpenTicket::tickets(open);
@@ -305,7 +314,15 @@ pub fn integration_branch(branches: &BranchesSection, version: Option<&str>) -> 
 /// Engineer ruled it through at that head ([`ruled_through`]). A branch read that fails leaves
 /// every base unknown, and a ticket whose ruled questions cannot be read stays held; each is a
 /// warning, in words, beside what was read. The merges are ordered either way.
-fn merging(ports: &Ports<'_>, tickets: &mut [TicketFacts]) -> (Option<Base>, Vec<String>) {
+///
+/// Each ticket is handed the branch as R29 judges it: the branch as read, or, for a merge in a
+/// tick's group while the branch is still at the group's own last commit, the group's base
+/// ([`GroupBase::judged`]). The base given back is the branch as read.
+fn merging(
+    ports: &Ports<'_>,
+    tickets: &mut [TicketFacts],
+    group: Option<&GroupBase>,
+) -> (Option<Base>, Vec<String>) {
     order_by_branch(&ports.manifest.branches, tickets);
     if tickets.is_empty() {
         return (None, Vec::new());
@@ -323,9 +340,10 @@ fn merging(ports: &Ports<'_>, tickets: &mut [TicketFacts]) -> (Option<Base>, Vec
             return (None, vec![warning]);
         }
     };
+    let judged = group.map_or_else(|| facts.clone(), |group| group.judged(&facts));
     let mut warnings = Vec::new();
     for ticket in tickets {
-        ticket.merging.base = facts.clone();
+        ticket.merging.base = judged.clone();
         match ruled_through(ports.board, ticket) {
             Ok(ruled_at) => ticket.merging.ruled_at = ruled_at,
             Err(error) => warnings.push(format!(
@@ -425,6 +443,7 @@ pub fn read_base(forge: &dyn Forge, branch: &BranchName) -> Result<BaseFacts, St
     Ok(BaseFacts {
         head: Some(head),
         checks: check_facts(read.checks)?,
+        reached_at: read.reached_at,
     })
 }
 
@@ -439,12 +458,16 @@ pub fn gather_for(
     composition: &Composition,
     board: &dyn Board,
     version: Option<&str>,
+    epics: &[Epic],
+    questions: &[Ticket],
 ) -> Result<Option<Gathered>, String> {
     let manifest = composition.manifest();
     if manifest.phases.is_empty() {
         return Ok(None);
     }
     let forge = composition.forge().map_err(|error| error.to_string())?;
+    // A project with no [vcs] counts getting nowhere by commit id, as before.
+    let vcs = composition.vcs().ok();
     let root = composition.root();
     let state_dir = composition.state_dir();
     // With no home there is no machine tier, so the project's actions alone are looked for.
@@ -457,9 +480,12 @@ pub fn gather_for(
         .or_else(|| std::env::var(VERSION_VAR).ok())
         .filter(|version| !version.is_empty())
         .or_else(|| lock::running(&state_dir, &process::alive).map(|holding| holding.version));
+    // A filter that cannot be built leaves every check expected, as a failed read does.
+    let ci_filter = composition.ci_filter().ok();
     let ports = Ports {
         board,
         forge: forge.as_ref(),
+        ci_filter: ci_filter.as_deref(),
         manifest,
         root,
         home: &home,
@@ -467,8 +493,11 @@ pub fn gather_for(
         alive: &process::alive,
         version: version.as_deref(),
         now: SystemTime::now(),
+        vcs: vcs.as_deref(),
     };
-    gather(&ports).map(Some).map_err(|error| error.to_string())
+    gather(&ports, epics, questions)
+        .map(Some)
+        .map_err(|error| error.to_string())
 }
 
 /// One ticket gathered as [`gather`] gathers each: its facts and what is read beside them, or none
@@ -485,12 +514,25 @@ pub fn gather_one(
     ports: &Ports<'_>,
     task: TicketId,
 ) -> Result<Option<(TicketFacts, Beside)>, Skip> {
+    gather_one_in(ports, task, None)
+}
+
+/// [`gather_one`] for a merge in a tick's group: the re-check before the merge, which judges R29
+/// at the group's base while the branch is still at the group's own last commit (`group`,
+/// [`GroupBase::judged`]), and as the branch reads at any other head. With no `group` it is
+/// [`gather_one`].
+pub fn gather_one_in(
+    ports: &Ports<'_>,
+    task: TicketId,
+    group: Option<&GroupBase>,
+) -> Result<Option<(TicketFacts, Beside)>, Skip> {
     let unread = |error: PortError| Skip::Unread(error.to_string());
     let open = ports.board.open_tickets().map_err(unread)?;
     let Some(ticket) = open.iter().find(|open| open.ticket.id == task) else {
         return Ok(None);
     };
-    let shared = shared(ports.board).map_err(unread)?;
+    let (epics, questions) = read_lists(ports.board).map_err(unread)?;
+    let shared = shared(&epics, &questions);
     let mut standings = BTreeMap::new();
     // A ruling that cannot be read leaves the ticket waiting on its checks, which is the refusal
     // the caller gives; the tick's gather is the one that words it.
@@ -511,7 +553,7 @@ pub fn gather_one(
         }
     }
     // A base that cannot be read is unknown, which holds nothing back, as in the tick.
-    let _ = merging(ports, &mut tickets);
+    let _ = merging(ports, &mut tickets, group);
     let at = tickets.iter().position(|facts| facts.ticket == task);
     Ok(at.map(|at| (tickets.swap_remove(at), beside)))
 }
@@ -545,22 +587,71 @@ fn declared_kind(ports: &Ports<'_>, action: &ActionName) -> Option<ActionKind> {
     parse(&found.path, &text).ok()?.metadata.kind
 }
 
-/// The reads every ticket shares: the open epics and the open questions. A board that cannot list
-/// its epics at all ([`PortError::Rejected`]) has none, which holds nothing back.
-fn shared(board: &dyn Board) -> Result<Shared, PortError> {
+/// [`gather`] over the lists `ports.board` gives, read here once: what a test with no verb above
+/// it to read them uses.
+#[cfg(test)]
+pub(crate) fn gather_listing(ports: &Ports<'_>) -> Result<Gathered, PortError> {
+    let (epics, questions) = read_lists(ports.board)?;
+    gather(ports, &epics, &questions)
+}
+
+/// The open epics and the open questions, one read each: what a verb that shows or places tickets
+/// reads at its start and hands down. A board that cannot list its epics at all
+/// ([`PortError::Rejected`]) has none, which holds nothing back.
+pub fn read_lists(board: &dyn Board) -> Result<(Vec<Epic>, Vec<Ticket>), PortError> {
     let epics = match board.epics() {
         Ok(epics) => epics,
         Err(PortError::Rejected(_)) => Vec::new(),
         Err(error) => return Err(error),
     };
-    Ok(Shared {
+    Ok((epics, board.questions()?))
+}
+
+/// The reads every ticket shares, from the open epics and the open questions given.
+fn shared(epics: &[Epic], questions: &[Ticket]) -> Shared {
+    Shared {
         tasks: epics.iter().flat_map(|epic| epic.tasks.clone()).collect(),
         epics: epics
             .iter()
             .map(|epic| (epic.id, epic_facts(epic)))
             .collect(),
-        questions: questions_by_issue(&board.questions()?),
-        listed: epics,
+        questions: questions_by_issue(questions),
+        listed: epics.to_vec(),
+        workflows: RefCell::default(),
+    }
+}
+
+/// Whether a check is expected on a pull request that changes `changed` (D17): the rule of
+/// [`checks_expected`] over the workflows at the integration branch, which every pull request of
+/// the gather merges into. The workflows are read once per branch and kept in `shared`. Every
+/// doubt expects a check: no filter port, no one integration branch to name, or a read that
+/// fails (kept as failed, so it is not asked again).
+fn expects_a_check(
+    ports: &Ports<'_>,
+    shared: &Shared,
+    changed: &ChangedFiles,
+    ticket: &Ticket,
+) -> bool {
+    // The slice's branch, for a workflow that runs on a push to it; a name that cannot be filled
+    // is no name, which a branch filter reads as a check expected.
+    let slice = crate::app::slice::fill(&ports.manifest.branches.task, ticket, ports.version).ok();
+    let Some(filter) = ports.ci_filter else {
+        return true;
+    };
+    let Some(base) = integration_branch(&ports.manifest.branches, ports.version) else {
+        return true;
+    };
+    let mut read = shared.workflows.borrow_mut();
+    let workflows = read
+        .entry(base)
+        .or_insert_with_key(|base| filter.workflows(base).ok());
+    workflows.as_deref().is_none_or(|workflows| {
+        checks_expected(
+            workflows,
+            &changed.paths,
+            changed.cut_short,
+            slice.as_deref(),
+        )
     })
 }
 
@@ -642,6 +733,7 @@ fn read_ticket(
                     .board
                     .standing_at(blocker)
                     .map_err(|error| Skip::Unread(format!("its blocker {blocker}: {error}")))?;
+                let at = finished_epic_standing(blocker, at, &shared.listed);
                 standings.insert(blocker, at);
                 at
             }
@@ -659,13 +751,21 @@ fn read_ticket(
     let recorded = SliceRecords::new(ports.root)
         .pr(ticket.id)
         .map_err(|error| Skip::Unread(format!("its pull request record {error}")))?;
-    let pull = match recorded {
+    let mut pull = match recorded {
         Some(pr) => Some(
             read_pull(ports.forge, pr)
                 .map_err(|reason| Skip::Unread(format!("pull request {pr}: {reason}")))?,
         ),
         None => None,
     };
+    // Whether a check is expected matters only to an open pull request with none at its head, so
+    // the workflows are read for no other.
+    if let Some(open) = pull
+        .as_mut()
+        .filter(|pull| pull.merged_at.is_none() && pull.checks.is_empty())
+    {
+        open.checks_expected = expects_a_check(ports, shared, &open.changed_files, ticket);
+    }
     let runs = record::read_runs(
         &ports.state_dir.join(record::PHASES_DIR),
         ticket.id,
@@ -693,6 +793,12 @@ fn read_ticket(
         ruled_markers(ports.board, ticket.id, &counting)
             .map_err(|error| Skip::Unread(format!("its questions: {error}")))?
     };
+    let trees = read_trees(
+        ports,
+        pull.as_ref().and_then(|pull| pull.head.as_ref()),
+        &runs,
+        &counting,
+    );
     let on_epic = shared.questions.get(&epic_id).cloned().unwrap_or_default();
     let no_check_ruled = match ruled_no_check(ports.board, ticket.id, pull.as_ref(), ports.now) {
         Ok(ruled) => ruled,
@@ -720,6 +826,7 @@ fn read_ticket(
         // Filled for all the tickets at once, when every one is read ([`merging`]).
         merging: MergeFacts::default(),
         no_check_ruled,
+        trees,
     };
     let beside = Beside {
         list,
@@ -727,6 +834,40 @@ fn read_ticket(
         on_epic,
     };
     Ok(Some((facts, beside)))
+}
+
+/// The trees of the pull request's head and of the heads the runs of the `counting` actions began
+/// and ended at, for R18 to count by tree ([`Trees`]). Read from the VCS now and stored nowhere. A
+/// commit whose tree cannot be read is left out, and counts by its id; with no VCS or no head
+/// nothing is read.
+fn read_trees(
+    ports: &Ports<'_>,
+    head: Option<&CommitId>,
+    runs: &[RunRecord],
+    counting: &[ActionName],
+) -> Trees {
+    let mut trees = Trees::default();
+    let (Some(vcs), Some(head)) = (ports.vcs, head) else {
+        return trees;
+    };
+    let commits: BTreeSet<&CommitId> = runs
+        .iter()
+        .filter(|run| counting.contains(&run.action))
+        .flat_map(|run| {
+            let left = match &run.head_end {
+                HeadEnd::Left(left) => left.as_ref(),
+                HeadEnd::Unknown => None,
+            };
+            [run.head.as_ref(), left]
+        })
+        .flatten()
+        .chain(std::iter::once(head))
+        .collect();
+    let commits: Vec<&CommitId> = commits.into_iter().collect();
+    for (commit, tree) in vcs.trees_of(ports.root, &commits) {
+        trees.insert(commit, tree);
+    }
+    trees
 }
 
 /// A type's phase list as the core reads it: adjacent `model` actions folded into one [`Phase`]
@@ -755,9 +896,9 @@ pub fn phases_of(list: &[ListedPhase]) -> Vec<Phase> {
 /// that cannot say whether it changes a file.
 pub fn read_pull(forge: &dyn Forge, pr: PrNumber) -> Result<PullFacts, String> {
     let failed = |source: PortError| source.to_string();
-    let merged = forge.merged(pr).map_err(failed)?;
+    // One read of the pull request gives its times, head and merged state; no memory lives past it.
     let request = forge.pull_request(pr).map_err(failed)?;
-    let merged_at = if merged {
+    let merged_at = if request.merged {
         Some(
             request
                 .merged_at
@@ -766,15 +907,12 @@ pub fn read_pull(forge: &dyn Forge, pr: PrNumber) -> Result<PullFacts, String> {
     } else {
         None
     };
-    let head = forge
-        .head(pr)
-        .map_err(failed)?
-        .map(crate::domain::CommitId::from);
-    let changed_file = forge
-        .last_changed_file(pr)
-        .map_err(failed)?
-        .map(crate::domain::RepoPath::from);
-    let checks = check_facts(forge.checks(pr).map_err(failed)?)?;
+    let changed_files = forge.changed_files(pr).map_err(failed)?;
+    let checks = check_facts(
+        forge
+            .checks_at(pr, request.head.as_deref())
+            .map_err(failed)?,
+    )?;
     let reviews = forge
         .review_comments(pr)
         .map_err(failed)?
@@ -787,10 +925,13 @@ pub fn read_pull(forge: &dyn Forge, pr: PrNumber) -> Result<PullFacts, String> {
     Ok(PullFacts {
         opened_at: request.opened_at,
         merged_at,
-        head,
-        changed_file,
+        head: request.head.map(crate::domain::CommitId::from),
+        changed_files,
         checks,
         reviews,
+        mergeable: request.mergeable,
+        // Settled by the caller, which reads the workflows only for a pull request with no check.
+        checks_expected: true,
     })
 }
 

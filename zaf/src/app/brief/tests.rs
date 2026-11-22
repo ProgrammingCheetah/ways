@@ -492,6 +492,7 @@ impl Tiers {
             project_root: self.root.path(),
             home: Some(self.home.path()),
             caller,
+            vcs: None,
         }
     }
 }

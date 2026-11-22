@@ -99,5 +99,5 @@ One behaviour, size XS, S or M (L, XL and E are costs of the size table and of a
 2. For each task: `zaf brief <task>` and read the pack.
 3. Check it against the list above. Ask in one batch whether the decisions it assumes exist: `zaf ask -t <task> "exists: ..." "where: ..."`.
 4. `zaf board report <task> "pass"`, or one line per defect with the change the planner should make.
-5. A defect that must stop the task, or that only the Engineer can settle: `zaf board question <task> "<question>" [--door]`. The task waits for the ruling.
+5. A defect that must stop the task, or that only the Engineer can settle: `zaf board question <task> "<question>" [--door]`, its last line `Proposed answer: <the fix you recommend>`. The task waits for the ruling.
 6. `zaf board report <epic> "<passed, with defects, questions>"`. Then end.

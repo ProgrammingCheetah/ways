@@ -1419,3 +1419,102 @@ fn an_old_star_gitignore_is_part_of_what_is_made() {
     fs::write(root.join(".zaf/.gitignore"), "*\n").expect("old file");
     assert_eq!(verbs(&plan(&root, Some(&home), false))[0], "Make");
 }
+
+/// A project whose manifest is on disk and whose first setup ran, the pack carrying
+/// `PACK_ACTIONS` actions: the folders, the profiles and the machine's actions all in place.
+fn set_up_project(extra: &str) -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
+    let (dir, root, home) = places();
+    let pack = pack_with_actions(dir.path());
+    fs::write(root.join(".zaf.toml"), format!("{HEAD}{extra}")).expect("manifest");
+    super::setup_with(
+        &root,
+        Some(&home),
+        &manifest(extra),
+        &FakeCommands::new(),
+        &RecordingShell::installing_at(&pack),
+        None,
+        None,
+    )
+    .expect("first setup");
+    (dir, root, home, pack)
+}
+
+#[test]
+fn a_rerun_with_nothing_to_change_asks_nothing() {
+    let (_dir, root, home, _pack) = set_up_project(TAGGED);
+    let rows = plan(&root, Some(&home), false);
+    assert_eq!(verbs(&rows), ["Install", "Check"]);
+    assert!(!writes(&rows));
+}
+
+#[test]
+fn a_rerun_with_a_new_action_asks_first() {
+    let (_dir, root, home, pack) = set_up_project(TAGGED);
+    fs::write(pack.join("actions/brand-new"), "#!/bin/sh\ntrue\n").expect("a new action");
+    let before = snapshot(&home);
+
+    let rows = plan(&root, Some(&home), false);
+
+    assert_eq!(verbs(&rows), ["Add", "Install", "Check"]);
+    assert_eq!(rows[0].noun.as_str(), "1 new action: brand-new");
+    assert!(writes(&rows));
+    assert_eq!(snapshot(&home), before, "the plan installs nothing");
+
+    // Two new ones are counted; a differing installed one is not new, and is not a row.
+    fs::write(pack.join("actions/also-new"), "#!/bin/sh\ntrue\n").expect("another");
+    fs::write(home.join("actions/action-03"), "mine\n").expect("edited");
+    let rows = plan(&root, Some(&home), false);
+    assert_eq!(rows[0].noun.as_str(), "2 new actions: also-new, brand-new");
+
+    // Once installed it is no row.
+    install_machine_actions(
+        &home,
+        &pack.join("actions"),
+        &FakeCommands::new(),
+        None,
+        SystemTime::now(),
+    )
+    .expect("installed");
+    assert_eq!(
+        verbs(&plan(&root, Some(&home), false)),
+        ["Install", "Check"]
+    );
+}
+
+#[test]
+fn a_rerun_with_stale_profiles_asks_first() {
+    let (_dir, root, home, _pack) = set_up_project(TAGGED);
+    fs::write(root.join(".zaf/roles/project.md"), "a new rule\n").expect("rules");
+    let before = snapshot(&root.join(".zaf/profiles"));
+
+    let rows = plan(&root, Some(&home), false);
+
+    assert_eq!(verbs(&rows), ["Refresh", "Install", "Check"]);
+    assert_eq!(rows[0].noun.as_str(), "the profiles: lean, build");
+    assert!(writes(&rows));
+    assert_eq!(
+        snapshot(&root.join(".zaf/profiles")),
+        before,
+        "the plan leaves the profiles as they were"
+    );
+}
+
+#[test]
+fn the_design_clone_is_a_plan_row() {
+    let design = concat!(
+        "[design]\nkind = \"git-sibling\"\n",
+        "repo = \"example/b-design\"\npath = \"../b-design\"\n"
+    );
+    let (dir, root, home, _pack) = set_up_project(&format!("{TAGGED}{design}"));
+    let rows = plan(&root, Some(&home), false);
+    assert_eq!(verbs(&rows), ["Clone", "Install", "Check"]);
+    assert_eq!(rows[0].noun.as_str(), "example/b-design");
+    assert!(writes(&rows));
+    assert!(
+        !dir.path().join("b-design").exists(),
+        "the plan clones nothing"
+    );
+
+    fs::create_dir(dir.path().join("b-design")).expect("cloned");
+    assert!(!writes(&plan(&root, Some(&home), false)));
+}

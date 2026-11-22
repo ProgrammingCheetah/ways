@@ -18,6 +18,7 @@ use super::actions::{
 };
 use super::release::{Phase, ReleaseFolder, phase_due};
 use crate::composition::{Composition, STATE_DIR, zaf_home};
+use crate::ports::{BranchName, PrNumber};
 
 /// The action that opens the integration branch on the remote.
 const OPEN_ACTION: &str = "base-open";
@@ -44,7 +45,7 @@ const VERSION_PLACEHOLDER: &str = "{version}";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Started {
     /// The integration branch (`ZAF_BASE`), made now or handed back.
-    pub branch: String,
+    pub branch: BranchName,
     /// Whether the branch was made by this start (`false`: it was on the remote already).
     pub made: bool,
     /// The commit the papers went in, `None` when the branch held them as they stand.
@@ -55,7 +56,7 @@ pub struct Started {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleasePullRequest {
     /// The pull request's number.
-    pub number: String,
+    pub number: PrNumber,
     /// Its link, when the action gave one.
     pub link: Option<String>,
 }
@@ -200,13 +201,17 @@ fn pull_request_of(printed: &str) -> Result<ReleasePullRequest, BuildError> {
     let link = lines.next().unwrap_or_default();
     let number = lines.next().unwrap_or_default();
     let is_number = |text: &str| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit());
-    if !is_number(number) || is_number(link) {
+    let parsed = number
+        .parse::<PrNumber>()
+        .ok()
+        .filter(|_| is_number(number));
+    let Some(number) = parsed.filter(|_| !is_number(link)) else {
         return Err(BuildError::Backend(format!(
             "{RELEASE_OPEN_ACTION} gave no pull request number: {number:?}"
         )));
-    }
+    };
     Ok(ReleasePullRequest {
-        number: number.to_owned(),
+        number,
         link: Some(link.to_owned()),
     })
 }
@@ -228,7 +233,7 @@ fn check_signed(folder: &ReleaseFolder, version: &str) -> Result<(), BuildError>
 }
 
 /// The integration branch of `version`, from `[branches] integration`.
-fn integration_branch(composition: &Composition, version: &str) -> Result<String, BuildError> {
+fn integration_branch(composition: &Composition, version: &str) -> Result<BranchName, BuildError> {
     let pattern: &str = composition.manifest().branches.integration.as_ref();
     let branch = pattern.replace(VERSION_PLACEHOLDER, version);
     if branch.contains("{task}") || branch.contains("{epic}") {
@@ -236,7 +241,7 @@ fn integration_branch(composition: &Composition, version: &str) -> Result<String
             "[branches] integration {pattern} names a ticket: there is none to build a version from"
         )));
     }
-    Ok(branch)
+    Ok(BranchName::from(branch))
 }
 
 /// What one action run needs, shared by both.
@@ -285,12 +290,14 @@ impl Runs<'_> {
             terminal: Terminal::Absent,
             run: None,
             phase: None,
+            vcs: manifest.vcs.as_ref().map(|vcs| vcs.kind),
         }
         .with_phase(PhaseEnv {
             version: self.version.to_owned(),
             phase: PHASE.to_owned(),
             release_dir: PathBuf::from(self.folder),
             input: None,
+            ready: None,
         });
         judge(&run_action(&request))
     }

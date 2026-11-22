@@ -6,6 +6,7 @@
 # zaf target: task
 # zaf kind: model
 # zaf ends: pr-open
+# changed: takes an open workspace of ZAF_VCS's kind (a `.git` file for git, a `.jj` folder for jj, or with no ZAF_VCS)
 
 # The task as a bare number; the launcher passes it as the one argument.
 task=${1#\#}
@@ -38,7 +39,13 @@ zaf board claim "$task" || stop $?
 # the Engineer, or crashed. The task is then past `claim`, where `slice-open` is refused, so the
 # open workspace is taken as it stands; whatever it holds, committed or not, stays.
 workspace=$ZAF_ROOT/.zaf/workspaces/$ZAF_SLICE
-if [ ! -d "$workspace/.jj" ]; then
+# A git worktree has a `.git` file, a jj workspace a `.jj` folder; with no ZAF_VCS it is jj's.
+open=
+case $ZAF_VCS in
+    git) [ -f "$workspace/.git" ] && open=1 ;;
+    *) [ -d "$workspace/.jj" ] && open=1 ;;
+esac
+if [ -z "$open" ]; then
     # A successful `zaf do` prints nothing, so `--more` brings the log back; its last non-empty
     # line is the workspace path.
     log=$(zaf do --more slice-open "$task") || stop $?

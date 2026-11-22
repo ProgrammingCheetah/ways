@@ -1,0 +1,74 @@
+#!/bin/sh
+# A slow stand-in for `curl` in the Forgejo adapter's batch tests; a test puts this directory
+# first on PATH.
+#
+# $FAKE_CURL_DIR holds `running/` (a file for each call in flight) and `peaks`, a line for each
+# call: how many were in flight when it began. A call is in flight for a short while, so calls
+# that run together overlap. A URL with `fail` in it is answered 500, `list` in it a list of
+# one item, any other a JSON object holding the URL; the page-size read is answered too. A pull
+# request's own reads (`pulls/N`, its files, three reviews with a line comment each, and a
+# commit's statuses) are answered as Forgejo prints them.
+# The board's epic reads are answered as a board answers them: thirteen open epics, no
+# comments, and one task under each epic.
+set -eu
+scene=${FAKE_CURL_DIR:?FAKE_CURL_DIR is not set}
+mkdir -p "$scene/running"
+cat > /dev/null
+url=
+for arg in "$@"; do
+    url=$arg
+done
+touch "$scene/running/$$"
+find "$scene/running" -type f | wc -l | tr -d ' ' >> "$scene/peaks"
+sleep 0.2
+rm -f "$scene/running/$$"
+case "$url" in
+    */settings/api)
+        printf '{"max_response_items": 50}\n200'
+        ;;
+    */pulls/[0-9]*/reviews/*/comments*)
+        printf '[{"user": {"login": "reviewer"}, "body": "Look.", "path": "a.rs", "position": 3, "commit_id": "abc", "created_at": "2026-11-12T10:09:00Z"}]\n200'
+        ;;
+    */pulls/[0-9]*/reviews\?*)
+        printf '[{"id": 1, "user": {"login": "reviewer"}, "body": "One.", "state": "COMMENT", "commit_id": "abc", "submitted_at": "2026-11-12T10:10:00Z", "comments_count": 1}, {"id": 2, "user": {"login": "reviewer"}, "body": "Two.", "state": "COMMENT", "commit_id": "abc", "submitted_at": "2026-11-12T10:11:00Z", "comments_count": 1}, {"id": 3, "user": {"login": "reviewer"}, "body": "Three.", "state": "COMMENT", "commit_id": "abc", "submitted_at": "2026-11-12T10:12:00Z", "comments_count": 1}]\n200'
+        ;;
+    */pulls/[0-9]*/files*)
+        printf '[{"filename": "src/a.rs"}]\n200'
+        ;;
+    */commits/*/statuses*)
+        printf '[{"id": 1, "status": "success", "context": "ci / test (push)", "created_at": "2026-11-12T10:11:00Z"}]\n200'
+        ;;
+    */pulls/[0-9]*)
+        number=${url##*/pulls/}
+        printf '{"number": %s, "state": "open", "merged": false, "html_url": "%s", "created_at": "2026-11-12T10:00:00Z", "head": {"ref": "feature", "sha": "abc"}}\n200' "$number" "$url"
+        ;;
+    *labels=epic*)
+        # Thirteen open epics, #13 first: the board puts them in number order.
+        printf '['
+        number=13
+        while [ "$number" -ge 1 ]; do
+            printf '{"number": %s, "title": "epic %s", "body": "body %s", "state": "open", "labels": [{"id": 1, "name": "epic"}]}' "$number" "$number" "$number"
+            [ "$number" -gt 1 ] && printf ','
+            number=$((number - 1))
+        done
+        printf ']\n200'
+        ;;
+    */issues/*/comments*)
+        printf '[]\n200'
+        ;;
+    */issues/*/dependencies*)
+        # One task under each epic: #<epic + 100>.
+        epic=${url#*/issues/}
+        epic=${epic%%/*}
+        printf '[{"number": %s, "title": "task", "state": "open", "labels": [{"id": 2, "name": "task"}]}]\n200' "$((epic + 100))"
+        ;;
+    *fail*)
+        printf '{"message": "broken"}\n500'
+        ;;
+    *list*)
+        printf '[{"url": "%s"}]\n200' "$url"
+        ;;
+    *)
+        printf '{"url": "%s"}\n200' "$url"
+        ;;
+esac

@@ -8,12 +8,14 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::adapters::design::DirDesign;
-use crate::adapters::forgejo::{ForgejoApi, ForgejoBoard, ForgejoForge};
+use crate::adapters::forgejo::{ForgejoApi, ForgejoBoard, ForgejoCiFilter, ForgejoForge, PageSize};
 use crate::adapters::gate::ShellGate;
-use crate::adapters::github::{GhCommand, GithubBoard, GithubForge, ProjectRef};
+use crate::adapters::git::GitVcs;
+use crate::adapters::github::{GhCommand, GithubBoard, GithubCiFilter, GithubForge, ProjectRef};
 use crate::adapters::jj::JjVcs;
 use crate::adapters::runner::{ProcessRunner, single_quote};
 use crate::adapters::shell::SystemShell;
@@ -25,7 +27,9 @@ use crate::manifest::{
     LEGACY_FILE, Manifest, ManifestError, ModelName, ProjectFiles, ROOT_FILE, RunnerName, VcsKind,
     workspaces_path_lenient,
 };
-use crate::ports::{Board, Design, Forge, Gate, RunRequest, Runner, Shell, SliceName, Vcs};
+use crate::ports::{
+    Board, CiFilter, Design, Forge, Gate, RunRequest, Runner, Shell, SliceName, Vcs,
+};
 
 /// The retired manifest file name at the project root; `zaf setup` still writes it.
 pub const MANIFEST_FILE: &str = LEGACY_FILE;
@@ -102,6 +106,37 @@ pub enum CompositionError {
 pub struct Composition {
     root: PathBuf,
     manifest: Manifest,
+    page_sizes: PageSizes,
+}
+
+/// The page-size cells of the Forgejo doors this composition builds, one for each host and
+/// repository, so the board and the forge on one repository read `settings/api` once.
+/// Clones of a composition share them; two compositions are equal whatever they hold.
+#[derive(Debug, Clone, Default)]
+struct PageSizes(Arc<Mutex<Vec<(String, String, PageSize)>>>);
+
+impl PartialEq for PageSizes {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for PageSizes {}
+
+impl PageSizes {
+    fn cell(&self, url: &str, repo: &str) -> PageSize {
+        let url = url.to_ascii_lowercase();
+        let mut cells = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some((_, _, cell)) = cells.iter().find(|(u, r, _)| *u == url && r == repo) {
+            return cell.clone();
+        }
+        let cell = PageSize::default();
+        cells.push((url, repo.to_owned(), cell.clone()));
+        cell
+    }
 }
 
 /// The zaf home, where the machine's `config.toml` lives: `ZAF_HOME`, else `~/.zaf`, else
@@ -131,7 +166,16 @@ impl Composition {
         Ok(Self {
             root: project_root.to_owned(),
             manifest,
+            page_sizes: PageSizes::default(),
         })
+    }
+
+    /// `api` reading its page size through the cell of its host and repository.
+    fn paged(&self, api: ForgejoApi) -> ForgejoApi {
+        let cell = self
+            .page_sizes
+            .cell(api.url().as_str(), api.repo().as_str());
+        api.with_page_size(cell)
     }
 
     /// Finds the project root by walking up from `start`.
@@ -287,7 +331,7 @@ impl Composition {
                 };
                 let repo = section.repo.clone().ok_or_else(|| missing("repo"))?;
                 let url = section.url.clone().ok_or_else(|| missing("url"))?;
-                let api = ForgejoApi::from_env(url, repo, section.token_env());
+                let api = self.paged(ForgejoApi::from_env(url, repo, section.token_env()));
                 Ok(Box::new(ForgejoBoard::from(api)))
             }
         }
@@ -301,6 +345,7 @@ impl Composition {
         })?;
         match section.kind {
             VcsKind::Jj => Ok(Box::new(JjVcs)),
+            VcsKind::Git => Ok(Box::new(GitVcs::new())),
         }
     }
 
@@ -331,11 +376,37 @@ impl Composition {
                 };
                 let repo = section.repo.clone().ok_or_else(|| missing("repo"))?;
                 let url = section.url.clone().ok_or_else(|| missing("url"))?;
-                let api = ForgejoApi::from_env(url, repo, section.token_env());
+                let api = self.paged(ForgejoApi::from_env(url, repo, section.token_env()));
                 if self.board_api().is_some_and(|board| shares(&board, &api)) {
                     return Ok(Box::new(ForgejoForge::beside_board(api)));
                 }
                 Ok(Box::new(ForgejoForge::from(api)))
+            }
+        }
+    }
+
+    /// The CI filter of the forge the manifest names, built from `[forge]` as [`Self::forge`] is.
+    pub fn ci_filter(&self) -> Result<Box<dyn CiFilter>, CompositionError> {
+        let section = self
+            .manifest
+            .forge
+            .as_ref()
+            .ok_or(CompositionError::Absent {
+                port: "CiFilter",
+                section: "forge",
+            })?;
+        let missing = |key: &'static str| CompositionError::MissingKey {
+            section: "forge",
+            key,
+            kind: section.kind.to_string(),
+        };
+        let repo = section.repo.clone().ok_or_else(|| missing("repo"))?;
+        match section.kind {
+            ForgeKind::Github => Ok(Box::new(GithubCiFilter::from(GhCommand::from(repo)))),
+            ForgeKind::Forgejo => {
+                let url = section.url.clone().ok_or_else(|| missing("url"))?;
+                let api = ForgejoApi::from_env(url, repo, section.token_env());
+                Ok(Box::new(ForgejoCiFilter::from(api)))
             }
         }
     }

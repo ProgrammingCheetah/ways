@@ -56,7 +56,7 @@
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use super::Cli;
@@ -77,16 +77,16 @@ use crate::app::schedule::tick::{self as schedule_tick, Held, Machine, PhaseTick
 use crate::app::schedule::trace::{self, Did, Entry, Seen};
 use crate::app::schedule::{binary, lock, request};
 use crate::app::schedule::{gather as schedule_gather, record, ticks};
-use crate::app::spawn::phase::{PhaseError, Ports};
+use crate::app::spawn::phase::{InlineOpened, PhaseError, Ports};
 use crate::app::spawn::watch::{SCHEDULED_BY_VAR, is_scheduled_by};
 use crate::app::spawn::{
     self, DryLaunch, LaunchContext, LaunchPorts, Launched, PlannedModel, Prepared, SpawnError,
     TickOutcome,
 };
 use crate::composition::{Composition, STATE_DIR, zaf_home};
-use crate::domain::schedule::Placement;
-use crate::domain::{Budget, CHALLENGER_ROLE, Instance, RoleName, TicketId};
-use crate::ports::{Board, Holder, PortError, RunRequest, e_is_live, live_use};
+use crate::domain::schedule::{GroupBase, Placement};
+use crate::domain::{Budget, CHALLENGER_ROLE, CommitId, Instance, RoleName, TicketId};
+use crate::ports::{Board, Holder, PortError, PrNumber, RunRequest, e_is_live, live_use};
 
 /// Runs one tick; refuses without `--once` or `--version`. With `dry_run`, launches
 /// nothing and writes nothing. With `no_wait`, a tick that finds `spawn.lock` held by another
@@ -97,13 +97,13 @@ use crate::ports::{Board, Holder, PortError, RunRequest, e_is_live, live_use};
 pub fn run(cli: &Cli, once: bool, version: Option<&str>, dry_run: bool, no_wait: bool) -> u8 {
     let path = cli.verb.path();
     if !once {
-        eprintln!(
+        crate::eprintln_zaf!(
             "zaf {path}: only one tick at a time; pass --once and let a timer repeat it, or --watch"
         );
         return REFUSED;
     }
     let Some(version) = version else {
-        eprintln!("zaf {path}: pass --version <v>, the milestone the instances build");
+        crate::eprintln_zaf!("zaf {path}: pass --version <v>, the milestone the instances build");
         return REFUSED;
     };
     let composition = match Composition::discover_here() {
@@ -260,7 +260,7 @@ fn defer_to_scheduler(
     if let Some(holding) = lock::running(&composition.state_dir(), &process::alive)
         && holding.version != version
     {
-        eprintln!(
+        crate::eprintln_zaf!(
             "zaf {path}: the running scheduler ({}) builds another milestone than --version \
              {version}; no tick was asked for or run: pass --version {}, or stop it first",
             holding.whereabouts(),
@@ -298,7 +298,7 @@ fn defer_to_scheduler(
             Some(OK)
         }
         Err(why) => {
-            eprintln!("zaf {path}: {why}");
+            crate::eprintln_zaf!("zaf {path}: {why}");
             Some(BACKEND)
         }
     }
@@ -328,7 +328,7 @@ fn write_trace(path: &str, composition: &Composition, entry: &Entry) -> trace::L
         std::time::SystemTime::now(),
     );
     if let Some(why) = &appended.failed {
-        eprintln!("zaf {path}: warning: the trace was not written: {why}");
+        crate::eprintln_zaf!("zaf {path}: warning: the trace was not written: {why}");
     }
     appended.line
 }
@@ -391,7 +391,7 @@ fn tick(
     // manifest runs its instances with yesterday's deny list.
     let stale = profile::stale(&state_dir, manifest);
     if let Some(line) = profile::stale_line(&stale) {
-        eprintln!("zaf {path}: {line}");
+        crate::eprintln_zaf!("zaf {path}: {line}");
         if !dry_run {
             traced.stopped = Some(line);
         }
@@ -401,7 +401,7 @@ fn tick(
     let project_env = match spawn::manifest_env(manifest, composition.root(), version) {
         Ok(env) => env,
         Err(error) => {
-            eprintln!("zaf {path}: {error}");
+            crate::eprintln_zaf!("zaf {path}: {error}");
             return REFUSED;
         }
     };
@@ -410,7 +410,9 @@ fn tick(
     }
     // This tick holds each launch it reserves until the runner starts the instance.
     let Some(holder) = process::this() else {
-        eprintln!("zaf {path}: cannot read this process's start time, so no launch could be held");
+        crate::eprintln_zaf!(
+            "zaf {path}: cannot read this process's start time, so no launch could be held"
+        );
         return BACKEND;
     };
     let prepared = match spawn::prepare(
@@ -484,7 +486,7 @@ fn tick(
     // A board that failed while labelling fails the tick, whose other steps still ran.
     block.did.extend(labelling.lines());
     for failure in &labelling.failed {
-        eprintln!("zaf {path}: {failure}");
+        crate::eprintln_zaf!("zaf {path}: {failure}");
         code = BACKEND;
     }
     if let Some(steps) = &phases {
@@ -547,7 +549,7 @@ fn tick(
         match result {
             Ok(done) => {
                 if let Some(error) = done.exit.problem() {
-                    eprintln!("zaf {path}: {}: {error}", done.instance);
+                    crate::eprintln_zaf!("zaf {path}: {}: {error}", done.instance);
                     code = BACKEND;
                 }
                 block.launched.push(format!(
@@ -591,7 +593,7 @@ fn tick(
         println!("{json}");
     }
     if let Err(message) = super::report::ingest_ledger(composition) {
-        eprintln!("zaf {path}: warning: {message}");
+        crate::eprintln_zaf!("zaf {path}: warning: {message}");
     }
     code
 }
@@ -665,6 +667,9 @@ pub struct InlineRecord<'a> {
     pub ports: &'a Ports<'a>,
     /// This process; none when its start time cannot be read, and no folder is opened.
     pub this: Option<&'a Holder>,
+    /// What the tick's group of merges remembers for this tick alone (D31): the group's last commit
+    /// and its base, which the gate judges R29 at while the branch is still at that commit.
+    pub group: &'a std::cell::RefCell<Option<GroupBase>>,
 }
 
 /// Why an inline run's folder was not opened.
@@ -678,15 +683,18 @@ enum NotOpened {
 impl InlineRecord<'_> {
     /// Opens the run folder of `action` on `task` once the gate, asked again under the lock, lets
     /// it run (see [`spawn::phase::open_inline`]).
-    fn open(&self, task: TicketId, action: &ActionName) -> Result<PathBuf, NotOpened> {
+    fn open(&self, task: TicketId, action: &ActionName) -> Result<InlineOpened, NotOpened> {
         let Some(this) = self.this else {
             return Err(NotOpened::Failed(
                 "cannot read this process's start time".to_owned(),
             ));
         };
-        spawn::phase::open_inline(self.ports, task, action, this).map_err(|error| match error {
-            PhaseError::Refused(reason) => NotOpened::Refused(reason),
-            PhaseError::Failed(reason) => NotOpened::Failed(reason),
+        let group = self.group.borrow();
+        spawn::phase::open_inline(self.ports, task, action, this, group.as_ref()).map_err(|error| {
+            match error {
+                PhaseError::Refused(reason) => NotOpened::Refused(reason),
+                PhaseError::Failed(reason) => NotOpened::Failed(reason),
+            }
         })
     }
 
@@ -738,17 +746,22 @@ pub fn run_zaf_action(
     version: &str,
 ) -> u8 {
     let not_recorded = |reason: &str| {
-        eprintln!("zaf spawn: warning: the run of {action} on {task} is not recorded: {reason}")
+        crate::eprintln_zaf!(
+            "zaf spawn: warning: the run of {action} on {task} is not recorded: {reason}"
+        )
     };
-    let run_dir = match record.open(task, action) {
-        Ok(run_dir) => Some(run_dir),
+    let (run_dir, land_head) = match record.open(task, action) {
+        Ok(opened) => (
+            Some(opened.run_dir),
+            opened.land_head.map(|head| head.as_str().to_owned()),
+        ),
         Err(NotOpened::Refused(reason)) => {
-            eprintln!("zaf spawn: NOT_RUN {action} on {task}: {reason}");
+            crate::eprintln_zaf!("zaf spawn: NOT_RUN {action} on {task}: {reason}");
             return NOT_RUN_EXIT;
         }
         Err(NotOpened::Failed(reason)) => {
             not_recorded(&reason);
-            None
+            (None, None)
         }
     };
     // The body's process, recorded as soon as it starts: the run reads as running while it lives,
@@ -769,6 +782,7 @@ pub fn run_zaf_action(
         super::do_action::VersionFrom::Given(version),
         run_dir.as_deref().map(|dir| RunStep {
             dir,
+            head: land_head.as_deref(),
             started: &started,
         }),
     );
@@ -828,7 +842,7 @@ fn phase_tick(
     let forge = match composition.forge() {
         Ok(forge) => forge,
         Err(error) => {
-            eprintln!("zaf {path}: the phase steps did not run: {error}");
+            crate::eprintln_zaf!("zaf {path}: the phase steps did not run: {error}");
             let observed = Observed::failed(error.to_string());
             return (
                 PhaseTick::default(),
@@ -847,9 +861,14 @@ fn phase_tick(
     };
     let manifest = composition.manifest();
     let now = std::time::SystemTime::now();
+    // A project with no [vcs] counts getting nowhere by commit id, as before.
+    let vcs = composition.vcs().ok();
+    // A filter that cannot be built leaves every check expected, as a failed read does.
+    let ci_filter = composition.ci_filter().ok();
     let ports = Ports {
         board,
         forge: forge.as_ref(),
+        ci_filter: ci_filter.as_deref(),
         manifest,
         root,
         home: &home,
@@ -857,11 +876,15 @@ fn phase_tick(
         alive: &process::alive,
         version: Some(version),
         now,
+        vcs: vcs.as_deref(),
     };
-    let gathered = match schedule_gather::gather(&ports) {
+    let lists = schedule_gather::read_lists(board);
+    let gathered = match lists
+        .and_then(|(epics, questions)| schedule_gather::gather(&ports, &epics, &questions))
+    {
         Ok(gathered) => gathered,
         Err(error) => {
-            eprintln!("zaf {path}: the phase steps did not run: {error}");
+            crate::eprintln_zaf!("zaf {path}: the phase steps did not run: {error}");
             let observed = Observed::failed(error.to_string());
             return (
                 PhaseTick::default(),
@@ -875,10 +898,10 @@ fn phase_tick(
         seen: Ok(Seen::of(&gathered, now)),
     };
     for skipped in &gathered.unreadable {
-        eprintln!("zaf {path}: skipped {}: {}", skipped.ticket, skipped.reason);
+        crate::eprintln_zaf!("zaf {path}: skipped {}: {}", skipped.ticket, skipped.reason);
     }
     for warning in &gathered.warnings {
-        eprintln!("zaf {path}: warning: {warning}");
+        crate::eprintln_zaf!("zaf {path}: warning: {warning}");
     }
     // After the placement, before the model start (and every other step).
     let labelling = labels::sync(board, &gathered, now);
@@ -890,16 +913,33 @@ fn phase_tick(
         e_live: e_is_live(&machine),
         launches_here,
         slots: usize::try_from(manifest.spawn.slots).unwrap_or(usize::MAX),
+        merge_per_tick: manifest.merge.per_tick,
     };
     // An inline run is a step of this process, which its run folder names while it runs.
     let this = process::this();
+    let group = std::cell::RefCell::new(None);
     let record = InlineRecord {
         ports: &ports,
         this: this.as_ref(),
+        group: &group,
     };
     let run_inline = |task: TicketId, action: &ActionName, version: &str| {
         run_zaf_action(&record, task, action, version)
     };
+    // The pull request's number, read before each merge (a landed merge forgets the record), and
+    // the forge's word on whether that number merged, asked after it (D30).
+    let records = crate::app::actions::SliceRecords::new(root);
+    let pr_of = |task: TicketId| recorded_pr(&records, task);
+    let merged = |pr: PrNumber| forge_says_merged(forge.as_ref(), pr);
+    // The integration branch's head, read once after each landed merge: the group's own last commit.
+    let branch = gathered.base.as_ref().map(|base| base.branch.clone());
+    let branch_head = || {
+        let branch = branch.as_ref()?;
+        schedule_gather::read_base(forge.as_ref(), branch)
+            .ok()?
+            .head
+    };
+    let keep = |own: Option<GroupBase>| *group.borrow_mut() = own;
     let (tick, code) = phase_steps(
         board,
         &state_dir,
@@ -910,11 +950,37 @@ fn phase_tick(
         version,
         &this_zaf,
         &run_inline,
+        &pr_of,
+        &merged,
+        &GroupMemory {
+            head: &branch_head,
+            keep: &keep,
+        },
     );
     for failure in &tick.failed {
-        eprintln!("zaf {path}: {failure}");
+        crate::eprintln_zaf!("zaf {path}: {failure}");
     }
     (tick, code, observed, labelling)
+}
+
+/// The number of `task`'s recorded pull request, read before its merge runs: a merge that lands
+/// forgets the record, so the tick cannot read it afterwards. None when there is no record, or
+/// one that does not read.
+fn recorded_pr(records: &crate::app::actions::SliceRecords, task: TicketId) -> Option<PrNumber> {
+    records.pr(task).ok().flatten()
+}
+
+/// Whether the forge says the pull request `pr` merged; one it cannot find or read is not.
+fn forge_says_merged(forge: &dyn crate::ports::Forge, pr: PrNumber) -> bool {
+    matches!(forge.merged(pr), Ok(true))
+}
+
+/// How the tick reads and keeps its group of merges' last commit (D31, F30), in memory for the tick.
+struct GroupMemory<'a> {
+    /// The integration branch's head on the forge now; none when it cannot be read.
+    head: &'a dyn Fn() -> Option<CommitId>,
+    /// Keeps the group's last commit and base for the re-check before the next merge; none clears.
+    keep: &'a dyn Fn(Option<GroupBase>),
 }
 
 /// Runs steps 3 to 6 on `gathered` at `now` ([`schedule_tick::tick`]): each `zaf`-kind action
@@ -938,6 +1004,9 @@ fn phase_steps(
     version: &str,
     zaf: &dyn Fn() -> Result<Command, String>,
     run_inline: &dyn Fn(TicketId, &ActionName, &str) -> u8,
+    pr_of: &dyn Fn(TicketId) -> Option<PrNumber>,
+    merged: &dyn Fn(PrNumber) -> bool,
+    group: &GroupMemory<'_>,
 ) -> (PhaseTick, u8) {
     let versioned = || -> Result<Command, String> {
         let mut command = zaf()?;
@@ -948,6 +1017,10 @@ fn phase_steps(
     let mut launch =
         |task: TicketId, action: &ActionName| spawn_phase_with(versioned()?, task, action);
     let mut start = |planned: &PlannedModel| start_model(versioned()?, planned);
+    let mut pr_of = |task: TicketId| pr_of(task);
+    let mut merged = |pr: PrNumber| merged(pr);
+    let mut branch_head = || (group.head)();
+    let mut keep = |own: Option<GroupBase>| (group.keep)(own);
     let mut log = |line: &str| eprintln!("{line}");
     let tick = schedule_tick::tick(
         board,
@@ -960,6 +1033,10 @@ fn phase_steps(
             run: &mut run,
             launch: &mut launch,
             start: &mut start,
+            pr_of: &mut pr_of,
+            merged: &mut merged,
+            branch_head: &mut branch_head,
+            group: &mut keep,
             log: &mut log,
         },
     );
@@ -1074,13 +1151,13 @@ fn dry(
         Ok(None) => unplaced_labels(board.as_ref(), &prepared, labels::read),
         Err(error) => {
             if !cli.json {
-                eprintln!("zaf {path}: the labels were not read: {error}");
+                crate::eprintln_zaf!("zaf {path}: the labels were not read: {error}");
             }
             Labelling::default()
         }
     };
     for failure in &labelling.failed {
-        eprintln!("zaf {path}: {failure}");
+        crate::eprintln_zaf!("zaf {path}: {failure}");
     }
     let code = if labelling.failed.is_empty() {
         OK
@@ -1132,7 +1209,12 @@ fn dry_gather(
     board: &dyn Board,
     version: &str,
 ) -> Result<Option<Gathered>, String> {
-    schedule_gather::gather_for(composition, board, Some(version))
+    if composition.manifest().phases.is_empty() {
+        return Ok(None);
+    }
+    let (epics, questions) =
+        schedule_gather::read_lists(board).map_err(|error| error.to_string())?;
+    schedule_gather::gather_for(composition, board, Some(version), &epics, &questions)
 }
 
 /// The labels of a project with no `[phases]`, whose tick places nothing: every open task, from
@@ -1182,7 +1264,7 @@ fn post_tick(path: &str, composition: &Composition, version: &str, outcome: &Tic
             None => Ok(()),
             Some(code) => Err(format!("exit {code}")),
         },
-        &mut |line| eprintln!("zaf {path}: {line}"),
+        &mut |line| crate::eprintln_zaf!("zaf {path}: {line}"),
     );
 }
 
@@ -1206,7 +1288,7 @@ fn run_tick_hook(
     };
     hook(root, &home, event)?;
     let failed = |reason: String| {
-        eprintln!("zaf {path}: NOT_RUN {name}: {reason}");
+        crate::eprintln_zaf!("zaf {path}: NOT_RUN {name}: {reason}");
         Some(BACKEND)
     };
     let nesting = match Nesting::from_env() {
@@ -1237,13 +1319,14 @@ fn run_tick_hook(
         terminal: Terminal::Absent,
         run: None,
         phase: None,
+        vcs: manifest.vcs.as_ref().map(|vcs| vcs.kind),
     };
     let outcome = run_hook_with_input(&request, input);
     if outcome.result == RunResult::Ok {
         return None;
     }
     if let Some(headline) = outcome.headline() {
-        eprintln!("zaf {path}: {headline}");
+        crate::eprintln_zaf!("zaf {path}: {headline}");
     }
     // The last lines of the log, under the line they explain, as `zaf do` shows them.
     if let Some(log) = &outcome.log
@@ -1279,7 +1362,7 @@ fn failed(path: &str, error: &SpawnError) -> u8 {
     match error {
         SpawnError::Port(error) => exit::fail(path, error),
         SpawnError::Read { .. } | SpawnError::Write { .. } => {
-            eprintln!("zaf {path}: {error}");
+            crate::eprintln_zaf!("zaf {path}: {error}");
             BACKEND
         }
     }
@@ -1393,6 +1476,7 @@ mod tests {
                 ready_since: Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1)),
                 merging: Default::default(),
                 no_check_ruled: None,
+                trees: Default::default(),
             });
             gathered.beside.insert(
                 TicketId::from(*task),
@@ -1441,12 +1525,21 @@ mod tests {
             e_live: false,
             launches_here: 0,
             slots: 2,
+            merge_per_tick: 1,
         }
     }
 
     /// The tick's clock in these tests.
     fn now() -> std::time::SystemTime {
         std::time::UNIX_EPOCH + std::time::Duration::from_secs(100)
+    }
+
+    /// A tick whose branch head is never read and whose group keeps nothing.
+    fn no_group() -> GroupMemory<'static> {
+        GroupMemory {
+            head: &|| None,
+            keep: &|_| {},
+        }
     }
 
     /// The in-process runner of a test whose tasks have no `zaf`-kind action ready.
@@ -1473,6 +1566,9 @@ mod tests {
             "0.3.0",
             &zaf,
             &no_inline,
+            &|_| None,
+            &|_| true,
+            &no_group(),
         );
         assert_eq!(code, BACKEND);
         assert_eq!(tick.outcome.started, None, "nothing is recorded as started");
@@ -1507,6 +1603,9 @@ mod tests {
             "0.3.0",
             &zaf,
             &no_inline,
+            &|_| None,
+            &|_| true,
+            &no_group(),
         );
         assert_eq!(code, OK);
         assert_eq!(std::fs::read_to_string(seen).expect("the version"), "0.3.0");
@@ -1534,6 +1633,9 @@ mod tests {
             "0.1",
             &zaf,
             &run_inline,
+            &|_| None,
+            &|_| true,
+            &no_group(),
         );
         assert_eq!(code, OK, "{:?}", tick.failed);
         assert_eq!(
@@ -1559,12 +1661,94 @@ mod tests {
             "0.3.0",
             &zaf,
             &no_inline,
+            &|_| None,
+            &|_| true,
+            &no_group(),
         );
         assert_eq!(code, OK);
         assert_eq!(
             tick.outcome.started.map(|started| started.task),
             Some(TicketId::from(3))
         );
+    }
+
+    /// A tick of three ready merges over real records and a fake forge: each task has its `.pr`
+    /// record and its open pull request, and a merge that exits 0 merges that pull request on the
+    /// forge and forgets the task's records, as `slice-merge` does. Gives the tasks whose merge
+    /// ran, the number of merges left for the next tick, and the tasks whose records are left.
+    fn three_merges(per_tick: u32) -> (Vec<u64>, usize, Vec<TicketId>) {
+        use crate::app::actions::SliceRecords;
+        use crate::fakes::{FakeForge, PrRequest};
+        use crate::ports::{BaseName, SliceName};
+
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let records = SliceRecords::new(dir.path());
+        let forge = FakeForge::default();
+        let slices = dir.path().join(".zaf/slices");
+        std::fs::create_dir_all(&slices).expect("the slices folder");
+        for task in [3_u64, 4, 5] {
+            let pr = forge
+                .open_pr(&PrRequest {
+                    slice: SliceName::from(format!("feature/0.5.3-1-{task}").as_str()),
+                    base: BaseName::from("feature/0.5.3"),
+                    title: "Task".to_owned(),
+                    body: String::new(),
+                })
+                .expect("open pr");
+            std::fs::write(slices.join(format!("{task}.pr")), pr.get().to_string())
+                .expect("the record");
+        }
+        let ran = std::cell::RefCell::new(Vec::new());
+        let run_inline = |task: TicketId, _: &ActionName, _: &str| {
+            ran.borrow_mut().push(task.get());
+            let pr = records.pr(task).expect("reads").expect("a record");
+            forge.merge(pr).expect("merges");
+            records.forget(task).expect("forgets");
+            0
+        };
+        let zaf = || Ok(fake_zaf(dir.path(), "exit 1"));
+        let board = crate::fakes::FakeBoard::default();
+        let (tick, code) = {
+            let machine = Machine {
+                merge_per_tick: per_tick,
+                ..idle()
+            };
+            let pr_of = |task: TicketId| recorded_pr(&records, task);
+            let merged = |pr: PrNumber| forge_says_merged(&forge, pr);
+            phase_steps(
+                &board,
+                dir.path(),
+                &ready_at_merge(&[3, 4, 5]),
+                now(),
+                &machine,
+                &Budget::default(),
+                "0.5.3",
+                &zaf,
+                &run_inline,
+                &pr_of,
+                &merged,
+                &no_group(),
+            )
+        };
+        assert_eq!(code, OK, "{:?}", tick.failed);
+        let left = records.tasks_with_pr().into_iter().collect();
+        (ran.into_inner(), tick.held.len(), left)
+    }
+
+    #[test]
+    fn tick_per_tick_one_lands_one_of_three() {
+        let (ran, held, left) = three_merges(1);
+        assert_eq!(ran, [3], "no second merge runs once one exited 0");
+        assert_eq!(held, 2, "the other two wait for the next tick");
+        assert_eq!(left, [TicketId::from(4), TicketId::from(5)]);
+    }
+
+    #[test]
+    fn tick_per_tick_three_lands_three() {
+        let (ran, held, left) = three_merges(3);
+        assert_eq!(ran, [3, 4, 5]);
+        assert_eq!(held, 0);
+        assert!(left.is_empty(), "every landed merge forgot its records");
     }
 
     #[test]

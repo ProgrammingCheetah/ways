@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use super::*;
 use crate::app::actions::ActionName;
-use crate::app::schedule::gather::gather;
+use crate::app::schedule::gather::gather_listing as gather;
 use crate::app::schedule::tick::{Machine, PhaseTick, Steps, tick};
 use crate::app::spawn::PlannedModel;
 use crate::app::spawn::phase::Ports;
@@ -163,6 +163,7 @@ impl Scene {
         let ports = Ports {
             board,
             forge: &self.forge,
+            ci_filter: None,
             manifest: &self.manifest,
             root: &self.root,
             home: &self.home,
@@ -170,6 +171,7 @@ impl Scene {
             alive: &|_: &Holder| false,
             version: None,
             now: SystemTime::now(),
+            vcs: None,
         };
         gather(&ports).expect("the board reads")
     }
@@ -198,6 +200,7 @@ fn run_tick(board: &dyn Board, gathered: &Gathered) -> (PhaseTick, Vec<PlannedMo
         e_live: false,
         launches_here: 0,
         slots: 2,
+        merge_per_tick: 1,
     };
     // No other tick meets this one: its questions are raised under a lock of its own.
     let state_dir = tempfile::tempdir().expect("tempdir");
@@ -212,6 +215,10 @@ fn run_tick(board: &dyn Board, gathered: &Gathered) -> (PhaseTick, Vec<PlannedMo
             run: &mut run,
             launch: &mut launch,
             start: &mut start,
+            pr_of: &mut |task: TicketId| task.get().to_string().parse().ok(),
+            merged: &mut |_: crate::ports::PrNumber| true,
+            branch_head: &mut || None,
+            group: &mut |_| {},
             log: &mut log,
         },
     );
@@ -428,6 +435,8 @@ struct Watched<'a> {
     read: RefCell<Vec<TicketId>>,
     /// How many states were set.
     sets: Cell<u32>,
+    /// How many times the epics were listed.
+    epics_read: Cell<u32>,
 }
 
 /// `board`, watched, failing nothing.
@@ -438,6 +447,7 @@ fn watched(board: &FakeBoard) -> Watched<'_> {
         set_fails: None,
         read: RefCell::new(Vec::new()),
         sets: Cell::new(0),
+        epics_read: Cell::new(0),
     }
 }
 
@@ -450,6 +460,7 @@ impl Board for Watched<'_> {
         self.board.standing(number)
     }
     fn epics(&self) -> Result<Vec<Epic>, PortError> {
+        self.epics_read.set(self.epics_read.get() + 1);
         self.board.epics()
     }
     fn open_tickets(&self) -> Result<Vec<crate::domain::OpenTicket>, PortError> {
@@ -649,6 +660,63 @@ fn the_read_alone_names_the_same_labels_and_writes_nothing() {
         );
     }
     assert_eq!(read_only.label(40), Some(TicketState::Ready));
+}
+
+/// The open epic #70 with its done task #71 (closed at 50), and the blocked spike #60 of epic #2
+/// naming it; a spike has no phase list, so the labels are what reads it.
+fn finished_epic_blocking_a_spike(scene: &Scene) {
+    scene.board.add_challenged_epic(id(70), "Other epic");
+    scene.board.add_ticket(Ticket {
+        id: id(71),
+        epic: Some(id(70)),
+        title: "Built".into(),
+        body: task_body("—").into(),
+        state: Some(TicketState::Done),
+        url: "".into(),
+        kind: None,
+    });
+    scene.board.close_at(id(71), time(50));
+    scene.spike(60, TicketState::Blocked, "#70");
+}
+
+#[test]
+fn labels_unblock_ticket_of_finished_epic() {
+    let scene = Scene::new();
+    finished_epic_blocking_a_spike(&scene);
+    let watched = watched(&scene.board);
+    let gathered = scene.gather_on(&watched);
+
+    let labelling = sync(&watched, &gathered, now());
+
+    assert_eq!(labelling.lines(), ["#60 unblocked: #70 is done"]);
+    assert_eq!(scene.label(60), Some(TicketState::Ready));
+    // The epic stays open and no label is written to it.
+    assert_eq!(scene.board.closed_as(id(70)), None);
+    assert_eq!(scene.label(70), None);
+    assert_eq!(watched.sets.get(), 1, "only #60's label");
+    assert_eq!(
+        watched.epics_read.get(),
+        1,
+        "the epics are the gather's one read: the labels add no call"
+    );
+}
+
+#[test]
+fn labels_keep_a_ticket_of_an_all_dropped_epic_blocked() {
+    let scene = Scene::new();
+    finished_epic_blocking_a_spike(&scene);
+    // Dropped: closed as not planned, and no longer labelled `done`.
+    scene
+        .board
+        .set_state(id(71), TicketState::Claimed)
+        .expect("labelled");
+    scene.board.close_not_planned(id(71));
+    let gathered = scene.gather();
+
+    let labelling = sync(&scene.board, &gathered, now());
+
+    assert_eq!(labelling.lines(), Vec::<String>::new());
+    assert_eq!(scene.label(60), Some(TicketState::Blocked));
 }
 
 #[test]

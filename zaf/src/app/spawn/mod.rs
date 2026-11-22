@@ -195,7 +195,8 @@ pub fn snapshot(board: &dyn Board, runs: &[Run]) -> Result<Snapshot, PortError> 
 /// [`snapshot`], with the open questions it read by the issue each was raised on.
 fn read_snapshot(board: &dyn Board, runs: &[Run]) -> Result<(Snapshot, Questions), PortError> {
     let ready = board.ready()?;
-    let found = blockers::read(board, &ready)?;
+    let epics = board.epics()?;
+    let found = blockers::read(board, &ready, &epics)?;
     let mut open = found.graph;
     for ticket in &ready {
         open.remove(&ticket.id);
@@ -209,7 +210,7 @@ fn read_snapshot(board: &dyn Board, runs: &[Run]) -> Result<(Snapshot, Questions
         ready,
         open,
         dead: found.dead,
-        epics: board.epics()?,
+        epics,
         questioned,
         launched: runs.iter().filter_map(past_launch).collect(),
     };

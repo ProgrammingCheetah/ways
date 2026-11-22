@@ -196,7 +196,7 @@ impl Host for Fake {
         }
     }
 
-    fn built(&mut self, version: &str, number: &str, link: Option<&str>) {
+    fn built(&mut self, version: &Version, number: PrNumber, link: Option<&str>) {
         self.log.push(built_line(version, number, link));
     }
 
@@ -612,8 +612,8 @@ fn a_stop_before_the_last_look_stops_rather_than_restarts() {
 
 fn pull_request() -> Opened {
     Opened {
-        version: "0.5.2".to_owned(),
-        number: "12".to_owned(),
+        version: Version::new(0, 5, 2),
+        number: PrNumber::from(12),
         link: Some("https://forge.example/zuri/ways/pulls/12".to_owned()),
     }
 }

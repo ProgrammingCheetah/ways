@@ -20,8 +20,11 @@ fn project(name: &str) -> ProjectState {
         questions: Vec::new(),
         problems: Vec::new(),
         instances: Vec::new(),
+        orphaned: Vec::new(),
+        releases_due: Vec::new(),
         watch: Some(watching(true)),
         last_tick: None,
+        status: crate::app::hub::state::StatusState::default(),
     }
 }
 
@@ -283,12 +286,14 @@ fn project_cannot_run() {
         kind: ProblemKind::Token,
         detail: "the variable `FORGEJO_TOKEN` that holds its token is not set".to_owned(),
         fix: Some("export FORGEJO_TOKEN=<token>".to_owned()),
+        verb: None,
     });
     let mut stale = project("ways");
     stale.problems.push(Problem {
         kind: ProblemKind::Profile,
         detail: "profile lean is of another profile generation (written by zaf 0.3.0)".to_owned(),
         fix: Some("cd /srv/ways && zaf profile init".to_owned()),
+        verb: None,
     });
     let mut gone = project("old");
     gone.missing = true;
@@ -297,6 +302,7 @@ fn project_cannot_run() {
         kind: ProblemKind::Missing,
         detail: "its folder is gone".to_owned(),
         fix: None,
+        verb: None,
     });
 
     let list = next_for_you(&machine(vec![token, stale, gone]));
@@ -336,6 +342,7 @@ fn next_for_you_has_one_item_for_stale_profiles() {
         detail: "profiles build and lean are of another profile generation (written by zaf 0.3.0)"
             .to_owned(),
         fix: Some("cd /srv/ways && zaf profile init".to_owned()),
+        verb: None,
     });
 
     let list = next_for_you(&machine(vec![stale]));
@@ -492,6 +499,7 @@ fn matches_what_status_and_epic_list_show() {
         PriceTable::default(),
     );
     let state = gather_state(&StateInputs {
+        lists: None,
         project: "ways",
         root: dir.path(),
         state_dir: dir.path(),
@@ -506,6 +514,7 @@ fn matches_what_status_and_epic_list_show() {
         now: std::time::SystemTime::UNIX_EPOCH,
         places: None,
         gathered: None,
+        releases: None,
     });
 
     let list = next_for_you(&machine(vec![state]));
@@ -545,4 +554,259 @@ fn matches_what_status_and_epic_list_show() {
     assert_eq!(questions, asked);
     assert!(questions.contains(&(door.get(), true)));
     assert_eq!(list.len(), 3, "{list:#?}");
+}
+
+#[test]
+fn proposal_is_read_from_the_house_forms() {
+    // `(Recommended: …)`, as zaf's own questions put it, to the bracket that closes it.
+    assert_eq!(
+        proposal_of(
+            "Should zaf update change nothing? (Recommended: change nothing; #281 builds that \
+             (for now) until you rule.)"
+        ),
+        Some("change nothing; #281 builds that (for now) until you rule.".to_owned())
+    );
+    // `(a) Recommended: …; (b) …`: the option, to the next one.
+    assert_eq!(
+        proposal_of(
+            "What does zaf update do: (a) Recommended: ask nothing, update only the binary; \
+             (b) take every default; (c) refuse."
+        ),
+        Some("ask nothing, update only the binary".to_owned())
+    );
+    // `(a) **(Recommended)** …`, on a line of its own.
+    assert_eq!(
+        proposal_of("Which base?\n(a) **(Recommended)** From main, or\n(b) from the last tag."),
+        Some("From main".to_owned())
+    );
+    assert_eq!(
+        proposal_of("Pick one: (a) from main (b) **(Recommended)** from the tag"),
+        Some("from the tag".to_owned())
+    );
+    // A line that opens with an answer comes first.
+    assert_eq!(
+        proposal_of("Which? (Recommended: this)\nClaude's answer: that"),
+        Some("that".to_owned())
+    );
+    // The word in prose proposes nothing.
+    assert_eq!(proposal_of("The recommended way is unclear: which?"), None);
+    assert_eq!(proposal_of("Which? (Recommended: )"), None);
+    assert_eq!(proposal_of("Which? (Recommended: unclosed"), None);
+}
+
+#[test]
+fn a_question_blocks_the_tickets_that_wait_on_it() {
+    use crate::app::hub::state::{LineTask, WaitKind, WaitState};
+    let waiting_on = |question: u64| {
+        Some(vec![WaitState {
+            on: WaitKind::Question,
+            number: Some(question),
+            commit: None,
+        }])
+    };
+    let task = |number: u64, waits: Option<Vec<WaitState>>| LineTask {
+        number,
+        title: format!("Task {number}"),
+        size: None,
+        state: LineState::NotStarted,
+        phase: None,
+        phases_done: 0,
+        phases_total: 0,
+        blocked_by: Vec::new(),
+        question: None,
+        issue_url: None,
+        waits,
+        cost: None,
+    };
+    let mut ways = project("ways");
+    let mut epic = epic(2, EpicStage::Challenged, 0, 6);
+    epic.tasks = vec![
+        task(3, waiting_on(30)),
+        task(4, waiting_on(30)),
+        task(5, waiting_on(31)),
+        task(6, Some(Vec::new())),
+    ];
+    ways.epics.push(epic);
+    // #30 holds two tickets and #31 one; #32, on the epic, names none, so the epic's open tasks
+    // count for it as they did before the placement was read.
+    ways.questions.push(question(31, Some(5), "Else?", false));
+    ways.questions.push(question(30, Some(3), "Which?", false));
+    ways.questions.push(question(32, Some(2), "Epic?", false));
+
+    let list = next_for_project(&ways);
+
+    let order: Vec<(Option<u64>, u32)> =
+        list.iter().map(|item| (item.number, item.blocks)).collect();
+    assert_eq!(order, [(Some(32), 6), (Some(30), 2), (Some(31), 1)]);
+}
+
+#[test]
+fn a_release_phase_that_is_due() {
+    use crate::app::hub::state::ReleaseDueState;
+    let mut ways = project("ways");
+    let mut built = epic(7, EpicStage::Challenged, 1, 4);
+    built.release = Some("0.5.3".to_owned());
+    ways.epics.push(built);
+    ways.releases_due.push(ReleaseDueState {
+        version: "0.5.3".to_owned(),
+        phase: "design".to_owned(),
+        command: "zaf begin --version 0.5.3".to_owned(),
+    });
+    ways.releases_due.push(ReleaseDueState {
+        version: "0.6.0".to_owned(),
+        phase: "objectives".to_owned(),
+        command: "zaf begin --version 0.6.0".to_owned(),
+    });
+
+    let list = next_for_project(&ways);
+
+    let phases: Vec<(&str, u32, Option<&str>)> = list
+        .iter()
+        .map(|item| (item.title.as_str(), item.blocks, item.command.as_deref()))
+        .collect();
+    assert_eq!(
+        phases,
+        [
+            (
+                "Release 0.5.3: its design is due",
+                3,
+                Some("cd /srv/ways && zaf begin --version 0.5.3")
+            ),
+            (
+                "Release 0.6.0: its objectives are due",
+                0,
+                Some("cd /srv/ways && zaf begin --version 0.6.0")
+            ),
+        ]
+    );
+    assert!(list.iter().all(|item| item.kind == NextKind::Phase));
+    let mut gone = ways.clone();
+    gone.missing = true;
+    assert!(
+        next_for_project(&gone).is_empty(),
+        "a missing project shows its problem only"
+    );
+}
+
+#[test]
+fn items_name_their_issue_and_proposal() {
+    let mut ways = project("ways");
+    ways.epics.push(epic(1, EpicStage::Unsigned, 0, 2));
+    ways.questions.push(question(
+        20,
+        Some(1),
+        "Which? (Recommended: the first)",
+        false,
+    ));
+
+    let list = next_for_project(&ways);
+
+    let named: Vec<(NextKind, Option<u64>, Option<&str>)> = list
+        .iter()
+        .map(|item| (item.kind, item.number, item.proposal.as_deref()))
+        .collect();
+    assert_eq!(
+        named,
+        // Equal at two: the epic (#1) is older than the question (#20).
+        [
+            (NextKind::Sign, Some(1), None),
+            (NextKind::Question, Some(20), Some("the first")),
+        ]
+    );
+}
+
+/// A task body that follows the template.
+const TASK_BODY: &str = concat!(
+    "Goal: do it\n",
+    "Owned paths: src/\n",
+    "Interfaces: none\n",
+    "Design pages: none\n",
+    "Acceptance:\n  - it works\n",
+    "Tests: it_works\n",
+    "Security trigger: no\n",
+    "Model: sonnet\n",
+    "Size: S\n",
+    "Blocked by: —\n",
+);
+
+#[test]
+fn the_same_board_gives_the_chair_and_status_the_same_items() {
+    use crate::app::actions::SliceRecords;
+    use crate::app::hub::state::{StateInputs, gather_state};
+    use crate::app::release::{DueRelease, Phase};
+    use crate::app::status::status_listing as status;
+    use crate::domain::{Epic, Ticket, TicketId};
+    use crate::fakes::FakeBoard;
+    use crate::ports::{Board, Holder, NewQuestion};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let board = FakeBoard::default();
+    // An unsigned epic with three tasks, a question on the epic and a door on a task.
+    board.add_epic(TicketId::from(7), "Unsigned epic");
+    for number in [8, 9, 10] {
+        board.add_ticket(Ticket {
+            id: TicketId::from(number),
+            epic: Some(TicketId::from(7)),
+            title: format!("Task {number}").into(),
+            body: TASK_BODY.into(),
+            state: Some(TicketState::Ready),
+            url: format!("https://board.invalid/tickets/{number}").into(),
+            kind: None,
+        });
+    }
+    let ask = |on: u64, text: &str, door: bool| {
+        board
+            .open_question(&NewQuestion {
+                on: TicketId::from(on),
+                text: text.to_owned(),
+                door,
+            })
+            .expect("opens");
+    };
+    ask(7, "Which name?\nProposal: the short one.", false);
+    ask(9, "Drop the v1 endpoint?", true);
+    let due = |_: &[Epic]| {
+        vec![DueRelease {
+            version: "0.6.0".to_owned(),
+            phase: Phase::Objectives,
+        }]
+    };
+    let alive = |_: &Holder| true;
+
+    let chair = gather_state(&StateInputs {
+        lists: None,
+        project: "example",
+        root: dir.path(),
+        state_dir: dir.path(),
+        board: Ok(&board),
+        forge: None,
+        vcs: None,
+        records: &SliceRecords::in_state_dir(dir.path()),
+        ledger: &[],
+        prices: &crate::app::report::PriceTable::default(),
+        pull_base: None,
+        alive: &alive,
+        now: std::time::SystemTime::UNIX_EPOCH,
+        places: None,
+        gathered: None,
+        releases: Some(&due),
+    });
+    let screen = status(&board, dir.path(), 1, &alive)
+        .expect("status")
+        .with_project("example", dir.path())
+        .with_releases(&due(&[]));
+
+    let from_chair = next_for_project(&chair);
+    let from_status = screen.needs_you();
+
+    let kinds: Vec<NextKind> = from_chair.iter().map(|item| item.kind).collect();
+    for kind in [
+        NextKind::Sign,
+        NextKind::Question,
+        NextKind::Door,
+        NextKind::Phase,
+    ] {
+        assert!(kinds.contains(&kind), "{kinds:?} lacks {kind:?}");
+    }
+    assert_eq!(from_status, from_chair);
 }

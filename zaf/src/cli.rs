@@ -19,6 +19,7 @@ pub mod asklog;
 pub mod begin;
 pub mod board;
 pub mod brief;
+pub mod chair;
 pub mod changes;
 pub mod check;
 pub mod do_action;
@@ -202,10 +203,14 @@ pub enum Verb {
     },
     /// The Engineer's start of a release: the phase due for a version, or, with none due, its open
     /// epics to sign. Refused inside an instance and where there is no terminal.
+    #[command(subcommand_negates_reqs = true, args_conflicts_with_subcommands = true)]
     Begin {
+        /// `ready`: what a phase's session runs once it judges its document done.
+        #[command(subcommand)]
+        action: Option<BeginAction>,
         /// The version to begin.
-        #[arg(long)]
-        version: String,
+        #[arg(long, required = true)]
+        version: Option<String>,
         /// `--phase <objectives|design>`: open that phase's shell even when it is not due, to
         /// change a signed document; design is refused while the objectives are not signed.
         #[arg(long, value_enum)]
@@ -275,6 +280,15 @@ pub enum ForgeAction {
         /// The check's link, as `checks` prints it.
         link: String,
     },
+}
+
+/// `zaf begin …`.
+#[derive(Debug, clap::Subcommand, strum::IntoStaticStr)]
+#[strum(serialize_all = "kebab-case")]
+pub enum BeginAction {
+    /// Mark the phase's document done: write the file `ZAF_READY` names, so the chair that opened
+    /// the session ends it and asks for the signature. Exit 1 when `ZAF_READY` is unset.
+    Ready,
 }
 
 /// `zaf epic …`.
@@ -550,6 +564,7 @@ impl Verb {
             Self::Progress { action } => Some(action.into()),
             Self::Epic { action } => Some(action.into()),
             Self::Forge { action } => Some(action.into()),
+            Self::Begin { action, .. } => action.as_ref().map(Into::into),
             _ => None,
         };
         action.map_or_else(|| verb.to_owned(), |action| format!("{verb} {action}"))
@@ -562,6 +577,14 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
+    let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
+    // Bare `zaf` is caught before clap, so a verb stays required everywhere else (D1).
+    if args.len() == 1
+        && !cfg!(test)
+        && let Some(code) = run_bare()
+    {
+        return code;
+    }
     <Cli as clap::Parser>::try_parse_from(args).map_or_else(
         |error| {
             // Printing help or an error is best effort: a closed stream changes nothing.
@@ -589,6 +612,36 @@ where
     )
 }
 
+/// Bare `zaf` on a terminal (D1): the chair, on this project's tab or on the machine's projects,
+/// or three lines where there is no project at all. None with no terminal, or inside an instance,
+/// so clap prints the usage on stderr and exits 2, as before.
+fn run_bare() -> Option<u8> {
+    use std::io::IsTerminal;
+    let terminal = std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
+        && std::env::var_os(board::INSTANCE_VAR).is_none();
+    if !terminal {
+        return None;
+    }
+    let here = std::env::current_dir().ok()?;
+    let home = crate::composition::zaf_home();
+    let project = project_root(&here, home.as_deref());
+    let projects = home.as_deref().map_or(0, |home| Projects::read(home).len());
+    match chair::bare(terminal, project, projects) {
+        chair::Bare::Usage => None,
+        chair::Bare::Open(project) => {
+            if project.is_some() {
+                first_run();
+            }
+            Some(chair::open(project.as_deref(), home.as_deref()))
+        }
+        chair::Bare::Nowhere => {
+            print!("{}", chair::nowhere(&screen::Screen::detect()));
+            Some(exit::OK)
+        }
+    }
+}
+
 /// Makes a missing project `.zaf/` and zaf home before the verb runs, one line on stderr when
 /// it made anything and nothing on stdout. Outside a project only the zaf home is made. A
 /// failure is reported and the verb still runs: it will say what it needs itself.
@@ -608,7 +661,7 @@ pub fn first_run_at(here: &Path, home: Option<&Path>) {
                 eprintln!("{notice}");
             }
         }
-        Err(error) => eprintln!("zaf: cannot make the zaf homes: {error}"),
+        Err(error) => crate::eprintln_zaf!("zaf: cannot make the zaf homes: {error}"),
     }
     join_the_list(root.as_deref(), home);
 }
@@ -620,7 +673,7 @@ pub fn join_the_list(root: Option<&Path>, home: Option<&Path>) {
     if let (Some(root), Some(home)) = (root, home)
         && let Err(error) = Projects::add(home, root)
     {
-        eprintln!("zaf: cannot add the project to the list in the zaf home: {error}");
+        crate::eprintln_zaf!("zaf: cannot add the project to the list in the zaf home: {error}");
     }
 }
 
@@ -701,7 +754,15 @@ fn run_verb(cli: &Cli) -> u8 {
         Verb::Progress { action } => progress::run(cli, action),
         Verb::Update { check } => update::run(cli, *check),
         Verb::Epic { action } => epic::run(cli, action),
-        Verb::Begin { version, phase } => begin::run(cli, version, *phase),
+        Verb::Begin {
+            action: Some(BeginAction::Ready),
+            ..
+        } => begin::ready(cli),
+        Verb::Begin {
+            action: None,
+            version,
+            phase,
+        } => begin::run(cli, version.as_deref().unwrap_or_default(), *phase),
         Verb::Forge { action } => forge::run(cli, action),
     }
 }

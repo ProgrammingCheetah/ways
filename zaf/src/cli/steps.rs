@@ -14,8 +14,8 @@ use crate::app::steps::StepReport;
 use crate::cli::screen::Screen;
 use crate::domain::screen::{Meaning, PlanRow, StepEnd};
 
-/// The spinner's frames, from the mocks.
-const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+/// The spinner's frames, from the mocks: the chair spins with them too.
+pub(crate) const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 /// The time between two frames.
 const TICK: Duration = Duration::from_millis(80);

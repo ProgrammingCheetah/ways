@@ -19,7 +19,7 @@ mod slice_env;
 pub use caller::{Caller, INSTANCE_VAR};
 pub use metadata::{
     ActionKind, ActionMetadata, ActionMode, ActionName, Bits, ListedPhase, MetadataError,
-    ParsedAction, PhaseEnd, Target, block_end, parse,
+    ParsedAction, PhaseEnd, Target, block_end, marks_jj, parse,
 };
 pub use phase::{
     LivePhase, PHASES_DIR, Phase, PhaseFacts, PhaseUnreadable, PrFacts, WorkspaceFacts,
@@ -27,15 +27,17 @@ pub use phase::{
 };
 pub use records::{RecordUnreadable, SliceRecords, hand_back};
 pub use resolve::{
-    ACTIONS_DIR, HOOK_EVENTS, HOOKS_DIR, ResolveError, Resolved, Tier, can_shadow, check_name,
-    hook, hook_file, hook_file_in, list, list_hooks, resolve, resolve_in, same_file,
+    ACTIONS_DIR, GIT_SUFFIX, HOOK_EVENTS, HOOKS_DIR, ResolveError, Resolved, Tier, can_shadow,
+    check_name, hook, hook_file, hook_file_in, list, list_for, list_hooks, resolve, resolve_for,
+    resolve_in, resolve_in_for, same_file,
 };
 pub use run::{
-    ACTION_VAR, CHAIN_VAR, DEPTH_VAR, HOOK_HAS_NO_TERMINAL, LOG_VAR, ListedAction, MAX_DEPTH,
-    MINUTE, NO_SUCH_ACTION, NO_TERMINAL, NOT_RUN_EXIT, Nesting, PHASE_INPUT_VAR, PHASE_VAR,
-    PhaseEnv, RELEASE_DIR_VAR, ROOT_VAR, Refused, RunOutcome, RunRequest, RunResult, RunStep,
-    RunsAs, StdioPlan, TIMEOUT_EXIT, Terminal, forbidden_action, last_lines, list_actions,
-    read_action, refuse_forbidden, run_action, run_hook, run_hook_with_input, stdio_plan,
+    ACTION_VAR, CHAIN_VAR, DEPTH_VAR, HEAD_VAR, HOOK_HAS_NO_TERMINAL, LOG_VAR, ListedAction,
+    MAX_DEPTH, MINUTE, NO_SUCH_ACTION, NO_TERMINAL, NOT_RUN_EXIT, Nesting, PHASE_INPUT_VAR,
+    PHASE_VAR, PhaseEnv, PtySide, READY_VAR, RELEASE_DIR_VAR, ROOT_VAR, Refused, RunOutcome,
+    RunRequest, RunResult, RunStep, RunsAs, StdioPlan, TIMEOUT_EXIT, Terminal, forbidden_action,
+    last_lines, list_actions, read_action, refuse_forbidden, run_action, run_hook,
+    run_hook_with_input, stdio_plan,
 };
 pub use slice_env::{BASE_VAR, PR_VAR, SLICE_VAR, SliceContext, TASK_TITLE_VAR, VERSION_VAR};
 

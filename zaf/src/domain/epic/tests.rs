@@ -8,10 +8,13 @@ fn task(n: u64, state: TicketState, standing: Standing) -> EpicTask {
     EpicTask {
         number: TicketId::from(n),
         title: format!("task {n}").into(),
+        body: "".into(),
+        url: "".into(),
         state: Some(state),
         standing,
         group: None,
         kind: None,
+        closed_at: None,
     }
 }
 
@@ -78,6 +81,54 @@ fn an_epic_walks_its_stages_in_order() {
     ];
     assert_eq!(epic.stage(), EpicStage::Done);
     assert_eq!(epic.tally(), (1, 1), "a dropped task counts for nothing");
+}
+
+fn challenged_with(tasks: Vec<EpicTask>) -> Epic {
+    Epic {
+        tasks,
+        challenged: true,
+        ..signed(epic())
+    }
+}
+
+#[test]
+fn epic_all_done_is_done() {
+    let epic = challenged_with(vec![
+        task(2, TicketState::Done, Standing::Done),
+        task(3, TicketState::Done, Standing::Done),
+    ]);
+    assert_eq!(epic.stage(), EpicStage::Done);
+    assert!(epic.finished_done());
+}
+
+#[test]
+fn epic_one_done_rest_dropped_is_done() {
+    let epic = challenged_with(vec![
+        task(2, TicketState::Done, Standing::Done),
+        task(3, TicketState::Ready, Standing::ClosedNotPlanned),
+    ]);
+    assert_eq!(epic.stage(), EpicStage::Done);
+    assert!(epic.finished_done());
+}
+
+#[test]
+fn epic_all_dropped_is_not_done() {
+    let epic = challenged_with(vec![
+        task(2, TicketState::Ready, Standing::ClosedNotPlanned),
+        task(3, TicketState::Ready, Standing::ClosedNotPlanned),
+    ]);
+    assert_eq!(epic.stage(), EpicStage::Challenged);
+    assert!(!epic.finished_done());
+}
+
+#[test]
+fn epic_one_open_is_not_done() {
+    let epic = challenged_with(vec![
+        task(2, TicketState::Done, Standing::Done),
+        task(3, TicketState::Ready, Standing::Open),
+    ]);
+    assert_eq!(epic.stage(), EpicStage::Challenged);
+    assert!(!epic.finished_done());
 }
 
 #[test]

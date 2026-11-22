@@ -273,3 +273,109 @@ fn doctor_from_a_task_workspace_checks_the_root_paths() {
         "nothing made in the workspace"
     );
 }
+
+/// The manifest with a `[vcs]` of `kind`.
+fn vcs_manifest(kind: &str) -> String {
+    format!("{MANIFEST}\n[vcs]\nkind = \"{kind}\"\n")
+}
+
+/// A project of `kind` whose folder holds `markers` (`.git`, `.jj`), and a `git` that reports
+/// `version` first on PATH.
+fn repository_project(kind: &str, markers: &[&str], version: &str) -> Project {
+    use std::os::unix::fs::PermissionsExt;
+    let mut project = Project::new(&vcs_manifest(kind));
+    project.provide_slice_actions();
+    for marker in markers {
+        fs::create_dir_all(project.root.join(marker)).expect("marker");
+    }
+    let bin = project.temp.path().join("fake-git");
+    write(
+        &bin,
+        "git",
+        &format!("#!/bin/sh\necho \"git version {version}\"\n"),
+    );
+    fs::set_permissions(bin.join("git"), fs::Permissions::from_mode(0o755)).expect("mode");
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    let path = std::env::join_paths(
+        [bin, common::fixtures()]
+            .into_iter()
+            .chain(std::env::split_paths(&inherited)),
+    )
+    .expect("search path");
+    project.env("PATH", &path.to_string_lossy());
+    project
+}
+
+fn doctor_of(project: &Project) -> (i32, String) {
+    let (code, stdout, stderr) = outcome(&project.zaf(&["doctor"]));
+    (code, format!("{stdout}{stderr}"))
+}
+
+#[test]
+fn not_a_repository_fails_with_a_fix() {
+    let git = repository_project("git", &[], "2.45.0");
+    let (code, text) = doctor_of(&git);
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        text.contains("repository:") && text.contains("`git init`"),
+        "{text}"
+    );
+
+    let jj = repository_project("jj", &[], "2.45.0");
+    let (code, text) = doctor_of(&jj);
+    assert_eq!(code, 1, "{text}");
+    assert!(text.contains("`jj git init --colocate`"), "{text}");
+}
+
+#[test]
+fn wrong_kind_fails_with_a_fix() {
+    let project = repository_project("git", &[".jj"], "2.45.0");
+    let (code, text) = doctor_of(&project);
+    assert_eq!(code, 1, "{text}");
+    assert!(text.contains("kind = \"jj\""), "{text}");
+
+    let project = repository_project("jj", &[".git"], "2.45.0");
+    let (code, text) = doctor_of(&project);
+    assert_eq!(code, 1, "{text}");
+    assert!(text.contains("kind = \"git\""), "{text}");
+}
+
+#[test]
+fn colocated_named_git_fails() {
+    let project = repository_project("git", &[".jj", ".git"], "2.45.0");
+    let (code, text) = doctor_of(&project);
+    assert_eq!(code, 1, "{text}");
+    assert!(text.contains("kind = \"jj\""), "{text}");
+    let (_, json, _) = outcome(&project.zaf(&["doctor", "--json"]));
+    assert!(
+        json.contains("\"repository\"") && json.contains("\"ok\": false"),
+        "--json carries the row: {json}"
+    );
+}
+
+#[test]
+fn old_git_fails_below_the_floor() {
+    let project = repository_project("git", &[".git"], "2.37.9");
+    let (code, text) = doctor_of(&project);
+    assert_eq!(code, 1, "{text}");
+    assert!(
+        text.contains("git version:") && text.contains("2.38.0"),
+        "the row names the floor: {text}"
+    );
+}
+
+#[test]
+fn git_at_the_floor_passes() {
+    let project = repository_project("git", &[".git"], "2.38.0");
+    let (code, text) = doctor_of(&project);
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("git version: ok (2.38.0)"), "{text}");
+}
+
+#[test]
+fn git_project_names_the_zaf_floor() {
+    let project = repository_project("git", &[".git"], "2.45.0");
+    let (code, text) = doctor_of(&project);
+    assert_eq!(code, 0, "{text}");
+    assert!(text.contains("zaf 0.5.3 or newer"), "{text}");
+}

@@ -97,6 +97,21 @@ pub fn gather_machine_with(
     }
 }
 
+/// One project's state, read as [`gather_machine_with`] reads each project: on a thread of its
+/// own, under `bound`, and never while an earlier read of it is still on its thread. A missing
+/// entry is marked and not read; a read that has not answered by the bound comes back with that
+/// reason and is left on its thread. What the captain's chair's gatherers call, one per project.
+pub fn gather_one(
+    entry: &ProjectEntry,
+    now: SystemTime,
+    bound: Duration,
+    reader: &Arc<Reader>,
+) -> ProjectState {
+    read_projects(std::slice::from_ref(entry), now, bound, reader)
+        .pop()
+        .unwrap_or_else(|| unread(entry, now, "its read ended without an answer".to_owned()))
+}
+
 /// The project roots whose read is on a thread now, in this process.
 static READING: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
 
@@ -217,6 +232,7 @@ fn missing(entry: &ProjectEntry, now: SystemTime) -> ProjectState {
         kind: ProblemKind::Missing,
         detail: what.to_owned(),
         fix: None,
+        verb: None,
     });
     state
 }

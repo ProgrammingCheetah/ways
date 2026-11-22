@@ -382,6 +382,7 @@ fn setup_writes_dot_zaf_toml() {
     let home = temp.path().join("zaf-home");
     let dir = temp.path().join("new-project");
     fs::create_dir(&dir).expect("project dir");
+    fs::create_dir(dir.join(".git")).expect("repository marker");
 
     let answers = "bookshelf\nexample/b\n\n\n";
     let (code, stdout, stderr) = outcome(&init_in(&dir, &home, answers));
@@ -419,6 +420,7 @@ fn setup_writes_dot_zaf_toml() {
     // The zaf home's own config.toml is the machine's, not a project's.
     let inside = temp.path().join("home-inside");
     fs::create_dir(&inside).expect("inside dir");
+    fs::create_dir(inside.join(".git")).expect("repository marker");
     write(&inside, ".zaf/config.toml", "# machine\n");
     let (code, stdout, stderr) = outcome(&init_in(&inside, &inside.join(".zaf"), answers));
     assert_ne!(code, 2, "{stdout}{stderr}");
@@ -431,6 +433,7 @@ fn setup_asks_without_manifest() {
     let home = temp.path().join("zaf-home");
     let dir = temp.path().join("new-project");
     fs::create_dir(&dir).expect("project dir");
+    fs::create_dir(dir.join(".git")).expect("repository marker");
 
     let (code, stdout, stderr) =
         outcome(&verb_in("setup", &dir, &home, "bookshelf\nexample/b\n\n\n"));
@@ -476,6 +479,7 @@ fn setup_closed_input_writes_nothing() {
     for (index, answers) in ["", "bookshelf\nexample/b\n"].iter().enumerate() {
         let dir = temp.path().join(format!("empty-{index}"));
         fs::create_dir(&dir).expect("project dir");
+        fs::create_dir(dir.join(".git")).expect("repository marker");
         let (code, _, stderr) = outcome(&verb_in("setup", &dir, &home, answers));
         assert_eq!(code, 1, "{stderr}");
         assert!(stderr.contains("input ended before"), "{stderr}");
@@ -485,6 +489,7 @@ fn setup_closed_input_writes_nothing() {
     // A blank required answer with no default is refused the same way.
     let dir = temp.path().join("blank");
     fs::create_dir(&dir).expect("project dir");
+    fs::create_dir(dir.join(".git")).expect("repository marker");
     let (code, _, stderr) = outcome(&verb_in("setup", &dir, &home, "\n\n\n\n\n"));
     assert_eq!(code, 1, "{stderr}");
     assert!(!dir.join(".zaf.toml").exists());

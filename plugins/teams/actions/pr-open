@@ -4,6 +4,7 @@
 # zaf 2: a backend failed (the manifest names no forge, or the forge is unreachable, refused, or gave no pull request number)
 # zaf mode: 750
 # zaf group: team, release, implement, fix
+# changed: hands back only line 1 of what `zaf forge open` prints, the pull request number, never the link on line 2
 slice=$1
 base=$2
 title=$3

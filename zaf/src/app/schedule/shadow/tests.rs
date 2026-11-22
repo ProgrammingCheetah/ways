@@ -37,6 +37,7 @@ fn facts(number: u64) -> TicketFacts {
         ready_since: Some(time(60)),
         merging: Default::default(),
         no_check_ruled: None,
+        trees: Default::default(),
     }
 }
 
@@ -45,9 +46,11 @@ fn pull(head: &str) -> PullFacts {
         opened_at: time(20),
         merged_at: None,
         head: Some(CommitId::from(head)),
-        changed_file: Some(crate::domain::RepoPath::from("src/lib.rs")),
+        changed_files: crate::domain::ChangedFiles::of(&["src/lib.rs"]),
         checks: Vec::new(),
         reviews: Vec::new(),
+        mergeable: None,
+        checks_expected: true,
     }
 }
 

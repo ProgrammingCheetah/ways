@@ -151,6 +151,8 @@ fn project() -> Project {
         std::env::set_var("PATH", common::path_with_zaf(&[&common::fixtures()]));
         std::env::set_var("FAKE_GH_DIR", project.temp.path().join("gh-scene"));
     }
+    // The hub runs the actions in this process, so the running binary is the test's, not zaf.
+    common::no_zaf_link_folder(&project.home);
     let (code, stdout, stderr) = outcome(&project.zaf(&["profile", "init"]));
     assert_eq!(code, 0, "{stdout}{stderr}");
     let (code, stdout, stderr) = outcome(&project.zaf(&["status"]));

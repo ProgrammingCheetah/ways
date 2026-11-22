@@ -6,13 +6,14 @@
 
 use super::Cli;
 use super::exit::{self, BACKEND, OK};
+use super::screen::Screen;
 use crate::adapters::process;
 use crate::app::profile;
 use crate::app::release;
-use crate::app::schedule::gather::gather_for;
+use crate::app::schedule::gather::{gather_for, read_lists};
 use crate::app::status::{self, Status, StatusError};
 use crate::composition::Composition;
-use crate::ports::{Board, PortError};
+use crate::ports::Board;
 
 /// Prints the screen.
 pub fn run(cli: &Cli) -> u8 {
@@ -32,33 +33,46 @@ pub fn run(cli: &Cli) -> u8 {
 /// `[phases]`, the core's placement; a gather that fails is one warning on stderr.
 fn screen(composition: &Composition, board: &dyn Board) -> Result<Status, StatusError> {
     let spawn = &composition.manifest().spawn;
+    // The open epics and the open questions are read once and shared by the screen, the releases
+    // due and the placement.
+    let (epics, questions) = read_lists(board)?;
     let screen = status::status(
         board,
         &composition.state_dir(),
         spawn.slots,
         &process::alive,
+        &epics,
+        &questions,
     )?
     .with_machine(&process::displayed())
-    .with_budget(spawn.budget());
-    let epics = match board.epics() {
-        Ok(epics) => epics,
-        Err(PortError::Rejected(_)) => Vec::new(),
-        Err(error) => return Err(error.into()),
-    };
+    .with_budget(spawn.budget())
+    .with_project(
+        composition.manifest().project.name.as_ref(),
+        composition.root(),
+    );
     let (root, manifest) = (composition.root(), composition.manifest());
     let vcs = composition.vcs().ok();
     let due = release::due_releases(root, manifest, &epics, &|version| {
         release::is_released(root, manifest, vcs.as_deref(), version)
     });
     let screen = screen.with_releases(&due);
-    Ok(match gather_for(composition, board, None) {
-        Ok(Some(gathered)) => screen.with_placement(&gathered, std::time::SystemTime::now()),
-        Ok(None) => screen,
-        Err(error) => {
-            eprintln!("zaf status: warning: the placement was not read: {error}");
-            screen
-        }
-    })
+    Ok(
+        match gather_for(composition, board, None, &epics, &questions) {
+            Ok(Some(gathered)) => screen.with_placement(&gathered, std::time::SystemTime::now()),
+            Ok(None) => screen,
+            Err(error) => {
+                crate::eprintln_zaf!("zaf status: warning: the placement was not read: {error}");
+                screen
+            }
+        },
+    )
+}
+
+/// The status as `terminal` draws it: each piece in its meaning's colour where colour is allowed,
+/// else the plain text of [`Status::render`]. The board's words went through `clean` in
+/// [`Status::lines`], so no piece of them can carry an escape into the painted output.
+fn draw(terminal: &Screen, status: &Status, more: bool) -> String {
+    terminal.draw(&status.lines(more))
 }
 
 /// Reads and prints the screen for a project over the given board.
@@ -72,13 +86,13 @@ fn print_status(cli: &Cli, composition: &Composition, board: &dyn Board) -> u8 {
             if cli.json {
                 println!("{}", screen.to_json());
             } else {
-                print!("{}", screen.render(cli.more));
+                print!("{}", draw(&Screen::detect(), &screen, cli.more));
             }
             OK
         }
         Err(StatusError::Board(error)) => exit::fail(&path, &error),
         Err(error) => {
-            eprintln!("zaf {path}: {error}");
+            crate::eprintln_zaf!("zaf {path}: {error}");
             BACKEND
         }
     }

@@ -28,7 +28,7 @@ pub fn run(cli: &Cli, ticket: Option<TicketId>, since: Option<SystemTime>) -> u8
     let recorded = match ticks::read(&composition.state_dir()) {
         Ok(recorded) => recorded.unwrap_or_default(),
         Err(why) => {
-            eprintln!("zaf {path}: {why}");
+            crate::eprintln_zaf!("zaf {path}: {why}");
             return BACKEND;
         }
     };

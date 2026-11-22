@@ -9,13 +9,15 @@
 //! names the paths there). Then every ruling made since the ticket's last model run started: each
 //! ruled question raised on the ticket that a run since then recorded, closed after that start, or
 //! closed at a time the board does not give, in full. With no model run before, every ruling is.
+//! When the forge marks the pull request not mergeable, the section opens with one line naming
+//! the conflict with the base and `zaf do sync-base <task>` ([`Conflict`]); nothing runs it.
 //! [`WhyThisRun::render`] writes the section.
 
 use std::fmt::Write as _;
 use std::time::SystemTime;
 
 use crate::app::actions::{ActionKind, parse, resolve};
-use crate::app::schedule::gather::{Beside, gather_one};
+use crate::app::schedule::gather::{Beside, gather_one, integration_branch};
 use crate::app::schedule::record::{PHASES_DIR, output_of};
 use crate::app::schedule::tick::{failed_phase, kind_of};
 use crate::app::spawn::phase::Ports;
@@ -30,10 +32,42 @@ pub const WHY_HEADING: &str = "## Why this run";
 /// run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WhyThisRun {
+    /// Set when the forge says the pull request does not merge into its base.
+    pub conflict: Option<Conflict>,
     /// The current phase, failed at the head; none when it has not failed.
     pub failed: Option<FailedRun>,
     /// The rulings made since the ticket's last model run started, oldest question first.
     pub rulings: Vec<Ruling>,
+}
+
+/// A pull request the forge marks not mergeable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Conflict {
+    /// The task, whose number `zaf do sync-base` takes.
+    pub task: TicketId,
+    /// The base branch; none when the manifest's pattern names no one branch.
+    pub base: Option<String>,
+}
+
+impl Conflict {
+    /// The conflict `mergeable` says: only `Some(false)`; true and unknown leave the section as it
+    /// was.
+    #[must_use]
+    pub fn of(mergeable: Option<bool>, task: TicketId, base: Option<String>) -> Option<Self> {
+        (mergeable == Some(false)).then_some(Self { task, base })
+    }
+
+    fn render(&self, text: &mut String) {
+        let base = self
+            .base
+            .as_deref()
+            .map_or_else(|| "its base".to_owned(), |base| format!("`{base}`"));
+        let _ = writeln!(
+            text,
+            "The pull request does not merge into {base}: run `zaf do sync-base {}` first.\n",
+            self.task.get()
+        );
+    }
 }
 
 /// How the current phase failed.
@@ -101,7 +135,17 @@ pub fn why_this_run(ports: &Ports<'_>, task: TicketId) -> Result<WhyThisRun, Str
         }
     };
     let rulings = rulings_since(ports, task, &facts, &beside)?;
-    Ok(WhyThisRun { failed, rulings })
+    let conflict = Conflict::of(
+        facts.pull.as_ref().and_then(|pull| pull.mergeable),
+        task,
+        integration_branch(&ports.manifest.branches, ports.version)
+            .map(|branch| branch.as_str().to_owned()),
+    );
+    Ok(WhyThisRun {
+        conflict,
+        failed,
+        rulings,
+    })
 }
 
 /// What exit `code` of `action` means, as its metadata declares it; none when the action cannot be
@@ -168,6 +212,9 @@ impl WhyThisRun {
     #[must_use]
     pub fn render(&self) -> String {
         let mut text = format!("{WHY_HEADING}\n\n");
+        if let Some(conflict) = &self.conflict {
+            conflict.render(&mut text);
+        }
         match &self.failed {
             None => text.push_str(
                 "No phase has failed at the pull request's head: this run was started by hand, \

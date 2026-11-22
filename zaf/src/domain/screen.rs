@@ -24,6 +24,8 @@ pub enum Meaning {
     Dim,
     /// A heading or emphasis.
     Bold,
+    /// Words with no meaning of their own: drawn as they are, in any terminal.
+    Plain,
 }
 
 text_newtype! {
@@ -53,6 +55,19 @@ pub fn clean(text: &str) -> String {
 /// One line of a screen: pieces of text, each with what it means, left to right. The pieces hold
 /// every space the line shows, so the plain line is the pieces joined.
 pub type Line = Vec<(Meaning, Text)>;
+
+/// `lines` as plain text: each line's pieces joined, every line ended by `\n`. What a screen
+/// without colour draws.
+pub fn plain(lines: &[Line]) -> String {
+    let mut out = String::new();
+    for line in lines {
+        for (_, text) in line {
+            out.push_str(text.as_str());
+        }
+        out.push('\n');
+    }
+    out
+}
 
 /// One line of a plan: a verb, the noun it acts on and why.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -609,6 +609,7 @@ impl ProjectState {
                     number,
                     title: issue.title,
                     body: issue.body,
+                    url: String::new(),
                     labels: issue.labels.map(|labels| labels.nodes).unwrap_or_default(),
                     parent: issue.parent,
                     state: issue.state,
@@ -616,6 +617,7 @@ impl ProjectState {
                     comments: Vec::new(),
                     issue_type: issue.issue_type,
                     created_at: None,
+                    closed_at: None,
                 };
                 found.push(OnProject { state, row });
             }

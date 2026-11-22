@@ -558,6 +558,7 @@ fn state_of(state_dir: &std::path::Path, board: &crate::fakes::FakeBoard) -> sta
     let records = crate::app::actions::SliceRecords::new(state_dir);
     let alive = |_: &crate::ports::Holder| true;
     state::gather_state(&state::StateInputs {
+        lists: None,
         project: "ways",
         root: state_dir,
         state_dir,
@@ -572,6 +573,7 @@ fn state_of(state_dir: &std::path::Path, board: &crate::fakes::FakeBoard) -> sta
         now: std::time::SystemTime::UNIX_EPOCH,
         places: None,
         gathered: None,
+        releases: None,
     })
 }
 

@@ -3,14 +3,14 @@
 //! An epic's stage is never stored. It is derived on every read from what the board holds
 //! (ruling 48): signed while the hash `zaf epic sign` stored still matches its body, planned
 //! once it has tasks, challenged once the challenger's report is on it, and done once every
-//! task is done or closed.
+//! task is finished and at least one is done (an epic whose every task was dropped is not).
 
 use std::str::FromStr;
 use std::time::SystemTime;
 
 use sha2::{Digest, Sha256};
 
-use super::{Standing, TicketBody, TicketId, TicketState, TicketTitle, TicketType};
+use super::{Standing, TicketBody, TicketId, TicketState, TicketTitle, TicketType, TicketUrl};
 use crate::newtype::text_newtype;
 
 /// The role whose report on an epic means the epic was challenged.
@@ -68,6 +68,10 @@ pub struct EpicTask {
     pub number: TicketId,
     /// Its title.
     pub title: TicketTitle,
+    /// Its body, as the epic's read held it.
+    pub body: TicketBody,
+    /// Where a person opens it.
+    pub url: TicketUrl,
     /// Its state, if it has one.
     pub state: Option<TicketState>,
     /// Where it stands: open, done (labelled so, or closed as completed), or closed as not
@@ -77,6 +81,9 @@ pub struct EpicTask {
     pub group: Option<GroupName>,
     /// Its type, the forge's issue type; none when the issue has no type.
     pub kind: Option<TicketType>,
+    /// When its issue closed; none while it is open, when the board does not say, and for a task
+    /// done by its label alone.
+    pub closed_at: Option<SystemTime>,
 }
 
 impl EpicTask {
@@ -238,11 +245,29 @@ impl Epic {
             EpicStage::Signed
         } else if !self.challenged {
             EpicStage::Planned
-        } else if !self.tasks.iter().all(EpicTask::finished) {
+        } else if !self.finished_done() {
             EpicStage::Challenged
         } else {
             EpicStage::Done
         }
+    }
+
+    /// Whether its work is over and some of it was done: no task is open and at least one is
+    /// done. An epic whose every task was dropped has nothing done, so it is not finished.
+    ///
+    /// Interface: `Epic::finished_done() -> bool`; consumed by the blocker helper, `is_built`
+    /// and the every-task-dropped problem.
+    pub fn finished_done(&self) -> bool {
+        self.tasks.iter().all(EpicTask::finished) && self.tasks.iter().any(EpicTask::done)
+    }
+
+    /// Whether it has tasks and every one was dropped: all are closed as not planned, so none is
+    /// open and none done. An epic with no tasks has not begun, so it is not this.
+    ///
+    /// Interface: `Epic::every_task_dropped() -> bool`; consumed by `zaf status` and the hub's
+    /// every-task-dropped problem, which read this one predicate.
+    pub fn every_task_dropped(&self) -> bool {
+        !self.tasks.is_empty() && self.tasks.iter().all(EpicTask::finished) && !self.finished_done()
     }
 
     /// Its tasks that are done, and the tasks that count toward it (see [`EpicTask::counts`]).

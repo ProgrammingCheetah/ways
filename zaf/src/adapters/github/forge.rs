@@ -16,11 +16,15 @@ use super::rows::{
 use crate::adapters::notes::{HANDOFF_MARKER, marked, unmarked};
 use crate::domain::Location;
 use crate::ports::{
-    Author, BranchChecks, BranchName, Check, CheckBucket, CheckLink, CheckLog, CheckName, CheckRun,
-    CheckState, CommitId, Forge, JobId, MergeOutcome, MergeStrategy, NewPullRequest, Opened,
-    PortError, PrNumber, PrRef, PullRequest, ReviewComment, RuleId, ScanningAlert,
+    Author, BranchChecks, BranchName, ChangedFiles, Check, CheckBucket, CheckLink, CheckLog,
+    CheckName, CheckRun, CheckState, CommitId, Forge, JobId, MergeOutcome, MergeStrategy,
+    NewPullRequest, Opened, PortError, PrNumber, PrRef, PullRequest, ReviewComment, RuleId,
+    ScanningAlert,
 };
 
+/// The most files GitHub's `pulls/{n}/files` lists for one pull request; a list that long may
+/// be cut short.
+const FILE_LIST_CAP: usize = 3000;
 /// The author shown for a comment whose account was deleted, as GitHub shows it.
 const GHOST: &str = "ghost";
 /// What gh prints when a pull request has no check runs at all.
@@ -57,6 +61,16 @@ const ZERO_TIME: &str = "0001-01-01T00:00:00Z";
 
 /// The time gh gave for `what` on a pull request; a time gh left out, or printed as the zero
 /// time or in a form that does not parse, is an error naming the pull request.
+/// What gh's `mergeable` says as the port's answer: `MERGEABLE` is true, `CONFLICTING` false,
+/// and `UNKNOWN` (GitHub still working it out) or any other word is none.
+fn mergeable_of(word: Option<&str>) -> Option<bool> {
+    match word {
+        Some("MERGEABLE") => Some(true),
+        Some("CONFLICTING") => Some(false),
+        _ => None,
+    }
+}
+
 fn time_of(pr: PrNumber, what: &str, text: Option<&str>) -> Result<SystemTime, PortError> {
     time_on(&format!("pull request {pr}"), what, text)
 }
@@ -167,10 +181,12 @@ impl Forge for GithubForge {
                 return Ok(BranchChecks {
                     head: None,
                     checks: Vec::new(),
+                    reached_at: None,
                 });
             }
             Err(error) => return Err(error),
         };
+        let reached_at = row.committed_at();
         let head = row.commit.sha;
         let text = self.gh.api_text(
             &format!("commits/{head}/check-runs"),
@@ -204,16 +220,28 @@ impl Forge for GithubForge {
         Ok(BranchChecks {
             head: Some(CommitId::from(head)),
             checks,
+            reached_at,
         })
     }
 
     fn pull_request(&self, pr: PrNumber) -> Result<PullRequest, PortError> {
         let number = bare(pr);
-        let row: PrTimesRow =
-            self.gh
-                .json(&["pr", "view", &number, "--json", "state,createdAt,mergedAt"])?;
+        let row: PrTimesRow = self.gh.json(&[
+            "pr",
+            "view",
+            &number,
+            "--json",
+            "state,createdAt,mergedAt,mergeable,headRefOid",
+        ])?;
         let opened_at = time_of(pr, "its opening", row.created_at.as_deref())?;
-        let merged_at = if row.state == "MERGED" {
+        let merged = row.state == "MERGED";
+        let head = row
+            .head_ref_oid
+            .as_deref()
+            .map(str::trim)
+            .filter(|head| !head.is_empty())
+            .map(str::to_owned);
+        let merged_at = if merged {
             Some(time_of(pr, "its merge", row.merged_at.as_deref())?)
         } else {
             None
@@ -221,7 +249,16 @@ impl Forge for GithubForge {
         Ok(PullRequest {
             opened_at,
             merged_at,
+            mergeable: mergeable_of(row.mergeable.as_deref()),
+            head,
+            merged,
         })
+    }
+
+    /// `gh pr checks` reads a pull request's checks by the pull request, not by a head, so the
+    /// head a caller knows is not needed.
+    fn checks_at(&self, pr: PrNumber, _head: Option<&str>) -> Result<Vec<Check>, PortError> {
+        self.checks(pr)
     }
 
     fn review_comments(&self, pr: PrNumber) -> Result<Vec<ReviewComment>, PortError> {
@@ -285,10 +322,19 @@ impl Forge for GithubForge {
         Ok(pull.state == "MERGED")
     }
 
-    fn last_changed_file(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
+    fn changed_files(&self, pr: PrNumber) -> Result<ChangedFiles, PortError> {
         let number = bare(pr);
-        let files: Vec<FileRow> = self.gh.api_list(&format!("pulls/{number}/files"))?;
-        Ok(files.into_iter().next_back().map(|file| file.filename))
+        let rows: Vec<FileRow> = self.gh.api_list(&format!("pulls/{number}/files"))?;
+        // GitHub lists at most this many files of a pull request, however many it changes.
+        let cut_short = rows.len() >= FILE_LIST_CAP;
+        let mut files = ChangedFiles {
+            cut_short,
+            ..ChangedFiles::default()
+        };
+        for row in rows {
+            files.push(row.filename, row.previous_filename);
+        }
+        Ok(files)
     }
 
     fn scanning_alerts(&self, pr: PrNumber) -> Result<Vec<ScanningAlert>, PortError> {

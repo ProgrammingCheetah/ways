@@ -172,7 +172,7 @@ fn ask_for_manifest(
         &mut io::stdout(),
     )
     .map_err(|error| {
-        eprintln!("zaf setup: {error}");
+        crate::eprintln_zaf!("zaf setup: {error}");
         init_exit(&error)
     })?;
     let shown = written
@@ -181,7 +181,7 @@ fn ask_for_manifest(
         .display()
         .to_string();
     let composition = Composition::load_with_home(dir, zaf_home).map_err(|error| {
-        eprintln!("zaf setup: {error}");
+        crate::eprintln_zaf!("zaf setup: {error}");
         REFUSED
     })?;
     Ok((composition, shown))
@@ -266,7 +266,7 @@ pub fn run(cli: &Cli) -> u8 {
         Err(CompositionError::NoProject { start }) => Err(start),
         Err(error) => {
             first_run();
-            eprintln!("zaf {path}: {error}");
+            crate::eprintln_zaf!("zaf {path}: {error}");
             return REFUSED;
         }
     };
@@ -316,7 +316,7 @@ pub fn run(cli: &Cli) -> u8 {
             }
         }
         Err(error) => {
-            eprintln!("zaf {path}: {error}");
+            crate::eprintln_zaf!("zaf {path}: {error}");
             return if error.kind() == ErrorKind::AlreadyExists {
                 REFUSED
             } else {
@@ -351,7 +351,7 @@ pub fn run(cli: &Cli) -> u8 {
                     println!("{line}");
                 }
             }
-            eprintln!("zaf {path}: {error}");
+            crate::eprintln_zaf!("zaf {path}: {error}");
             return exit::BACKEND;
         }
     };
@@ -362,7 +362,9 @@ pub fn run(cli: &Cli) -> u8 {
         print_report(&report);
         return if ready { OK } else { REFUSED };
     }
-    end_row(&mut steps, &rows, "Make", None);
+    for verb in ["Make", "Clone", "Refresh", "Add"] {
+        end_row(&mut steps, &rows, verb, None);
+    }
     end_row(&mut steps, &rows, "Install", Some(installed_end(&report)));
     let fixes = left_to_fix(&report);
     let check = (!ready).then(|| StepEnd::Failed(fixes_text(fixes.len()).as_str().into()));
@@ -737,6 +739,32 @@ mod tests {
         assert!(went);
         assert_eq!(said, "");
         assert_eq!(tree(dir.path()), before, "asking writes nothing");
+    }
+
+    #[test]
+    fn a_design_clone_row_is_asked_before_anything_is_cloned() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path().join("project");
+        let home = dir.path().join("zaf-home");
+        fs::create_dir(&root).expect("project");
+        fs::write(
+            root.join(".zaf.toml"),
+            concat!(
+                "[project]\nname = \"b\"\n[board]\nkind = \"github-issues\"\nrepo = \"e/b\"\n",
+                "[design]\nkind = \"git-sibling\"\nrepo = \"e/b-design\"\npath = \"../b-design\"\n"
+            ),
+        )
+        .expect("manifest");
+        ensure_homes(Some(&root), Some(&home)).expect("homes");
+        let before = tree(dir.path());
+        let rows = plan(&root, Some(&home), false);
+        assert!(writes(&rows));
+        let (went, said) = agree(&rows, false, Terminal::Present, "n\n");
+        assert!(!went);
+        assert!(said.contains("Clone"), "{said}");
+        assert!(said.contains("Continue? [Y/n] "), "{said}");
+        assert!(said.ends_with("Nothing changed.\n"), "{said}");
+        assert_eq!(tree(dir.path()), before);
     }
 
     #[test]

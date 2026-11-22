@@ -65,3 +65,73 @@ fn a_repository_says_whether_it_has_a_remote() {
     vcs.add_remote();
     assert_eq!(port.has_remote(root), Ok(true));
 }
+
+#[test]
+fn fake_tree_of_matches_the_rule() {
+    let vcs = FakeVcs::default();
+    let port: &dyn Vcs = &vcs;
+    let (slice, base) = names();
+    let root = Path::new("/project");
+    vcs.open(&slice, &base);
+    vcs.edit(&slice, "src/export.rs", 12, 3, "@@")
+        .expect("edit");
+    vcs.place(
+        &slice,
+        Path::new("/project/.zaf/workspaces/feature/v1-export-2"),
+    )
+    .expect("place");
+    let latest = vcs.commit(&slice, "Add the CSV writer").expect("commit");
+    // An empty commit has its parent's tree, however deep; a change has another; a sibling shares.
+    let tree = port.tree_of(root, &latest).expect("tree");
+    let empty = vcs.empty_commit(&latest).expect("empty");
+    assert_eq!(port.tree_of(root, &empty), Ok(tree.clone()));
+    let emptier = vcs.empty_commit(&empty).expect("empty");
+    assert_eq!(port.tree_of(root, &emptier), Ok(tree.clone()));
+    let changed = vcs.changed_commit(&latest).expect("changed");
+    assert_ne!(port.tree_of(root, &changed), Ok(tree.clone()));
+    let beside = vcs.sibling_commit(&latest).expect("sibling");
+    assert_eq!(port.tree_of(root, &beside), Ok(tree));
+    // A commit the repository does not hold is not found.
+    assert!(matches!(
+        port.tree_of(root, &CommitId::from("never-seen")),
+        Err(PortError::NotFound(_))
+    ));
+}
+
+#[test]
+fn fake_holds_matches_the_rule() {
+    let vcs = FakeVcs::default();
+    let port: &dyn Vcs = &vcs;
+    let (slice, base) = names();
+    let workspace = Path::new("/project/.zaf/workspaces/feature/v1-export-2");
+    assert!(matches!(
+        port.holds(workspace, &CommitId::from("fake-1")),
+        Err(PortError::NotFound(_))
+    ));
+    vcs.open(&slice, &base);
+    vcs.place(&slice, workspace).expect("place");
+    vcs.edit(&slice, "src/export.rs", 12, 3, "@@")
+        .expect("edit");
+    let latest = vcs.commit(&slice, "Add the CSV writer").expect("commit");
+    // The latest commit holds itself, and an empty commit on top of it does too, however deep.
+    assert_eq!(port.holds(workspace, &latest), Ok(true));
+    let empty = vcs.empty_commit(&latest).expect("empty");
+    assert_eq!(port.holds(workspace, &empty), Ok(true));
+    let emptier = vcs.empty_commit(&empty).expect("empty");
+    assert_eq!(port.holds(workspace, &emptier), Ok(true));
+    // A commit that changes anything does not, nor does any commit above one that did.
+    let changed = vcs.changed_commit(&latest).expect("changed");
+    assert_eq!(port.holds(workspace, &changed), Ok(false));
+    let above = vcs.empty_commit(&changed).expect("empty");
+    assert_eq!(port.holds(workspace, &above), Ok(false));
+    // A commit off the line does not, even with the same tree; nor does an ancestor.
+    let beside = vcs.sibling_commit(&latest).expect("sibling");
+    assert_eq!(port.holds(workspace, &beside), Ok(false));
+    let base_commit = CommitId::from("fake-base-feature/v1");
+    assert_eq!(port.holds(workspace, &base_commit), Ok(false));
+    // A head the repository does not hold is false, not an error.
+    assert_eq!(
+        port.holds(workspace, &CommitId::from("never-seen")),
+        Ok(false)
+    );
+}

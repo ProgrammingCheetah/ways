@@ -111,6 +111,11 @@
       "node": false
     },
     {
+      "name": "git_e2e.rs",
+      "role": "a plain git repository (git init, a bare origin, the fake Forgejo curl, a fake claude) set up by zaf setup, doctor passing, takes one ticket from ready to merged through implement, ci, review and merge by zaf spawn phase; no jj or gh on the path",
+      "node": false
+    },
+    {
       "name": "hub_dashboard.rs",
       "role": "zaf hub --port <n>: a port that is taken is refused by name",
       "node": false
@@ -137,7 +142,7 @@
     },
     {
       "name": "pack_actions.rs",
-      "role": "the teams pack's 24 standard actions: every file executable and a valid action",
+      "role": "the teams pack's 25 standard actions: every file executable and a valid action",
       "node": false
     },
     {

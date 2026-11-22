@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use super::report::{self, ReportError};
+use crate::domain::screen::{Line, Meaning};
 
 /// The state file's name under the state folder.
 pub const GUARD_FILE: &str = "guard.json";
@@ -61,13 +62,32 @@ pub struct GuardState {
 impl GuardState {
     /// The one line `zaf guard` and `zaf status` print.
     pub fn line(&self) -> String {
-        match self.weekly_usd {
-            None => "no budget set".to_owned(),
-            Some(weekly) => format!(
-                "{} {:.0}% (${:.0} of ${:.0})",
-                self.level, self.percent, self.spent_usd, weekly
-            ),
-        }
+        self.pieces()
+            .iter()
+            .map(|(_, text)| text.as_str())
+            .collect()
+    }
+
+    /// [`GuardState::line`] as a screen line: the level and its percent are red when the
+    /// spawner stops (`Failed`), green within budget (`Done`) and yellow between (`Noun`); the
+    /// amounts are `Noun`. The pieces joined are the plain line.
+    pub fn pieces(&self) -> Line {
+        let Some(weekly) = self.weekly_usd else {
+            return vec![(Meaning::Dim, "no budget set".into())];
+        };
+        let state = match self.level {
+            Level::Green => Meaning::Done,
+            Level::Yellow | Level::Orange => Meaning::Noun,
+            Level::Red => Meaning::Failed,
+        };
+        vec![
+            (state, format!("{} {:.0}%", self.level, self.percent).into()),
+            (Meaning::Dim, " (".into()),
+            (Meaning::Noun, format!("${:.0}", self.spent_usd).into()),
+            (Meaning::Dim, " of ".into()),
+            (Meaning::Noun, format!("${weekly:.0}").into()),
+            (Meaning::Dim, ")".into()),
+        ]
     }
 }
 

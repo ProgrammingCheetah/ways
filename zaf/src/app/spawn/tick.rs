@@ -56,12 +56,16 @@ pub struct PastLaunch {
 pub struct Settings {
     /// `[spawn] slots`.
     pub slots: u32,
+    /// `Settings.merge_per_tick: u32`, from `[merge] per_tick`: the merges one tick may land,
+    /// at least 1.
+    pub merge_per_tick: u32,
 }
 
 impl From<&Manifest> for Settings {
     fn from(manifest: &Manifest) -> Self {
         Self {
             slots: manifest.spawn.slots,
+            merge_per_tick: manifest.merge.per_tick,
         }
     }
 }

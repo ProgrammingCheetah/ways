@@ -59,6 +59,9 @@ const END_NAMES: &str = "pr-open, review-posted, ci-done, merged, exit";
 /// The one value `terminal` takes.
 const TERMINAL_YES: &str = "yes";
 
+/// The one value `vcs` takes: the action runs jj, so a git project does not take it for its own.
+const VCS_JJ: &str = "jj";
+
 pub use crate::manifest::ActionName;
 
 /// One entry of a task type's phase list, with what its action declares: the `kind`, `ends` and
@@ -175,6 +178,25 @@ pub struct ActionMetadata {
     /// stderr, so it can hold a conversation. Such an action runs only when zaf has a terminal, is
     /// never a phase action (`kind`) and never a hook, since both run with no one there.
     pub terminal: bool,
+    /// `# zaf vcs: jj`: the action runs jj, so a git project looks for its `<name>.git` and takes
+    /// this file only when it is not marked (docs/zaf-actions.md §2).
+    pub jj_only: bool,
+}
+
+/// Whether `text` carries the metadata line `vcs: jj` in its metadata block. Only that exact line
+/// counts, never a mention of jj in a comment or the body. The block is read line by line and
+/// nothing else about the file is judged, so a file that is no valid action still reads as marked
+/// when it carries the line.
+pub fn marks_jj(text: &str) -> bool {
+    let first = usize::from(
+        text.lines()
+            .next()
+            .is_some_and(|line| line.starts_with("#!")),
+    );
+    text.lines()
+        .skip(first)
+        .map_while(metadata_line)
+        .any(|(key, value)| key == "vcs" && value == VCS_JJ)
 }
 
 /// A parsed action file: its metadata and where its body starts.
@@ -321,6 +343,8 @@ struct Fields {
     on_fail: Option<(usize, ActionName)>,
     /// The line of `terminal: yes`.
     terminal: Option<usize>,
+    /// Whether `vcs: jj` was declared.
+    jj_only: bool,
 }
 
 impl Fields {
@@ -426,12 +450,23 @@ impl Fields {
                 }
                 self.terminal = Some(line);
             }
+            "vcs" => {
+                if self.jj_only {
+                    return Err(repeated());
+                }
+                if value != VCS_JJ {
+                    return Err(format!(
+                        "`vcs: {value}` is not `jj`; omit it for an action that runs on any project"
+                    ));
+                }
+                self.jj_only = true;
+            }
             _ if key.starts_with(|c: char| c.is_ascii_digit() || c == '-' || c == '+') => {
                 self.code(key, value)?;
             }
             _ => {
                 return Err(format!(
-                    "unknown key `{key}`; the keys are description, an exit code, mode, group, target, phases, timeout, kind, ends, on-fail and terminal"
+                    "unknown key `{key}`; the keys are description, an exit code, mode, group, target, phases, timeout, kind, ends, on-fail, terminal and vcs"
                 ));
             }
         }
@@ -525,6 +560,7 @@ impl Fields {
             ends,
             on_fail,
             terminal: self.terminal.is_some(),
+            jj_only: self.jj_only,
         })
     }
 }

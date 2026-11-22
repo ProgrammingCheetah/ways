@@ -314,6 +314,7 @@ fn base(checks: Vec<CheckFact>) -> BaseFacts {
     BaseFacts {
         head: Some(commit("base1")),
         checks,
+        reached_at: None,
     }
 }
 
@@ -349,6 +350,7 @@ fn a_merge_does_not_wait_on_a_base_with_no_check_every_check_ended_or_unknown() 
     let headless = BaseFacts {
         head: None,
         checks: vec![pending()],
+        reached_at: None,
     };
     assert_eq!(merging_over(headless), lane);
 }

@@ -30,6 +30,10 @@ impl Forge for SharedForge {
         self.0.review_comments(pr)
     }
 
+    fn checks_at(&self, pr: PrNumber, head: Option<&str>) -> Result<Vec<Check>, PortError> {
+        self.0.checks_at(pr, head)
+    }
+
     fn pull_request(&self, pr: PrNumber) -> Result<PullRequest, PortError> {
         self.0.pull_request(pr)
     }
@@ -42,8 +46,8 @@ impl Forge for SharedForge {
         self.0.merged(pr)
     }
 
-    fn last_changed_file(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
-        self.0.last_changed_file(pr)
+    fn changed_files(&self, pr: PrNumber) -> Result<crate::domain::ChangedFiles, PortError> {
+        self.0.changed_files(pr)
     }
 
     fn scanning_alerts(&self, pr: PrNumber) -> Result<Vec<ScanningAlert>, PortError> {

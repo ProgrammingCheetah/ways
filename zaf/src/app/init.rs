@@ -41,6 +41,9 @@ pub enum InitError {
     /// The answers make a manifest that does not load; nothing was written.
     #[error(transparent)]
     Invalid(#[from] ManifestError),
+    /// The folder is no repository: neither `.jj` nor `.git` is there; nothing was asked.
+    #[error("{0} is not a repository; run `git init` or `jj git init` first")]
+    NoRepository(PathBuf),
     /// The marketplace's current pack tag could not be learned; nothing was written.
     #[error("the pack's current tag: {0}")]
     Pack(#[from] ProfileError),
@@ -76,6 +79,34 @@ impl Question {
 
 /// How a question is shown before its answer is read: the whole text, prompt included.
 pub type Draw<'a> = &'a dyn Fn(&Question) -> String;
+
+/// The kind of repository a folder holds, as init writes it to `[vcs] kind`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Repository {
+    Jj,
+    Git,
+}
+
+impl Repository {
+    /// `.jj` first (a colocated repository has both and is jj), then a `.git` folder or file;
+    /// none for a folder that is neither.
+    fn of(dir: &Path) -> Option<Self> {
+        if dir.join(".jj").is_dir() {
+            Some(Self::Jj)
+        } else if dir.join(".git").exists() {
+            Some(Self::Git)
+        } else {
+            None
+        }
+    }
+
+    fn kind(self) -> &'static str {
+        match self {
+            Self::Jj => "jj",
+            Self::Git => "git",
+        }
+    }
+}
 
 /// What the folder and its `origin` say init can offer.
 struct Facts {
@@ -400,33 +431,41 @@ Task = ["implement", "ci", "review", "merge"]
 Bug = ["implement", "ci", "review", "merge"]
 "#;
 
-/// The tools and merge denies of a GitHub project: `gh` is needed, and `gh pr merge` is denied.
+/// The denies of a GitHub project: `gh pr merge` and `jj git push` are denied.
 const GITHUB_TOOLS: &str = r#"
-[requires]
-jj = "*"
-gh = "*"
-
 [forbidden]
 commands = [
   "gh pr merge",
+  "jj git push",
   "zaf forge merge",
   "zaf do pr-merge",
   "zaf do --tier machine pr-merge",
 ]
 "#;
 
-/// The tools and merge denies of a Forgejo project, which needs no `gh`.
+/// The denies of a Forgejo project: `jj git push` and the merges are denied.
 const FORGEJO_TOOLS: &str = r#"
-[requires]
-jj = "*"
-
 [forbidden]
 commands = [
+  "jj git push",
   "zaf forge merge",
   "zaf do pr-merge",
   "zaf do --tier machine pr-merge",
 ]
 "#;
+
+/// The tools the actions need: `jj` for a jj project only (install.sh checks git), and `gh` for
+/// a GitHub one.
+fn requires(repository: Repository, github: bool) -> String {
+    let mut text = String::from("\n[requires]\n");
+    if repository == Repository::Jj {
+        text.push_str("jj = \"*\"\n");
+    }
+    if github {
+        text.push_str("gh = \"*\"\n");
+    }
+    text
+}
 
 /// The variable a Forgejo project's token is read from.
 const TOKEN_ENV: &str = "FORGEJO_TOKEN";
@@ -474,6 +513,8 @@ pub fn init_with_home(
     if let Some(existing) = found.root.or(found.folder).or(found.legacy) {
         return Err(InitError::Exists(existing));
     }
+    let repository =
+        Repository::of(dir).ok_or_else(|| InitError::NoRepository(dir.to_path_buf()))?;
     let facts = Facts::of(dir);
     let mut list = facts.list().into_iter();
     let mut next = || list.next().expect("the list holds every question asked");
@@ -498,10 +539,11 @@ pub fn init_with_home(
     };
     let gate = put(input, output, draw, &next())?;
 
+    let vcs = repository.kind();
     let mut text = match &url {
         Some(url) => format!(
             "[project]\nname = {}\n\n[board]\nkind = \"forgejo-issues\"\nurl = {}\nrepo = {}\n\
-             token_env = \"{TOKEN_ENV}\"\n\n[vcs]\nkind = \"jj\"\n\n[forge]\nkind = \"forgejo\"\n\
+             token_env = \"{TOKEN_ENV}\"\n\n[vcs]\nkind = \"{vcs}\"\n\n[forge]\nkind = \"forgejo\"\n\
              url = {}\nrepo = {}\ntoken_env = \"{TOKEN_ENV}\"\n",
             quoted(&name),
             quoted(url),
@@ -511,7 +553,7 @@ pub fn init_with_home(
         ),
         None => format!(
             "[project]\nname = {}\n\n[board]\nkind = \"github-issues\"\nrepo = {}\n\n\
-             [vcs]\nkind = \"jj\"\n\n[forge]\nkind = \"github\"\nrepo = {}\n",
+             [vcs]\nkind = \"{vcs}\"\n\n[forge]\nkind = \"github\"\nrepo = {}\n",
             quoted(&name),
             quoted(&board),
             quoted(&forge),
@@ -521,6 +563,7 @@ pub fn init_with_home(
         text.push_str(&format!("\n[gate]\nfull = {}\n", quoted(&gate)));
     }
     text.push_str(STANDARD);
+    text.push_str(&requires(repository, url.is_none()));
     text.push_str(if url.is_some() {
         FORGEJO_TOOLS
     } else {

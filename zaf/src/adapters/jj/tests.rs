@@ -246,6 +246,183 @@ fn a_merge_in_progress_is_the_latest_commit() {
     );
 }
 
+/// The commit id of a revset that names one commit.
+fn id_of(dir: &Path, revset: &str) -> CommitId {
+    CommitId::from(jj(dir, &["log", "--no-graph", "-r", revset, "-T", "commit_id"]).as_str())
+}
+
+/// A slice workspace with one commit of work, and that commit's id: the workspace's latest.
+fn slice_with_work(fixture: &Fixture) -> (PathBuf, CommitId) {
+    let (dir, _base) = fixture.slice();
+    write(&dir, "work.txt", "work\n");
+    jj(&dir, &["commit", "-m", "Work"]);
+    let latest = id_of(&dir, "@-");
+    assert_eq!(JjVcs.latest_commit(&dir), Ok(latest.clone()));
+    (dir, latest)
+}
+
+#[test]
+fn tree_of_is_one_for_an_empty_commit_and_another_for_a_change() {
+    for colocate in [false, true] {
+        let fixture = Fixture::new(colocate);
+        let (dir, latest) = slice_with_work(&fixture);
+        let root = fixture.root.as_path();
+        let base = id_of(&dir, &bookmark(BASE));
+        let work = JjVcs.tree_of(root, &latest).expect("tree of the work");
+        assert_ne!(JjVcs.tree_of(root, &base), Ok(work.clone()));
+        // The working copy is empty on top of the latest commit, and so is a commit above that.
+        let empty = id_of(&dir, "@");
+        assert_ne!(empty, latest);
+        assert_eq!(JjVcs.tree_of(root, &empty), Ok(work.clone()));
+        jj(&dir, &["new", "--no-edit", empty.as_ref(), "-m", "Empty"]);
+        let emptier = id_of(&dir, &format!("children(commit_id(\"{empty}\"))"));
+        assert_eq!(JjVcs.tree_of(&dir, &emptier), Ok(work));
+        // A commit the repository does not hold, and text that is no commit id, are not found.
+        let unseen = CommitId::from("0123456789abcdef0123456789abcdef01234567");
+        assert!(matches!(
+            JjVcs.tree_of(root, &unseen),
+            Err(PortError::NotFound(_))
+        ));
+        assert!(matches!(
+            JjVcs.tree_of(root, &CommitId::from("main")),
+            Err(PortError::NotFound(_))
+        ));
+        // A directory that is no repository is not found.
+        let nowhere = fixture.root.join("nowhere");
+        assert!(matches!(
+            JjVcs.tree_of(&nowhere, &latest),
+            Err(PortError::NotFound(_))
+        ));
+    }
+}
+
+/// How many operations the repository's log holds, counted without a snapshot of its own.
+fn operations(root: &Path) -> usize {
+    jj(
+        root,
+        &[
+            "--ignore-working-copy",
+            "op",
+            "log",
+            "--no-graph",
+            "-T",
+            r#"id ++ "\n""#,
+        ],
+    )
+    .lines()
+    .count()
+}
+
+#[test]
+fn gather_does_not_snapshot_root_working_copy() {
+    for colocate in [false, true] {
+        let fixture = Fixture::new(colocate);
+        let root = fixture.root.as_path();
+        let latest = id_of(root, "@-");
+        // An uncommitted edit in the root: any jj command that snapshots would record it.
+        write(root, "edited.txt", "not committed\n");
+        let before = operations(root);
+        let commits = [&latest];
+        assert_eq!(JjVcs.trees_of(root, &commits).len(), 1);
+        JjVcs.tree_of(root, &latest).expect("tree");
+        JjVcs.has_tag(root, "app-v1.0.0").expect("tag");
+        JjVcs.has_remote(root).expect("remote");
+        JjVcs.tags(root).expect("tags");
+        assert_eq!(
+            operations(root),
+            before,
+            "a root read recorded an operation"
+        );
+    }
+}
+
+#[test]
+fn trees_of_reads_each_commit_and_leaves_out_what_it_cannot() {
+    let fixture = Fixture::new(true);
+    let root = fixture.root.as_path();
+    let (dir, latest) = slice_with_work(&fixture);
+    let base = id_of(&dir, &bookmark(BASE));
+    let unseen = CommitId::from("0123456789abcdef0123456789abcdef01234567");
+    let asked = [&latest, &unseen, &base];
+    let trees = JjVcs.trees_of(root, &asked);
+    let ids: Vec<&CommitId> = trees.iter().map(|(commit, _)| commit).collect();
+    assert_eq!(ids, [&latest, &base]);
+    assert_eq!(
+        trees[0].1,
+        JjVcs.tree_of(root, &latest).expect("tree of the work")
+    );
+    let nowhere = fixture.root.join("nowhere");
+    assert!(JjVcs.trees_of(&nowhere, &asked).is_empty());
+}
+
+#[test]
+fn holds_an_empty_commit_on_top() {
+    let fixture = Fixture::new(false);
+    let (dir, latest) = slice_with_work(&fixture);
+    // The latest commit holds itself.
+    assert_eq!(JjVcs.holds(&dir, &latest), Ok(true));
+    // The working copy, empty on top of the latest commit, holds its work; so does an empty
+    // commit on top of that.
+    let empty = id_of(&dir, "@");
+    assert_eq!(JjVcs.holds(&dir, &empty), Ok(true));
+    jj(&dir, &["new", "--no-edit", empty.as_ref(), "-m", "Empty"]);
+    let emptier = id_of(&dir, &format!("children(commit_id(\"{empty}\"))"));
+    assert_ne!(emptier, empty);
+    assert_eq!(JjVcs.holds(&dir, &emptier), Ok(true));
+}
+
+#[test]
+fn holds_false_for_a_different_tree() {
+    let fixture = Fixture::new(false);
+    let (dir, latest) = slice_with_work(&fixture);
+    write(&dir, "more.txt", "more\n");
+    let changed = id_of(&dir, "@");
+    assert_ne!(changed, latest);
+    assert_eq!(JjVcs.holds(&dir, &changed), Ok(false));
+    // An empty commit on top of the one that changed something is no better.
+    jj(&dir, &["new", "--no-edit", changed.as_ref(), "-m", "Above"]);
+    let above = id_of(&dir, "description(\"Above\")");
+    assert_eq!(JjVcs.holds(&dir, &above), Ok(false));
+}
+
+#[test]
+fn holds_false_for_a_head_off_the_line() {
+    let fixture = Fixture::new(false);
+    let (dir, latest) = slice_with_work(&fixture);
+    // A copy of the latest commit: the same tree, the same parent, and no descendant of it.
+    jj(&dir, &["duplicate", latest.as_ref()]);
+    let copy = id_of(
+        &dir,
+        &format!("description(\"Work\") ~ commit_id(\"{latest}\")"),
+    );
+    assert_ne!(copy, latest);
+    assert_eq!(JjVcs.holds(&dir, &copy), Ok(false));
+    // An ancestor, the base, is not a head that holds the work.
+    let base = id_of(&dir, &bookmark(BASE));
+    assert_eq!(JjVcs.holds(&dir, &base), Ok(false));
+    // A head the repository does not have, never an error, and nothing that is no commit id.
+    let unseen = CommitId::from("0123456789abcdef0123456789abcdef01234567");
+    assert_eq!(JjVcs.holds(&dir, &unseen), Ok(false));
+    for text in [
+        "",
+        "@",
+        "nothing",
+        "x | @",
+        "\") | (\"",
+        &latest.to_string()[..12],
+    ] {
+        assert_eq!(
+            JjVcs.holds(&dir, &CommitId::from(text)),
+            Ok(false),
+            "{text}"
+        );
+    }
+    assert!(matches!(
+        JjVcs.holds(&dir.join("no-workspace"), &latest),
+        Err(PortError::NotFound(_))
+    ));
+}
+
 #[test]
 fn diffs_come_as_stat_first_and_hunks_on_request() {
     let fixture = Fixture::new(false);

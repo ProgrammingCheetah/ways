@@ -141,6 +141,10 @@ pub(super) struct PullRow {
     pub created_at: Option<String>,
     #[serde(default)]
     pub merged_at: Option<String>,
+    /// Whether Forgejo says the pull request merges into its base; `null` or absent while it
+    /// has not worked that out.
+    #[serde(default)]
+    pub mergeable: Option<bool>,
     #[serde(default)]
     pub head: Option<BranchRow>,
     #[serde(default)]
@@ -204,6 +208,13 @@ impl BranchHeadRow {
             .map(|commit| commit.id.as_str())
             .filter(|id| !id.is_empty())
     }
+
+    /// The time of the commit the branch is at, when Forgejo gives one that reads; the zero time
+    /// a Go server prints for one it does not have is none.
+    pub fn committed_at(&self) -> Option<SystemTime> {
+        let text = self.commit.as_ref()?.timestamp.as_deref()?;
+        parse_time(text).filter(|at| *at > SystemTime::UNIX_EPOCH)
+    }
 }
 
 /// The commit a branch is at.
@@ -211,6 +222,9 @@ impl BranchHeadRow {
 pub(super) struct BranchCommitRow {
     #[serde(default, deserialize_with = "or_default")]
     pub id: String,
+    /// When the commit was made.
+    #[serde(default)]
+    pub timestamp: Option<String>,
 }
 
 /// A commit status as `GET /repos/{owner}/{repo}/commits/{ref}/statuses` prints it: one row per
@@ -277,6 +291,9 @@ pub(super) struct ReviewCommentRow {
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct ChangedFileRow {
     pub filename: String,
+    /// The name a renamed file had before; empty or absent for any other change.
+    #[serde(default)]
+    pub previous_filename: Option<String>,
 }
 
 /// What `GET /settings/api` prints, read only for the page size.

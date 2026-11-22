@@ -122,6 +122,9 @@ fn the_lowest_open_question_is_asked_first_and_a_settled_one_never() {
         instances: Vec::new(),
         watch: None,
         last_tick: None,
+        orphaned: Vec::new(),
+        releases_due: Vec::new(),
+        status: crate::app::hub::state::StatusState::default(),
     };
     let mut settled = BTreeSet::new();
 
@@ -136,7 +139,7 @@ fn the_lowest_open_question_is_asked_first_and_a_settled_one_never() {
 fn the_end_screen_names_the_pull_request_and_the_next_release() {
     let end = End {
         version: Version::new(0, 1, 0),
-        number: "30".to_owned(),
+        number: PrNumber::from(30),
         next: Version::new(0, 2, 0),
     };
     let text: Vec<String> = end_lines(&end, 9, 23)
@@ -263,6 +266,29 @@ fn a_one_line_paste_is_the_line_without_its_markers() {
 }
 
 #[test]
+fn a_paste_after_typed_text_with_a_newline_is_asked_again() {
+    // `x` typed, then `a\nb` pasted: the line ends inside the paste.
+    let (typed, cleared) = paste_of(b"x\x1b[200~a\n");
+    assert_eq!(typed, Typed::Many);
+    assert!(cleared);
+    let (typed, _) = paste_of(b"x\x1b[200~a\rb\x1b[201~\n");
+    assert_eq!(typed, Typed::Many);
+}
+
+#[test]
+fn a_paste_after_typed_text_is_kept_without_markers() {
+    let (typed, cleared) = paste_of(b"x\x1b[200~ab\x1b[201~\n");
+    assert_eq!(typed, Typed::Line("xab\n".to_owned()));
+    assert!(!cleared);
+    // Typed text on both sides, two pastes, a stray end marker.
+    let (typed, _) = paste_of(b"x\x1b[200~a\x1b[201~y\x1b[200~b\x1b[201~z\x1b[201~\n");
+    assert_eq!(typed, Typed::Line("xaybz\n".to_owned()));
+    // A paste with no end and no newline (stdin ended) is kept.
+    let (typed, _) = paste_of(b"x\x1b[200~ab");
+    assert_eq!(typed, Typed::Line("xab".to_owned()));
+}
+
+#[test]
 fn a_paste_with_input_queued_behind_it_is_refused() {
     let cleared = std::cell::Cell::new(false);
     let mut input = std::io::Cursor::new(b"\x1b[200~one\x1b[201~\n".to_vec());
@@ -293,7 +319,7 @@ type Leave = fn(WatchView, End);
 fn every_way_out_restores_through_put_back() {
     let end = End {
         version: Version::new(0, 5, 2),
-        number: "1".to_owned(),
+        number: PrNumber::from(1),
         next: Version::new(0, 5, 3),
     };
     let ways: [(&str, Leave); 3] = [
@@ -354,4 +380,54 @@ fn single_line_answer_is_recorded() {
     assert!(!cleared.get());
     let Typed::Line(line) = typed else { return };
     assert_eq!(answer_of(&line), Some("yes"));
+}
+
+fn read_one(bytes: &[u8]) -> (Typed, bool) {
+    let cleared = std::cell::Cell::new(false);
+    let mut input = std::io::Cursor::new(bytes.to_vec());
+    let typed = read_typed(&mut input, || false, || cleared.set(true));
+    (typed, cleared.get())
+}
+
+#[test]
+fn watch_view_refuses_control_chars_on_pty() {
+    for bytes in [
+        &b"ye\x1b[2Js\n"[..],
+        b"a\x07b\n",
+        b"a\x7fb\n",
+        b"a\xc2\x9bb\n",
+    ] {
+        let (typed, cleared) = read_one(bytes);
+        assert_eq!(typed, Typed::Unprintable, "{bytes:?}");
+        assert!(cleared, "{bytes:?}");
+    }
+    let block = question_block(&plain(), &question(5, "Which one?"));
+    let again = refused_unprintable(&plain(), &block);
+    assert!(again.ends_with(&block), "{again:?}");
+    assert!(!again.contains("recorded"), "{again:?}");
+}
+
+#[test]
+fn watch_view_refuses_bidi_chars_on_pty() {
+    for text in ["yes\u{202E}\n", "a\u{2066}b\n", "a\u{200B}b\n"] {
+        let (typed, cleared) = read_one(text.as_bytes());
+        assert_eq!(typed, Typed::Unprintable, "{text:?}");
+        assert!(cleared, "{text:?}");
+    }
+}
+
+#[test]
+fn watch_view_rules_printable_answer() {
+    for (bytes, answer) in [
+        (&b"yes\n"[..], "yes"),
+        (b"tab\there\r\n", "tab\there"),
+        ("é ✓\n".as_bytes(), "é ✓"),
+    ] {
+        let (typed, cleared) = read_one(bytes);
+        assert!(!cleared);
+        let Typed::Line(line) = typed else {
+            panic!("{bytes:?} was refused")
+        };
+        assert_eq!(answer_of(&line), Some(answer));
+    }
 }

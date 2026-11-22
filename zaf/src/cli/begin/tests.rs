@@ -262,7 +262,7 @@ fn begin_built_stage_names_pr_and_next() {
         "0.6.0",
         || {
             Ok(ReleasePullRequest {
-                number: "77".to_owned(),
+                number: crate::ports::PrNumber::from(77),
                 link: Some("https://forge.example/pulls/77".to_owned()),
             })
         },

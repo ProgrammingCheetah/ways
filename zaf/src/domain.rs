@@ -7,6 +7,8 @@
 mod answer;
 mod ask;
 mod budget;
+mod changed_files;
+mod ci;
 mod document_signature;
 mod epic;
 mod finding;
@@ -32,13 +34,15 @@ pub use ask::{
     QuestionId,
 };
 pub use budget::{Budget, DEFAULT_RESERVE, Fit, SizeTable};
+pub use changed_files::ChangedFiles;
+pub use ci::{PullRequestFilter, WorkflowFilter, checks_expected};
 pub use document_signature::{DocumentSignature, SignatureState};
 pub use epic::{
     BodyHash, CHALLENGER_ROLE, Epic, EpicStage, EpicTask, GroupName, PLANNING_ROLE, RELEASE_PREFIX,
     Signature, SignatureError, all_signed, of_version, release_of, with_release,
 };
 pub use finding::{Finding, FindingSource, Location, Severity};
-pub use ids::{CommitId, IdError, PageId, RepoPath, TicketId};
+pub use ids::{CommitId, IdError, PageId, RepoPath, TicketId, TreeId};
 pub use instance::{Instance, InstanceNumber, RoleName};
 pub use labels::{PageStatus, TicketState};
 pub use memory::{MEBIBYTES_PER_UNIT, Mebibytes, Units};
@@ -50,6 +54,7 @@ pub use slot::{SLOTS_DIR, SlotRecord};
 pub use task::{
     SecurityTrigger, TaskField, TaskModel, TaskProblem, TaskSize, TaskTemplate, TaskTemplateError,
 };
+pub use text::printable;
 pub use ticket::{
     DEFAULT_TASK_TYPE, NewEpic, NewTask, OpenTicket, Standing, StandingAt, Ticket, TicketBody,
     TicketSummary, TicketTitle, TicketType, TicketUrl,

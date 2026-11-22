@@ -78,45 +78,65 @@ impl ForgejoBoard {
         Ok(rows)
     }
 
+    /// The comments of each of `issues`, each oldest first, read together, in the order asked.
+    fn comments_of(&self, issues: &[TicketId]) -> Result<Vec<Vec<CommentRow>>, PortError> {
+        let endpoints: Vec<String> = issues
+            .iter()
+            .map(|issue| format!("issues/{}/comments", issue.get()))
+            .collect();
+        let mut all: Vec<Vec<CommentRow>> = self.api.get_all(&endpoints)?;
+        for comments in &mut all {
+            comments.sort_by_key(|comment| comment.id);
+        }
+        Ok(all)
+    }
+
     /// The epic a task is filed under: the oldest issue labelled `epic` that depends on it.
     fn epic_of(&self, number: u64) -> Result<Option<TicketId>, PortError> {
         let blocked: Vec<IssueRow> = self.api.list(&format!("issues/{number}/blocks"))?;
-        Ok(blocked
+        Ok(oldest_epic(&blocked))
+    }
+
+    /// The epic of each of `rows`, read together, in the order asked.
+    fn epics_of(&self, rows: &[IssueRow]) -> Result<Vec<Option<TicketId>>, PortError> {
+        let endpoints: Vec<String> = rows
             .iter()
-            .filter(|row| row.has_label(EPIC_LABEL))
-            .map(|row| row.number)
-            .min()
-            .map(TicketId::from))
+            .map(|row| format!("issues/{}/blocks", row.number))
+            .collect();
+        let blocked: Vec<Vec<IssueRow>> = self.api.list_all(&endpoints)?;
+        Ok(blocked.iter().map(|rows| oldest_epic(rows)).collect())
     }
 
     /// The ticket `row` reads as, in `state`, with its epic.
     fn ticket(&self, row: &IssueRow, state: Option<TicketState>) -> Result<Ticket, PortError> {
-        Ok(Ticket {
-            id: TicketId::from(row.number),
-            epic: self.epic_of(row.number)?,
-            title: row.title.clone().into(),
-            body: row.body.clone().into(),
-            state,
-            url: row.html_url.clone().into(),
-            kind: labels::kind(row.label_names()),
-        })
+        Ok(ticket_of(row, state, self.epic_of(row.number)?))
+    }
+
+    /// The tickets of `rows`, each in the state `state` gives it, their epics read together.
+    fn tickets_with(
+        &self,
+        rows: &[IssueRow],
+        state: impl Fn(&IssueRow) -> Option<TicketState>,
+    ) -> Result<Vec<Ticket>, PortError> {
+        let epics = self.epics_of(rows)?;
+        Ok(rows
+            .iter()
+            .zip(epics)
+            .map(|(row, epic)| ticket_of(row, state(row), epic))
+            .collect())
     }
 
     /// The open issues labelled `task` and `state/<state>`, in number order, each read in that
     /// state with its epic.
     fn open_tasks_in(&self, state: TicketState) -> Result<Vec<Ticket>, PortError> {
         let label = labels::state_label(state);
-        self.issues(&[TASK_LABEL, &label], "open")?
-            .iter()
-            .map(|row| self.ticket(row, Some(state)))
-            .collect()
+        let rows = self.issues(&[TASK_LABEL, &label], "open")?;
+        self.tickets_with(&rows, |_| Some(state))
     }
 
     /// The tickets of `rows`, each in the first state its labels hold.
     fn tickets(&self, rows: &[IssueRow]) -> Result<Vec<Ticket>, PortError> {
-        rows.iter()
-            .map(|row| self.ticket(row, states(row).first().copied()))
-            .collect()
+        self.tickets_with(rows, |row| states(row).first().copied())
     }
 
     fn post_comment(&self, number: TicketId, body: &str) -> Result<(), PortError> {
@@ -174,28 +194,76 @@ impl ForgejoBoard {
 
     /// The epic `row` reads as, with its comments and the tasks it depends on.
     fn epic_from(&self, row: &IssueRow) -> Result<Epic, PortError> {
-        let id = TicketId::from(row.number);
-        let comments = self.comments(id)?;
-        let notes = EpicNotes::read(
-            comments
-                .iter()
-                .map(|comment| (comment.body.as_str(), comment.posted())),
-        );
-        let mut tasks: Vec<IssueRow> = self
-            .api
-            .list(&format!("issues/{}/dependencies", row.number))?;
-        tasks.retain(|task| !task.is_pull() && task.has_label(TASK_LABEL));
-        tasks.sort_by_key(|task| task.number);
-        tasks.dedup_by_key(|task| task.number);
-        Ok(Epic {
-            id,
-            title: row.title.clone().into(),
-            body: row.body.clone().into(),
-            tasks: tasks.iter().map(epic_task).collect(),
-            signature: notes.signature,
-            planned_at: notes.planned_at,
-            challenged: notes.challenged,
-        })
+        let mut epics = self.epics_from(std::slice::from_ref(row))?;
+        epics
+            .pop()
+            .ok_or_else(|| PortError::Backend(format!("#{} was read as no epic", row.number)))
+    }
+
+    /// The epic each of `rows` reads as. Every epic's comments and dependencies are independent
+    /// reads, so all of them run together.
+    fn epics_from(&self, rows: &[IssueRow]) -> Result<Vec<Epic>, PortError> {
+        let ids: Vec<TicketId> = rows.iter().map(|row| TicketId::from(row.number)).collect();
+        let endpoints: Vec<String> = rows
+            .iter()
+            .map(|row| format!("issues/{}/dependencies", row.number))
+            .collect();
+        let (comments, dependencies) = std::thread::scope(|scope| {
+            let dependencies = scope.spawn(|| self.api.list_all::<IssueRow, _>(&endpoints));
+            let comments = self.comments_of(&ids);
+            let dependencies = dependencies
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+            (comments, dependencies)
+        });
+        let (comments, dependencies) = (comments?, dependencies?);
+        Ok(rows
+            .iter()
+            .zip(comments)
+            .zip(dependencies)
+            .map(|((row, comments), mut tasks)| {
+                let notes = EpicNotes::read(
+                    comments
+                        .iter()
+                        .map(|comment| (comment.body.as_str(), comment.posted())),
+                );
+                tasks.retain(|task| !task.is_pull() && task.has_label(TASK_LABEL));
+                tasks.sort_by_key(|task| task.number);
+                tasks.dedup_by_key(|task| task.number);
+                Epic {
+                    id: TicketId::from(row.number),
+                    title: row.title.clone().into(),
+                    body: row.body.clone().into(),
+                    tasks: tasks.iter().map(epic_task).collect(),
+                    signature: notes.signature,
+                    planned_at: notes.planned_at,
+                    challenged: notes.challenged,
+                }
+            })
+            .collect())
+    }
+}
+
+/// The oldest of `blocked` labelled `epic`.
+fn oldest_epic(blocked: &[IssueRow]) -> Option<TicketId> {
+    blocked
+        .iter()
+        .filter(|row| row.has_label(EPIC_LABEL))
+        .map(|row| row.number)
+        .min()
+        .map(TicketId::from)
+}
+
+/// The ticket `row` reads as, in `state`, filed under `epic`.
+fn ticket_of(row: &IssueRow, state: Option<TicketState>, epic: Option<TicketId>) -> Ticket {
+    Ticket {
+        id: TicketId::from(row.number),
+        epic,
+        title: row.title.clone().into(),
+        body: row.body.clone().into(),
+        state,
+        url: row.html_url.clone().into(),
+        kind: labels::kind(row.label_names()),
     }
 }
 
@@ -219,10 +287,13 @@ fn epic_task(row: &IssueRow) -> EpicTask {
     EpicTask {
         number: TicketId::from(row.number),
         title: row.title.clone().into(),
+        body: row.body.clone().into(),
+        url: row.html_url.clone().into(),
         state: states.first().copied(),
         standing: standing(row, &states),
         group: group(row.label_names()).map(Into::into),
         kind: labels::kind(row.label_names()),
+        closed_at: row.closed(),
     }
 }
 
@@ -230,10 +301,8 @@ impl Board for ForgejoBoard {
     /// The open issues labelled `epic`, each read with its comments and its dependencies: the
     /// tasks, open and closed, in number order.
     fn epics(&self) -> Result<Vec<Epic>, PortError> {
-        self.issues(&[EPIC_LABEL], "open")?
-            .iter()
-            .map(|row| self.epic_from(row))
-            .collect()
+        let rows = self.issues(&[EPIC_LABEL], "open")?;
+        self.epics_from(&rows)
     }
 
     /// One issue read: not there, a pull request, closed or not labelled `epic` is no open epic.
@@ -368,15 +437,16 @@ impl Board for ForgejoBoard {
     fn open_tickets(&self) -> Result<Vec<OpenTicket>, PortError> {
         let mut rows = self.issues(&[TASK_LABEL], "open")?;
         rows.retain(|row| !states(row).contains(&TicketState::Done));
-        rows.iter()
-            .map(|row| {
-                Ok(OpenTicket {
-                    ticket: self.ticket(row, states(row).first().copied())?,
-                    priority: Priority::from_labels(row.label_names()),
-                    opened_at: row.opened(),
-                })
+        let tickets = self.tickets(&rows)?;
+        Ok(rows
+            .iter()
+            .zip(tickets)
+            .map(|(row, ticket)| OpenTicket {
+                ticket,
+                priority: Priority::from_labels(row.label_names()),
+                opened_at: row.opened(),
             })
-            .collect()
+            .collect())
     }
 
     fn task(&self, number: TicketId) -> Result<Ticket, PortError> {
@@ -419,11 +489,12 @@ impl Board for ForgejoBoard {
 
     fn claims(&self) -> Result<Vec<ClaimRecord>, PortError> {
         let claimed = labels::state_label(TicketState::Claimed);
+        let rows = self.issues(&[&claimed], "open")?;
+        let ids: Vec<TicketId> = rows.iter().map(|row| TicketId::from(row.number)).collect();
+        let all_comments = self.comments_of(&ids)?;
         let mut claims = Vec::new();
-        for row in self.issues(&[&claimed], "open")? {
-            let task = TicketId::from(row.number);
-            let comments = self.comments(task)?;
-            let held = states(&row).contains(&TicketState::Claimed);
+        for ((row, task), comments) in rows.iter().zip(ids).zip(all_comments) {
+            let held = states(row).contains(&TicketState::Claimed);
             claims.extend(live_claim(
                 task,
                 held,
@@ -517,15 +588,17 @@ impl Board for ForgejoBoard {
             !row.has_label(TASK_LABEL) && NewQuestion::raised_on(&row.body) == Some(task)
         });
         let tickets = self.tickets(&rows)?;
-        rows.iter()
-            .zip(tickets)
-            .map(|(row, ticket)| {
-                let comments = self.comments(TicketId::from(row.number))?;
+        let ids: Vec<TicketId> = rows.iter().map(|row| TicketId::from(row.number)).collect();
+        let all_comments = self.comments_of(&ids)?;
+        Ok(tickets
+            .into_iter()
+            .zip(all_comments)
+            .map(|(ticket, comments)| {
                 let ruling = recorded_ruling(comments.iter().map(|c| c.body.as_str()))
                     .map(|text| text.trim().to_owned());
-                Ok((ticket, ruling))
+                (ticket, ruling)
             })
-            .collect()
+            .collect())
     }
 
     /// Opens the issue with `question`, `state/question` and, for a door, `door`.

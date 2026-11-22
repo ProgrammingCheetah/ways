@@ -142,10 +142,11 @@ fn spawn_refuses_a_profile_with_no_stamp_or_written_by_another_zaf() {
     let (code, _, stderr) = outcome(&project.zaf(&SPAWN));
     assert_eq!(code, 0, "the same generation is current: {stderr}");
 
-    assert!(other_zaf.contains("\"generation\": 1"), "{other_zaf}");
+    let current = format!("\"generation\": {}", zaf::app::profile::GENERATION);
+    assert!(other_zaf.contains(&current), "{other_zaf}");
     fs::write(
         stamp(&project),
-        other_zaf.replace("\"generation\": 1", "\"generation\": 0"),
+        other_zaf.replace(&current, "\"generation\": 0"),
     )
     .expect("old");
     let (code, _, stderr) = outcome(&project.zaf(&SPAWN));
@@ -218,4 +219,214 @@ fn a_second_init_reports_nothing_written() {
     let (code, stdout, stderr) = outcome(&project.zaf(&["profile", "init"]));
     assert_eq!(code, 0, "{stderr}");
     assert_eq!(stdout.trim(), "nothing changed");
+}
+
+// A git project's profile (#498): git's read verbs as exact rules, never `Bash(git *)`.
+
+const GIT_VCS: &str = "[vcs]\nkind = \"git\"\n\n[requires]\ngit = \"*\"\n\n";
+const JJ_VCS: &str = "[vcs]\nkind = \"jj\"\n\n[requires]\njj = \"*\"\n\n";
+
+/// The permissions of the lean profile `zaf profile init` writes for `HEAD` plus `extra`.
+fn init_permissions(extra: &str) -> serde_json::Value {
+    let mut project = Project::new(&format!("{HEAD}{extra}"));
+    let config = project.temp.path().join("claude-config");
+    fs::create_dir_all(&config).expect("config");
+    project.env("CLAUDE_CONFIG_DIR", config.to_str().expect("utf-8"));
+    let (code, stdout, stderr) = outcome(&project.zaf(&["profile", "init"]));
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    let text = fs::read_to_string(project.root.join(".zaf/profiles/lean/settings.json"))
+        .expect("settings");
+    serde_json::from_str::<serde_json::Value>(&text).expect("json")["permissions"].clone()
+}
+
+fn rules(permissions: &serde_json::Value, key: &str) -> Vec<String> {
+    permissions[key]
+        .as_array()
+        .expect("rules")
+        .iter()
+        .map(|rule| rule.as_str().expect("text").to_owned())
+        .collect()
+}
+
+/// Claude Code's wildcard: `*` matches any text anywhere.
+fn glob(pattern: &str, text: &str) -> bool {
+    match pattern.split_once('*') {
+        None => pattern == text,
+        Some((head, rest)) => text.strip_prefix(head).is_some_and(|tail| {
+            (0..=tail.len())
+                .filter(|at| tail.is_char_boundary(*at))
+                .any(|at| glob(rest, &tail[at..]))
+        }),
+    }
+}
+
+/// Whether a rule matches `command`; a trailing ` *` also matches the bare command.
+fn matches(rules: &[String], command: &str) -> bool {
+    rules.iter().any(|rule| {
+        let Some(pattern) = rule
+            .strip_prefix("Bash(")
+            .and_then(|rest| rest.strip_suffix(')'))
+        else {
+            return false;
+        };
+        pattern.strip_suffix(" *") == Some(command) || glob(pattern, command)
+    })
+}
+
+fn permitted(permissions: &serde_json::Value, command: &str) -> bool {
+    matches(&rules(permissions, "allow"), command) && !matches(&rules(permissions, "deny"), command)
+}
+
+#[test]
+fn git_profile_allows_the_exact_verbs() {
+    let permissions = init_permissions(GIT_VCS);
+    // The Engineer's ruling on #521 (2026-11-19): git's read verbs only; commits are an action.
+    for command in [
+        "git status",
+        "git status --short",
+        "git diff HEAD",
+        "git log -p main",
+        "git show HEAD",
+        "git blame src/main.rs",
+        "git rev-parse HEAD",
+    ] {
+        assert!(permitted(&permissions, command), "{command}");
+    }
+    for command in [
+        "git commit -m x",
+        "git add .",
+        "git restore x",
+        "git checkout main",
+        "git merge main",
+        "git fetch",
+        "git worktree add x",
+        "git config core.pager x",
+    ] {
+        assert!(!permitted(&permissions, command), "{command}");
+    }
+}
+
+#[test]
+fn git_profile_denies_output_and_global_options() {
+    let permissions = init_permissions(GIT_VCS);
+    for command in [
+        "git log --output=x",
+        "git diff --output x",
+        "git show --output=/tmp/x HEAD",
+        "git -C /tmp status",
+        "git -c core.pager=x log",
+        "git --git-dir=/x log",
+        "git --git-dir /x log",
+        "git --work-tree=/x status",
+        "git --exec-path=/x status",
+        "git --config-env=a=B status",
+        "GIT_CONFIG_COUNT=1 git log",
+        "FOO=1 git log --output=x",
+    ] {
+        assert!(!permitted(&permissions, command), "{command}");
+    }
+}
+
+#[test]
+fn git_profile_denies_push() {
+    let permissions = init_permissions(GIT_VCS);
+    for command in [
+        "git push",
+        "git push origin main",
+        "git -c push.default=current push",
+    ] {
+        assert!(!permitted(&permissions, command), "{command}");
+    }
+}
+
+#[test]
+fn git_profile_has_no_git_wildcard() {
+    // Even a required `git` and a gate line that runs it add no `Bash(git *)`.
+    let permissions = init_permissions(&format!(
+        "{GIT_VCS}[gate]\nfull = \"git diff --check && cargo test\"\n"
+    ));
+    let allow = rules(&permissions, "allow");
+    assert!(!allow.iter().any(|rule| rule == "Bash(git *)"), "{allow:?}");
+    for rule in &allow {
+        if let Some(verb) = rule.strip_prefix("Bash(git ") {
+            let verb = verb.split([' ', ')']).next().expect("a verb");
+            assert!(
+                ["status", "diff", "log", "show", "blame", "rev-parse"].contains(&verb),
+                "{rule}"
+            );
+        }
+    }
+}
+
+#[test]
+fn jj_profile_unchanged_by_git_rules() {
+    let permissions = init_permissions(JJ_VCS);
+    let allow = rules(&permissions, "allow");
+    let git: Vec<&str> = allow
+        .iter()
+        .filter(|rule| rule.starts_with("Bash(git"))
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        git,
+        [
+            "Bash(git log *)",
+            "Bash(git show *)",
+            "Bash(git diff *)",
+            "Bash(git status *)",
+            "Bash(git blame *)",
+        ]
+    );
+    assert_eq!(
+        rules(&permissions, "deny"),
+        [
+            "Bash(git * --output*)",
+            "Bash(git --config-env*)",
+            "Bash(git --exec-path*)",
+            "Bash(git --git-dir*)",
+            "Bash(git --work-tree*)",
+            "Bash(git -C *)",
+            "Bash(git -c *)",
+            "Bash(jj *--config*)",
+            "Bash(jj *--repository*)",
+            "Bash(jj *--tool*)",
+            "Bash(jj *-R*)",
+            "Bash(jj -* config edit *)",
+            "Bash(jj -* config edit)",
+            "Bash(jj -* config set *)",
+            "Bash(jj -* config set)",
+            "Bash(jj -* gerrit *)",
+            "Bash(jj -* gerrit)",
+            "Bash(jj -* git clone *)",
+            "Bash(jj -* git clone)",
+            "Bash(jj -* git init *)",
+            "Bash(jj -* git init)",
+            "Bash(jj -* git remote *)",
+            "Bash(jj -* git remote)",
+            "Bash(jj -* run *)",
+            "Bash(jj -* run)",
+            "Bash(jj -* util *)",
+            "Bash(jj -* util)",
+            "Bash(jj -* workspace add *)",
+            "Bash(jj -* workspace add)",
+            "Bash(jj config edit *)",
+            "Bash(jj config edit)",
+            "Bash(jj config set *)",
+            "Bash(jj config set)",
+            "Bash(jj gerrit *)",
+            "Bash(jj gerrit)",
+            "Bash(jj git clone *)",
+            "Bash(jj git clone)",
+            "Bash(jj git init *)",
+            "Bash(jj git init)",
+            "Bash(jj git remote *)",
+            "Bash(jj git remote)",
+            "Bash(jj run *)",
+            "Bash(jj run)",
+            "Bash(jj util *)",
+            "Bash(jj util)",
+            "Bash(jj workspace add *)",
+            "Bash(jj workspace add)",
+        ]
+    );
 }

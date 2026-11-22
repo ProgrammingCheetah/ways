@@ -7,6 +7,7 @@
 use std::time::SystemTime;
 
 use semver::Version;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::hub::LineState;
 use crate::app::hub::state::{EpicState, LineTask, ProjectState};
@@ -94,9 +95,9 @@ fn piece(meaning: Meaning, text: impl Into<String>) -> (Meaning, Text) {
     (meaning, Text::from(text.into()))
 }
 
-/// `text` padded with spaces to `width` characters; longer text is left as it is.
+/// `text` padded with spaces to `width` display columns; longer text is left as it is.
 fn padded(text: &str, width: usize) -> String {
-    let missing = width.saturating_sub(text.chars().count());
+    let missing = width.saturating_sub(text.width());
     format!("{text}{}", " ".repeat(missing))
 }
 
@@ -196,7 +197,8 @@ fn dimmed(line: Line) -> Line {
         .collect()
 }
 
-/// `line` cut to `width` characters, never inside a character.
+/// `line` cut to `width` display columns, never inside a character: a character that
+/// would cross the edge is left out.
 fn cut(line: Line, width: usize) -> Line {
     let mut left = width;
     let mut cut = Vec::new();
@@ -204,15 +206,21 @@ fn cut(line: Line, width: usize) -> Line {
         if left == 0 {
             break;
         }
-        let length = text.as_str().chars().count();
+        let length = text.as_str().width();
         if length <= left {
             left -= length;
             cut.push((meaning, text));
         } else {
-            cut.push(piece(
-                meaning,
-                text.as_str().chars().take(left).collect::<String>(),
-            ));
+            let mut kept = String::new();
+            for character in text.as_str().chars() {
+                let columns = character.width().unwrap_or(0);
+                if columns > left {
+                    break;
+                }
+                left -= columns;
+                kept.push(character);
+            }
+            cut.push(piece(meaning, kept));
             break;
         }
     }
@@ -313,6 +321,8 @@ mod tests {
             blocked_by: Vec::new(),
             question: None,
             issue_url: None,
+            waits: None,
+            cost: None,
         }
     }
 
@@ -453,6 +463,9 @@ mod tests {
                 last_tick: None,
             }),
             last_tick: None,
+            orphaned: Vec::new(),
+            releases_due: Vec::new(),
+            status: crate::app::hub::state::StatusState::default(),
         }
     }
 
@@ -531,9 +544,36 @@ mod tests {
         let lines = frame(&mock_state(), &version(), now(), 0, (30, 40));
         assert!(!lines.is_empty());
         for line in plain(&lines) {
-            assert!(line.chars().count() <= 30, "too long: {line:?}");
+            assert!(line.width() <= 30, "too long: {line:?}");
         }
         assert_eq!(plain(&lines)[3], "  Accounts: sign up and sign i");
+    }
+
+    #[test]
+    fn an_ascii_frame_is_unchanged() {
+        let got = plain(&frame(&mock_state(), &version(), now(), 3, (100, 40)));
+        assert_eq!(got[3], "  Accounts: sign up and sign in      ■■■□□□ 3/6");
+        assert_eq!(got[4], "    #21 Sign-up form     ✓ merged");
+        let narrow = plain(&frame(&mock_state(), &version(), now(), 0, (30, 40)));
+        assert_eq!(narrow[3], "  Accounts: sign up and sign i");
+    }
+
+    #[test]
+    fn a_wide_title_is_cut_at_the_window_edge() {
+        let mut state = mock_state();
+        state.epics[0].title = "日本語のタイトルがとても長い🎉🎉🎉🎉🎉🎉🎉🎉🎉".into();
+        state.epics[0].tasks[0].title = "漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字漢字".into();
+        for width in 7..=41 {
+            for line in plain(&frame(&state, &version(), now(), 0, (width, 40))) {
+                assert!(
+                    line.width() <= usize::from(width),
+                    "{width}: too wide: {line:?}"
+                );
+            }
+        }
+        // The character that would cross the edge is dropped, not split.
+        let lines = plain(&frame(&state, &version(), now(), 0, (7, 40)));
+        assert_eq!(lines[3], "  日本");
     }
 
     #[test]

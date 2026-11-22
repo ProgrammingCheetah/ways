@@ -191,3 +191,94 @@ fn encoded_root_counts_as_this_project() {
         "-home-zuri-my-code-ways-rs"
     );
 }
+
+fn screen(colour: bool) -> crate::cli::screen::Screen {
+    crate::cli::screen::Screen {
+        colour,
+        live: false,
+        rows: 24,
+        columns: 80,
+    }
+}
+
+/// A view of two epics, the second with nothing done, and one run outside any epic.
+fn two_epics() -> epics::EpicView {
+    let row = |epic: u64, tasks_done: usize| epics::EpicRow {
+        epic,
+        tasks_done,
+        est_usd: 12.5,
+        usd_per_task: (tasks_done > 0).then_some(4.0),
+        tokens: epics::Tokens {
+            input: 1_000_000,
+            cache_write: 2_000_000,
+            cache_read: 3_000_000,
+            output: 4_000_000,
+        },
+        turns: 40,
+        turns_per_task: None,
+        context_first: Some(30_000.0),
+        context_last: Some(90_000.0),
+        roles: vec![epics::RoleShare {
+            role: "team".to_owned(),
+            est_usd: 12.5,
+            share_percent: 100.0,
+        }],
+        median_usd: epics::SizeMedians::default(),
+        done_by_size: epics::SizeCounts::default(),
+        versus_last: epics::SizeVerdicts::default(),
+    };
+    epics::EpicView {
+        rows: vec![row(96, 3), row(103, 0)],
+        outside: Some(epics::Outside {
+            runs: 1,
+            turns: 2,
+            est_usd: 1.5,
+            tokens: epics::Tokens::default(),
+        }),
+    }
+}
+
+#[test]
+fn the_coloured_report_stripped_is_the_plain_report() {
+    use crate::cli::screen::strip_escapes;
+    let view = two_epics();
+    let coloured = screen(true).draw(&view.lines());
+    assert!(coloured.contains('\x1b'), "the colour draw paints");
+    assert_eq!(strip_escapes(&coloured), screen(false).draw(&view.lines()));
+    assert_eq!(strip_escapes(&coloured), view.render_text());
+    assert!(!view.render_text().contains('\x1b'));
+}
+
+#[test]
+fn a_heading_is_bold() {
+    use crate::cli::screen::code;
+    use crate::domain::screen::Meaning;
+    let view = two_epics();
+    let drawn = screen(true).draw(&view.lines());
+    let bold = code(Meaning::Bold);
+    let heading = drawn
+        .lines()
+        .find(|line| line.contains("S vs last"))
+        .expect("the heading line");
+    assert!(
+        heading.starts_with(&format!("\x1b[{bold}mepic")),
+        "{heading:?}"
+    );
+    assert!(drawn.contains(&format!("\x1b[{}m#96\x1b[0m", code(Meaning::Noun))));
+    assert!(drawn.contains(&format!("\x1b[{}m3\x1b[0m", code(Meaning::Done))));
+
+    let report = report::report(&Query {
+        roots: vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("src/app/report/fixtures/projects")],
+        hours: 100_000.0,
+        matching: String::new(),
+        top: 25,
+        prices: PriceTable::default(),
+        now: SystemTime::now(),
+    });
+    let drawn = screen(true).draw(&report.lines());
+    assert_eq!(
+        drawn.matches(&format!("\x1b[{bold}m")).count(),
+        2,
+        "two headings"
+    );
+}

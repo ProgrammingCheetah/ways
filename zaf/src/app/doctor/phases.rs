@@ -9,8 +9,10 @@
 use std::fs;
 use std::path::Path;
 
+use super::paint::{bold, piece, with_commands};
 use crate::app::actions::{parse, resolve};
 use crate::composition::STATE_DIR;
+use crate::domain::screen::{Line, Meaning};
 use crate::manifest::Manifest;
 
 /// One action of one task type's phase list, checked.
@@ -30,16 +32,36 @@ pub struct PhaseCheck {
 
 impl PhaseCheck {
     /// `phase <type> <name> (<tier>): ok`, or the failure with a line per problem under it.
-    pub(super) fn lines(&self) -> Vec<String> {
+    /// As pieces: `ok` done, the failure and each problem red.
+    pub(super) fn painted(&self) -> Vec<Line> {
+        let kind = format!("phase {} ", self.task_type);
         let head = match (&self.tier, self.ok) {
-            (Some(tier), true) => format!("phase {} {} ({tier}): ok", self.task_type, self.name),
-            (Some(tier), false) => {
-                format!("phase {} {} ({tier}): invalid", self.task_type, self.name)
+            (Some(tier), ok) => {
+                let (state, meaning) = if ok {
+                    ("ok", Meaning::Done)
+                } else {
+                    ("invalid", Meaning::Failed)
+                };
+                vec![
+                    bold(kind),
+                    piece(Meaning::Noun, &self.name),
+                    bold(format!(" ({tier}): ")),
+                    piece(meaning, state),
+                ]
             }
-            (None, _) => format!("phase {} {}: no provider", self.task_type, self.name),
+            (None, _) => vec![
+                bold(kind),
+                piece(Meaning::Noun, &self.name),
+                bold(": "),
+                piece(Meaning::Failed, "no provider"),
+            ],
         };
         let mut lines = vec![head];
-        lines.extend(self.problems.iter().map(|problem| format!("  {problem}")));
+        lines.extend(
+            self.problems
+                .iter()
+                .map(|problem| with_commands(Meaning::Failed, &format!("  {problem}"))),
+        );
         lines
     }
 }

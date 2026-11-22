@@ -1,0 +1,80 @@
+#!/bin/sh
+# zaf description: open the version's integration branch (ZAF_BASE) on the remote at the head of the forge's default branch, printing `made <branch>`; a branch already on the remote that descends from the default branch is handed back, quietly; the checkout never moves
+# zaf 1: refused: ZAF_VERSION or ZAF_BASE is unset or not a usable branch name, the forge's default branch is not on the remote, the remote's branch shares no history with the default branch, or the branch exists only locally (it is never pushed)
+# zaf 2: a backend failed (git is missing or refused, the fetch failed, the forge could not say its default branch, or the push failed)
+# zaf mode: 750
+# zaf group: release
+# changed: the git version of `base-open`, which a git project takes in its place; it pushes the default branch's commit straight to the remote, with no checkout, switch or local branch
+branch=$ZAF_BASE
+remote=origin
+
+if [ -z "$ZAF_ROOT" ] || [ -z "$ZAF_VERSION" ] || [ -z "$branch" ] || [ "$#" -ne 0 ]; then
+    echo "usage: base-open, with ZAF_ROOT, ZAF_VERSION and ZAF_BASE set" >&2
+    exit 1
+fi
+case $branch in
+    -* | *\"* | *\\*)
+        echo "$branch is not a usable branch name" >&2
+        exit 1
+        ;;
+esac
+
+git_run() {
+    git -C "$ZAF_ROOT" "$@"
+}
+
+if ! git_run check-ref-format "refs/heads/$branch" 2>/dev/null; then
+    echo "$branch is not a usable branch name" >&2
+    exit 1
+fi
+
+# A fetch moves only the remote-tracking refs, so the checkout never moves. Its own words are shown
+# only when it fails: a branch handed back prints nothing.
+if ! fetched=$(git_run fetch --quiet "$remote" 2>&1); then
+    printf '%s\n' "$fetched" >&2
+    exit 2
+fi
+
+# The default branch is the forge's, never the checkout's guess.
+default=$(zaf forge default-branch) || exit 2
+case $default in
+    '' | -* | *\"* | *\\*)
+        echo "the forge gave no usable default branch name: $default" >&2
+        exit 2
+        ;;
+esac
+if ! git_run check-ref-format "refs/heads/$default" 2>/dev/null; then
+    echo "the forge gave no usable default branch name: $default" >&2
+    exit 2
+fi
+if ! default_head=$(git_run rev-parse --verify --quiet "refs/remotes/$remote/$default^{commit}"); then
+    echo "the forge's default branch $default is not on $remote to open $branch at" >&2
+    exit 1
+fi
+
+if remote_head=$(git_run rev-parse --verify --quiet "refs/remotes/$remote/$branch^{commit}"); then
+    # On the remote already: it must descend from the default branch at any point (a commit
+    # landing on the default branch later does not unmake it), that is, share a commit with it.
+    git_run merge-base "$default_head" "$remote_head" >/dev/null 2>&1
+    case $? in
+        0) exit 0 ;;
+        1)
+            echo "$branch on $remote shares no history with the default branch" >&2
+            exit 1
+            ;;
+        *) exit 2 ;;
+    esac
+fi
+
+if git_run rev-parse --verify --quiet "refs/heads/$branch" >/dev/null; then
+    echo "$branch exists only locally, not on $remote; push or remove it first" >&2
+    exit 1
+fi
+
+# A plain push of the commit, never forced and with no local branch made. Git's words are shown
+# only on a failure: the one line printed is `made`.
+if ! pushed=$(git_run push --quiet "$remote" "$default_head:refs/heads/$branch" 2>&1); then
+    printf '%s\n' "$pushed" >&2
+    exit 2
+fi
+echo "made $branch"

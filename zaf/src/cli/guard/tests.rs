@@ -68,3 +68,46 @@ fn the_manifest_thresholds_are_the_ones_used() {
     );
     assert_eq!(json["percent"], 20.0);
 }
+
+fn state(level: guard::Level, percent: f64, spent: f64, weekly: Option<f64>) -> GuardState {
+    GuardState {
+        level,
+        percent,
+        spent_usd: spent,
+        weekly_usd: weekly,
+        computed_at: "2026-11-19T00:00:00Z".to_owned(),
+    }
+}
+
+fn screen(colour: bool) -> Screen {
+    Screen {
+        colour,
+        live: colour,
+        rows: 24,
+        columns: 80,
+    }
+}
+
+#[test]
+fn the_coloured_line_stripped_is_the_plain_line() {
+    use super::super::screen::strip_escapes;
+    for state in [
+        state(guard::Level::Red, 120.0, 120.0, Some(100.0)),
+        state(guard::Level::Green, 20.0, 20.0, Some(100.0)),
+        state(guard::Level::Yellow, 55.0, 55.0, Some(100.0)),
+        state(guard::Level::Green, 0.0, 0.0, None),
+    ] {
+        let plain = drawn(&screen(false), &state);
+        assert_eq!(plain, format!("{}\n", state.line()));
+        assert!(!plain.contains('\x1b'));
+        assert_eq!(strip_escapes(&drawn(&screen(true), &state)), plain);
+    }
+}
+
+#[test]
+fn over_budget_is_red() {
+    let over = state(guard::Level::Red, 120.0, 120.0, Some(100.0));
+    assert!(drawn(&screen(true), &over).starts_with("\x1b[31mred 120%\x1b[0m"));
+    let within = state(guard::Level::Green, 20.0, 20.0, Some(100.0));
+    assert!(drawn(&screen(true), &within).starts_with("\x1b[32mgreen 20%\x1b[0m"));
+}

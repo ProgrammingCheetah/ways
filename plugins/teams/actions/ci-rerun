@@ -1,0 +1,80 @@
+#!/bin/sh
+# zaf description: re-run a pull request's CI by pushing one empty "Re-run CI at <short head>" commit onto its slice, when a check failed at the head; the forge has no re-run API, so a new head is the re-run
+# zaf 1: refused: the argument is not <task>, no check failed at the pull request's head, the head is not the workspace's latest commit, the head is already an empty commit, or a step refused (the slice is not open, or the remote has work the slice lacks)
+# zaf 2: a backend failed (the forge is unreachable or reports no head, or jj failed)
+# zaf mode: 750
+# zaf group: fix
+# zaf target: task
+# changed: new; builds the re-run from `zaf forge`, `commit --empty` and `push`, and needs no git version
+# changed: refuses, committing nothing, when the forge's head is not the workspace's latest commit or is an empty commit; it reads the workspace's latest commit with jj or git, whichever the workspace is
+
+# The task as a bare number; zaf has already read it as one.
+task=${1#\#}
+# zaf sets ZAF_SLICE and ZAF_PR on a `target: task` run, ZAF_PR from the task's record.
+if [ "$#" -ne 1 ] || [ -z "$ZAF_ROOT" ] || [ -z "$ZAF_SLICE" ] || [ -z "$ZAF_PR" ]; then
+    echo "usage: ci-rerun <task>, run by zaf with ZAF_ROOT, ZAF_SLICE and ZAF_PR set" >&2
+    exit 1
+fi
+
+# A step ends this action with its own code when it is 1, a refusal; any other code, 125 (a step
+# that never ran) included, is a backend that failed.
+stop() {
+    case $1 in
+        1) exit 1 ;;
+        *) exit 2 ;;
+    esac
+}
+
+cd "$ZAF_ROOT" || exit 2
+
+head=$(zaf forge head "$ZAF_PR") || exit 2
+if [ -z "$head" ]; then
+    echo "the forge reports no head commit for pull request #$ZAF_PR" >&2
+    exit 2
+fi
+
+# One line per check: its bucket (pass, fail, pending, skipping or cancel), name and link.
+checks=$(zaf forge checks "$ZAF_PR") || exit 2
+if ! printf '%s\n' "$checks" | grep -q '^fail'; then
+    echo "no check failed at $head of pull request #$ZAF_PR; nothing to re-run for #$task" >&2
+    exit 1
+fi
+
+short=$(printf '%s' "$head" | cut -c1-12)
+
+# The re-run goes on the workspace's latest commit, so that must be the commit the forge holds as
+# the head; otherwise `commit` would stack a second commit beside the head and the bookmark could
+# not move.
+dir=$ZAF_ROOT/.zaf/workspaces/$ZAF_SLICE
+if [ -d "$dir/.jj" ]; then
+    latest=$(cd "$dir" && jj --no-pager --color=never log --no-graph -r @- -T 'commit_id ++ "\n"') || exit 2
+    empty=$(cd "$dir" && jj --no-pager --color=never log --no-graph -r @- -T empty) || exit 2
+elif [ -e "$dir/.git" ]; then
+    latest=$(git -C "$dir" rev-parse HEAD) || exit 2
+    if git -C "$dir" rev-parse --verify --quiet 'HEAD~1^{commit}' >/dev/null; then
+        previous=HEAD~1
+    else
+        previous=$(git hash-object -t tree /dev/null) || exit 2
+    fi
+    if git -C "$dir" diff --quiet "$previous" HEAD; then
+        empty=true
+    else
+        empty=false
+    fi
+else
+    echo "slice $ZAF_SLICE is not open" >&2
+    exit 1
+fi
+if [ "$latest" != "$head" ]; then
+    echo "the head $short of pull request #$ZAF_PR is not the latest commit of $ZAF_SLICE ($(printf '%s' "$latest" | cut -c1-12)); nothing committed for #$task" >&2
+    exit 1
+fi
+if [ "$empty" = "true" ]; then
+    echo "the head $short of pull request #$ZAF_PR is already empty: a re-run would stack on it; nothing committed for #$task" >&2
+    exit 1
+fi
+
+# The head is the workspace's latest, non-empty commit, so one re-run is never stacked on
+# another; `commit --empty` still guards it. The push is plain, and the new head is what the forge runs its checks on.
+zaf do commit "$ZAF_SLICE" "Re-run CI at $short" --empty || stop $?
+zaf do push "$ZAF_SLICE" || stop $?

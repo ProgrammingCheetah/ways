@@ -227,7 +227,8 @@ fn epic_sign_quiet_with_stdin_closed() {
 fn epic_sign_yes_execs_spawn_watch() {
     let (project, spawned) = project(&[epic(1, "0.3.0", false), epic(2, "0.3.0", true)]);
 
-    let (code, shown) = sign_on_pty(&project, &[], &[], "y\n");
+    // The pty is a terminal for stderr too, so colour is off here: the line is read as written.
+    let (code, shown) = sign_on_pty(&project, &[], &[("NO_COLOR", "1")], "y\n");
 
     // The exec runs this binary, not the stub `zaf` first on PATH: `zaf spawn` answers (here it
     // refuses, the release having no signed objectives) and the stub never ran.

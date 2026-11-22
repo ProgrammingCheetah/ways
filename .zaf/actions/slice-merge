@@ -1,16 +1,25 @@
 #!/bin/sh
-# zaf description: land a task's slice with CI as the only gate: `merge-base --probe` asks whether the base merges into the slice cleanly, and a slice it does merges with no new round of checks, though the base moved on: `pr-merge` at the slice's head, `zaf board done` and `workspace-drop`, stopping at the first that fails; nothing is pushed
-# zaf 1: refused: the arguments are not <task>, the base conflicts (the paths are in the log, the slice is unchanged), or a step refused
-# zaf 2: a backend failed (jj, gh or the board failed, or a step did not run (it exited 125), or a step ended with a code `slice-merge` does not know); after `pr-merge` the merge may already have happened
+# zaf description: land a task's slice with CI as the only gate: `merge-base --probe` asks whether the base merges into the slice cleanly, and a slice it does merges with no new round of checks, though the base moved on: `pr-merge` at `ZAF_HEAD`, the head Land was derived at, `zaf board done` and `workspace-drop`, stopping at the first that fails; nothing is pushed
+# zaf 1: refused: the arguments are not <task>, ZAF_HEAD is not set (a merge goes through the land phase, which sets it), the forge's head is not ZAF_HEAD (a push after Land was derived), the base conflicts (the paths are in the log, the slice is unchanged), or a step refused
+# zaf 2: a backend failed (git, gh or the board failed, or a step did not run (it exited 125), or a step ended with a code `slice-merge` does not know); after `pr-merge` the merge may already have happened
 # zaf mode: 750
 # zaf group: team, release, merge
 # zaf target: task
 # zaf phases: land
+# changed: merges only at ZAF_HEAD, the head Land was derived at, never the workspace's parent; a run with no ZAF_HEAD is refused
 
 # zaf sets ZAF_SLICE, ZAF_BASE and ZAF_PR on a `target: task` run, ZAF_PR from the task's record;
-# a hand-written call has none of them.
+# a hand-written call has none of them. ZAF_HEAD it sets on a run of the land phase alone.
 if [ "$#" -ne 1 ] || [ -z "$ZAF_ROOT" ] || [ -z "$ZAF_SLICE" ] || [ -z "$ZAF_BASE" ] || [ -z "$ZAF_PR" ]; then
     echo "usage: slice-merge <task>, run by zaf with ZAF_SLICE, ZAF_BASE and ZAF_PR set" >&2
+    exit 1
+fi
+
+# The head to merge is the one Land was derived at, never what the workspace or the forge holds
+# now: the forge's head would defeat the guard, and a push after CI and review is a head nobody
+# checked.
+if [ -z "$ZAF_HEAD" ]; then
+    echo "slice-merge refuses: ZAF_HEAD is not set; a merge goes through the land phase, which sets it" >&2
     exit 1
 fi
 
@@ -27,16 +36,11 @@ stop() {
     esac
 }
 
-# The slice's latest commit, which is what the pull request's head is compared with.
-head_of() {
-    (cd "$ZAF_ROOT/.zaf/workspaces/$ZAF_SLICE" && jj --no-pager --color=never log --no-graph -r @- -T commit_id)
-}
-
 # Merge when clean (the Engineer's ruling): a slice whose own checks passed, and into which the
 # base merges with no conflict, is merged without a new round. So the base is only probed: the
-# slice's head stays the one CI and the review saw, and the forge makes the merge. `--more` brings
-# the step's whole log back, so a conflict's paths reach this log. Exit 1 is a conflict only when
-# the step ran: a step that never ran is 125, which ends this action with 2.
+# head stays the one CI and the review saw, and the forge makes the merge. `--more` brings the
+# step's whole log back, so a conflict's paths reach this log. Exit 1 is a conflict only when the
+# step ran: a step that never ran is 125, which ends this action with 2.
 status=0
 log=$(zaf do --more merge-base "$ZAF_SLICE" "$ZAF_BASE" --probe 2>&1) || status=$?
 printf '%s\n' "$log"
@@ -44,10 +48,8 @@ if [ "$status" -ne 0 ]; then
     stop "$status"
 fi
 
-head=$(head_of) || exit 2
-
-# The merge names that head, so a push after CI makes the forge refuse it, and the task is then
-# not marked done.
-zaf do pr-merge "$ZAF_PR" --match-head-commit "$head" || stop $?
+# The merge names ZAF_HEAD, so a push after Land was derived makes the forge refuse it, and the
+# task is then not marked done.
+zaf do pr-merge "$ZAF_PR" --match-head-commit "$ZAF_HEAD" || stop $?
 zaf board done "$1" || stop $?
 zaf do workspace-drop "$ZAF_SLICE" || stop $?

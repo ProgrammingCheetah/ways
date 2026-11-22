@@ -4,11 +4,13 @@
 //! The token never reaches a command line, a manifest or a log: curl reads it, with the
 //! request's body, from a config handed over on its stdin (`--config -`).
 
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fmt;
 use std::io::Write;
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 
 use serde::de::DeserializeOwned;
 
@@ -33,6 +35,10 @@ const STATUS_LINE: &str = "\\n%{http_code}";
 
 /// The most characters of a reply that is not Forgejo's JSON error a message carries.
 const MESSAGE_LIMIT: usize = 300;
+
+/// The most `curl` processes the reads of every [`ForgejoApi`] in this process run at once
+/// against one host.
+const HOST_BOUND: usize = 8;
 
 /// A Forgejo access token. It has no `Display`, and its `Debug` hides it, so no message,
 /// log or panic can print it.
@@ -125,8 +131,13 @@ pub struct ForgejoApi {
     token: Option<ForgejoToken>,
     env: Vec<(OsString, OsString)>,
     limits: Option<Limits>,
-    page_size: OnceLock<usize>,
+    page_size: PageSize,
 }
+
+/// An instance's `settings/api` page size, read once and shared by every door that holds a
+/// clone of the cell.
+#[derive(Debug, Clone, Default)]
+pub struct PageSize(Arc<OnceLock<usize>>);
 
 /// Shorter time bounds than the defaults, in seconds, for a call that must not hold anything up.
 #[derive(Debug, Clone, Copy)]
@@ -164,7 +175,7 @@ impl ForgejoApi {
             token,
             env: Vec::new(),
             limits: None,
-            page_size: OnceLock::new(),
+            page_size: PageSize::default(),
         }
     }
 
@@ -182,6 +193,13 @@ impl ForgejoApi {
     /// a `PATH` set here also decides which `curl` runs.
     pub fn env(mut self, key: impl Into<OsString>, value: impl Into<OsString>) -> Self {
         self.env.push((key.into(), value.into()));
+        self
+    }
+
+    /// Reads the page size through `page_size`, so doors holding one cell for the same
+    /// repository ask `settings/api` once between them.
+    pub fn with_page_size(mut self, page_size: PageSize) -> Self {
+        self.page_size = page_size;
         self
     }
 
@@ -237,6 +255,75 @@ impl ForgejoApi {
         self.send(Method::Get, endpoint, None)
     }
 
+    /// `GET /repos/<repo>/<endpoint>` for each endpoint, run together, never more than
+    /// [`HOST_BOUND`] `curl` processes at once on this host, whatever other batches this process
+    /// runs. The results come back in the order the endpoints were given. When a read fails, no
+    /// read that has not started is started, every started one ends, and the first error, in
+    /// the order asked, is returned.
+    pub fn get_all<T, S>(&self, endpoints: &[S]) -> Result<Vec<T>, PortError>
+    where
+        T: DeserializeOwned + Send,
+        S: AsRef<str> + Sync,
+    {
+        self.batch(endpoints, |endpoint| self.get(endpoint.as_ref()))
+    }
+
+    /// [`Self::list`] for each endpoint, run together under the bound of [`Self::get_all`]
+    /// (a list holds one place while it reads its pages), the lists in the order asked.
+    pub fn list_all<T, S>(&self, endpoints: &[S]) -> Result<Vec<Vec<T>>, PortError>
+    where
+        T: DeserializeOwned + Send,
+        S: AsRef<str> + Sync,
+    {
+        self.batch(endpoints, |endpoint| self.list(endpoint.as_ref()))
+    }
+
+    /// Runs `read` on each endpoint on at most [`HOST_BOUND`] threads, each holding a place of
+    /// this host's gate while it reads.
+    fn batch<T, S>(
+        &self,
+        endpoints: &[S],
+        read: impl Fn(&S) -> Result<T, PortError> + Sync,
+    ) -> Result<Vec<T>, PortError>
+    where
+        T: Send,
+        S: Sync,
+    {
+        let gate = host_gate(self.url.as_str());
+        let next = AtomicUsize::new(0);
+        let failed = AtomicBool::new(false);
+        let results: Mutex<Vec<Option<Result<T, PortError>>>> =
+            Mutex::new(endpoints.iter().map(|_| None).collect());
+        std::thread::scope(|scope| {
+            for _ in 0..endpoints.len().min(HOST_BOUND) {
+                scope.spawn(|| {
+                    loop {
+                        let index = next.fetch_add(1, Ordering::SeqCst);
+                        let Some(endpoint) = endpoints.get(index) else {
+                            break;
+                        };
+                        let stop = at_gate(&gate, || {
+                            if failed.load(Ordering::SeqCst) {
+                                return true;
+                            }
+                            let result = read(endpoint);
+                            if result.is_err() {
+                                failed.store(true, Ordering::SeqCst);
+                            }
+                            results.lock().unwrap_or_else(PoisonError::into_inner)[index] =
+                                Some(result);
+                            false
+                        });
+                        if stop {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        collect_slots(results.into_inner().unwrap_or_else(PoisonError::into_inner))
+    }
+
     /// `<method> /repos/<repo>/<endpoint>` with `body` as JSON, the reply decoded; a reply
     /// with no body decodes as JSON `null`, so `()` reads a `204`.
     pub fn send<T: DeserializeOwned>(
@@ -253,19 +340,50 @@ impl ForgejoApi {
     /// Every item of a list endpoint under `/repos/<repo>/`, page by page (`page`, `limit`),
     /// until a page comes back short of the instance's page size.
     pub fn list<T: DeserializeOwned>(&self, endpoint: &str) -> Result<Vec<T>, PortError> {
-        let limit = self.page_size()?;
-        let separator = if endpoint.contains('?') { '&' } else { '?' };
-        let mut items = Vec::new();
-        for page in 1.. {
-            let paged = format!("{endpoint}{separator}page={page}&limit={limit}");
-            let found: Vec<T> = self.get(&paged)?;
-            let short = found.len() < limit;
-            items.extend(found);
-            if short {
-                break;
+        at_gate(&host_gate(self.url.as_str()), || {
+            let limit = self.page_size()?;
+            let separator = if endpoint.contains('?') { '&' } else { '?' };
+            let mut items = Vec::new();
+            for page in 1.. {
+                let paged = format!("{endpoint}{separator}page={page}&limit={limit}");
+                let found: Vec<T> = self.get(&paged)?;
+                let short = found.len() < limit;
+                items.extend(found);
+                if short {
+                    break;
+                }
             }
-        }
-        Ok(items)
+            Ok(items)
+        })
+    }
+
+    /// Items of a list endpoint like [`Self::list`], reading at most `max_pages` pages. The
+    /// flag says the list may be missing items: the last page allowed was still full, or a page
+    /// after the first failed to read. The first page failing is an error.
+    pub fn list_capped<T: DeserializeOwned>(
+        &self,
+        endpoint: &str,
+        max_pages: usize,
+    ) -> Result<(Vec<T>, bool), PortError> {
+        at_gate(&host_gate(self.url.as_str()), || {
+            let limit = self.page_size()?;
+            let separator = if endpoint.contains('?') { '&' } else { '?' };
+            let mut items = Vec::new();
+            for page in 1..=max_pages {
+                let paged = format!("{endpoint}{separator}page={page}&limit={limit}");
+                let found: Vec<T> = match self.get(&paged) {
+                    Ok(found) => found,
+                    Err(error) if page == 1 => return Err(error),
+                    Err(_) => return Ok((items, true)),
+                };
+                let short = found.len() < limit;
+                items.extend(found);
+                if short {
+                    return Ok((items, false));
+                }
+            }
+            Ok((items, true))
+        })
     }
 
     /// `GET /<path>` on the instance, outside any repository (`version`, `settings/api`),
@@ -294,14 +412,14 @@ impl ForgejoApi {
 
     /// The most items the instance puts on one page (its `max_response_items`), read once.
     fn page_size(&self) -> Result<usize, PortError> {
-        if let Some(size) = self.page_size.get() {
+        if let Some(size) = self.page_size.0.get() {
             return Ok(*size);
         }
         let settings: ApiSettingsRow = self.instance("settings/api")?;
         let size = usize::try_from(settings.max_response_items)
             .unwrap_or(usize::MAX)
             .max(1);
-        Ok(*self.page_size.get_or_init(|| size))
+        Ok(*self.page_size.0.get_or_init(|| size))
     }
 
     /// `/api/v1/repos/<repo>`, then `/<endpoint>` unless it is empty.
@@ -329,7 +447,8 @@ impl ForgejoApi {
         Err(PortError::Backend(message))
     }
 
-    /// Runs curl once: the token and the body go to its stdin as a config, never to argv.
+    /// Runs curl once, holding a place of the host's gate while it runs unless the thread holds
+    /// one already (a batch's, a list's).
     fn call(
         &self,
         method: Method,
@@ -343,6 +462,18 @@ impl ForgejoApi {
                 self.token_env
             )));
         }
+        at_gate(&host_gate(self.url.as_str()), || {
+            self.curl(method, path, body)
+        })
+    }
+
+    /// Runs curl once: the token and the body go to its stdin as a config, never to argv.
+    fn curl(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<Reply, PortError> {
         let mut config = String::new();
         if let Some(token) = &self.token {
             config.push_str(&config_line(
@@ -427,6 +558,115 @@ impl ForgejoApi {
             status,
             body: body.to_owned(),
         })
+    }
+}
+
+/// The slots of a batch, one for each request in the order asked, as one result: the first
+/// `Err` by index wherever the reads skipped after a failure sit, else one item for each
+/// request. A slot left unread when no read failed is an internal error, never the end of the
+/// list.
+pub(super) fn collect_slots<T>(
+    slots: Vec<Option<Result<T, PortError>>>,
+) -> Result<Vec<T>, PortError> {
+    let mut items = Vec::with_capacity(slots.len());
+    let mut unread = None;
+    for (index, slot) in slots.into_iter().enumerate() {
+        match slot {
+            Some(Ok(item)) => items.push(item),
+            Some(Err(error)) => return Err(error),
+            None => {
+                unread.get_or_insert(index);
+            }
+        }
+    }
+    match unread {
+        None => Ok(items),
+        Some(index) => Err(PortError::Backend(format!(
+            "internal error: read {index} of a batch was never made and no read reported a failure"
+        ))),
+    }
+}
+
+/// The places a host has for reads running together.
+struct Gate {
+    running: Mutex<usize>,
+    freed: Condvar,
+}
+
+/// The gate of `host`, one for the whole process, so every batch on that host shares it.
+fn host_gate(host: &str) -> Arc<Gate> {
+    static GATES: OnceLock<Mutex<HashMap<String, Arc<Gate>>>> = OnceLock::new();
+    let mut gates = GATES
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    Arc::clone(gates.entry(host.to_owned()).or_insert_with(|| {
+        Arc::new(Gate {
+            running: Mutex::new(0),
+            freed: Condvar::new(),
+        })
+    }))
+}
+
+thread_local! {
+    /// The gates this thread holds a place at, by address (a gate lives as long as the process).
+    static HELD: std::cell::RefCell<Vec<*const Gate>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Runs `run` holding a place of `gate`, unless this thread holds one of it already: a call
+/// inside a batch or a list uses the place its thread has and takes no second one.
+fn at_gate<R>(gate: &Arc<Gate>, run: impl FnOnce() -> R) -> R {
+    let key = Arc::as_ptr(gate);
+    if HELD.with(|held| held.borrow().contains(&key)) {
+        return run();
+    }
+    let _place = Place::take(gate);
+    HELD.with(|held| held.borrow_mut().push(key));
+    let _held = Held(key);
+    run()
+}
+
+/// This thread's note of a place it holds, taken back when it drops.
+struct Held(*const Gate);
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        HELD.with(|held| {
+            let mut held = held.borrow_mut();
+            if let Some(index) = held.iter().rposition(|key| *key == self.0) {
+                held.remove(index);
+            }
+        });
+    }
+}
+
+/// A place at a host's gate, given back when it drops.
+struct Place<'a>(&'a Gate);
+
+impl<'a> Place<'a> {
+    /// Waits for a free place.
+    fn take(gate: &'a Gate) -> Self {
+        let mut running = gate.running.lock().unwrap_or_else(PoisonError::into_inner);
+        while *running >= HOST_BOUND {
+            running = gate
+                .freed
+                .wait(running)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        *running += 1;
+        Self(gate)
+    }
+}
+
+impl Drop for Place<'_> {
+    fn drop(&mut self) {
+        let mut running = self
+            .0
+            .running
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        *running -= 1;
+        self.0.freed.notify_one();
     }
 }
 

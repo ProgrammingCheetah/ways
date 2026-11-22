@@ -18,6 +18,7 @@ use std::fmt;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use semver::Version;
 use serde::Deserialize;
@@ -72,7 +73,7 @@ impl fmt::Debug for Token {
 }
 
 /// A release as the API gives it; the fields zaf reads.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct ReleaseRow {
     tag_name: String,
     #[serde(default)]
@@ -86,7 +87,7 @@ struct ReleaseRow {
 }
 
 /// A file of a release.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct AssetRow {
     name: String,
     browser_download_url: String,
@@ -99,11 +100,16 @@ struct Reply {
 }
 
 /// The published releases of one repository, read over `curl` from GitHub's public API.
+///
+/// The release list is read once and kept (a clone shares it): GitHub allows 60 unauthenticated
+/// calls an hour, and one `zaf update` asks for the list several times. A failed listing is not
+/// kept, so a later call lists again.
 #[derive(Debug, Clone)]
 pub struct PublicReleases {
     repo: RepoName,
     token: Option<Token>,
     env: Vec<(OsString, OsString)>,
+    kept: Arc<Mutex<Option<Arc<Vec<ReleaseRow>>>>>,
 }
 
 impl PublicReleases {
@@ -119,6 +125,7 @@ impl PublicReleases {
             repo,
             token,
             env: Vec::new(),
+            kept: Arc::default(),
         }
     }
 
@@ -128,6 +135,7 @@ impl PublicReleases {
             repo,
             token: token.map(|token| Token(token.to_owned())),
             env: Vec::new(),
+            kept: Arc::default(),
         }
     }
 
@@ -139,8 +147,21 @@ impl PublicReleases {
     }
 
     /// The published releases, drafts and pre-releases left out. One page of 100 is enough:
-    /// zaf has published far fewer releases than that, and the newest come first.
-    fn published(&self) -> Result<Vec<ReleaseRow>, PortError> {
+    /// zaf has published far fewer releases than that, and the newest come first. Listed on the
+    /// first call and kept; a failed listing is returned and not kept.
+    fn published(&self) -> Result<Arc<Vec<ReleaseRow>>, PortError> {
+        // Held across the listing, so two callers at once still make one.
+        let mut kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(rows) = kept.as_ref() {
+            return Ok(Arc::clone(rows));
+        }
+        let rows = Arc::new(self.list()?);
+        *kept = Some(Arc::clone(&rows));
+        Ok(rows)
+    }
+
+    /// One call to GitHub's list of releases.
+    fn list(&self) -> Result<Vec<ReleaseRow>, PortError> {
         let url = format!("{API_ROOT}/repos/{}/releases?per_page=100", self.repo);
         let reply = self.get(&url, true)?;
         let body = self.checked(&url, reply)?;
@@ -155,8 +176,9 @@ impl PublicReleases {
 
     fn release(&self, tag: &str) -> Result<ReleaseRow, PortError> {
         self.published()?
-            .into_iter()
+            .iter()
             .find(|row| row.tag_name == tag)
+            .cloned()
             .ok_or_else(|| PortError::NotFound(format!("release {tag}")))
     }
 
@@ -299,8 +321,8 @@ impl Releases for PublicReleases {
     fn tags(&self) -> Result<Vec<String>, PortError> {
         Ok(self
             .published()?
-            .into_iter()
-            .map(|row| row.tag_name)
+            .iter()
+            .map(|row| row.tag_name.clone())
             .collect())
     }
 

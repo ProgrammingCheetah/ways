@@ -3,6 +3,7 @@
 # zaf 1: refused: no ZAF_ROOT, so it was not run by zaf in a project; or claude's own exit 1
 # zaf mode: 700
 # zaf terminal: yes
+# changed: its phase header tells the Designer to say "Ready for Exit." and run `zaf begin ready` when the document is done, which ends the session
 
 # Any other code is claude's own: the session ended that way.
 if [ -z "$ZAF_ROOT" ]; then
@@ -21,6 +22,7 @@ Release folder: ${ZAF_RELEASE_DIR:-none}
 Input: no input
 Output that must exist: objectives.md in the release folder, or scope.md for a small release.
 zaf takes the Engineer's signature when this session ends, so write no sign-off.
+When you judge the document done, say \"Ready for Exit.\" and run 'zaf begin ready': zaf then ends this session.
 
 $command_line"
 else

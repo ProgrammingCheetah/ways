@@ -1,0 +1,82 @@
+#!/bin/sh
+# zaf description: remove a slice's git worktree and prune its entry, with its directory and any empty parents; the branch stays; one already gone is quiet
+# zaf 1: refused, nothing changed: ZAF_VCS is not git, the slice name leaves the workspaces directory, a part of its path is a symbolic link, or its directory is not a workspace (it may hold other slices)
+# zaf 2: a backend failed (git is missing or refused, or the directory could not be removed)
+# zaf mode: 750
+# zaf group: team, release, merge
+# changed: the git version of `workspace-drop`: a git project takes this file for that name
+slice=$1
+
+if [ -z "$ZAF_ROOT" ] || [ "$#" -ne 1 ]; then
+    echo "usage: workspace-drop <slice>, with ZAF_ROOT set" >&2
+    exit 1
+fi
+
+if [ "$ZAF_VCS" != "git" ]; then
+    echo "workspace-drop.git is for a git project; ZAF_VCS is '$ZAF_VCS'" >&2
+    exit 1
+fi
+
+# A slice name is a relative path of plain parts, below the workspaces directory.
+case "/$slice/" in
+    *//* | */./* | */../*)
+        echo "slice name $slice is not a relative path inside the workspaces directory" >&2
+        exit 1
+        ;;
+esac
+case $slice in
+    "" | /* | -*)
+        echo "slice name $slice is not a relative path inside the workspaces directory" >&2
+        exit 1
+        ;;
+esac
+
+workspaces=$ZAF_ROOT/.zaf/workspaces
+dir=$workspaces/$slice
+
+# `rm -rf` follows a symbolic link in the middle of a path, so no part of the slice's path below
+# the workspaces directory may be one: the removal would land somewhere else.
+part=$slice
+while [ "$part" != "." ]; do
+    if [ -L "$workspaces/$part" ]; then
+        echo "$workspaces/$part is a symbolic link; a slice's path has none" >&2
+        exit 1
+    fi
+    part=$(dirname "$part")
+done
+
+# Only a worktree of this repository is removed whole. A directory that is not one is a parent of
+# other slices, or someone's files: an empty one goes with the empty parents below, any other is a
+# refusal.
+is_worktree=false
+if [ -e "$dir/.git" ]; then
+    here=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+    root=$(git -C "$ZAF_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+    if [ -n "$here" ] && [ "$here" = "$root" ]; then
+        is_worktree=true
+    fi
+fi
+if [ -d "$dir" ] && [ "$is_worktree" != "true" ] && ! rmdir "$dir" 2>/dev/null; then
+    echo "$dir is not a slice workspace" >&2
+    exit 1
+fi
+
+# The work is dropped with the workspace, as the jj version does: the branch keeps what was
+# committed.
+if [ "$is_worktree" = "true" ]; then
+    git -C "$ZAF_ROOT" worktree remove --force "$dir" || exit 2
+fi
+if [ -e "$dir" ]; then
+    rm -rf "$dir" || exit 2
+fi
+# An entry whose directory is already gone is cleared here, which makes a second drop quiet.
+git -C "$ZAF_ROOT" worktree prune || exit 2
+
+# A nested slice name leaves directories behind. `rmdir` refuses a non-empty one: another slice
+# still lives there.
+parent=$(dirname "$slice")
+while [ "$parent" != "." ]; do
+    rmdir "$workspaces/$parent" 2>/dev/null || break
+    parent=$(dirname "$parent")
+done
+exit 0

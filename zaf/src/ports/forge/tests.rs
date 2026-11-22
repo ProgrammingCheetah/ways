@@ -121,6 +121,9 @@ fn a_pull_request_reads_back_its_open_and_merge_times() {
         Ok(PullRequest {
             opened_at: at(10),
             merged_at: None,
+            mergeable: None,
+            head: None,
+            merged: false,
         })
     );
     forge.set_merged_at(pr, at(500)).expect("arrange merge");
@@ -130,10 +133,33 @@ fn a_pull_request_reads_back_its_open_and_merge_times() {
         Ok(PullRequest {
             opened_at: at(10),
             merged_at: Some(at(500)),
+            mergeable: None,
+            head: None,
+            merged: true,
         })
     );
     assert!(matches!(
         port.pull_request(PrNumber::from(99)),
+        Err(PortError::NotFound(_))
+    ));
+}
+
+#[test]
+fn fake_forge_gives_mergeable() {
+    let forge = FakeForge::default();
+    let port: &dyn Forge = &forge;
+    let pr = forge
+        .open_pr(&request("feature/v1-export-2"))
+        .expect("open");
+    assert_eq!(port.pull_request(pr).expect("read").mergeable, None);
+    forge.set_mergeable(pr, Some(true)).expect("arrange true");
+    assert_eq!(port.pull_request(pr).expect("read").mergeable, Some(true));
+    forge.set_mergeable(pr, Some(false)).expect("arrange false");
+    assert_eq!(port.pull_request(pr).expect("read").mergeable, Some(false));
+    forge.set_mergeable(pr, None).expect("arrange none");
+    assert_eq!(port.pull_request(pr).expect("read").mergeable, None);
+    assert!(matches!(
+        forge.set_mergeable(PrNumber::from(99), Some(true)),
         Err(PortError::NotFound(_))
     ));
 }

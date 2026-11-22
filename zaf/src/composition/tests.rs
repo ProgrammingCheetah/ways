@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use crate::domain::{Profile, RoleName};
 use crate::manifest::{EnvVarName, ForgeUrl, ModelName, RepoName, RunnerName};
-use crate::ports::{GateVerdict, RunRequest};
+use crate::ports::{GateVerdict, PortError, RunRequest};
 
 use super::*;
 
@@ -57,10 +57,31 @@ fn every_declared_port_is_built_from_its_kind() {
         composition.forge().is_ok(),
         "the forge repo falls back to the board's"
     );
+    assert!(
+        composition.ci_filter().is_ok(),
+        "the CI filter is built from [forge] as the forge is"
+    );
     assert!(composition.design().expect("builds").is_some());
     assert!(composition.gate().is_ok());
     assert!(composition.runner(&RunnerName::from("local")).is_ok());
     assert_eq!(composition.state_dir(), root.join(STATE_DIR));
+    fs::remove_dir_all(&root).expect("clean up");
+}
+
+#[test]
+fn git_manifest_builds_git_vcs() {
+    let root = scratch_dir("git-vcs");
+    write_manifest(
+        &root,
+        "[project]\nname = \"bookshelf\"\n[board]\nkind = \"github-issues\"\nrepo = \"example/b\"\n[vcs]\nkind = \"git\"\n",
+    );
+    let composition = Composition::load_with_home(&root, None).expect("loads");
+    let vcs = composition.vcs().expect("builds");
+    // The GitVcs reads the slice: a directory with no workspace is NotFound, as with jj.
+    assert!(matches!(
+        vcs.latest_commit(&root),
+        Err(PortError::NotFound(_))
+    ));
     fs::remove_dir_all(&root).expect("clean up");
 }
 
@@ -79,6 +100,13 @@ fn an_undeclared_port_is_absent_not_a_crash() {
     assert!(matches!(
         composition.forge(),
         Err(CompositionError::Absent { port: "Forge", .. })
+    ));
+    assert!(matches!(
+        composition.ci_filter(),
+        Err(CompositionError::Absent {
+            port: "CiFilter",
+            ..
+        })
     ));
     assert!(matches!(
         composition.gate(),
@@ -595,6 +623,7 @@ fn a_forgejo_board_and_forge_are_built_and_the_forge_beside_the_board_asks_docto
     );
     let composition = Composition::load_with_home(&root, None).expect("loads");
     assert!(composition.board().is_ok());
+    assert!(composition.ci_filter().is_ok());
     let forge = composition.forge().expect("the Forgejo forge is built");
     // Beside the board, the forge's doctor check is the one the board's lack: pull requests.
     let checks = forge.access();
@@ -634,4 +663,119 @@ fn two_doors_share_a_repository_only_on_the_same_instance_repository_and_token_v
         &board,
         &door("http://forgejo.test", "example/b", "FORGE_TOKEN")
     ));
+}
+
+/// A scene for the fake `curl` in `tests/fixtures/forgejo/`: every instance pages 50 items and
+/// every repository's lists are empty.
+fn fake_forgejo_scene() -> tempfile::TempDir {
+    let scene = tempfile::tempdir().expect("scene directory");
+    fs::write(scene.path().join("page"), "{\"max_response_items\": 50}").expect("page response");
+    fs::write(scene.path().join("empty"), "[]").expect("empty response");
+    fs::write(
+        scene.path().join("rules"),
+        "GET */api/v1/settings/api\t200\tpage\nGET */api/v1/repos/*\t200\tempty\n",
+    )
+    .expect("rules");
+    scene
+}
+
+/// A door to `repo` on `url`, built as the composition builds one, calling the fake `curl` of
+/// `scene`.
+fn paged_door(composition: &Composition, url: &str, repo: &str, scene: &Path) -> ForgejoApi {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/forgejo");
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    let search_path =
+        std::env::join_paths(std::iter::once(fixtures).chain(std::env::split_paths(&inherited)))
+            .expect("search path");
+    let api = ForgejoApi::new(
+        ForgeUrl::from(url),
+        RepoName::from(repo),
+        EnvVarName::from("FORGEJO_TOKEN"),
+        Some(crate::adapters::forgejo::ForgejoToken::from("secret-token")),
+    );
+    composition
+        .paged(api)
+        .env("PATH", search_path)
+        .env("FAKE_CURL_DIR", scene)
+}
+
+/// The URLs the scene's `settings/api` reads went to, in order.
+fn page_size_reads(scene: &Path) -> Vec<String> {
+    let mut files: Vec<_> = fs::read_dir(scene.join("calls"))
+        .expect("calls")
+        .map(|entry| entry.expect("call").path())
+        .filter(|path| path.extension().is_none())
+        .collect();
+    files.sort();
+    files
+        .iter()
+        .filter_map(|file| {
+            let recorded = fs::read_to_string(file).expect("recorded call");
+            let url = recorded.split_terminator('\0').next_back()?.to_owned();
+            url.ends_with("/settings/api").then_some(url)
+        })
+        .collect()
+}
+
+fn list_all(api: &ForgejoApi, endpoint: &str) {
+    api.list::<serde_json::Value>(endpoint).expect("lists");
+}
+
+#[test]
+fn page_size_read_once_for_board_and_forge() {
+    let root = scratch_dir("page-once");
+    write_manifest(
+        &root,
+        "[project]\nname = \"bookshelf\"\n[board]\nkind = \"github-issues\"\nrepo = \"example/b\"\n",
+    );
+    let composition = Composition::load_with_home(&root, None).expect("loads");
+    let scene = fake_forgejo_scene();
+    let board = paged_door(
+        &composition,
+        "http://forgejo.test",
+        "example/b",
+        scene.path(),
+    );
+    let forge = paged_door(
+        &composition,
+        "HTTP://Forgejo.test/",
+        "example/b",
+        scene.path(),
+    );
+    list_all(&board, "issues");
+    list_all(&forge, "pulls");
+    list_all(&board, "labels");
+    assert_eq!(
+        page_size_reads(scene.path()),
+        vec!["http://forgejo.test/api/v1/settings/api"]
+    );
+    fs::remove_dir_all(&root).expect("clean up");
+}
+
+#[test]
+fn page_size_read_per_host() {
+    let root = scratch_dir("page-hosts");
+    write_manifest(
+        &root,
+        "[project]\nname = \"bookshelf\"\n[board]\nkind = \"github-issues\"\nrepo = \"example/b\"\n",
+    );
+    let composition = Composition::load_with_home(&root, None).expect("loads");
+    let scene = fake_forgejo_scene();
+    let board = paged_door(&composition, "http://board.test", "example/b", scene.path());
+    let forge = paged_door(&composition, "http://forge.test", "example/b", scene.path());
+    let other = paged_door(&composition, "http://board.test", "example/c", scene.path());
+    list_all(&board, "issues");
+    list_all(&forge, "pulls");
+    list_all(&other, "issues");
+    list_all(&board, "labels");
+    list_all(&forge, "labels");
+    assert_eq!(
+        page_size_reads(scene.path()),
+        vec![
+            "http://board.test/api/v1/settings/api",
+            "http://forge.test/api/v1/settings/api",
+            "http://board.test/api/v1/settings/api",
+        ]
+    );
+    fs::remove_dir_all(&root).expect("clean up");
 }

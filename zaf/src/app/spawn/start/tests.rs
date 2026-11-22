@@ -79,12 +79,14 @@ fn failed_ci(task: u64, size: TaskSize, on_fail: Option<&str>) -> (TicketFacts, 
         opened_at: time(20),
         merged_at: None,
         head: Some(CommitId::from("head")),
-        changed_file: Some(crate::domain::RepoPath::from("src/lib.rs")),
+        changed_files: crate::domain::ChangedFiles::of(&["src/lib.rs"]),
         checks: vec![CheckFact {
             name: CheckName::from("ci"),
             result: CheckResult::Failed(time(30)),
         }],
         reviews: Vec::new(),
+        mergeable: None,
+        checks_expected: true,
     };
     let facts = support::facts(task, &list, size, time(1), Some(pull), Vec::new());
     (facts, list)
@@ -636,9 +638,11 @@ fn a_starved_phase_lets_zaf_actions_run() {
         opened_at: time(10),
         merged_at: None,
         head: Some(CommitId::from("head")),
-        changed_file: Some(crate::domain::RepoPath::from("src/lib.rs")),
+        changed_files: crate::domain::ChangedFiles::of(&["src/lib.rs"]),
         checks: Vec::new(),
         reviews: Vec::new(),
+        mergeable: None,
+        checks_expected: true,
     };
     // D1: the list has no `pr-open` phase, so implement's `exit` is keyed on the head: the run
     // left the pull request's head.

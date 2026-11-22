@@ -1443,7 +1443,7 @@ fn a_branchs_checks_are_the_check_runs_of_the_commit_it_is_at() {
     ]}]"#;
     fake.on(
         &format!("api repos/{REPO}/branches/feature/v1"),
-        r#"{"name":"feature/v1","commit":{"sha":"abc123"}}"#,
+        r#"{"name":"feature/v1","commit":{"sha":"abc123","commit":{"committer":{"date":"2027-01-15T07:30:00Z"}}}}"#,
     )
     .on(
         &format!("api repos/{REPO}/commits/abc123/check-runs *"),
@@ -1459,6 +1459,7 @@ fn a_branchs_checks_are_the_check_runs_of_the_commit_it_is_at() {
         .branch_checks(&BranchName::from("feature/v1"))
         .expect("the branch reads");
     assert_eq!(read.head, Some(CommitId::from("abc123")));
+    assert_eq!(read.reached_at, Some(time("2027-01-15T07:30:00Z")));
     assert_eq!(
         read.checks,
         [
@@ -1593,6 +1594,62 @@ fn a_review_comment_has_its_time_and_head() {
     assert_eq!(read[1].head, Some(CommitId::from("abc123")));
 }
 
+/// A `gh pr view` answer for an open pull request whose `mergeable` is `word`.
+fn open_pr_json(word: &str) -> String {
+    format!(
+        r#"{{"state":"OPEN","createdAt":"2027-01-16T08:00:00Z","mergedAt":null,"mergeable":{word}}}"#
+    )
+}
+
+#[test]
+fn github_pull_reads_mergeable() {
+    let fake = FakeGh::new();
+    fake.on("pr view 7 *", &open_pr_json(r#""MERGEABLE""#))
+        .on("pr view 8 *", &open_pr_json(r#""CONFLICTING""#));
+    let forge = fake.forge();
+    let read = |number: u64| forge.pull_request(PrNumber::from(number)).expect("read");
+    assert_eq!(read(7).mergeable, Some(true));
+    assert_eq!(read(8).mergeable, Some(false));
+}
+
+#[test]
+fn github_pull_reads_head_and_merged_in_one_call() {
+    let fake = FakeGh::new();
+    fake.on(
+        "pr view 7 *",
+        r#"{"state":"MERGED","createdAt":"2027-01-15T08:00:00Z","mergedAt":"2027-01-15T09:30:00Z","headRefOid":"abc123"}"#,
+    )
+    .on(
+        "pr view 8 *",
+        r#"{"state":"OPEN","createdAt":"2027-01-16T08:00:00Z","mergedAt":null,"headRefOid":""}"#,
+    );
+    let forge = fake.forge();
+    let merged = forge.pull_request(PrNumber::from(7)).expect("merged");
+    assert_eq!(merged.head, Some("abc123".to_owned()));
+    assert!(merged.merged);
+    let open = forge.pull_request(PrNumber::from(8)).expect("open");
+    assert_eq!(open.head, None);
+    assert!(!open.merged);
+    assert_eq!(fake.calls().len(), 2, "one call for each read");
+}
+
+#[test]
+fn github_unknown_mergeable_is_none() {
+    let fake = FakeGh::new();
+    fake.on("pr view 7 *", &open_pr_json(r#""UNKNOWN""#))
+        .on("pr view 8 *", &open_pr_json(r#""SOMETHING_NEW""#))
+        .on("pr view 9 *", &open_pr_json("null"))
+        .on(
+            "pr view 10 *",
+            r#"{"state":"OPEN","createdAt":"2027-01-16T08:00:00Z","mergedAt":null}"#,
+        );
+    let forge = fake.forge();
+    for number in 7..=10 {
+        let read = forge.pull_request(PrNumber::from(number)).expect("read");
+        assert_eq!(read.mergeable, None, "#{number}");
+    }
+}
+
 #[test]
 fn a_pr_has_its_open_and_merge_times() {
     let fake = FakeGh::new();
@@ -1622,7 +1679,7 @@ fn a_pr_has_its_open_and_merge_times() {
         "view",
         "7",
         "--json",
-        "state,createdAt,mergedAt",
+        "state,createdAt,mergedAt,mergeable,headRefOid",
         "--repo",
         REPO,
     ]);
@@ -1794,7 +1851,7 @@ fn scanning_alerts_read_the_open_alerts_of_the_head_ref() {
 }
 
 #[test]
-fn last_changed_file_reads_the_diff() {
+fn changed_files_lists_a_rename_under_both_names() {
     let fake = FakeGh::new();
     let files = r#"[[
         {"filename":"README.md","status":"modified"},
@@ -1807,10 +1864,18 @@ fn last_changed_file_reads_the_diff() {
         .on(&format!("api repos/{REPO}/pulls/8/files *"), "[[]]");
     let forge = fake.forge();
     assert_eq!(
-        forge.last_changed_file(PrNumber::from(7)),
-        Ok(Some("src/z/last.rs".to_owned()))
+        forge.changed_files(PrNumber::from(7)),
+        Ok(crate::domain::ChangedFiles::of(&[
+            "README.md",
+            "src/export.rs",
+            "src/a.rs",
+            "src/z/last.rs"
+        ]))
     );
-    assert_eq!(forge.last_changed_file(PrNumber::from(8)), Ok(None));
+    assert_eq!(
+        forge.changed_files(PrNumber::from(8)),
+        Ok(crate::domain::ChangedFiles::default())
+    );
     let expected_calls = vec![
         argv(&["api", &endpoint, "--paginate", "--slurp"]),
         argv(&[
@@ -1825,9 +1890,36 @@ fn last_changed_file_reads_the_diff() {
     let broken = FakeGh::new();
     broken.fail_on("api *", "HTTP 404: Not Found");
     assert!(matches!(
-        broken.forge().last_changed_file(PrNumber::from(7)),
+        broken.forge().changed_files(PrNumber::from(7)),
         Err(PortError::Backend(_))
     ));
+}
+
+#[test]
+fn changed_files_are_cut_short_at_githubs_cap() {
+    let rows = (0..3000)
+        .map(|at| format!(r#"{{"filename":"f{at}.rs"}}"#))
+        .collect::<Vec<_>>()
+        .join(",");
+    let fake = FakeGh::new();
+    fake.on(
+        &format!("api repos/{REPO}/pulls/7/files *"),
+        &format!("[[{rows}]]"),
+    )
+    .on(
+        &format!("api repos/{REPO}/pulls/8/files *"),
+        r#"[[{"filename":"a.rs"}]]"#,
+    );
+    let forge = fake.forge();
+    let capped = forge
+        .changed_files(PrNumber::from(7))
+        .expect("the files read");
+    assert_eq!(capped.paths.len(), 3000);
+    assert!(capped.cut_short);
+    let short = forge
+        .changed_files(PrNumber::from(8))
+        .expect("the files read");
+    assert!(!short.cut_short);
 }
 
 #[test]
@@ -2197,6 +2289,372 @@ fn github_file_epic_maps_a_gh_failure() {
         matches!(&error, PortError::Backend(message) if message.contains("bad gateway")),
         "{error:?}"
     );
+}
+
+#[test]
+fn github_epic_task_carries_body_and_url() {
+    let epics = serde_json::json!([{
+        "number": 1, "title": "tickets", "body": "Goal.",
+        "labels": [{"name": "epic"}], "comments": [],
+    }]);
+    let tasks = serde_json::json!([
+        {"number": 2, "title": "t", "body": "Goal: the first",
+         "url": "https://github.com/example/tracker/issues/2",
+         "labels": [{"name": "task"}, {"name": "ready"}],
+         "parent": {"number": 1}, "state": "OPEN"},
+    ]);
+    let fake = FakeGh::new();
+    fake.on("issue list --label epic *", &epics.to_string())
+        .on("issue list --label task *", &tasks.to_string());
+
+    let read = fake.board().epics().expect("epics read");
+    let task = &read[0].tasks[0];
+    assert_eq!(task.body, "Goal: the first".into());
+    assert_eq!(
+        task.url,
+        "https://github.com/example/tracker/issues/2".into()
+    );
+    let task_list = &fake.calls()[1];
+    assert!(
+        task_list
+            .iter()
+            .any(|word| word.contains("body") && word.contains("url")),
+        "the task list asks for the body and the link: {task_list:?}"
+    );
+}
+
+const WORKFLOWS: &str = ".github/workflows";
+
+fn github_entry(name: &str, kind: &str) -> serde_json::Value {
+    serde_json::json!({ "name": name, "path": format!("{WORKFLOWS}/{name}"), "type": kind })
+}
+
+#[test]
+fn ci_filter_reads_github_workflows() {
+    use crate::domain::{PullRequestFilter, RepoPath, WorkflowFilter};
+    use crate::ports::CiFilter;
+
+    let fake = FakeGh::new();
+    fake.on(
+        &format!("api repos/{REPO}/contents/{WORKFLOWS} --method GET -f ref=feature/v1"),
+        &serde_json::json!([
+            github_entry("b.yaml", "file"),
+            github_entry("a.yml", "file"),
+            github_entry("c.yml", "file"),
+            github_entry("README.md", "file"),
+            github_entry("nested.yml", "dir"),
+        ])
+        .to_string(),
+    );
+    fake.on(
+        &format!("api repos/{REPO}/contents/{WORKFLOWS}/a.yml * -f ref=feature/v1"),
+        "on: pull_request\njobs: {}\n",
+    );
+    fake.on(
+        &format!("api repos/{REPO}/contents/{WORKFLOWS}/b.yaml * -f ref=feature/v1"),
+        "on: push\njobs: {}\n",
+    );
+    fake.fail_on(
+        &format!("api repos/{REPO}/contents/{WORKFLOWS}/c.yml *"),
+        "gh: Forbidden (HTTP 403)",
+    );
+    let found = GithubCiFilter::from(fake.gh())
+        .workflows(&BranchName::from("feature/v1"))
+        .expect("the workflows read");
+    let at = |name: &str, filter| WorkflowFilter {
+        path: RepoPath::from(format!("{WORKFLOWS}/{name}").as_str()),
+        filter,
+    };
+    assert_eq!(
+        found,
+        [
+            at("a.yml", PullRequestFilter::AnyChange),
+            at("b.yaml", PullRequestFilter::AnyChange),
+            at("c.yml", PullRequestFilter::Unsure),
+        ]
+    );
+    // Every read names the base's ref, never a pull request's head.
+    for call in fake.calls() {
+        assert_eq!(call.last().map(String::as_str), Some("ref=feature/v1"));
+    }
+}
+
+#[test]
+fn ci_filter_has_no_workflows_in_a_github_base_with_no_folder_but_fails_on_a_missing_base() {
+    use crate::ports::CiFilter;
+
+    let fake = FakeGh::new();
+    fake.fail_on(
+        &format!("api repos/{REPO}/contents/{WORKFLOWS} * ref=main"),
+        "gh: Not Found (HTTP 404)",
+    );
+    fake.on(&format!("api repos/{REPO}/branches/main"), "{}");
+    fake.fail_on(
+        &format!("api repos/{REPO}/contents/{WORKFLOWS} * ref=gone"),
+        "gh: Not Found (HTTP 404)",
+    );
+    fake.fail_on(
+        &format!("api repos/{REPO}/branches/gone"),
+        "gh: Not Found (HTTP 404)",
+    );
+    let filter = GithubCiFilter::from(fake.gh());
+    assert_eq!(filter.workflows(&BranchName::from("main")), Ok(Vec::new()));
+    assert!(matches!(
+        filter.workflows(&BranchName::from("gone")),
+        Err(PortError::Backend(_))
+    ));
+    assert!(matches!(
+        filter.workflows(&BranchName::from("-main")),
+        Err(PortError::Rejected(_))
+    ));
+}
+
+/// An issue as the batched GraphQL read returns it, its comments carrying `total` in all.
+fn batch_issue(number: u64, comments: &[String], total: usize) -> serde_json::Value {
+    let comments: Vec<_> = comments
+        .iter()
+        .enumerate()
+        .map(|(index, body)| {
+            let url = format!(
+                "https://github.com/{REPO}/issues/{number}#issuecomment-{}",
+                100 + index
+            );
+            serde_json::json!({ "body": body, "url": url, "createdAt": "2027-01-15T08:00:00Z" })
+        })
+        .collect();
+    serde_json::json!({
+        "number": number,
+        "title": format!("task {number}"),
+        "body": "Goal: export the list",
+        "state": "OPEN",
+        "labels": { "totalCount": 2, "nodes": [{ "name": "task" }, { "name": "claimed" }] },
+        "parent": { "number": 1 },
+        "issueType": null,
+        "comments": { "totalCount": total, "nodes": comments },
+    })
+}
+
+/// What `gh api graphql` prints for a batch: each issue under the alias `i<number>`.
+fn batch_answer(issues: Vec<(u64, serde_json::Value)>) -> String {
+    let repository: serde_json::Map<String, serde_json::Value> = issues
+        .into_iter()
+        .map(|(number, issue)| (format!("i{number}"), issue))
+        .collect();
+    serde_json::json!({ "data": { "repository": repository } }).to_string()
+}
+
+const CLAIMED: [u64; 5] = [3, 4, 5, 6, 7];
+
+/// The comments of claimed task `number`: held by instance `number % 3 + 1`.
+fn claimed_comments(number: u64) -> Vec<String> {
+    let holder = u32::try_from(number % 3).expect("small") + 1;
+    vec![
+        claim_line(holder, 1_700_000_000 + number),
+        heartbeat_line(holder, 1_800_000_000 + number),
+    ]
+}
+
+fn claimed_list() -> String {
+    let rows: Vec<_> = CLAIMED
+        .iter()
+        .map(|number| serde_json::json!({ "number": number }))
+        .collect();
+    serde_json::Value::Array(rows).to_string()
+}
+
+fn batch_of(numbers: &[u64]) -> Vec<(u64, serde_json::Value)> {
+    numbers
+        .iter()
+        .map(|number| {
+            let comments = claimed_comments(*number);
+            (*number, batch_issue(*number, &comments, comments.len()))
+        })
+        .collect()
+}
+
+#[test]
+fn github_claims_read_in_one_call() {
+    let fake = FakeGh::new();
+    fake.on("issue list --label claimed *", &claimed_list())
+        .on("api graphql *", &batch_answer(batch_of(&CLAIMED)));
+    let claims = fake.board().claims().expect("claims");
+    assert_eq!(claims.len(), 5);
+    let calls = fake.calls();
+    assert_eq!(calls.len(), 2, "the list, then one read of the five");
+    assert_eq!(calls[1][..2], argv(&["api", "graphql"]));
+    assert!(
+        calls
+            .iter()
+            .all(|call| call[..2] != argv(&["issue", "view"])),
+        "no issue is read alone"
+    );
+}
+
+#[test]
+fn github_claims_unchanged() {
+    let batched = FakeGh::new();
+    batched
+        .on("issue list --label claimed *", &claimed_list())
+        .on("api graphql *", &batch_answer(batch_of(&CLAIMED)));
+    // The per-issue reads: each task alone in the list, so `claims` reads it with `issue view`.
+    let mut per_issue = Vec::new();
+    for number in CLAIMED {
+        let single = FakeGh::new();
+        single
+            .on(
+                "issue list --label claimed *",
+                &format!(r#"[{{"number":{number}}}]"#),
+            )
+            .on(
+                &format!("issue view {number} *"),
+                &issue(
+                    number,
+                    &["task", "claimed"],
+                    &claimed_comments(number),
+                    "OPEN",
+                ),
+            );
+        per_issue.extend(single.board().claims().expect("claims"));
+    }
+    let claims = batched.board().claims().expect("claims");
+    assert_eq!(claims.len(), 5);
+    assert_eq!(claims, per_issue);
+}
+
+#[test]
+fn github_batch_missing_number_errors() {
+    let fake = FakeGh::new();
+    let mut answer: serde_json::Value =
+        serde_json::from_str(&batch_answer(batch_of(&[3, 4, 6, 7]))).expect("json");
+    answer["data"]["repository"]["i5"] = serde_json::Value::Null;
+    fake.on("issue list --label claimed *", &claimed_list())
+        .on("api graphql *", &answer.to_string());
+    let Err(PortError::NotFound(message)) = fake.board().claims() else {
+        panic!("a number the answer lacks is an error");
+    };
+    assert!(message.contains("#5"), "{message}");
+}
+
+#[test]
+fn github_batch_cut_comments_are_read_whole() {
+    let fake = FakeGh::new();
+    let comments = claimed_comments(3);
+    let mut issues = batch_of(&[4]);
+    issues.insert(0, (3, batch_issue(3, &comments[..1], 150)));
+    fake.on(
+        "issue list --label claimed *",
+        r#"[{"number":3},{"number":4}]"#,
+    )
+    .on("api graphql *", &batch_answer(issues))
+    .on(
+        "issue view 3 *",
+        &issue(3, &["task", "claimed"], &comments, "OPEN"),
+    );
+    let claims = fake.board().claims().expect("claims");
+    assert_eq!(claims.len(), 2);
+    assert_eq!(fake.calls().len(), 3);
+}
+
+#[test]
+fn fake_gh_concurrent_calls_get_distinct_numbers() {
+    let fake = FakeGh::new();
+    fake.on("issue *", "{}");
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/gh");
+    for round in 0..5 {
+        let before = fake.calls().len();
+        let children: Vec<_> = (0..8)
+            .map(|call| {
+                std::process::Command::new(&fixture)
+                    .args(["issue", "view", &format!("{round}-{call}")])
+                    .env("FAKE_GH_DIR", fake.scene.path())
+                    .stdout(std::process::Stdio::null())
+                    .spawn()
+                    .expect("fake gh")
+            })
+            .collect();
+        for mut child in children {
+            assert!(child.wait().expect("fake gh ends").success());
+        }
+        let calls = fake.calls();
+        assert_eq!(calls.len(), before + 8, "two calls wrote one file");
+        let mut seen: Vec<_> = calls.iter().map(|call| call[2].clone()).collect();
+        seen.sort();
+        seen.dedup();
+        assert_eq!(seen.len(), calls.len(), "a call's record was overwritten");
+    }
+}
+
+/// Whether a check is expected on a pull request from `branch` that changes a doc, for the one
+/// workflow `text` at the base of a fake GitHub.
+fn github_ci_expected(text: &str, branch: &str) -> bool {
+    use crate::domain::{RepoPath, checks_expected};
+    use crate::ports::CiFilter;
+
+    let fake = FakeGh::new();
+    fake.on(
+        &format!("api repos/{REPO}/contents/{WORKFLOWS} --method GET -f ref=main"),
+        &serde_json::json!([github_entry("a.yml", "file")]).to_string(),
+    );
+    fake.on(
+        &format!("api repos/{REPO}/contents/{WORKFLOWS}/a.yml * -f ref=main"),
+        text,
+    );
+    let workflows = GithubCiFilter::from(fake.gh())
+        .workflows(&BranchName::from("main"))
+        .expect("the workflows read");
+    checks_expected(
+        &workflows,
+        &[RepoPath::from("docs/a.md")],
+        false,
+        Some(branch),
+    )
+}
+
+#[test]
+fn ci_filter_push_no_branches_expected_github() {
+    assert!(github_ci_expected("on: push\n", "feature/x"));
+    assert!(github_ci_expected("on:\n  push:\n", "feature/x"));
+}
+
+#[test]
+fn ci_filter_push_matching_branch_expected_github() {
+    let text = "on:\n  push:\n    branches: ['feature/**']\n";
+    assert!(github_ci_expected(text, "feature/x"));
+}
+
+#[test]
+fn ci_filter_push_other_branch_not_expected_github() {
+    let text = "on:\n  push:\n    branches: [main]\n";
+    assert!(!github_ci_expected(text, "feature/x"));
+}
+
+#[test]
+fn ci_filter_pull_request_target_expected_github() {
+    assert!(github_ci_expected("on: pull_request_target\n", "feature/x"));
+}
+
+#[test]
+fn ci_filter_unreadable_unsure_github() {
+    use crate::domain::PullRequestFilter;
+    use crate::ports::CiFilter;
+
+    assert!(github_ci_expected(
+        "on:\n  push:\n    branches-ignore: [wip]\n",
+        "feature/x"
+    ));
+    let fake = FakeGh::new();
+    fake.on(
+        &format!("api repos/{REPO}/contents/{WORKFLOWS} --method GET -f ref=main"),
+        &serde_json::json!([github_entry("a.yml", "file")]).to_string(),
+    );
+    fake.on(
+        &format!("api repos/{REPO}/contents/{WORKFLOWS}/a.yml * -f ref=main"),
+        "on: [unclosed",
+    );
+    let found = GithubCiFilter::from(fake.gh())
+        .workflows(&BranchName::from("main"))
+        .expect("the workflows read");
+    assert_eq!(found[0].filter, PullRequestFilter::Unsure);
 }
 
 mod forge_writes;

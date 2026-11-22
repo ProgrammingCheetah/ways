@@ -5,6 +5,8 @@
 //! a test needs to arrange a scene and read the result.
 
 mod board;
+mod calls;
+mod ci_filter;
 mod design;
 mod forge;
 mod gate;
@@ -13,6 +15,7 @@ mod runner;
 mod vcs;
 
 pub use board::{FakeBoard, link as board_link};
+pub use ci_filter::FakeCiFilter;
 pub use design::FakeDesign;
 pub use forge::{FakeForge, PrRequest};
 pub use gate::FakeGate;

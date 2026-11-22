@@ -258,6 +258,9 @@ fn landing_with(path: &str, content: &str) -> (Project, PathBuf, String) {
     let head = commit_field(&dir, "@-", "commit_id");
     forge_at(&mut project, &head);
     pr_check(&project, "clean", &head);
+    // The land phase sets `ZAF_HEAD` to the head it was derived at; `slice-merge` run by hand has
+    // none and is refused, so the run is given it, and `zaf do` hands it down.
+    project.env("ZAF_HEAD", &head);
     (project, dir, head)
 }
 
@@ -621,6 +624,7 @@ fn claim_to_done_walks_the_phases() {
 
     // `check pr` is clean for the head the workspace is on: `land`, and the run lands it.
     pr_check(&project, "clean", &head);
+    project.env("ZAF_HEAD", &head);
     let (code, text) = action(&project, &["slice-merge", "2"]);
     assert_eq!(code, 0, "{text}");
     assert!(called(&project, "pr merge 7 --merge"), "{text}");
@@ -666,6 +670,7 @@ fn must_fix_round_returns_to_build() {
 
     // A clean `check pr` on the fixed head: `land`.
     pr_check(&project, "clean", &fixed);
+    project.env("ZAF_HEAD", &fixed);
     let (code, text) = action(&project, &["slice-merge", "2"]);
     assert_eq!(code, 0, "{text}");
     assert!(called(&project, "pr merge 7 --merge"), "{text}");

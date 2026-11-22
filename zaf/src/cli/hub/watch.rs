@@ -163,7 +163,7 @@ impl Tick for Process {
     }
 
     fn say(&self, line: &str) {
-        eprintln!("zaf hub: watch {}: {line}", self.root.display());
+        crate::eprintln_zaf!("zaf hub: watch {}: {line}", self.root.display());
     }
 
     fn version_built(&self) -> bool {

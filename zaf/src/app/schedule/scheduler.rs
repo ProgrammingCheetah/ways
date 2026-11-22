@@ -40,7 +40,10 @@
 
 use std::time::{Duration, Instant, SystemTime};
 
+use semver::Version;
+
 use crate::domain::schedule::Placement;
+use crate::ports::PrNumber;
 
 /// What the scheduler keeps between two ticks. A cache: each tick gathers the facts again, and
 /// what a tick read replaces what is kept; nothing here is ever read to decide what a tick does.
@@ -144,18 +147,18 @@ pub enum Ended {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Opened {
     /// The version that is built.
-    pub version: String,
+    pub version: Version,
     /// The pull request's number.
-    pub number: String,
+    pub number: PrNumber,
     /// Its link, when the action gave one.
     pub link: Option<String>,
 }
 
 /// The line that says a version is built: `zaf built 0.5.2: release pull request #12, <link>`.
-pub fn built_line(version: &str, number: &str, link: Option<&str>) -> String {
+pub fn built_line(version: &Version, number: PrNumber, link: Option<&str>) -> String {
     match link {
-        Some(link) => format!("zaf built {version}: release pull request #{number}, {link}"),
-        None => format!("zaf built {version}: release pull request #{number}"),
+        Some(link) => format!("zaf built {version}: release pull request {number}, {link}"),
+        None => format!("zaf built {version}: release pull request {number}"),
     }
 }
 
@@ -206,7 +209,7 @@ pub trait Host {
         Err("this host opens no release pull request".to_owned())
     }
     /// The event: the version is built and its release pull request is `number` at `link`.
-    fn built(&mut self, version: &str, number: &str, link: Option<&str>) {
+    fn built(&mut self, version: &Version, number: PrNumber, link: Option<&str>) {
         let _ = (version, number, link);
     }
     /// Says when the timer asks next, `interval` after the tick that just ended.
@@ -325,7 +328,7 @@ fn open_release_once(host: &mut dyn Host) -> bool {
     }
     match host.open_release() {
         Ok(opened) => {
-            host.built(&opened.version, &opened.number, opened.link.as_deref());
+            host.built(&opened.version, opened.number, opened.link.as_deref());
             true
         }
         Err(why) => {

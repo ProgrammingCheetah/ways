@@ -201,5 +201,15 @@ pub struct StandingAt {
     pub closed_at: Option<SystemTime>,
 }
 
+impl From<Standing> for StandingAt {
+    /// A standing with no close time.
+    fn from(standing: Standing) -> Self {
+        Self {
+            standing,
+            closed_at: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;

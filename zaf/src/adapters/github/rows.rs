@@ -1,5 +1,7 @@
 //! What `gh` prints, as far as the adapters read it.
 
+use std::collections::BTreeMap;
+
 use serde::Deserialize;
 
 use crate::ports::CheckBucket;
@@ -23,6 +25,9 @@ pub struct IssueRow {
     pub title: String,
     #[serde(default)]
     pub body: String,
+    /// Where a person opens it; absent from a read that did not ask.
+    #[serde(default)]
+    pub url: String,
     #[serde(default)]
     pub labels: Vec<NameRow>,
     #[serde(default)]
@@ -40,6 +45,9 @@ pub struct IssueRow {
     /// When it was opened, RFC 3339; absent from a read that did not ask.
     #[serde(default, rename = "createdAt")]
     pub created_at: Option<String>,
+    /// When it closed, RFC 3339; null while it is open, absent from a read that did not ask.
+    #[serde(default, rename = "closedAt")]
+    pub closed_at: Option<String>,
 }
 
 /// The fields a blocker's standing is read from, and when it closed.
@@ -111,6 +119,13 @@ pub(super) struct PrTimesRow {
     pub created_at: Option<String>,
     #[serde(rename = "mergedAt", default)]
     pub merged_at: Option<String>,
+    /// gh's `mergeable`: `MERGEABLE`, `CONFLICTING` or `UNKNOWN` (GitHub's `MergeableState`;
+    /// `UNKNOWN` while GitHub is still working it out). Anything else, or none, is not said.
+    #[serde(default)]
+    pub mergeable: Option<String>,
+    /// gh's `headRefOid`: the commit the head is at; empty or absent when gh says none.
+    #[serde(rename = "headRefOid", default)]
+    pub head_ref_oid: Option<String>,
 }
 
 /// A check run as `gh pr checks --json name,bucket,completedAt` prints it.
@@ -130,10 +145,43 @@ pub(super) struct BranchHeadRow {
     pub commit: BranchCommitRow,
 }
 
+impl BranchHeadRow {
+    /// The time of the commit the branch is at (its committer's date), when GitHub gives one that
+    /// reads.
+    pub fn committed_at(&self) -> Option<std::time::SystemTime> {
+        let text = self
+            .commit
+            .commit
+            .as_ref()?
+            .committer
+            .as_ref()?
+            .date
+            .as_deref()?;
+        humantime::parse_rfc3339(text).ok()
+    }
+}
+
 /// The commit a branch is at.
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct BranchCommitRow {
     pub sha: String,
+    /// The commit itself, as git holds it.
+    #[serde(default)]
+    pub commit: Option<GitCommitRow>,
+}
+
+/// A commit as git holds it.
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct GitCommitRow {
+    #[serde(default)]
+    pub committer: Option<GitSignatureRow>,
+}
+
+/// Who made a commit, and when.
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct GitSignatureRow {
+    #[serde(default)]
+    pub date: Option<String>,
 }
 
 /// One page of `repos/{repo}/commits/{ref}/check-runs`.
@@ -202,8 +250,70 @@ pub(super) struct ReviewRow {
     pub commit_id: Option<String>,
 }
 
-/// A changed file from `repos/{repo}/pulls/{n}/files`, read only by its path.
+/// A changed file from `repos/{repo}/pulls/{n}/files`, read by its path and, for a rename, the
+/// path it had.
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct FileRow {
     pub filename: String,
+    #[serde(default)]
+    pub previous_filename: Option<String>,
+}
+
+/// What one batched read of issues returns: each alias the query named, its issue or `null`.
+#[derive(Debug, Deserialize)]
+pub(super) struct BatchData {
+    pub repository: Option<BTreeMap<String, Option<BatchIssue>>>,
+}
+
+/// A GraphQL connection: its nodes, and how many there are in all when asked.
+#[derive(Debug, Deserialize)]
+pub(super) struct BatchNodes<T> {
+    pub nodes: Vec<T>,
+    #[serde(default, rename = "totalCount")]
+    pub total: Option<usize>,
+}
+
+/// An issue as the batched GraphQL read returns it: [`ISSUE_FIELDS`] in GraphQL's shape.
+#[derive(Debug, Deserialize)]
+pub(super) struct BatchIssue {
+    number: u64,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    body: String,
+    #[serde(default)]
+    state: String,
+    labels: BatchNodes<NameRow>,
+    #[serde(default)]
+    parent: Option<NumberRow>,
+    #[serde(default, rename = "issueType")]
+    issue_type: Option<NameRow>,
+    comments: BatchNodes<IssueCommentRow>,
+}
+
+impl BatchIssue {
+    /// The row `gh issue view` would print, or none when the read cut the comments or the labels
+    /// short: the batch holds the first hundred of each, and a claim lives in the latest comment.
+    pub(super) fn into_row(self) -> Option<IssueRow> {
+        let cut = |total: Option<usize>, held: usize| total.is_some_and(|total| total > held);
+        if cut(self.comments.total, self.comments.nodes.len())
+            || cut(self.labels.total, self.labels.nodes.len())
+        {
+            return None;
+        }
+        Some(IssueRow {
+            number: self.number,
+            title: self.title,
+            body: self.body,
+            url: String::new(),
+            labels: self.labels.nodes,
+            parent: self.parent,
+            state: self.state,
+            state_reason: None,
+            comments: self.comments.nodes,
+            issue_type: self.issue_type,
+            created_at: None,
+            closed_at: None,
+        })
+    }
 }

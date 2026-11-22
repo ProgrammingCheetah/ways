@@ -30,9 +30,9 @@ mod place;
 mod wait;
 
 pub use facts::{
-    BaseFacts, CheckFact, CheckName, CheckResult, Dependency, EpicFacts, ExitCode, HeadEnd,
-    MergeFacts, OutputLine, PullFacts, Report, ReviewFact, RuledMarker, RunExit, RunRecord,
-    TicketFacts,
+    BaseFacts, CheckFact, CheckName, CheckResult, Dependency, EpicFacts, ExitCode, GroupBase,
+    HeadEnd, MergeFacts, OutputLine, PullFacts, Report, ReviewFact, RuledMarker, RunExit,
+    RunRecord, TicketFacts, Trees,
 };
 pub use label::label_for;
 pub use lane::{

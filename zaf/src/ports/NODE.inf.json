@@ -87,7 +87,7 @@
     },
     {
       "name": "vcs.rs",
-      "role": "slices: open, merge base, commit, publish, diff; whether the repository holds a tag",
+      "role": "slices: open, merge base, commit, publish, diff; whether the repository holds a tag; two live adapters implement it, jj (adapters/jj.rs) and git (adapters/git.rs), chosen by `[vcs] kind`",
       "node": false
     },
     {
@@ -101,6 +101,7 @@
     "Shell has no fake in fakes/; test modules implement it ad hoc",
     "lib.rs names six ports; Shell is the seventh, used by check command steps, doctor and profile's plugin installs",
     "Design may be absent (kind none); the board's epics and rulings then stand in as the design",
-    "Board.question on an unclaimed task or on an epic sets no state label (0.1.2)"
+    "Board.question on an unclaimed task or on an epic sets no state label (0.1.2)",
+    "Vcs has a jj adapter and a git adapter (0.5.3): a plain git repository takes a task from ready to merged (zaf/tests/git_e2e.rs), and tests/vcs_contract.rs runs the fake and both adapters through the same cases"
   ]
 }

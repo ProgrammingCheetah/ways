@@ -10,12 +10,14 @@
 mod access;
 mod api;
 mod board;
+mod ci_filter;
 mod forge;
 mod labels;
 mod rows;
 
-pub use api::{ForgejoApi, ForgejoToken, Method, Reply, query_value};
+pub use api::{ForgejoApi, ForgejoToken, Method, PageSize, Reply, query_value};
 pub use board::ForgejoBoard;
+pub use ci_filter::ForgejoCiFilter;
 pub use forge::ForgejoForge;
 pub use labels::{DUPLICATE_LABEL, NOT_PLANNED_LABEL, state_label, type_label};
 

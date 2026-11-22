@@ -6,7 +6,7 @@
 
 use super::{PhaseFacts, PrFacts, WorkspaceFacts};
 use crate::app::actions::{RunOutcome, SliceRecords, Tier};
-use crate::domain::{TicketId, TicketState};
+use crate::domain::{CommitId, TicketId, TicketState};
 use crate::ports::{Board, Forge, PortError, Vcs};
 
 /// A read the phase needs that failed: the board, the forge or the workspace could not say.
@@ -52,16 +52,7 @@ pub fn gather_phase_facts(
             .map_err(unreadable)?
             .iter()
             .any(|claim| claim.task == task);
-    let workspace = match records.workspace(task) {
-        Some(workspace) => Some(WorkspaceFacts {
-            latest_commit: Some(
-                vcs.latest_commit(&workspace)
-                    .map_err(unreadable)?
-                    .to_string(),
-            ),
-        }),
-        None => None,
-    };
+    let workspace_dir = records.workspace(task);
     // A record that cannot be read is no fact: the guard would fall to an earlier phase and let
     // `slice-pr` open a second pull request.
     let pr_number = records
@@ -72,6 +63,24 @@ pub fn gather_phase_facts(
             recorded_at: records.pr_recorded_at(task),
             head: forge.head(pr).map_err(unreadable)?,
         }),
+        None => None,
+    };
+    let workspace = match workspace_dir {
+        Some(dir) => {
+            let latest_commit = vcs.latest_commit(&dir).map_err(unreadable)?.to_string();
+            // No head, or an empty one, is held by nothing; a head the repository does not have
+            // is not held either (the port answers `false`), and nothing is fetched to find out.
+            let holds_head = match pr.as_ref().and_then(|pr| pr.head.as_deref()) {
+                Some(head) if !head.is_empty() => {
+                    vcs.holds(&dir, &CommitId::from(head)).map_err(unreadable)?
+                }
+                _ => false,
+            };
+            Some(WorkspaceFacts {
+                latest_commit: Some(latest_commit),
+                holds_head,
+            })
+        }
         None => None,
     };
     let facts = PhaseFacts {

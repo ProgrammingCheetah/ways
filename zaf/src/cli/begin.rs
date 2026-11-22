@@ -20,6 +20,11 @@
 //! open epic of the version done) it draws the four stages done, runs the action `release-open` for
 //! the release pull request and prints it with `zaf begin --version <next>`; a `release-open` that
 //! is refused or fails prints its sentence and exits 1 or 2.
+//!
+//! `zaf begin ready` is what a phase's session runs once it judges its document done: it writes the
+//! file `ZAF_READY` names (the chair watches for it and ends the session), exit 0 printing nothing;
+//! exit 1 with one sentence when `ZAF_READY` is unset or names no `.ready` file, 2 when the file
+//! cannot be written.
 
 use std::io::{self, BufRead, Write};
 use std::path::Path;
@@ -33,8 +38,9 @@ use super::epic::{build_question, exec_spawn_watch};
 use super::exit::{self, BACKEND, OK, REFUSED};
 use super::screen::{DefaultAnswer, Screen, ask_yes};
 use crate::adapters::process;
+use crate::app::actions::READY_VAR;
 use crate::app::begin::{
-    self, BeginOutcome, BeginRequest, CompleteError, Completion, PhaseRun, phase_word,
+    self, BeginOutcome, BeginRequest, CompleteError, Completion, PhaseRun, ReadyError, phase_word,
 };
 use crate::app::build::{BuildError, ReleasePullRequest, open_release};
 use crate::app::epic::{EpicError, SignGuard};
@@ -107,6 +113,31 @@ pub fn run(cli: &Cli, version: &str, phase: Option<BeginPhase>) -> u8 {
     }
 }
 
+/// `zaf begin ready`: writes the file `ZAF_READY` names.
+pub fn ready(cli: &Cli) -> u8 {
+    let path = cli.verb.path();
+    let named = std::env::var_os(READY_VAR).map(std::path::PathBuf::from);
+    match begin::mark_ready(named.as_deref(), SystemTime::now()) {
+        Ok(file) => {
+            if cli.json {
+                println!("{}", json!({ "ready": file }));
+            }
+            OK
+        }
+        Err(error @ (ReadyError::Unset | ReadyError::NotReadyFile(_))) => {
+            if cli.json {
+                println!("{}", json!({ "refused": error.to_string() }));
+            }
+            crate::eprintln_zaf!("zaf {path}: {error}");
+            REFUSED
+        }
+        Err(error) => {
+            crate::eprintln_zaf!("zaf {path}: {error}");
+            BACKEND
+        }
+    }
+}
+
 /// How one pass of the verb ended.
 enum Pass {
     /// The verb is over, with this exit code.
@@ -142,12 +173,12 @@ fn pass(
             if cli.json {
                 println!("{}", json!({ "refused": refusal.to_string() }));
             }
-            eprintln!("zaf {path}: {refusal}");
+            crate::eprintln_zaf!("zaf {path}: {refusal}");
             BACKEND
         }
         Ok(BeginOutcome::Due { phase, malformed }) => {
             if last == Some(phase) {
-                eprintln!(
+                crate::eprintln_zaf!(
                     "zaf {path}: {} is signed and still due; stopping",
                     phase_word(phase)
                 );
@@ -155,7 +186,7 @@ fn pass(
             }
             let word = phase_word(phase);
             for block in &malformed {
-                eprintln!(
+                crate::eprintln_zaf!(
                     "zaf {path}: {}:{}: {}",
                     block.path.display(),
                     block.line,
@@ -215,7 +246,10 @@ fn pass(
                                     "{}",
                                     json!({ "version": version, "phase": word, "result": "not signed" })
                                 );
-                                eprintln!("zaf {path}: {} is not signed", document.display());
+                                crate::eprintln_zaf!(
+                                    "zaf {path}: {} is not signed",
+                                    document.display()
+                                );
                             } else {
                                 print!("{}", not_signed_text(&screen, version));
                             }
@@ -228,7 +262,7 @@ fn pass(
                                     json!({ "version": version, "phase": word, "result": "changed" })
                                 );
                             }
-                            eprintln!(
+                            crate::eprintln_zaf!(
                                 "zaf {path}: {} changed while it asked; running zaf begin again asks again",
                                 document.display()
                             );
@@ -242,20 +276,20 @@ fn pass(
                                 );
                             }
                             for line in &missing {
-                                eprintln!("zaf {path}: {line}");
+                                crate::eprintln_zaf!("zaf {path}: {line}");
                             }
                             REFUSED
                         }
                         Err(CompleteError::Board(error)) => exit::fail(&path, &error),
                         Err(error) => {
-                            eprintln!("zaf {path}: {error}");
+                            crate::eprintln_zaf!("zaf {path}: {error}");
                             BACKEND
                         }
                     }
                 }
                 Ok(PhaseRun::Undone { outcome }) => {
                     print_outcome(cli, &outcome);
-                    eprintln!(
+                    crate::eprintln_zaf!(
                         "zaf {path}: {word} ended with code {}: the phase is not done",
                         outcome.exit
                     );
@@ -266,7 +300,7 @@ fn pass(
                     BACKEND
                 }
                 Err(error) => {
-                    eprintln!(
+                    crate::eprintln_zaf!(
                         "zaf {path}: cannot make {}: {error}",
                         folder.path().display()
                     );
@@ -316,7 +350,7 @@ fn pass(
         }
         Err(EpicError::Board(error)) => exit::fail(&path, &error),
         Err(error) => {
-            eprintln!("zaf {path}: {error}");
+            crate::eprintln_zaf!("zaf {path}: {error}");
             BACKEND
         }
     };
@@ -357,8 +391,8 @@ fn built_stage<W: Write, E: Write>(
         }
     };
     let named = match &pull_request.link {
-        Some(link) => format!("#{} {link}", pull_request.number),
-        None => format!("#{}", pull_request.number),
+        Some(link) => format!("{} {link}", pull_request.number),
+        None => pull_request.number.to_string(),
     };
     let _ = writeln!(
         out,
@@ -625,7 +659,9 @@ fn build_stage(screen: &Screen, version: &str) -> u8 {
         Err(_) => BACKEND,
         Ok(true) => {
             let error = exec_spawn_watch(version);
-            eprintln!("zaf begin: cannot start `zaf spawn --watch --version {version}`: {error}");
+            crate::eprintln_zaf!(
+                "zaf begin: cannot start `zaf spawn --watch --version {version}`: {error}"
+            );
             BACKEND
         }
     }

@@ -3,8 +3,17 @@ use std::io::Cursor;
 use std::process::Command;
 
 use super::*;
+use crate::manifest::VcsKind;
+
+/// Marks a folder that is no repository as a jj one, so the tests that are not about the kind ask.
+fn marked(dir: &Path) {
+    if !dir.join(".git").exists() && !dir.join(".jj").exists() {
+        fs::create_dir(dir.join(".jj")).expect("marker");
+    }
+}
 
 fn run(dir: &Path, answers: &str) -> (Result<PathBuf, InitError>, String) {
+    marked(dir);
     let mut output = Vec::new();
     let mut learn = || Ok(TAG.to_owned());
     let result = init(
@@ -90,6 +99,7 @@ fn init_writes_standard_manifest() {
         denied,
         [
             "gh pr merge",
+            "jj git push",
             "zaf forge merge",
             "zaf do pr-merge",
             "zaf do --tier machine pr-merge"
@@ -100,6 +110,7 @@ fn init_writes_standard_manifest() {
 #[test]
 fn a_tag_that_cannot_be_learned_writes_nothing() {
     let dir = tempfile::tempdir().expect("temp dir");
+    marked(dir.path());
     let mut learn = || {
         Err(ProfileError::Install {
             line: "claude plugin install".to_owned(),
@@ -457,6 +468,7 @@ fn run_with_probe(
     answers: &str,
     found: &str,
 ) -> (Result<PathBuf, InitError>, String, Vec<String>) {
+    marked(dir);
     let mut output = Vec::new();
     let mut learn = || Ok(TAG.to_owned());
     let mut asked = Vec::new();
@@ -508,7 +520,7 @@ fn a_forgejo_origin_asks_the_url_and_writes_forgejo_kinds() {
     assert_eq!(forge.token_env().as_str(), "FORGEJO_TOKEN");
     assert_eq!(manifest.board.token_env().as_str(), "FORGEJO_TOKEN");
     let required: Vec<&str> = manifest.requires.keys().map(AsRef::as_ref).collect();
-    assert_eq!(required, ["jj"]);
+    assert!(required.is_empty(), "a plain git repository needs no jj");
     let denied: Vec<&str> = manifest
         .forbidden
         .commands
@@ -518,6 +530,7 @@ fn a_forgejo_origin_asks_the_url_and_writes_forgejo_kinds() {
     assert_eq!(
         denied,
         [
+            "jj git push",
             "zaf forge merge",
             "zaf do pr-merge",
             "zaf do --tier machine pr-merge"
@@ -525,6 +538,80 @@ fn a_forgejo_origin_asks_the_url_and_writes_forgejo_kinds() {
     );
     let text = fs::read_to_string(&path).expect("text");
     assert!(!text.contains("gh = ") && !text.contains("gh pr"), "{text}");
+}
+
+/// A shell no run may reach: the profiles below are generated with no pack.
+struct NoShell;
+
+impl crate::ports::Shell for NoShell {
+    fn run(
+        &self,
+        line: &crate::manifest::CommandLine,
+    ) -> Result<crate::ports::GateRun, crate::ports::PortError> {
+        panic!("no pack, no shell: {}", line.as_ref());
+    }
+}
+
+/// The Bash deny patterns of the lean and build profiles generated from the manifest at `path`.
+fn profile_denies(path: &Path) -> Vec<(&'static str, Vec<String>)> {
+    let mut manifest = Manifest::load(path).expect("loads");
+    manifest.pack = None;
+    let root = tempfile::tempdir().expect("temp dir");
+    let state = root.path().join(".zaf");
+    crate::app::profile::init_with(root.path(), &state, &manifest, &NoShell, None)
+        .expect("generates");
+    ["lean", "build"]
+        .into_iter()
+        .map(|profile| {
+            let file = state.join("profiles").join(profile).join("settings.json");
+            let text = fs::read_to_string(file).expect("settings");
+            let settings: serde_json::Value = serde_json::from_str(&text).expect("parses");
+            let patterns = settings["permissions"]["deny"]
+                .as_array()
+                .expect("a deny list")
+                .iter()
+                .filter_map(|rule| rule.as_str())
+                .filter_map(|rule| rule.strip_prefix("Bash(")?.strip_suffix(')'))
+                .map(str::to_owned)
+                .collect();
+            (profile, patterns)
+        })
+        .collect()
+}
+
+/// Asserts each profile denies `jj git push` and its flag forms, and still the merge denies.
+fn assert_blocks_jj_git_push(path: &Path, merge_denies: &[&str]) {
+    let denies = profile_denies(path);
+    assert_eq!(denies.len(), 2);
+    for (profile, patterns) in denies {
+        for wanted in ["jj git push", "jj git push *", "jj -* git push *"]
+            .into_iter()
+            .chain(merge_denies.iter().copied())
+        {
+            assert!(
+                patterns.iter().any(|pattern| pattern == wanted),
+                "{profile} lacks {wanted}: {patterns:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_forgejo_profile_blocks_jj_git_push() {
+    let (_root, dir) = repo_folder(Some(FORGEJO_ORIGIN));
+    let (result, _, _) = run_with_probe(&dir, "\n\n\n\n\n", "http://yagdrassyl.local:3000");
+    let path = result.expect("written");
+    assert_blocks_jj_git_push(&path, &["zaf forge merge", "zaf do pr-merge"]);
+}
+
+#[test]
+fn a_github_profile_blocks_jj_git_push() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = run_standard(dir.path());
+    assert_blocks_jj_git_push(
+        &path,
+        &["gh pr merge", "zaf forge merge", "zaf do pr-merge"],
+    );
 }
 
 #[test]
@@ -655,4 +742,81 @@ fn explained_questions_write_the_same_manifest() {
          repo = \"example/shelf\"\n\n[gate]\nfull = \"cargo test\"\n\n[runners.claude]\n"
     ));
     assert!(text.ends_with("\n[pack]\ntag = \"teams-v2.0.0\"\n"));
+}
+
+fn required(path: &Path) -> Vec<String> {
+    let manifest = Manifest::load(path).expect("loads");
+    manifest
+        .requires
+        .keys()
+        .map(|name| name.as_ref().to_owned())
+        .collect()
+}
+
+#[test]
+fn plain_git_writes_kind_git() {
+    let (_root, dir) = repo_folder(Some("git@github.com:o/zabo.git"));
+    let path = run(&dir, "\n\n\n\n").0.expect("written");
+    let manifest = Manifest::load(&path).expect("loads");
+    assert_eq!(manifest.vcs.expect("[vcs]").kind, VcsKind::Git);
+    assert!(
+        fs::read_to_string(&path)
+            .expect("text")
+            .contains("[vcs]\nkind = \"git\"\n")
+    );
+}
+
+#[test]
+fn plain_git_requires_no_jj() {
+    let (_root, dir) = repo_folder(Some("git@github.com:o/zabo.git"));
+    let path = run(&dir, "\n\n\n\n").0.expect("written");
+    assert_eq!(required(&path), ["gh"]);
+
+    let (_root, dir) = repo_folder(Some(FORGEJO_ORIGIN));
+    let (result, _, _) = run_with_probe(&dir, "\n\n\nhttps://forge.example\n\n", "none");
+    assert!(required(&result.expect("written")).is_empty());
+}
+
+#[test]
+fn colocated_is_jj() {
+    let (_root, dir) = repo_folder(Some("git@github.com:o/zabo.git"));
+    fs::create_dir(dir.join(".jj")).expect(".jj");
+    let path = run(&dir, "\n\n\n\n").0.expect("written");
+    let manifest = Manifest::load(&path).expect("loads");
+    assert_eq!(manifest.vcs.expect("[vcs]").kind, VcsKind::Jj);
+    assert_eq!(required(&path), ["gh", "jj"]);
+}
+
+#[test]
+fn no_repository_is_refused() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut output = Vec::new();
+    let mut learn = || Ok(TAG.to_owned());
+    let result = init(
+        dir.path(),
+        &mut learn,
+        &mut Cursor::new("a\nb/c\n\n\n".to_owned()),
+        &mut output,
+    );
+    let error = result.expect_err("refused");
+    assert!(matches!(error, InitError::NoRepository(_)));
+    let text = error.to_string();
+    assert!(
+        text.contains("git init") && text.contains("jj git init"),
+        "{text}"
+    );
+    assert!(output.is_empty(), "refused before the first question");
+    assert!(!dir.path().join(MANIFEST_FILE).exists());
+}
+
+#[test]
+fn rerun_keeps_vcs() {
+    let (_root, dir) = repo_folder(Some("git@github.com:o/zabo.git"));
+    let path = dir.join(MANIFEST_FILE);
+    let text = "[vcs]\nkind = \"jj\"\n";
+    fs::write(&path, text).expect("manifest");
+    let (result, prompts) = run(&dir, "\n\n\n\n");
+    assert!(matches!(result, Err(InitError::Exists(_))));
+    assert_eq!(fs::read_to_string(&path).expect("read"), text);
+    assert_eq!(prompts, "");
 }

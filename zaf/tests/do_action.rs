@@ -26,7 +26,9 @@ repo = "example/tracker"
 
 /// The variables a run reads from its caller: a test suite run inside an action must not
 /// hand them to the runs it makes.
-const CALLER_VARS: [&str; 7] = [
+const CALLER_VARS: [&str; 9] = [
+    "ZAF_HEAD",
+    "ZAF_VCS",
     "ZAF_ROOT",
     "ZAF_ACTION",
     "ZAF_DEPTH",
@@ -271,6 +273,163 @@ fn an_action_finds_the_running_zaf_first_on_path() {
     assert_eq!(seen[1..], rest[..], "{seen:?}");
 }
 
+/// The entries of the `PATH` an action sees when zaf is given `given` (`None`: unset).
+fn path_seen_by_an_action(project: &Project, given: Option<&str>) -> Vec<String> {
+    action(
+        project,
+        "show-path",
+        "",
+        "echo \"$PATH\" > \"$ZAF_ROOT/path\"",
+    );
+    let mut command = Command::new(env!("CARGO_BIN_EXE_zaf"));
+    command
+        .args(["do", "show-path"])
+        .current_dir(&project.root)
+        .env("ZAF_HOME", &project.home);
+    match given {
+        Some(value) => command.env("PATH", value),
+        None => command.env_remove("PATH"),
+    };
+    for var in CALLER_VARS {
+        command.env_remove(var);
+    }
+    let run = command.output().expect("run zaf");
+    assert_eq!(outcome(&run).0, 0, "{}", said(&run));
+    let text = read(&project.root.join("path"));
+    let text = text.trim_end_matches('\n');
+    assert!(!text.is_empty(), "PATH was empty");
+    text.split(':').map(str::to_owned).collect()
+}
+
+#[test]
+fn an_unset_path_gives_no_empty_entry() {
+    let project = project();
+    let seen = path_seen_by_an_action(&project, None);
+    assert!(seen.iter().all(|entry| !entry.is_empty()), "{seen:?}");
+    assert_eq!(seen.len(), 1, "{seen:?}");
+}
+
+#[test]
+fn an_empty_manifest_path_gives_no_empty_entry() {
+    let project = project_with_env("PATH = \"\"\n");
+    let seen = path_seen_by_an_action(&project, Some("/usr/bin:/bin"));
+    assert!(seen.iter().all(|entry| !entry.is_empty()), "{seen:?}");
+    assert_eq!(seen.len(), 1, "{seen:?}");
+}
+
+/// A copy of the built `zaf` at `dir/zaf`: a binary at a path of its own.
+fn copy_of_zaf(dir: &Path) -> PathBuf {
+    fs::create_dir_all(dir).expect("folder");
+    let copy = dir.join("zaf");
+    fs::copy(env!("CARGO_BIN_EXE_zaf"), &copy).expect("copy the binary");
+    real(&copy)
+}
+
+/// Runs the action `show` with `exe` and the PATH `given`; the action writes what it finds into
+/// `which` (`command -v zaf`) and `which-foo` (`command -v foo`) under the project root.
+fn run_show(project: &Project, exe: &Path, given: &std::ffi::OsStr) {
+    action(
+        project,
+        "show",
+        "",
+        "command -v zaf > \"$ZAF_ROOT/which\"\ncommand -v foo > \"$ZAF_ROOT/which-foo\" || true",
+    );
+    let mut command = Command::new(exe);
+    command
+        .args(["do", "show"])
+        .current_dir(&project.root)
+        .env("PATH", given)
+        .env("ZAF_HOME", &project.home);
+    for var in CALLER_VARS {
+        command.env_remove(var);
+    }
+    let run = command.output().expect("run zaf");
+    assert_eq!(outcome(&run).0, 0, "{}", said(&run));
+}
+
+/// The folders under `state/bin` of the project's zaf home, sorted.
+fn zaf_folders(project: &Project) -> Vec<PathBuf> {
+    files_in(&project.home.join("state/bin"))
+}
+
+#[test]
+fn another_tool_beside_zaf_is_not_found_first() {
+    let project = project();
+    let beside = project.root.join("beside");
+    let exe = copy_of_zaf(&beside);
+    executable(&beside, "foo", "#!/bin/sh\necho beside\n");
+    let users = project.root.join("users");
+    let theirs = executable(&users, "foo", "#!/bin/sh\necho theirs\n");
+    let inherited = std::env::var_os("PATH").unwrap_or_default();
+    let given =
+        std::env::join_paths(std::iter::once(users).chain(std::env::split_paths(&inherited)))
+            .expect("search path");
+
+    run_show(&project, &exe, &given);
+
+    let foo = PathBuf::from(read(&project.root.join("which-foo")).trim());
+    assert_eq!(real(&foo), real(&theirs));
+    let found = PathBuf::from(read(&project.root.join("which")).trim());
+    assert_eq!(real(&found), exe);
+}
+
+#[test]
+fn two_binaries_get_two_folders() {
+    let project = project();
+    let first = copy_of_zaf(&project.root.join("one"));
+    let second = copy_of_zaf(&project.root.join("two"));
+    let given = std::env::var_os("PATH").unwrap_or_default();
+
+    run_show(&project, &first, &given);
+    run_show(&project, &second, &given);
+
+    let folders = zaf_folders(&project);
+    assert_eq!(folders.len(), 2, "{folders:?}");
+    assert_ne!(folders[0].file_name(), folders[1].file_name());
+    let mut linked = Vec::new();
+    for folder in &folders {
+        let mode = fs::metadata(folder).expect("folder").permissions().mode();
+        assert_eq!(mode & 0o7777, 0o700, "{}", folder.display());
+        assert_eq!(
+            files_in(folder),
+            vec![folder.join("zaf")],
+            "{}",
+            folder.display()
+        );
+        linked.push(fs::read_link(folder.join("zaf")).expect("a link"));
+    }
+    linked.sort();
+    assert_eq!(linked, vec![first, second]);
+}
+
+#[test]
+fn a_planted_link_is_replaced() {
+    let project = project();
+    let exe = copy_of_zaf(&project.root.join("one"));
+    let given = std::env::var_os("PATH").unwrap_or_default();
+    run_show(&project, &exe, &given);
+    let folders = zaf_folders(&project);
+    assert_eq!(folders.len(), 1, "{folders:?}");
+    let folder = &folders[0];
+
+    // A link to another binary, a wider mode and a stray file.
+    let link = folder.join("zaf");
+    fs::remove_file(&link).expect("take the link away");
+    std::os::unix::fs::symlink("/bin/false", &link).expect("plant");
+    fs::write(folder.join("extra"), "x").expect("stray");
+    fs::set_permissions(folder, fs::Permissions::from_mode(0o755)).expect("widen");
+
+    run_show(&project, &exe, &given);
+
+    assert_eq!(zaf_folders(&project), vec![folder.clone()]);
+    assert_eq!(fs::read_link(&link).expect("a link"), exe);
+    assert_eq!(files_in(folder), vec![link.clone()]);
+    let mode = fs::metadata(folder).expect("folder").permissions().mode();
+    assert_eq!(mode & 0o7777, 0o700);
+    let found = PathBuf::from(read(&project.root.join("which")).trim());
+    assert_eq!(real(&found), exe);
+}
+
 /// A project whose manifest has an `[env]` table, set up like [`project`].
 fn project_with_env(table: &str) -> Project {
     let project = Project::new(&format!("{MANIFEST}\n[env]\n{table}"));
@@ -367,6 +526,54 @@ fn do_env_cannot_set_a_zaf_variable() {
     assert!(!env.contains_key("zaf_action"), "{env:?}");
     assert_eq!(env["ZAF_ACTION"], "dump");
     assert_eq!(real(Path::new(&env["ZAF_ROOT"])), real(&project.root));
+}
+
+#[test]
+fn nested_do_keeps_zaf_head() {
+    // A land run's action calls `zaf do` as `slice-merge` is called: the nested body sees the
+    // head the run was given, and a run with none has none.
+    let project = project();
+    action(
+        &project,
+        "inner",
+        "",
+        "printf '%s' \"${ZAF_HEAD-unset}\" > \"$ZAF_ROOT/inner\"",
+    );
+    action(&project, "outer", "", "zaf do inner");
+
+    let run = zaf_in(
+        &project,
+        &project.root,
+        &["do", "outer"],
+        &[("ZAF_HEAD", "abc123")],
+    );
+    assert_eq!(outcome(&run).0, 0, "{}", said(&run));
+    assert_eq!(read(&project.root.join("inner")), "abc123");
+
+    let run = zaf(&project, &["do", "outer"]);
+    assert_eq!(outcome(&run).0, 0, "{}", said(&run));
+    assert_eq!(read(&project.root.join("inner")), "unset");
+}
+
+#[test]
+fn env_table_cannot_set_zaf_head() {
+    // The manifest refuses the table when it loads.
+    let project = Project::new(&format!("{MANIFEST}\n[env]\nZAF_HEAD = \"forged\"\n"));
+    action(&project, "dump", "", "env > \"$ZAF_ROOT/env\"");
+    let run = zaf_in(&project, &project.root, &["do", "dump"], &[]);
+    assert_ne!(outcome(&run).0, 0, "{}", said(&run));
+    assert!(said(&run).contains("ZAF_HEAD"), "{}", said(&run));
+    assert!(!project.root.join("env").exists(), "the body ran");
+
+    // A table that reached the runner some other way is skipped, and the inherited head stands.
+    let project = self::project();
+    action(&project, "dump", "", "env > \"$ZAF_ROOT/env\"");
+    let mut request = request(&project, "dump", 1, MINUTE);
+    request.env = BTreeMap::from([("ZAF_HEAD".to_owned(), "forged".to_owned())]);
+    let outcome = run_action(&request);
+    assert_eq!(outcome.result, RunResult::Ok, "{outcome:?}");
+    let env = env_lines(&read(&project.root.join("env")));
+    assert_ne!(env.get("ZAF_HEAD").map(String::as_str), Some("forged"));
 }
 
 #[test]
@@ -681,6 +888,7 @@ fn request<'a>(
         terminal: Terminal::Absent,
         run: None,
         phase: None,
+        vcs: None,
     }
 }
 
@@ -2540,4 +2748,229 @@ fn do_board_failure_is_not_run() {
     let run = plain.zaf(&["do", "slice-thing", "2"]);
     assert_eq!(outcome(&run).0, 0, "{}", said(&run));
     assert!(plain.root.join("ran").exists());
+}
+
+// Which version of an action a project takes (docs/zaf-actions.md §2): on a git project each tier
+// is searched, the project's first, for `<name>.git`, then `<name>` unless it is marked
+// `# zaf vcs: jj`.
+
+/// A project whose manifest holds `[vcs] kind = "<kind>"`, in a repository of that kind: doctor
+/// refuses a folder that is not one, and setup is ready only when doctor passes.
+fn project_with_vcs(kind: &str) -> Project {
+    let project = Project::new(&format!("{MANIFEST}\n[vcs]\nkind = \"{kind}\"\n"));
+    let init: &[&str] = match kind {
+        "git" => &["git", "init", "--quiet", "."],
+        _ => &["jj", "git", "init", "--colocate", "."],
+    };
+    let made = Command::new(init[0])
+        .args(&init[1..])
+        .current_dir(&project.root)
+        .output()
+        .expect("the repository's own tool");
+    assert!(made.status.success(), "{init:?}: {made:?}");
+    set_up(&project);
+    project
+}
+
+/// A machine-tier action with `extra` metadata lines.
+fn machine_action_with(project: &Project, name: &str, extra: &str, body: &str) -> PathBuf {
+    executable(
+        &project.home.join("actions"),
+        name,
+        &action_text(name, extra, body),
+    )
+}
+
+/// A body that records who ran, in a file of the project root.
+fn says(who: &str) -> String {
+    format!("echo {who} > \"$ZAF_ROOT/ran\"")
+}
+
+const JJ: &str = "# zaf vcs: jj\n";
+
+/// The tests of `zaf do`'s git-version lookup, named `do_action::<test>` in the ticket.
+mod do_action {
+    use super::*;
+
+    #[test]
+    fn git_project_prefers_dot_git_in_the_same_tier() {
+        let project = project_with_vcs("git");
+        action(&project, "push.git", "", &says("project-git"));
+        action(&project, "push", "", &says("project-plain"));
+        machine_action_with(&project, "push", "", &says("machine"));
+
+        let run = zaf(&project, &["do", "--show", "push"]);
+        let (code, stdout, stderr) = outcome(&run);
+        assert_eq!(code, 0, "{stdout}{stderr}");
+        assert_eq!(stdout, read(&project.root.join(".zaf/actions/push.git")));
+
+        let run = zaf(&project, &["do", "push"]);
+        assert_eq!(outcome(&run).0, 0, "{}", said(&run));
+        assert_eq!(read(&project.root.join("ran")), "project-git\n");
+
+        // The listing has the name once, from the file that runs.
+        let (code, stdout, _) = outcome(&zaf(&project, &["do", "--json"]));
+        assert_eq!(code, 0);
+        let rows: Vec<serde_json::Value> = serde_json::from_str(&stdout).expect("json");
+        let pushes: Vec<_> = rows.iter().filter(|row| row["name"] == "push").collect();
+        assert_eq!(pushes.len(), 1, "{stdout}");
+        assert_eq!(pushes[0]["tier"], "project");
+        assert!(rows.iter().all(|row| row["name"] != "push.git"), "{stdout}");
+    }
+
+    #[test]
+    fn git_project_takes_an_unmarked_action_in_an_earlier_tier() {
+        let project = project_with_vcs("git");
+        action(&project, "gate", "", &says("project"));
+        machine_action_with(&project, "gate.git", "", &says("machine-git"));
+
+        let run = zaf(&project, &["do", "gate"]);
+        assert_eq!(outcome(&run).0, 0, "{}", said(&run));
+        assert_eq!(read(&project.root.join("ran")), "project\n");
+    }
+
+    #[test]
+    fn git_project_skips_a_jj_marked_action() {
+        let project = project_with_vcs("git");
+        action(&project, "commit", JJ, &says("project-jj"));
+        machine_action_with(&project, "commit.git", "", &says("machine-git"));
+
+        let run = zaf(&project, &["do", "commit"]);
+        assert_eq!(outcome(&run).0, 0, "{}", said(&run));
+        assert_eq!(read(&project.root.join("ran")), "machine-git\n");
+
+        // `--tier machine` looks in that tier the same way.
+        fs::remove_file(project.root.join("ran")).expect("clear");
+        let run = zaf(&project, &["do", "--tier", "machine", "commit"]);
+        assert_eq!(outcome(&run).0, 0, "{}", said(&run));
+        assert_eq!(read(&project.root.join("ran")), "machine-git\n");
+    }
+
+    #[test]
+    fn git_project_refuses_with_no_git_version() {
+        let project = project_with_vcs("git");
+        action(&project, "merge-base", JJ, &says("project-jj"));
+        machine_action_with(&project, "merge-base", JJ, &says("machine-jj"));
+
+        for args in [
+            &["do", "merge-base"][..],
+            &["do", "--tier", "machine", "merge-base"],
+            &["do", "--show", "merge-base"],
+        ] {
+            let run = zaf(&project, args);
+            let (code, stdout, stderr) = outcome(&run);
+            assert_eq!(code, 125, "{args:?}: {stdout}{stderr}");
+            assert_eq!(
+                stderr, "NOT_RUN merge-base: no git version of `merge-base`\n",
+                "{args:?}"
+            );
+        }
+        assert!(!project.root.join("ran").exists());
+
+        // The listing leaves it out; a name no tier has is still `no such action`.
+        let (_, stdout, _) = outcome(&zaf(&project, &["do"]));
+        assert!(!stdout.contains("merge-base"), "{stdout}");
+        let run = zaf(&project, &["do", "ghost"]);
+        assert_eq!(said(&run), "NOT_RUN ghost: no such action\n");
+    }
+
+    #[test]
+    fn jj_project_ignores_dot_git_files() {
+        for project in [project_with_vcs("jj"), project()] {
+            action(&project, "push.git", "", &says("git"));
+            action(&project, "push", "", &says("plain"));
+
+            let run = zaf(&project, &["do", "push"]);
+            assert_eq!(outcome(&run).0, 0, "{}", said(&run));
+            assert_eq!(read(&project.root.join("ran")), "plain\n");
+
+            let (code, stdout, _) = outcome(&zaf(&project, &["do"]));
+            assert_eq!(code, 0);
+            assert!(
+                stdout.lines().all(|line| !line.starts_with("push.git")),
+                "{stdout}"
+            );
+            assert!(
+                stdout.lines().any(|line| line.starts_with("push ")),
+                "{stdout}"
+            );
+
+            // A marked action is as it was on a project that is not git: found and run.
+            action(&project, "commit", JJ, &says("marked"));
+            let run = zaf(&project, &["do", "commit"]);
+            assert_eq!(outcome(&run).0, 0, "{}", said(&run));
+            assert_eq!(read(&project.root.join("ran")), "marked\n");
+        }
+    }
+
+    #[test]
+    fn a_jj_mention_is_not_a_mark() {
+        let project = project_with_vcs("git");
+        // Mentions of jj in the description, a comment and the body; the `vcs` line absent.
+        let text = [
+            "#!/bin/sh",
+            "# zaf description: runs jj, vcs: jj",
+            "# zaf 1: it failed",
+            "# vcs: jj",
+            "# zaf-vcs: jj",
+            "jj_note='# zaf vcs: jj'",
+            "echo talk > \"$ZAF_ROOT/ran\"",
+            "",
+        ]
+        .join("\n");
+        executable(&project.root.join(".zaf/actions"), "talk", &text);
+
+        let run = zaf(&project, &["do", "talk"]);
+        assert_eq!(outcome(&run).0, 0, "{}", said(&run));
+        assert_eq!(read(&project.root.join("ran")), "talk\n");
+    }
+}
+
+/// What `$ZAF_VCS` is in a body run by `zaf do` with `env` from the caller: `unset` for none.
+fn vcs_seen(project: &Project, env: &[(&str, &str)]) -> String {
+    action(
+        project,
+        "vcs",
+        "",
+        "printf '%s' \"${ZAF_VCS-unset}\" > \"$ZAF_ROOT/seen\"",
+    );
+    let run = zaf_in(project, &project.root, &["do", "vcs"], env);
+    assert_eq!(outcome(&run).0, 0, "{}", said(&run));
+    read(&project.root.join("seen"))
+}
+
+#[test]
+fn zaf_vcs_is_git_in_a_git_project() {
+    assert_eq!(vcs_seen(&project_with_vcs("git"), &[]), "git");
+}
+
+#[test]
+fn zaf_vcs_is_jj_in_a_jj_project() {
+    assert_eq!(vcs_seen(&project_with_vcs("jj"), &[]), "jj");
+    // The manifest's word, whatever the caller held.
+    assert_eq!(
+        vcs_seen(&project_with_vcs("jj"), &[("ZAF_VCS", "git")]),
+        "jj"
+    );
+}
+
+#[test]
+fn zaf_vcs_unset_without_vcs_section() {
+    assert_eq!(vcs_seen(&project(), &[]), "unset");
+    assert_eq!(vcs_seen(&project(), &[("ZAF_VCS", "jj")]), "unset");
+}
+
+#[test]
+fn zaf_vcs_reaches_a_nested_step() {
+    let project = project_with_vcs("git");
+    action(
+        &project,
+        "inner",
+        "",
+        "printf '%s' \"${ZAF_VCS-unset}\" > \"$ZAF_ROOT/inner\"",
+    );
+    action(&project, "outer", "", "zaf do inner");
+    let run = zaf(&project, &["do", "outer"]);
+    assert_eq!(outcome(&run).0, 0, "{}", said(&run));
+    assert_eq!(read(&project.root.join("inner")), "git");
 }

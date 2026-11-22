@@ -36,17 +36,19 @@ use std::time::SystemTime;
 
 use super::{Released, SpawnError, lock, release_orphaned};
 use crate::app::actions::{ActionKind, ActionName, ListedPhase, PHASES_DIR, parse, resolve};
-use crate::app::schedule::gather::{Skip, gather_one, model_runs};
+use crate::app::schedule::gather::{Skip, gather_one, gather_one_in, model_runs};
 use crate::app::schedule::record;
 use crate::app::schedule::tick::{Refusal, may_start};
-use crate::domain::schedule::HeadEnd;
-use crate::domain::{DEFAULT_TASK_TYPE, Instance, InstanceNumber, RoleName, TaskSize, TicketId};
+use crate::domain::schedule::{GroupBase, HeadEnd, PhaseEnd, TicketFacts};
+use crate::domain::{
+    CommitId, DEFAULT_TASK_TYPE, Instance, InstanceNumber, RoleName, TaskSize, TicketId,
+};
 use crate::manifest::Manifest;
-use crate::ports::{Board, Forge, Holder, PortError};
+use crate::ports::{Board, CiFilter, Forge, Holder, PortError, Vcs};
 
 pub use crate::app::schedule::record::{
-    ACTION_FILE, EXIT_FILE, HEAD_FILE, INSTANCE_FILE, OUTPUT_FILE, PID_FILE, POST_PHASE_LOG,
-    SIZE_FILE, TASK_FILE, record_exit, record_launcher, record_pid,
+    ACTION_FILE, EXIT_FILE, HEAD_FILE, INSTANCE_FILE, LAND_HEAD_FILE, OUTPUT_FILE, PID_FILE,
+    POST_PHASE_LOG, SIZE_FILE, TASK_FILE, record_exit, record_launcher, record_pid,
 };
 
 /// Why a phase was not started.
@@ -94,6 +96,30 @@ pub struct Launch {
     pub size: String,
     /// The instance, as `ZAF_INSTANCE` carries it.
     pub instance: String,
+    /// The head Land was derived at, as `ZAF_HEAD` carries it; none for a run of any other phase.
+    pub head: Option<String>,
+}
+
+/// An inline run's folder, opened for the tick.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlineOpened {
+    /// The phase run folder.
+    pub run_dir: PathBuf,
+    /// The head Land was derived at, as `ZAF_HEAD` carries it; none for a run of any other phase.
+    pub land_head: Option<CommitId>,
+}
+
+/// The head `action`'s run is told as `ZAF_HEAD`: the pull request's head the facts hold, when
+/// `action` is the land phase (the phase that ends at `merged`) and the pull request has a head.
+/// It is the head Land was derived at, read from the same facts the gate placed the ticket by, so
+/// a head pushed after cannot stand in for it.
+fn land_head_of(facts: &TicketFacts, action: &ActionName) -> Option<CommitId> {
+    facts
+        .phases
+        .iter()
+        .any(|phase| phase.name == *action && phase.ends.contains(&PhaseEnd::Merged))
+        .then(|| facts.head().cloned())
+        .flatten()
 }
 
 /// What [`start`] reads from.
@@ -102,6 +128,10 @@ pub struct Ports<'a> {
     pub board: &'a dyn Board,
     /// The forge the standing's facts are read from.
     pub forge: &'a dyn Forge,
+    /// The workflows of the forge as they stand at the integration branch, which say whether a
+    /// pull request with no check is expected to get one. None when the forge has no such port:
+    /// every check is then expected.
+    pub ci_filter: Option<&'a dyn CiFilter>,
     /// The manifest holding `[phases]`.
     pub manifest: &'a Manifest,
     /// The project root.
@@ -118,6 +148,9 @@ pub struct Ports<'a> {
     pub version: Option<&'a str>,
     /// The time of the read, which the gather measures a pull request's age against.
     pub now: SystemTime,
+    /// The VCS the trees of the heads are read from, for R18's count by tree; none when the
+    /// caller has none, and then getting nowhere counts by commit id.
+    pub vcs: Option<&'a dyn Vcs>,
 }
 
 /// Checks, through the tick's gate, that `action` may start on `task` now, releases the task's
@@ -217,6 +250,10 @@ pub fn start(
         },
     )
     .map_err(PhaseError::Failed)?;
+    let land = land_head_of(&facts, &action_name);
+    if let Some(land) = &land {
+        record::mark_land(&run_dir, land).map_err(PhaseError::Failed)?;
+    }
     let started = Started {
         run_dir,
         instance: instance.to_string(),
@@ -282,6 +319,7 @@ pub fn launch_of(run_dir: &Path) -> Result<Launch, String> {
             .map_err(|_| format!("{TASK_FILE} holds {task:?}, not a task"))?,
         size,
         instance: read(INSTANCE_FILE)?,
+        head: record::land_head(run_dir),
     })
 }
 
@@ -340,20 +378,27 @@ pub fn end(run_dir: &Path, code: i32, head_end: &HeadEnd, after: &dyn Fn()) -> R
 /// next instance number, as [`start`] does, and opens the folder with no `pid`, since the run is a
 /// step of the tick's own process, `this`, which the folder's `inline` mark names: the run reads as
 /// running from its first moment until its `exit` is written. Returns the folder, which
-/// [`record::end`] ends once the action has run.
+/// [`record::end`] ends once the action has run, and, for the land phase, the head Land was derived
+/// at, which the action gets as `ZAF_HEAD` ([`InlineOpened`]).
 ///
 /// A ticket the gate holds, one no longer in the lane at `action`, one whose action is not of the
 /// `zaf` kind, and one that cannot be read now are [`PhaseError::Refused`], in the gate's words: the
 /// action is not run, and the next tick places the ticket again. A folder that cannot be written is
 /// [`PhaseError::Failed`].
+///
+/// `group` is what the tick's group of merges remembers, in memory ([`GroupBase`]): the gate
+/// judges R29 at the group's base while the integration branch is still at the group's own last
+/// commit, so checks pending at a commit the group just made do not hold its next merge (F30).
+/// With none, or at any other head, it judges as the branch reads.
 pub fn open_inline(
     ports: &Ports<'_>,
     task: TicketId,
     action: &ActionName,
     this: &Holder,
-) -> Result<PathBuf, PhaseError> {
+    group: Option<&GroupBase>,
+) -> Result<InlineOpened, PhaseError> {
     let _held = lock(ports.state_dir)?;
-    let (facts, beside) = match gather_one(ports, task) {
+    let (facts, beside) = match gather_one_in(ports, task, group) {
         Ok(Some(gathered)) => gathered,
         Ok(None) => {
             return Err(PhaseError::Refused(
@@ -391,7 +436,7 @@ pub fn open_inline(
     };
     state.next_instance = number.saturating_add(1);
     super::save(ports.state_dir, &state)?;
-    record::open(
+    let run_dir = record::open(
         &ports.state_dir.join(PHASES_DIR),
         &record::Opening {
             task,
@@ -402,7 +447,12 @@ pub fn open_inline(
             inline: Some(this),
         },
     )
-    .map_err(PhaseError::Failed)
+    .map_err(PhaseError::Failed)?;
+    let land_head = land_head_of(&facts, action);
+    if let Some(land) = &land_head {
+        record::mark_land(&run_dir, land).map_err(PhaseError::Failed)?;
+    }
+    Ok(InlineOpened { run_dir, land_head })
 }
 
 #[cfg(test)]

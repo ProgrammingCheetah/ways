@@ -118,6 +118,7 @@ fn place_of(root: &Path) -> Place {
         ready_since: None,
         merging: Default::default(),
         no_check_ruled: None,
+        trees: Default::default(),
     };
     place(&facts, SystemTime::now())
 }

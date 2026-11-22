@@ -4,11 +4,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use super::*;
-use crate::app::schedule::gather::gather;
+use crate::app::schedule::gather::gather_listing as gather;
 use crate::app::spawn::outcome::{Launched, Ran, Started};
 use crate::app::spawn::phase::{self, PhaseError, Ports};
 use crate::domain::{Instance, RoleName, Ticket, TicketState};
-use crate::fakes::{FakeBoard, FakeForge, PrRequest};
+use crate::fakes::{FakeBoard, FakeForge, FakeVcs, PrRequest};
 use crate::manifest::Manifest;
 use crate::ports::{
     BaseName, Check, CheckName, CheckState, Holder, NewQuestion, PrNumber, SliceName,
@@ -85,6 +85,7 @@ struct Scene {
     state_dir: PathBuf,
     board: FakeBoard,
     forge: FakeForge,
+    vcs: FakeVcs,
     manifest: Manifest,
 }
 
@@ -116,6 +117,7 @@ impl Scene {
             state_dir,
             board,
             forge: FakeForge::default(),
+            vcs: FakeVcs::default(),
             manifest: manifest(list),
         }
     }
@@ -205,6 +207,7 @@ impl Scene {
         Ports {
             board: &self.board,
             forge: &self.forge,
+            ci_filter: None,
             manifest: &self.manifest,
             root: &self.root,
             home: &self.home,
@@ -212,6 +215,7 @@ impl Scene {
             alive: &live,
             version: None,
             now: SystemTime::now(),
+            vcs: Some(&self.vcs),
         }
     }
 
@@ -312,6 +316,7 @@ fn idle(slots: usize) -> Machine {
         e_live: false,
         launches_here: 0,
         slots,
+        merge_per_tick: 1,
     }
 }
 
@@ -353,6 +358,10 @@ fn run_on(
             run: &mut run,
             launch: &mut launch,
             start: &mut start,
+            pr_of: &mut |task: TicketId| task.get().to_string().parse().ok(),
+            merged: &mut |_: crate::ports::PrNumber| true,
+            branch_head: &mut || None,
+            group: &mut |_| {},
             log: &mut log,
         },
     );
@@ -927,6 +936,108 @@ fn a_fix_that_changes_nothing_three_times_raises_a_question() {
         ),
         "{asked:?}"
     );
+}
+
+/// A failed ci on #3 whose pull request is at `head`, a commit of the scene's VCS (or any text,
+/// for a head the VCS does not hold).
+fn ci_failed_at(scene: &Scene, head: &str) {
+    scene.fails_to_fix();
+    scene.task(3, "S");
+    let pr = scene.open_pr(3, Some(CheckState::Failed));
+    scene.forge.set_head(pr, Some(head)).expect("head");
+}
+
+/// A finished run of `fix` on #3 that began at `from` and left `to`.
+fn fix_between(scene: &Scene, started: u64, code: i32, from: &str, to: &str) {
+    scene.phase_run_at(3, "fix", started, Some(code), "no change\n", from);
+    write(&scene.run_dir(3, "fix", started).join("head-end"), to);
+}
+
+/// The scene's first commit, and what the next empty commits stand on.
+fn first_commit(scene: &Scene) -> crate::domain::CommitId {
+    let (slice, base) = (SliceName::from("slice"), BaseName::from("base"));
+    scene.vcs.open(&slice, &base);
+    crate::domain::CommitId::from("fake-base-base")
+}
+
+#[test]
+fn three_rounds_at_one_tree_raise_r18() {
+    let scene = Scene::new();
+    let base = first_commit(&scene);
+    ci_failed_at(&scene, base.as_str());
+    for started in [40, 50, 60] {
+        fix_between(&scene, started, 0, base.as_str(), base.as_str());
+    }
+    let (tick, calls) = run(&scene.board, &scene.gather(), Ok(()));
+    assert!(calls.start.is_empty(), "no fourth fix: {calls:?}");
+    assert_eq!(tick.outcome.questions, [id(3)]);
+    assert!(
+        scene.asked()[0]
+            .1
+            .starts_with("fix got nowhere three times at fake-base-base"),
+        "{:?}",
+        scene.asked()
+    );
+}
+
+#[test]
+fn rounds_with_empty_commits_still_raise_r18() {
+    let scene = Scene::new();
+    let base = first_commit(&scene);
+    // Each round added an empty commit: a new head every time, the tree never moved.
+    let one = scene.vcs.empty_commit(&base).expect("empty");
+    let two = scene.vcs.empty_commit(&one).expect("empty");
+    let three = scene.vcs.empty_commit(&two).expect("empty");
+    ci_failed_at(&scene, three.as_str());
+    fix_between(&scene, 40, 0, base.as_str(), one.as_str());
+    fix_between(&scene, 50, 0, one.as_str(), two.as_str());
+    let (_, calls) = run(&scene.board, &scene.gather(), Ok(()));
+    assert_eq!(calls.start.len(), 1, "two rounds are not yet nowhere");
+    fix_between(&scene, 60, 0, two.as_str(), three.as_str());
+    let (tick, calls) = run(&scene.board, &scene.gather(), Ok(()));
+    assert!(calls.start.is_empty(), "no fourth fix: {calls:?}");
+    assert_eq!(tick.outcome.questions, [id(3)]);
+    // The question still names the current head.
+    assert!(
+        scene.asked()[0]
+            .1
+            .starts_with(&format!("fix got nowhere three times at {three} ")),
+        "{:?}",
+        scene.asked()
+    );
+}
+
+#[test]
+fn rounds_that_each_change_the_tree_raise_no_question() {
+    let scene = Scene::new();
+    let base = first_commit(&scene);
+    let one = scene.vcs.changed_commit(&base).expect("changed");
+    let two = scene.vcs.changed_commit(&one).expect("changed");
+    let three = scene.vcs.changed_commit(&two).expect("changed");
+    ci_failed_at(&scene, three.as_str());
+    fix_between(&scene, 40, 0, base.as_str(), one.as_str());
+    fix_between(&scene, 50, 0, one.as_str(), two.as_str());
+    fix_between(&scene, 60, 0, two.as_str(), three.as_str());
+    let (tick, calls) = run(&scene.board, &scene.gather(), Ok(()));
+    assert_eq!(calls.start.len(), 1, "fix starts again: {calls:?}");
+    assert!(tick.outcome.questions.is_empty());
+    assert!(scene.asked().is_empty());
+}
+
+#[test]
+fn runs_at_an_unreadable_tree_count_by_commit_id() {
+    let scene = Scene::new();
+    // The VCS holds none of these heads: the same id counts, a different one does not.
+    ci_failed_at(&scene, "h3");
+    fix_between(&scene, 40, 0, "h1", "h2");
+    fix_between(&scene, 50, 0, "h3", "h3");
+    fix_between(&scene, 60, 0, "h3", "h3");
+    let (_, calls) = run(&scene.board, &scene.gather(), Ok(()));
+    assert_eq!(calls.start.len(), 1, "two at h3, not three: {calls:?}");
+    fix_between(&scene, 70, 0, "h3", "h3");
+    let (tick, calls) = run(&scene.board, &scene.gather(), Ok(()));
+    assert!(calls.start.is_empty(), "{calls:?}");
+    assert_eq!(tick.outcome.questions, [id(3)]);
 }
 
 #[test]
@@ -1832,12 +1943,14 @@ mod fixing {
             opened_at: time(10),
             merged_at: None,
             head: Some(CommitId::from("h1")),
-            changed_file: Some(crate::domain::RepoPath::from("src/lib.rs")),
+            changed_files: crate::domain::ChangedFiles::of(&["src/lib.rs"]),
             checks: vec![CheckFact {
                 name: CheckName::from("ci"),
                 result: CheckResult::Passed(time(12)),
             }],
             reviews: Vec::new(),
+            mergeable: None,
+            checks_expected: true,
         }
     }
 
@@ -1931,8 +2044,10 @@ mod one_merge_a_tick {
     //! One merge a tick, and the words of a merge's waits (R29, R30).
 
     use super::*;
+    use crate::app::schedule::gather::Base;
     use crate::domain::CommitId;
-    use crate::domain::schedule::BaseFacts;
+    use crate::domain::schedule::{BaseFacts, CheckFact, CheckResult};
+    use crate::ports::BranchName;
 
     /// Three tasks, each with its pull request open and CI green: `merge` is next for each.
     fn three_at_their_merge() -> (Scene, Gathered) {
@@ -1945,13 +2060,27 @@ mod one_merge_a_tick {
         (scene, gathered)
     }
 
-    /// The tick's steps on `gathered`, `zaf do` exiting as `exit` says for each task.
+    /// The tick's steps on `gathered`, `zaf do` exiting as `exit` says for each task, a merge that
+    /// exits 0 merged on the forge, and `per_tick` merges allowed.
     fn run_exiting(
         board: &dyn Board,
         gathered: &Gathered,
         exit: impl Fn(u64) -> u8,
     ) -> (PhaseTick, Vec<u64>) {
+        run_group(board, gathered, 1, &exit, &|task| exit(task) == 0).0
+    }
+
+    /// The tick's steps with `per_tick` merges allowed, `zaf do` exiting as `exit` says and the
+    /// forge saying `merged` of each task's pull request; the log's lines come with it.
+    fn run_group(
+        board: &dyn Board,
+        gathered: &Gathered,
+        per_tick: u32,
+        exit: &dyn Fn(u64) -> u8,
+        merged: &dyn Fn(u64) -> bool,
+    ) -> ((PhaseTick, Vec<u64>), Vec<String>) {
         let mut ran = Vec::new();
+        let mut logged = Vec::new();
         let mut run = |task: TicketId, _: &ActionName| {
             ran.push(task.get());
             exit(task.get())
@@ -1962,16 +2091,273 @@ mod one_merge_a_tick {
             state_dir.path(),
             gathered,
             now(),
-            &idle(2),
+            &Machine {
+                merge_per_tick: per_tick,
+                ..idle(2)
+            },
             &Budget::default(),
             &mut Steps {
                 run: &mut run,
                 launch: &mut |_: TicketId, _: &ActionName| Ok(()),
                 start: &mut |_: &PlannedModel| Ok(()),
+                pr_of: &mut |task: TicketId| task.get().to_string().parse().ok(),
+                merged: &mut |pr: crate::ports::PrNumber| merged(pr.get()),
+                branch_head: &mut || None,
+                group: &mut |_| {},
+                log: &mut |line: &str| logged.push(line.to_owned()),
+            },
+        );
+        ((tick, ran), logged)
+    }
+
+    /// `gathered` over an integration branch at `b1` with `checks` at its head.
+    fn over_branch(mut gathered: Gathered, checks: Vec<CheckFact>) -> Gathered {
+        gathered.base = Some(Base {
+            branch: BranchName::from("feature/v1"),
+            facts: BaseFacts {
+                head: Some(CommitId::from("b1")),
+                checks,
+                reached_at: None,
+            },
+        });
+        gathered
+    }
+
+    #[test]
+    fn a_red_head_lands_one_merge() {
+        let (scene, gathered) = three_at_their_merge();
+        let failed = CheckFact {
+            name: CheckName::from("ci"),
+            result: CheckResult::Failed(now()),
+        };
+        let gathered = over_branch(gathered, vec![failed]);
+        let ((tick, ran), _) = run_group(&scene.board, &gathered, 8, &|_| 0, &|_| true);
+        assert_eq!(ran, [3], "red: one merge, whatever per_tick says");
+        assert_eq!(
+            lines(&tick.held),
+            [
+                "#4 skipped: #3 merged in this tick, so its merge waits for the next one",
+                "#5 skipped: #3 merged in this tick, so its merge waits for the next one",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_head_with_no_check_is_not_red() {
+        let (scene, gathered) = three_at_their_merge();
+        let gathered = over_branch(gathered, Vec::new());
+        let ((tick, ran), _) = run_group(&scene.board, &gathered, 8, &|_| 0, &|_| true);
+        assert_eq!(ran, [3, 4, 5]);
+        assert!(tick.held.is_empty(), "{:?}", tick.held);
+    }
+
+    #[test]
+    fn the_group_keeps_its_last_commit_with_the_start_base_after_each_merge() {
+        use crate::domain::CommitId;
+        use crate::domain::schedule::{BaseFacts, GroupBase};
+        let (scene, mut gathered) = three_at_their_merge();
+        let at_start = BaseFacts {
+            head: Some(CommitId::from("b0")),
+            ..BaseFacts::default()
+        };
+        gathered.base = Some(crate::app::schedule::gather::Base {
+            branch: "feature/v1".into(),
+            facts: at_start.clone(),
+        });
+        // The branch moves with each merge: b1 after #3, b2 after #4.
+        let heads = std::cell::RefCell::new(vec!["b2", "b1"]);
+        let kept = std::cell::RefCell::new(Vec::new());
+        let state_dir = tempfile::tempdir().expect("tempdir");
+        tick(
+            &scene.board,
+            state_dir.path(),
+            &gathered,
+            now(),
+            &Machine {
+                merge_per_tick: 2,
+                ..idle(2)
+            },
+            &Budget::default(),
+            &mut Steps {
+                run: &mut |_: TicketId, _: &ActionName| 0,
+                launch: &mut |_: TicketId, _: &ActionName| Ok(()),
+                start: &mut |_: &PlannedModel| Ok(()),
+                pr_of: &mut |task: TicketId| task.get().to_string().parse().ok(),
+                merged: &mut |_: crate::ports::PrNumber| true,
+                branch_head: &mut || heads.borrow_mut().pop().map(CommitId::from),
+                group: &mut |own: Option<GroupBase>| kept.borrow_mut().push(own),
                 log: &mut |_: &str| {},
             },
         );
-        (tick, ran)
+        let own = |head: &str| {
+            Some(GroupBase {
+                head: CommitId::from(head),
+                base: at_start.clone(),
+            })
+        };
+        // Each landed merge keeps the head then read with the base as the tick began; the group
+        // clears it when it ends, so nothing outlives the tick.
+        assert_eq!(*kept.borrow(), [own("b1"), own("b2"), None]);
+    }
+
+    #[test]
+    fn a_group_lands_every_ready_merge() {
+        let (scene, gathered) = three_at_their_merge();
+        let ((tick, ran), logged) = run_group(&scene.board, &gathered, 8, &|_| 0, &|_| true);
+        assert_eq!(ran, [3, 4, 5]);
+        assert_eq!(tick.outcome.ran.len(), 3);
+        assert!(tick.held.is_empty(), "{:?}", tick.held);
+        assert!(tick.failed.is_empty(), "{tick:?}");
+        assert!(
+            logged
+                .iter()
+                .any(|line| line.starts_with("merge #4 of merge: exit 0, merged, ")),
+            "each merge is logged: {logged:?}"
+        );
+        assert!(
+            logged
+                .iter()
+                .any(|line| line.starts_with("merges: 3 landed, 0 left for the next tick, in ")),
+            "the tick's length is logged: {logged:?}"
+        );
+    }
+
+    #[test]
+    fn tick_logs_merged_for_each_landed_merge() {
+        use crate::ports::PrNumber;
+        use std::cell::RefCell;
+        let (scene, gathered) = three_at_their_merge();
+        // The record is read before the merge and gone after it, as a landed `slice-merge` leaves
+        // it: only a number read first can be asked about.
+        let records: RefCell<Vec<u64>> = RefCell::new(vec![3, 4, 5]);
+        let asked = RefCell::new(Vec::new());
+        let mut logged = Vec::new();
+        let state_dir = tempfile::tempdir().expect("tempdir");
+        tick(
+            &scene.board,
+            state_dir.path(),
+            &gathered,
+            now(),
+            &Machine {
+                merge_per_tick: 3,
+                ..idle(2)
+            },
+            &Budget::default(),
+            &mut Steps {
+                run: &mut |task: TicketId, _: &ActionName| {
+                    records.borrow_mut().retain(|kept| *kept != task.get());
+                    0
+                },
+                launch: &mut |_: TicketId, _: &ActionName| Ok(()),
+                start: &mut |_: &PlannedModel| Ok(()),
+                pr_of: &mut |task: TicketId| {
+                    records
+                        .borrow()
+                        .contains(&task.get())
+                        .then(|| task.get().to_string().parse().expect("a number"))
+                },
+                merged: &mut |pr: PrNumber| {
+                    asked.borrow_mut().push(pr.get());
+                    true
+                },
+                branch_head: &mut || None,
+                group: &mut |_| {},
+                log: &mut |line: &str| logged.push(line.to_owned()),
+            },
+        );
+        assert_eq!(
+            *asked.borrow(),
+            [3, 4, 5],
+            "the forge is asked of each number"
+        );
+        for task in [3, 4, 5] {
+            let prefix = format!("merge #{task} of merge: exit 0, merged, ");
+            assert!(
+                logged.iter().any(|line| line.starts_with(&prefix)),
+                "#{task} is logged as merged: {logged:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_merge_whose_record_cannot_be_read_is_not_merged() {
+        let (scene, gathered) = three_at_their_merge();
+        let mut logged = Vec::new();
+        let state_dir = tempfile::tempdir().expect("tempdir");
+        tick(
+            &scene.board,
+            state_dir.path(),
+            &gathered,
+            now(),
+            &Machine {
+                merge_per_tick: 1,
+                ..idle(2)
+            },
+            &Budget::default(),
+            &mut Steps {
+                run: &mut |_: TicketId, _: &ActionName| 0,
+                launch: &mut |_: TicketId, _: &ActionName| Ok(()),
+                start: &mut |_: &PlannedModel| Ok(()),
+                pr_of: &mut |_: TicketId| None,
+                merged: &mut |_: crate::ports::PrNumber| panic!("no number, no question"),
+                branch_head: &mut || None,
+                group: &mut |_| {},
+                log: &mut |line: &str| logged.push(line.to_owned()),
+            },
+        );
+        assert!(
+            logged
+                .iter()
+                .any(|line| line.contains("exit 0, not merged, ")),
+            "{logged:?}"
+        );
+    }
+
+    #[test]
+    fn per_tick_two_skips_the_third() {
+        let (scene, gathered) = three_at_their_merge();
+        let ((tick, ran), _) = run_group(&scene.board, &gathered, 2, &|_| 0, &|_| true);
+        assert_eq!(ran, [3, 4]);
+        assert_eq!(lines(&tick.held), ["#5 skipped: 2 merged in this tick"]);
+    }
+
+    #[test]
+    fn a_refusal_ends_the_group() {
+        let (scene, gathered) = three_at_their_merge();
+        // The forge refuses #4: pr-merge exits 4, which merge passes on as 2.
+        let ((tick, ran), logged) = run_group(
+            &scene.board,
+            &gathered,
+            8,
+            &|task| if task == 4 { 2 } else { 0 },
+            &|task| task != 4,
+        );
+        assert_eq!(ran, [3, 4], "#5 never runs");
+        assert_eq!(
+            lines(&tick.held),
+            ["#5 skipped: #3 merged in this tick, so its merge waits for the next one"]
+        );
+        assert!(
+            logged
+                .iter()
+                .any(|line| line.starts_with("merge #4 of merge: exit 2, not merged, ")),
+            "{logged:?}"
+        );
+    }
+
+    #[test]
+    fn a_landed_merge_with_board_done_failing_counts() {
+        let (scene, gathered) = three_at_their_merge();
+        // #3 merged, then `board done` failed: the action exits 2, the pull request is merged.
+        let ((tick, ran), _) = run_group(
+            &scene.board,
+            &gathered,
+            2,
+            &|task| if task == 3 { 2 } else { 0 },
+            &|_| true,
+        );
+        assert_eq!(ran, [3, 4], "#3 counts toward per_tick, so #5 waits");
+        assert_eq!(lines(&tick.held), ["#5 skipped: 2 merged in this tick"]);
     }
 
     #[test]
@@ -2031,6 +2417,60 @@ mod one_merge_a_tick {
     }
 
     #[test]
+    fn a_held_task_follows_the_fresh_one_in_the_same_tick() {
+        let (scene, mut gathered) = three_at_their_merge();
+        // #5 is fresh from a fix: #3 and #4 wait on its merge, and nothing else (F31).
+        for facts in &mut gathered.tickets {
+            facts.merging.first = (facts.ticket != id(5)).then(|| id(5));
+        }
+        let ((tick, ran), logged) = run_group(&scene.board, &gathered, 8, &|_| 0, &|_| true);
+        assert_eq!(
+            ran,
+            [5, 3, 4],
+            "#5 lands first, the two held behind it after"
+        );
+        assert!(tick.failed.is_empty(), "{tick:?}");
+        assert!(
+            logged
+                .iter()
+                .any(|line| line.starts_with("merges: 3 landed, 0 left for the next tick, in ")),
+            "{logged:?}"
+        );
+        // The fresh one did not land: the hold stands, so nobody follows it.
+        let ((_, ran), _) = run_group(&scene.board, &gathered, 8, &|_| 1, &|_| false);
+        assert_eq!(ran, [5], "#3 and #4 wait while #5 stands");
+    }
+
+    #[test]
+    fn a_task_with_another_wait_does_not_follow() {
+        let (scene, mut gathered) = three_at_their_merge();
+        let head = CommitId::from("b1");
+        let pending = BaseFacts {
+            head: Some(head.clone()),
+            checks: vec![crate::domain::schedule::CheckFact {
+                name: CheckName::from("ci"),
+                result: crate::domain::schedule::CheckResult::Pending,
+            }],
+            reached_at: None,
+        };
+        // The base has a check pending: #3, the fresh one, was ruled through at that head; #4 waits
+        // on #3's merge and on the base; #5 waits on the base alone.
+        for facts in &mut gathered.tickets {
+            facts.merging.base = pending.clone();
+            facts.merging.first = (facts.ticket == id(4)).then(|| id(3));
+            if facts.ticket == id(3) {
+                facts.merging.ruled_at = Some(head.clone());
+            }
+        }
+        let ((_, ran), _) = run_group(&scene.board, &gathered, 8, &|_| 0, &|_| true);
+        assert_eq!(
+            ran,
+            [3],
+            "#4 is held by R30 and by the base, so it is not added"
+        );
+    }
+
+    #[test]
     fn the_gate_names_what_a_merge_waits_on() {
         let (_scene, mut gathered) = three_at_their_merge();
         let facts = &mut gathered.tickets[0];
@@ -2041,6 +2481,7 @@ mod one_merge_a_tick {
                 name: CheckName::from("ci"),
                 result: crate::domain::schedule::CheckResult::Pending,
             }],
+            reached_at: None,
         };
         let refusal = may_start(facts, &gathered.beside[&id(3)], &name("merge"), now())
             .expect_err("it waits");

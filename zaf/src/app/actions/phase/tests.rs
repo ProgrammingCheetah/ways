@@ -1,6 +1,7 @@
 use std::time::{Duration, SystemTime};
 
 use super::*;
+use crate::ports::{CommitId, Vcs};
 
 const HEAD: &str = "head-new";
 const OLD_HEAD: &str = "head-old";
@@ -34,9 +35,12 @@ fn task_check(verdict: Verdict, seconds: u64) -> Option<CheckRecord> {
     Some(record(verdict, None, seconds))
 }
 
+/// A workspace whose latest commit is `commit`; it is at the pull request's head when that is
+/// `HEAD`.
 fn workspace(commit: &str) -> Option<WorkspaceFacts> {
     Some(WorkspaceFacts {
         latest_commit: Some(commit.to_owned()),
+        holds_head: commit == HEAD,
     })
 }
 
@@ -482,4 +486,203 @@ fn unclaimed_is_never_declarable() {
     assert_eq!(Phase::declared("unclaimed"), None);
     assert_eq!(Phase::Unclaimed.to_string(), "unclaimed");
     assert_eq!(Phase::declared("land"), Some(Phase::Land));
+}
+
+/// A task whose workspace and pull request are read through the fake Vcs and the fake forge, as
+/// the actions read them.
+mod held_head {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use super::*;
+    use crate::domain::{Ticket, TicketId, TicketState};
+    use crate::fakes::{FakeBoard, FakeForge, FakeVcs, PrRequest};
+    use crate::ports::{BaseName, PrNumber, SliceName};
+
+    const TASK: u64 = 448;
+    const SLICE: &str = "feature/0.5.3-420-448";
+    const BASE: &str = "feature/0.5.3";
+
+    pub(super) struct Scene {
+        _dir: tempfile::TempDir,
+        root: PathBuf,
+        workspace: PathBuf,
+        board: FakeBoard,
+        forge: FakeForge,
+        pub(super) vcs: FakeVcs,
+        pr: PrNumber,
+    }
+
+    fn write(file: &Path, text: &str) {
+        fs::create_dir_all(file.parent().expect("parent")).expect("mkdir");
+        fs::write(file, text).expect("write");
+    }
+
+    impl Scene {
+        /// A claimed task with its slice open and one commit of work in the workspace; its
+        /// pull request is open and reports no head yet.
+        pub(super) fn new() -> (Self, CommitId) {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let base = fs::canonicalize(dir.path()).expect("real path");
+            let (root, workspace) = (base.join("project"), base.join("workspace"));
+            fs::create_dir_all(&workspace).expect("mkdir");
+            let task = TicketId::from(TASK);
+            let board = FakeBoard::default();
+            board.add_ticket(Ticket {
+                id: task,
+                epic: Some(TicketId::from(420)),
+                title: "Holds".into(),
+                body: "".into(),
+                state: Some(TicketState::Claimed),
+                url: "".into(),
+                kind: None,
+            });
+            let (slice, base_name) = (SliceName::from(SLICE), BaseName::from(BASE));
+            let vcs = FakeVcs::default();
+            vcs.open(&slice, &base_name);
+            vcs.place(&slice, &workspace).expect("place");
+            vcs.edit(&slice, "a.rs", 1, 0, "+a").expect("edit");
+            let latest = vcs.commit(&slice, "Work").expect("commit");
+            let forge = FakeForge::default();
+            let pr = forge
+                .open_pr(&PrRequest {
+                    slice,
+                    base: base_name,
+                    title: "Holds".to_owned(),
+                    body: String::new(),
+                })
+                .expect("open pr");
+            write(
+                &root.join(".zaf/slices/448"),
+                &workspace.display().to_string(),
+            );
+            write(&root.join(".zaf/slices/448.pr"), &pr.get().to_string());
+            let scene = Self {
+                _dir: dir,
+                root,
+                workspace,
+                board,
+                forge,
+                vcs,
+                pr,
+            };
+            (scene, latest)
+        }
+
+        /// The pull request is at `head`, and a clean `check pr` was made at `reviewed`.
+        pub(super) fn at(&self, head: &CommitId, reviewed: &CommitId) {
+            self.forge
+                .set_head(self.pr, Some(head.as_str()))
+                .expect("set head");
+            let stored = CheckRecord {
+                target: "#448".to_owned(),
+                verdict: Verdict::Clean,
+                lines: Vec::new(),
+                head: Some(reviewed.to_string()),
+                at: Some(humantime::format_rfc3339_seconds(time(REVIEWED)).to_string()),
+            };
+            let file = self
+                .root
+                .join(format!(".zaf/runs/check-pr-{}.json", self.pr.get()));
+            write(&file, &serde_json::to_string(&stored).expect("json"));
+        }
+
+        pub(super) fn facts(&self) -> PhaseFacts {
+            let records = crate::app::actions::SliceRecords::new(&self.root);
+            let task = TicketId::from(TASK);
+            gather_phase_facts(&self.board, &self.forge, &self.vcs, &records, task).expect("facts")
+        }
+
+        pub(super) fn phase(&self) -> Phase {
+            derive_phase(&self.facts())
+        }
+
+        pub(super) fn workspace(&self) -> &Path {
+            &self.workspace
+        }
+    }
+}
+
+#[test]
+fn empty_commit_on_top_derives_land() {
+    let (scene, latest) = held_head::Scene::new();
+    // The head the pull request is at is an empty commit on the workspace's latest commit, and
+    // the review is clean at that head.
+    let head = scene.vcs.empty_commit(&latest).expect("empty commit");
+    scene.at(&head, &head);
+    assert_eq!(scene.phase(), Phase::Land);
+    // The workspace's own latest commit as the head is held as before.
+    scene.at(&latest, &latest);
+    assert_eq!(scene.phase(), Phase::Land);
+}
+
+#[test]
+fn other_work_at_head_does_not_derive_land() {
+    let (scene, latest) = held_head::Scene::new();
+    let head = scene.vcs.changed_commit(&latest).expect("changed commit");
+    scene.at(&head, &head);
+    assert_eq!(scene.phase(), Phase::Build);
+    // A head that does not descend from the workspace's latest commit, with its tree.
+    let beside = scene.vcs.sibling_commit(&latest).expect("sibling");
+    scene.at(&beside, &beside);
+    assert_eq!(scene.phase(), Phase::Build);
+    // A head the repository does not hold.
+    let unseen = CommitId::from("not-in-the-repository");
+    scene.at(&unseen, &unseen);
+    assert_eq!(scene.phase(), Phase::Build);
+    assert_eq!(scene.vcs.holds(scene.workspace(), &unseen), Ok(false));
+}
+
+#[test]
+fn review_at_an_earlier_head_does_not_count() {
+    let (scene, latest) = held_head::Scene::new();
+    let head = scene.vcs.empty_commit(&latest).expect("empty commit");
+    // Clean at the workspace's commit, but the pull request has moved on to the empty commit:
+    // the head holds the work, and the review is not for it.
+    scene.at(&head, &latest);
+    assert_eq!(scene.phase(), Phase::Publish);
+    // The same review at the head it was made at counts.
+    scene.at(&head, &head);
+    assert_eq!(scene.phase(), Phase::Land);
+}
+
+#[test]
+fn phase_refusal_names_head_not_held() {
+    // A workspace ahead of the head of a clean review: the words name both commits.
+    let held = ahead_of_clean_review().head_not_held();
+    assert_eq!(
+        held.as_deref(),
+        Some(
+            "the workspace does not hold the pull request's head head-new: \
+             its latest commit is commit-local"
+        )
+    );
+    // At the head, with no clean result or no workspace, nothing is said.
+    let at_head = PhaseFacts {
+        workspace: workspace(HEAD),
+        ..ahead_of_clean_review()
+    };
+    assert_eq!(at_head.head_not_held(), None);
+    assert_eq!(must_fix_review().head_not_held(), None);
+    assert_eq!(open_pr().head_not_held(), None);
+    let no_workspace = PhaseFacts {
+        workspace: None,
+        ..ahead_of_clean_review()
+    };
+    assert_eq!(no_workspace.head_not_held(), None);
+}
+
+#[test]
+fn phase_refusal_head_missing_locally() {
+    let (scene, latest) = held_head::Scene::new();
+    let unseen = CommitId::from("not-in-the-repository");
+    scene.at(&unseen, &unseen);
+    let held = scene.facts().head_not_held().expect("the head is not held");
+    assert!(
+        held.starts_with(
+            "the workspace does not hold the pull request's head not-in-the-repository"
+        ),
+        "{held}"
+    );
+    assert!(held.contains(latest.as_str()), "{held}");
 }

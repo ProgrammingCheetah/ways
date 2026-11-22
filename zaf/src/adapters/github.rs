@@ -6,6 +6,7 @@
 //! [`crate::ports::PortError::Backend`] carrying gh's stderr.
 
 mod board;
+mod ci_filter;
 mod command;
 mod forge;
 mod public_releases;
@@ -13,6 +14,7 @@ mod rows;
 mod state;
 
 pub use board::{GithubBoard, GithubProjectBoard};
+pub use ci_filter::GithubCiFilter;
 pub use command::{GhCommand, GhRun};
 pub use forge::GithubForge;
 pub use public_releases::PublicReleases;

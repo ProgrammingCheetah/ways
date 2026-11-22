@@ -58,6 +58,10 @@ impl Forge for ScriptedForge {
         self.inner.review_comments(pr)
     }
 
+    fn checks_at(&self, pr: PrNumber, _head: Option<&str>) -> Result<Vec<Check>, PortError> {
+        self.checks(pr)
+    }
+
     fn pull_request(&self, pr: PrNumber) -> Result<PullRequest, PortError> {
         self.inner.pull_request(pr)
     }
@@ -70,8 +74,8 @@ impl Forge for ScriptedForge {
         self.inner.merged(pr)
     }
 
-    fn last_changed_file(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
-        self.inner.last_changed_file(pr)
+    fn changed_files(&self, pr: PrNumber) -> Result<crate::domain::ChangedFiles, PortError> {
+        self.inner.changed_files(pr)
     }
 
     fn scanning_alerts(&self, pr: PrNumber) -> Result<Vec<ScanningAlert>, PortError> {

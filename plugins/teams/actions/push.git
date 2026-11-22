@@ -1,0 +1,125 @@
+#!/bin/sh
+# zaf description: push a slice's branch to origin by a forward move only: when origin has no such branch, or its branch is an ancestor of the slice's latest commit; never forced, so a move backward or sideways is refused and origin stays as it was; a slice already on origin at its latest commit is quiet; hands back the pushed commit
+# zaf 1: refused: ZAF_VCS is not git, uncommitted work, a merge in progress, a remote branch the slice's latest commit does not hold (a move backward or sideways: origin has work the slice lacks), no workspace for the slice, or a slice name that is not a workspace path
+# zaf 2: a backend failed (git is missing or refused, origin is missing or unreachable, or the push failed)
+# zaf mode: 750
+# zaf group: team, release, implement, fix, merge
+# changed: the git version of `push`: a git project takes this file for that name
+slice=$1
+
+if [ -z "$ZAF_ROOT" ] || [ "$#" -ne 1 ]; then
+    echo "usage: push <slice>, with ZAF_ROOT set" >&2
+    exit 1
+fi
+
+if [ "$ZAF_VCS" != "git" ]; then
+    echo "push.git is for a git project; ZAF_VCS is '$ZAF_VCS'" >&2
+    exit 1
+fi
+
+# A slice name is a relative path of plain parts, below the workspaces directory.
+case "/$slice/" in
+    *//* | */./* | */../*)
+        echo "slice name $slice is not a relative path inside the workspaces directory" >&2
+        exit 1
+        ;;
+esac
+case $slice in
+    "" | /* | -*)
+        echo "slice name $slice is not a relative path inside the workspaces directory" >&2
+        exit 1
+        ;;
+esac
+if ! git check-ref-format --branch "$slice" >/dev/null 2>&1; then
+    echo "slice name $slice is not a relative path inside the workspaces directory" >&2
+    exit 1
+fi
+
+dir=$ZAF_ROOT/.zaf/workspaces/$slice
+
+# Only a worktree of this repository, on the slice's branch, is an open slice.
+open=false
+if [ -e "$dir/.git" ]; then
+    here=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+    root=$(git -C "$ZAF_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+    branch=$(git -C "$dir" symbolic-ref --short --quiet HEAD 2>/dev/null)
+    if [ -n "$here" ] && [ "$here" = "$root" ] && [ "$branch" = "$slice" ]; then
+        open=true
+    fi
+fi
+if [ "$open" != "true" ]; then
+    echo "no workspace for slice $slice" >&2
+    exit 1
+fi
+cd "$dir" || exit 2
+
+# What is pushed is a commit: work left on disk is not in it. Nothing under .zaf/ is the slice's.
+if ! work=$(git status --porcelain -- . ':(exclude).zaf'); then
+    exit 2
+fi
+if [ -n "$work" ]; then
+    echo "uncommitted work in $slice; commit first" >&2
+    exit 1
+fi
+
+# A merge left open is not a commit yet, and its branch is not the slice's to publish.
+if git rev-parse --quiet --verify MERGE_HEAD >/dev/null 2>&1; then
+    echo "a merge is in progress in $slice; conclude it first" >&2
+    exit 1
+fi
+
+head=$(git rev-parse --verify HEAD) || exit 2
+remote=origin
+ref=refs/heads/$slice
+
+if ! git remote get-url "$remote" >/dev/null 2>&1; then
+    echo "the project has no remote $remote" >&2
+    exit 2
+fi
+
+# What origin holds under the branch now: nothing, or a commit.
+listed=$(git ls-remote "$remote" "$ref") || exit 2
+there=$(printf '%s\n' "$listed" | awk -v ref="$ref" '$2 == ref { print $1 }')
+
+if [ -n "$there" ]; then
+    # Already there at this commit: nothing new.
+    if [ "$there" = "$head" ]; then
+        echo "$head"
+        exit 0
+    fi
+    # The commit origin holds must be known here to be told an ancestor. Fetching it by name moves
+    # no branch of this repository.
+    if ! git cat-file -e "$there^{commit}" 2>/dev/null; then
+        git fetch --quiet "$remote" "$ref" >&2 || exit 2
+        if ! git cat-file -e "$there^{commit}" 2>/dev/null; then
+            echo "origin's $slice ($there) could not be fetched" >&2
+            exit 2
+        fi
+    fi
+    git merge-base --is-ancestor "$there" "$head"
+    case $? in
+        0) ;;
+        1)
+            echo "origin has work $slice lacks: pushing would move its branch backward or sideways" >&2
+            exit 1
+            ;;
+        *) exit 2 ;;
+    esac
+fi
+
+# A plain push of a named commit to the one branch: no `+`, no `--force`, no lease. A branch that
+# moved on origin since it was read is refused by git itself.
+if ! pushed=$(git push --quiet "$remote" "$head:$ref" 2>&1); then
+    printf '%s\n' "$pushed" >&2
+    case $pushed in
+        *"non-fast-forward"* | *"fetch first"* | *"[rejected]"*)
+            echo "origin has work $slice lacks" >&2
+            exit 1
+            ;;
+    esac
+    exit 2
+fi
+if [ -n "$pushed" ]; then
+    printf '%s\n' "$pushed" >&2
+fi
+echo "$head"

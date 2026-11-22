@@ -10,13 +10,20 @@
 #                an answer ending in `!` answers one call only, and the next rule the later ones
 #   used         the rules that answered once, by line number
 #   calls/       every call: <n> holds its argv, NUL-separated; <n>.config what it read on stdin
+#   hook         optional, executable: run as `hook "METHOD URL" <scene>` before the rules are
+#                read, so a test can change the scene (the rules, a repository) as an instance
+#                does when a call lands; its output goes to hook.log, and its failure ends the
+#                call with a 599 status
 # An unmatched call prints a 599 status.
 set -eu
 scene=${FAKE_CURL_DIR:?FAKE_CURL_DIR is not set}
 mkdir -p "$scene/calls"
+# Calls may run together: a lock makes each call's number its own.
+until mkdir "$scene/calls.lock" 2>/dev/null; do sleep 0.01; done
 count=$(find "$scene/calls" -type f ! -name '*.config' | wc -l)
 call="$scene/calls/$(printf '%05d' "$count")"
 printf '%s\0' "$@" > "$call"
+rmdir "$scene/calls.lock"
 cat > "$call.config"
 method=GET
 url=
@@ -29,6 +36,12 @@ for arg in "$@"; do
     url=$arg
 done
 asked="$method $url"
+if [ -x "$scene/hook" ]; then
+    "$scene/hook" "$asked" "$scene" >> "$scene/hook.log" 2>&1 || {
+        printf 'fake curl: the hook failed on: %s\n599' "$asked"
+        exit 0
+    }
+fi
 tab=$(printf '\t')
 line=0
 while IFS="$tab" read -r pattern answer response; do
@@ -57,4 +70,5 @@ while IFS="$tab" read -r pattern answer response; do
             ;;
     esac
 done < "$scene/rules"
+echo "$asked" >> "$scene/unmatched"
 printf 'fake curl: no rule matches: %s\n599' "$asked"

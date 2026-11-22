@@ -9,13 +9,17 @@
 //! An action that declares `terminal: yes` keeps the caller's terminal instead ([`StdioPlan`]):
 //! its stdin, stdout and stderr are zaf's, it stays in zaf's process group so the terminal lets it
 //! read, its log holds one line saying so, and only a bound it declares itself applies. It runs
-//! only when the caller has a terminal ([`Terminal`]), never as a hook.
+//! only when the caller has a terminal ([`Terminal`]), never as a hook. A caller that holds a
+//! pseudo-terminal (the chair's phase pane) hands over its side as a plain file descriptor
+//! ([`PtySide`]): the body gets it as stdin, stdout, stderr and controlling terminal, in a session
+//! of its own, so this layer names no terminal crate.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::fd::{BorrowedFd, OwnedFd, RawFd};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -24,16 +28,18 @@ use std::time::{Duration, Instant, SystemTime};
 
 use super::caller::Caller;
 use super::metadata::{ActionKind, ActionMetadata, parse};
-use super::phase::{derive_phase, gather_phase_facts};
+use super::phase::{Phase, derive_phase, gather_phase_facts};
 use super::records::{SliceRecords, forget_records, keep_hand_back};
 use super::resolve::{
-    HOOKS_DIR, ResolveError, Resolved, Tier, can_shadow, check_name, hook_file, hook_file_in, list,
-    resolve, resolve_in, same_file,
+    HOOKS_DIR, ResolveError, Resolved, Tier, can_shadow, check_name, hook_file, hook_file_in,
+    list_for, resolve_for, resolve_in_for, same_file,
 };
 use super::slice_env::{SliceContext, SliceEnv, VERSION_VAR};
+use crate::adapters::process;
 use crate::app::schedule::binary;
 use crate::composition::{STATE_DIR, ZAF_HOME_VAR};
 use crate::domain::TicketId;
+use crate::manifest::VcsKind;
 
 /// The exit code of a body that never ran; no action may declare it.
 pub const NOT_RUN_EXIT: u8 = 125;
@@ -50,6 +56,9 @@ pub const MAX_DEPTH: u32 = 8;
 
 /// The project root, unset outside a project.
 pub const ROOT_VAR: &str = "ZAF_ROOT";
+
+/// The project's VCS: `jj` or `git`, from the manifest's `[vcs] kind`; unset without one.
+pub const VCS_VAR: &str = "ZAF_VCS";
 
 /// The action's name.
 pub const ACTION_VAR: &str = "ZAF_ACTION";
@@ -102,14 +111,41 @@ pub enum RunResult {
     NotRun,
 }
 
-/// Whether the caller has a terminal: zaf's own stdin and stdout are both one. The CLI tells it, so
-/// a test can say either without a real terminal.
+/// Whether the caller has a terminal: zaf's own stdin and stdout are both one, or a pseudo-terminal
+/// it holds for the body. The CLI tells it, so a test can say either without a real terminal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Terminal {
     /// zaf's stdin and stdout are a terminal: someone may be there to answer.
     Present,
     /// One of them is not, as in a model's shell, a pipe or a detached launch: no one can answer.
     Absent,
+    /// The caller holds a pseudo-terminal and draws it for someone who answers there: the chair's
+    /// phase pane. A `terminal: yes` body runs on its side ([`StdioPlan::OnPty`]).
+    Pty(PtySide),
+}
+
+/// The side of a pseudo-terminal a body runs on (the slave), as the plain file descriptor the
+/// caller holds open for as long as the run lasts. The run takes copies of it and never closes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PtySide(RawFd);
+
+impl PtySide {
+    /// The side open at `fd`, which the caller keeps open until the run returns.
+    pub fn new(fd: RawFd) -> Self {
+        Self(fd)
+    }
+
+    /// Its file descriptor.
+    pub fn fd(self) -> RawFd {
+        self.0
+    }
+
+    /// A copy of it, for one of the body's stdio streams.
+    fn copy(self) -> io::Result<OwnedFd> {
+        // SAFETY: the caller keeps the descriptor open for the whole run (`PtySide::new`), so it
+        // is valid while it is borrowed here to be duplicated.
+        unsafe { BorrowedFd::borrow_raw(self.0) }.try_clone_to_owned()
+    }
 }
 
 /// What a run is for: the file is found by its own rules, and only an action may take the
@@ -133,6 +169,11 @@ pub enum StdioPlan {
     /// terminal lets read. Its log holds one line saying it ran here, and only a bound the file
     /// declares applies: a person at the terminal takes the time they take.
     OnTerminal,
+    /// The body's stdin, stdout and stderr are the caller's pseudo-terminal side, which is also its
+    /// controlling terminal, in a session (and process group) of its own: a hang-up or a resize
+    /// reaches it as from a terminal. Its log holds one line saying so, and only a bound the file
+    /// declares applies, as on the terminal.
+    OnPty(PtySide),
 }
 
 impl StdioPlan {
@@ -141,14 +182,20 @@ impl StdioPlan {
     pub fn time_bound(self, declared: Option<u64>, default: u64) -> Option<u64> {
         match self {
             Self::Logged => Some(declared.unwrap_or(default)),
-            Self::OnTerminal => declared,
+            Self::OnTerminal | Self::OnPty(_) => declared,
         }
+    }
+
+    /// Whether the body leads a process group of its own, so a kill takes the whole group.
+    fn leads_group(self) -> bool {
+        !matches!(self, Self::OnTerminal)
     }
 }
 
 /// The plan for a body whose file declares `metadata`, run as `runs_as` for a caller with or
-/// without a terminal. A file without `terminal: yes` is logged; one with it is on the terminal, or refused
-/// with the words of the `NOT_RUN` line when the run is a hook or the caller has no terminal.
+/// without a terminal. A file without `terminal: yes` is logged; one with it is on the terminal (on
+/// the caller's pseudo-terminal when it holds one), or refused with the words of the `NOT_RUN` line
+/// when the run is a hook or the caller has no terminal.
 pub fn stdio_plan(
     metadata: &ActionMetadata,
     runs_as: RunsAs,
@@ -161,6 +208,7 @@ pub fn stdio_plan(
         (RunsAs::Hook, _) => Err(HOOK_HAS_NO_TERMINAL),
         (RunsAs::Action, Terminal::Absent) => Err(NO_TERMINAL),
         (RunsAs::Action, Terminal::Present) => Ok(StdioPlan::OnTerminal),
+        (RunsAs::Action, Terminal::Pty(side)) => Ok(StdioPlan::OnPty(side)),
     }
 }
 
@@ -289,6 +337,10 @@ pub struct RunRequest<'a> {
     /// The phase a `zaf begin` run carries, set on the body as the `ZAF_PHASE*` variables; `None`
     /// for every other run, which then sets none of them. Only [`RunRequest::with_phase`] sets it.
     pub phase: Option<PhaseEnv>,
+    /// The manifest's `[vcs] kind`, set on the body as `ZAF_VCS`; `None` (no `[vcs]`, or no project)
+    /// sets none and removes one the caller held. On a git project a name also resolves to its
+    /// `<name>.git` first and passes over a file marked `vcs: jj` (a hook never does).
+    pub vcs: Option<VcsKind>,
 }
 
 impl RunRequest<'_> {
@@ -300,6 +352,10 @@ impl RunRequest<'_> {
     }
 }
 
+/// The pull request's head the land phase was derived at. Set by zaf on a run of the land phase
+/// alone and passed through every nested `zaf do`; the manifest's `[env]` cannot set it.
+pub const HEAD_VAR: &str = "ZAF_HEAD";
+
 /// The phase's name: `design`, `objectives`, and so on.
 pub const PHASE_VAR: &str = "ZAF_PHASE";
 
@@ -309,8 +365,12 @@ pub const RELEASE_DIR_VAR: &str = "ZAF_RELEASE_DIR";
 /// The file a phase reads its input from; set only when the phase has one (design).
 pub const PHASE_INPUT_VAR: &str = "ZAF_PHASE_INPUT";
 
+/// The file `zaf begin ready` writes when the session judges its document done; set only when
+/// someone watches for it (the chair's phase pane), which then ends the session.
+pub const READY_VAR: &str = "ZAF_READY";
+
 /// What an action run for a release phase is told (docs/zaf-actions.md §3, epic #92 §5):
-/// `PhaseEnv { version, phase, release_dir, input: Option<PathBuf> }`.
+/// `PhaseEnv { version, phase, release_dir, input: Option<PathBuf>, ready: Option<PathBuf> }`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhaseEnv {
     /// The release the branches build toward: `ZAF_VERSION`.
@@ -321,9 +381,18 @@ pub struct PhaseEnv {
     pub release_dir: PathBuf,
     /// The input file: `ZAF_PHASE_INPUT`, set only when given and never for objectives.
     pub input: Option<PathBuf>,
+    /// The ready file: `ZAF_READY`, set only when a caller watches for it (the chair).
+    pub ready: Option<PathBuf>,
 }
 
 impl PhaseEnv {
+    /// This phase's environment with `ZAF_READY` naming `file`, which the caller watches for.
+    #[must_use]
+    pub fn with_ready(mut self, file: PathBuf) -> Self {
+        self.ready = Some(file);
+        self
+    }
+
     /// Puts the variables on `command`.
     fn apply(&self, command: &mut Command) {
         let release_dir =
@@ -336,6 +405,10 @@ impl PhaseEnv {
             Some(input) => command.env(PHASE_INPUT_VAR, input),
             None => command.env_remove(PHASE_INPUT_VAR),
         };
+        match &self.ready {
+            Some(ready) => command.env(READY_VAR, ready),
+            None => command.env_remove(READY_VAR),
+        };
     }
 }
 
@@ -347,6 +420,9 @@ impl PhaseEnv {
 pub struct RunStep<'a> {
     /// The run folder, set on the body as `ZAF_RUN`.
     pub dir: &'a Path,
+    /// The head Land was derived at, set on the body as `ZAF_HEAD` for a run of the land phase;
+    /// `None` for any other phase, whose body then has none.
+    pub head: Option<&'a str>,
     /// Told the body's process id once it has started.
     pub started: &'a dyn Fn(u32),
 }
@@ -381,8 +457,8 @@ pub struct RunOutcome {
     pub seconds: f64,
     /// The log; `None` for a body that never ran.
     pub log: Option<PathBuf>,
-    /// Whether the body ran on the terminal: what it wrote went there and never to the log, so a
-    /// `FAIL` quotes no lines of it.
+    /// Whether the body ran on the terminal, or on a caller's pseudo-terminal: what it wrote went
+    /// there and never to the log, so a `FAIL` quotes no lines of it.
     pub on_terminal: bool,
 }
 
@@ -448,6 +524,7 @@ pub struct ListedAction {
 /// that tier alone is looked in: the other is skipped, and a name it alone has resolves to
 /// nothing. A file found this way shadows nothing, since the tier above it was never read.
 fn find_action(
+    vcs: Option<VcsKind>,
     project_root: Option<&Path>,
     home: &Path,
     name: &str,
@@ -458,9 +535,9 @@ fn find_action(
             check_name(name)?;
             Ok(None)
         }
-        (Some(tier), root) => resolve_in(tier, root.unwrap_or(home), home, name),
-        (None, Some(root)) => resolve(root, home, name),
-        (None, None) => resolve_in(Tier::Machine, home, home, name),
+        (Some(tier), root) => resolve_in_for(vcs, tier, root.unwrap_or(home), home, name),
+        (None, Some(root)) => resolve_for(vcs, root, home, name),
+        (None, None) => resolve_in_for(None, Tier::Machine, home, home, name),
     }
 }
 
@@ -476,6 +553,7 @@ fn may_read(caller: &Caller, metadata: &Result<ActionMetadata, String>) -> bool 
 
 /// Every name the tiers provide that `caller` may read, with its tier and description.
 pub fn list_actions(
+    vcs: Option<VcsKind>,
     project_root: Option<&Path>,
     home: &Path,
     caller: &Caller,
@@ -483,7 +561,7 @@ pub fn list_actions(
     // `list` always reads a project tier. Outside a project it is pointed at a folder that
     // cannot be a project, so a `.zaf/actions` lying about is never taken for one.
     let no_project = home.join(super::resolve::ACTIONS_DIR);
-    let found = list(project_root.unwrap_or(&no_project), home)?;
+    let found = list_for(vcs, project_root.unwrap_or(&no_project), home)?;
     Ok(found
         .into_iter()
         .filter_map(|found| {
@@ -505,13 +583,14 @@ pub fn list_actions(
 /// The bytes of the file `name` resolves to, when `caller` may read it. The decision is made on
 /// the bytes returned, so an edit between the two cannot slip a file past its mode.
 pub fn read_action(
+    vcs: Option<VcsKind>,
     project_root: Option<&Path>,
     home: &Path,
     name: &str,
     only: Option<Tier>,
     caller: &Caller,
 ) -> Result<Vec<u8>, Refused> {
-    let found = find_action(project_root, home, name, only)
+    let found = find_action(vcs, project_root, home, name, only)
         .map_err(|error| Refused::before_the_file(error.to_string()))?
         .ok_or_else(|| Refused::before_the_file(NO_SUCH_ACTION.to_owned()))?;
     let refused = |reason: String| Refused {
@@ -587,6 +666,7 @@ fn find_hook_of(request: &RunRequest<'_>) -> Result<Option<Resolved>, ResolveErr
 /// The file of the request's action, as [`find_action`] has it.
 fn find_action_of(request: &RunRequest<'_>) -> Result<Option<Resolved>, ResolveError> {
     find_action(
+        request.vcs,
         request.project_root,
         request.home,
         request.name,
@@ -647,7 +727,7 @@ fn run_body(
         meaning,
         seconds: started_at.elapsed().as_secs_f64(),
         log: Some(log),
-        on_terminal: plan == StdioPlan::OnTerminal,
+        on_terminal: plan != StdioPlan::Logged,
     }
 }
 
@@ -824,7 +904,12 @@ fn check_phase(request: &RunRequest<'_>, metadata: &ActionMetadata) -> Result<()
         return Ok(());
     }
     let allowed: Vec<String> = metadata.phases.iter().map(ToString::to_string).collect();
-    Err(format!("{task} is in {phase}, not {}", allowed.join(", ")))
+    let reason = format!("{task} is in {phase}, not {}", allowed.join(", "));
+    // A land the workspace keeps the task from says why: it does not hold the head.
+    match facts.head_not_held() {
+        Some(held) if metadata.phases.contains(&Phase::Land) => Err(format!("{held}; {reason}")),
+        _ => Err(reason),
+    }
 }
 
 /// Whether the file's first two bytes are `#!`.
@@ -853,7 +938,7 @@ fn shadowed_metadata(
         .and_then(|rest| rest.strip_prefix('/'))
     {
         Some(file) => hook_file_in(tier, root, request.home, file),
-        None => resolve_in(tier, root, request.home, &found.name),
+        None => resolve_in_for(request.vcs, tier, root, request.home, &found.name),
     }
     .map_err(|error| error.to_string())?;
     let Some(shadowed) = shadowed.filter(|shadowed| !same_file(&found.path, &shadowed.path)) else {
@@ -966,10 +1051,38 @@ fn on_terminal_line(name: &str) -> String {
     format!("zaf: {name} ran on the terminal; its output went there and is not kept here\n")
 }
 
+/// The one line the log of a body on a caller's pseudo-terminal holds.
+fn on_pty_line(name: &str) -> String {
+    format!(
+        "zaf: {name} ran on a pseudo-terminal zaf drew; its output went there and is not kept here\n"
+    )
+}
+
+/// In the child, before it runs the body: a session of its own, with `side` (already its stdin) as
+/// its controlling terminal, so the terminal's hang-up and resize reach it, and nothing of its
+/// parent's but stdin, stdout and stderr once it runs (`limit` as
+/// [`process::close_above_stdio`] takes it): the chair holds the real terminal and its log.
+fn take_pty_as_terminal(limit: libc::c_int) -> io::Result<()> {
+    // SAFETY: called between fork and exec, where only async-signal-safe calls may be made: setsid
+    // and ioctl are. Descriptor 0 is the pseudo-terminal's side, set as stdin before this runs.
+    unsafe {
+        if libc::setsid() < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if libc::ioctl(0, libc::TIOCSCTTY, 0) < 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    process::close_above_stdio(limit);
+    Ok(())
+}
+
 /// Starts the file. A logged body runs in a process group of its own, its output in the log and
 /// nothing on stdin, bar the `input` a hook is told: no one can answer a prompt whose question went
 /// to a file. A body on the terminal keeps zaf's stdin, stdout and stderr and zaf's process group,
-/// the one the terminal lets read, and its log gets the one line that says so.
+/// the one the terminal lets read, and its log gets the one line that says so. A body on a caller's
+/// pseudo-terminal gets its side as stdin, stdout and stderr and as its controlling terminal, in a
+/// session of its own, and its log gets the one line that says so.
 fn spawn_body(request: &RunRequest<'_>, body: Body<'_>, slice_env: &SliceEnv) -> io::Result<Child> {
     let RunRequest { name, nesting, .. } = request;
     let Body {
@@ -983,7 +1096,7 @@ fn spawn_body(request: &RunRequest<'_>, body: Body<'_>, slice_env: &SliceEnv) ->
     command.args(request.args).current_dir(request.cwd);
     // Before every zaf variable, so nothing in the table can stand in for one.
     apply_manifest_env(&mut command, &request.env);
-    put_running_zaf_first(&mut command);
+    put_running_zaf_first(&mut command, request.home);
     command
         .env(ZAF_HOME_VAR, request.home)
         .env(ACTION_VAR, name)
@@ -1010,13 +1123,33 @@ fn spawn_body(request: &RunRequest<'_>, body: Body<'_>, slice_env: &SliceEnv) ->
                 .stdout(Stdio::inherit())
                 .stderr(Stdio::inherit());
         }
+        StdioPlan::OnPty(side) => {
+            log_file.write_all(on_pty_line(name).as_bytes())?;
+            command
+                .stdin(Stdio::from(side.copy()?))
+                .stdout(Stdio::from(side.copy()?))
+                .stderr(Stdio::from(side.copy()?));
+            let limit = process::descriptor_limit();
+            // SAFETY: the hook makes only async-signal-safe calls (`take_pty_as_terminal`).
+            unsafe { command.pre_exec(move || take_pty_as_terminal(limit)) };
+        }
     }
     match request.project_root {
         Some(root) => command.env(ROOT_VAR, root),
         None => command.env_remove(ROOT_VAR),
     };
+    // The manifest's word alone: a value the caller held never stands in for it.
+    match request.vcs {
+        Some(kind) => command.env(VCS_VAR, kind.to_string()),
+        None => command.env_remove(VCS_VAR),
+    };
     if let Some(run) = request.run {
         command.env(crate::ports::RUN_VAR, run.dir);
+        // A run of a phase says its head or has none: an inherited one is never the phase's.
+        match run.head {
+            Some(head) => command.env(HEAD_VAR, head),
+            None => command.env_remove(HEAD_VAR),
+        };
     }
     // Last, so nothing the caller or an earlier line set can stand in for these.
     slice_env.apply(&mut command);
@@ -1058,16 +1191,40 @@ fn apply_manifest_env(command: &mut Command, env: &BTreeMap<String, String>) {
     }
 }
 
-/// Puts the folder of the running zaf first on the `PATH` the action gets (the manifest's `PATH`, if
-/// it set one, else the inherited one), so `zaf` in a body is this binary and not an older one
-/// found earlier. When the running binary's path cannot be read, `PATH` is passed unchanged.
-fn put_running_zaf_first(command: &mut Command) {
-    let Some(folder) = std::env::current_exe()
-        .map(binary::without_deleted)
-        .ok()
-        .and_then(|exe| exe.parent().map(Path::to_path_buf))
-    else {
+/// The folder of the zaf links, under the zaf home.
+const BIN_DIR: &str = "state/bin";
+
+/// The link a zaf folder holds, and its only file.
+const ZAF_LINK: &str = "zaf";
+
+/// Puts a folder with only the running zaf first on the `PATH` the action gets (the manifest's
+/// `PATH`, if it set one, else the inherited one), so `zaf` in a body is this binary and not an older
+/// one found earlier, and no other tool beside the binary comes with it ([`zaf_folder`]). When that
+/// folder cannot be made, the folder the binary lives in goes first instead, with one warning line
+/// naming the folder that could not be made (ruling #578). The rest of `PATH` and its separator
+/// follow only when it is set and not empty: an empty entry would search the current folder. When
+/// the running binary's path cannot be read, `PATH` is passed unchanged.
+fn put_running_zaf_first(command: &mut Command, home: &Path) {
+    // The binary of a unit test is the test harness, not zaf: a `zaf` linked to it would stand in
+    // for the fake `zaf` a test puts on the manifest's `PATH`. `tests/do_action.rs` runs the real one.
+    if cfg!(test) {
         return;
+    }
+    let Ok(exe) = std::env::current_exe().map(binary::without_deleted) else {
+        return;
+    };
+    let folder = match zaf_folder(home, &exe) {
+        Ok(folder) => folder,
+        Err((folder, error)) => {
+            eprintln!(
+                "zaf: cannot make {}: {error}; the folder of the running zaf goes first on PATH",
+                folder.display()
+            );
+            match exe.parent() {
+                Some(parent) => parent.to_path_buf(),
+                None => return,
+            }
+        }
     };
     let set = command
         .get_envs()
@@ -1078,10 +1235,96 @@ fn put_running_zaf_first(command: &mut Command) {
         None => std::env::var_os("PATH"),
     }
     .unwrap_or_default();
-    let paths = std::iter::once(folder).chain(std::env::split_paths(&rest));
+    let rest = if rest.is_empty() {
+        Vec::new()
+    } else {
+        std::env::split_paths(&rest).collect()
+    };
+    let paths = std::iter::once(folder).chain(rest);
     if let Ok(joined) = std::env::join_paths(paths) {
         command.env("PATH", joined);
     }
+}
+
+/// `$ZAF_HOME/state/bin/<hash>`, a folder of mode 700 holding one symlink, `zaf`, to `exe`; `<hash>`
+/// is a hash of `exe`'s path, so two binaries never share a folder. It is made under a temporary
+/// name beside it and renamed into place. A folder already there whose link points at `exe` is
+/// used as it is; one whose link points elsewhere, or whose mode is wider, is set aside and
+/// replaced the same way. On failure, the folder that could not be made comes back with the error.
+fn zaf_folder(home: &Path, exe: &Path) -> Result<PathBuf, (PathBuf, io::Error)> {
+    use sha2::{Digest, Sha256};
+    use std::os::unix::ffi::OsStrExt;
+    let bin = home.join(BIN_DIR);
+    let digest = Sha256::digest(exe.as_os_str().as_bytes());
+    let name: String = digest[..16]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let folder = bin.join(&name);
+    make_zaf_folder(&bin, &folder, &name, exe).map_err(|error| (folder.clone(), error))?;
+    Ok(folder)
+}
+
+fn make_zaf_folder(bin: &Path, folder: &Path, name: &str, exe: &Path) -> io::Result<()> {
+    if links_only(folder, exe) {
+        return Ok(());
+    }
+    fs::create_dir_all(bin)?;
+    let nonce = format!(
+        "{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |since| since.as_nanos())
+    );
+    let fresh = bin.join(format!(".{name}.{nonce}.new"));
+    let old = bin.join(format!(".{name}.{nonce}.old"));
+    fs::DirBuilder::new().mode(0o700).create(&fresh)?;
+    let made = std::os::unix::fs::symlink(exe, fresh.join(ZAF_LINK))
+        // The umask may narrow a made folder's mode, never widen it: set it as it must be.
+        .and_then(|()| fs::set_permissions(&fresh, fs::Permissions::from_mode(0o700)))
+        .and_then(|()| {
+            // A folder that is there and wrong goes aside, so the rename can take its place.
+            if fs::symlink_metadata(folder).is_ok() {
+                let _ = fs::rename(folder, &old);
+            }
+            fs::rename(&fresh, folder)
+        });
+    let _ = fs::remove_dir_all(&old);
+    match made {
+        Ok(()) => Ok(()),
+        // Another run put its own in place in the meantime: use it when it is right.
+        Err(_) if links_only(folder, exe) => {
+            let _ = fs::remove_dir_all(&fresh);
+            Ok(())
+        }
+        Err(error) => {
+            let _ = fs::remove_dir_all(&fresh);
+            Err(error)
+        }
+    }
+}
+
+/// Whether `folder` is ours, mode 700, and holds only a `zaf` symlink to `exe`.
+fn links_only(folder: &Path, exe: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(meta) = fs::symlink_metadata(folder) else {
+        return false;
+    };
+    // SAFETY: `geteuid` takes no arguments and cannot fail.
+    let mine = meta.uid() == unsafe { libc::geteuid() };
+    if !meta.is_dir() || !mine || meta.mode() & 0o7777 != 0o700 {
+        return false;
+    }
+    let Ok(entries) = fs::read_dir(folder) else {
+        return false;
+    };
+    let names: Vec<OsString> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name())
+        .collect();
+    names == [OsString::from(ZAF_LINK)]
+        && fs::read_link(folder.join(ZAF_LINK)).is_ok_and(|target| target == exe)
 }
 
 /// Writes the inner log's path into the outer log, straight to the file so a body capturing
@@ -1187,7 +1430,7 @@ fn judge(status: ExitStatus, metadata: &ActionMetadata) -> (RunResult, u8, Optio
 /// is its own: a nested `zaf do` dying does not take its body along. A body on the terminal leads
 /// no group, it shares zaf's, so its processes there are killed one by one and the group never is.
 fn kill_all_under(leader: u32, plan: StdioPlan) {
-    let doomed = doomed_under(leader, plan == StdioPlan::Logged);
+    let doomed = doomed_under(leader, plan.leads_group());
     let targets = doomed
         .groups
         .iter()

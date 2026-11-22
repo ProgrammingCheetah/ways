@@ -72,7 +72,9 @@ use crate::app::schedule::request;
 use crate::app::spawn::view::{SPINNER, frame};
 use crate::composition::{STATE_DIR, zaf_home};
 use crate::domain::TicketId;
+use crate::domain::printable;
 use crate::domain::screen::{Line, Meaning, clean};
+use crate::ports::PrNumber;
 
 /// The log the view's process writes to, under the state folder.
 pub const LOG_FILE: &str = "logs/scheduler.log";
@@ -112,7 +114,7 @@ pub struct End {
     /// The version that is built.
     pub version: Version,
     /// The release pull request's number.
-    pub number: String,
+    pub number: PrNumber,
     /// The version after it, from the one next-version function.
     pub next: Version,
 }
@@ -419,10 +421,14 @@ impl View {
                 // The view stands still while a question waits: only its answer is looked for.
                 let line = match asked.line.try_recv() {
                     Ok(Typed::Line(line)) => line,
-                    Ok(Typed::Many) => {
-                        // More than one line: nothing is ruled, and the same question is asked
-                        // again once the refusal is out.
-                        let again = refused(&self.screen, &asked.block);
+                    Ok(refusal @ (Typed::Many | Typed::Unprintable)) => {
+                        // More than one line, or characters a screen may not be handed: nothing
+                        // is ruled, and the same question is asked again once the refusal is out.
+                        let again = if refusal == Typed::Many {
+                            refused(&self.screen, &asked.block)
+                        } else {
+                            refused_unprintable(&self.screen, &asked.block)
+                        };
                         let number = asked.number;
                         let block = asked.block.clone();
                         if out
@@ -565,7 +571,7 @@ impl View {
             request::ask(&self.state_dir, &who, SystemTime::now(), &process::alive)
         {
             // Said in the log: the timer picks the ruling up at its next tick.
-            eprintln!("zaf spawn --watch: {}", not_asked.left_to_the_timer(&who));
+            crate::eprintln_zaf!("zaf spawn --watch: {}", not_asked.left_to_the_timer(&who));
         }
         Ok(())
     }
@@ -614,16 +620,19 @@ enum Typed {
     Line(String),
     /// More input was queued after the line: it is thrown away and the line is not taken.
     Many,
+    /// The line differs from its [`printable`] form (a control, bidi or other hidden character):
+    /// it is thrown away with what was queued and the line is not taken.
+    Unprintable,
 }
 
 /// Reads one line from `input`, then asks `queued` whether more input waits behind it. On more,
 /// `clear` throws it away and the line is refused, so a pasted block is never read as an answer
 /// piece by piece.
 ///
-/// A line that starts with `ESC[200~` is a bracketed paste. One holding a newline is refused the
-/// same way, whether or not its last line was ended: the line discipline hands a line over at its
-/// newline, so a paste with no final newline shows as a first line that ends inside the markers.
-/// A one-line paste is the line as typed, without the markers.
+/// A bracketed paste (`ESC[200~` ... `ESC[201~`) may stand anywhere in the line, after typed text
+/// too. One holding a newline is refused the same way, whether or not its last line was ended: the
+/// line discipline hands a line over at its newline, so a paste with no final newline shows as a
+/// first line that ends inside the markers. Any other line is as typed, without the markers.
 fn read_typed(
     input: &mut impl BufRead,
     queued: impl FnOnce() -> bool,
@@ -631,58 +640,64 @@ fn read_typed(
 ) -> Typed {
     let mut bytes = Vec::new();
     let _ = input.read_until(b'\n', &mut bytes);
-    if let Some(inside) = bytes.strip_prefix(PASTE_START) {
-        let (pasted, rest) = match find(inside, PASTE_END) {
-            Some(at) => (&inside[..at], &inside[at + PASTE_END.len()..]),
-            // No end yet: the line ended inside the paste, which therefore holds a newline.
-            None if inside.ends_with(b"\n") => {
-                clear();
-                return Typed::Many;
-            }
-            None => (inside, &[][..]),
-        };
-        if pasted.iter().any(|byte| matches!(byte, b'\n' | b'\r')) {
+    // A newline met inside a paste, or a line that ended with a paste still open, refuses it.
+    match unmarked(&bytes) {
+        Some(line) => bytes = line,
+        None => {
             clear();
             return Typed::Many;
         }
-        let mut line = pasted.to_vec();
-        line.extend(unmarked(rest));
-        bytes = line;
     }
     if queued() {
         clear();
         return Typed::Many;
     }
-    Typed::Line(String::from_utf8_lossy(&bytes).into_owned())
+    let line = String::from_utf8_lossy(&bytes).into_owned();
+    // What is ruled is what was shown: an answer that printable() would change is not taken.
+    let answer = line.trim_end_matches(['\n', '\r']);
+    if printable(answer) != answer {
+        clear();
+        return Typed::Unprintable;
+    }
+    Typed::Line(line)
 }
 
-/// Where `needle` first occurs in `haystack`.
-fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|window| window == needle)
-}
-
-/// `bytes` without any paste marker.
-fn unmarked(bytes: &[u8]) -> Vec<u8> {
+/// `bytes` without any paste marker, wherever it stands, the rest kept in order; none when a paste
+/// holds a newline (`\n` or `\r`), which includes a paste that is still open when the line ends
+/// at its newline.
+fn unmarked(bytes: &[u8]) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(bytes.len());
+    let mut inside = false;
     let mut at = 0;
     while at < bytes.len() {
         let rest = &bytes[at..];
-        if rest.starts_with(PASTE_START) || rest.starts_with(PASTE_END) {
+        if rest.starts_with(PASTE_START) {
+            inside = true;
             at += PASTE_START.len();
+        } else if rest.starts_with(PASTE_END) {
+            inside = false;
+            at += PASTE_END.len();
+        } else if inside && matches!(bytes[at], b'\n' | b'\r') {
+            return None;
         } else {
             out.push(bytes[at]);
             at += 1;
         }
     }
-    out
+    Some(out)
 }
 
 /// What is written when several lines were given as an answer: the refusal, then the question's
 /// `block` again, which ends on the prompt.
 fn refused(screen: &Screen, block: &str) -> String {
     let said = "  one line only; answer longer ones with `zaf board ruling`";
+    format!("\n{}\n{block}", screen.paint(Meaning::Failed, said))
+}
+
+/// What is written when an answer held characters that cannot be shown: the refusal, then the
+/// question's `block` again, which ends on the prompt.
+fn refused_unprintable(screen: &Screen, block: &str) -> String {
+    let said = "  that answer holds control or hidden characters; type it again";
     format!("\n{}\n{block}", screen.paint(Meaning::Failed, said))
 }
 
@@ -762,7 +777,7 @@ pub fn end_lines(end: &End, merged: usize, minutes: u64) -> Vec<Line> {
             (Meaning::Bold, "Next:".into()),
             (
                 Meaning::Bold,
-                format!(" merge pull request #{} on the forge to ship ", end.number).into(),
+                format!(" merge pull request {} on the forge to ship ", end.number).into(),
             ),
             (Meaning::Noun, format!("{}.", end.version).into()),
         ],

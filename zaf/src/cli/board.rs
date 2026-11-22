@@ -17,6 +17,7 @@ use std::path::Path;
 use serde_json::json;
 
 use super::exit::{BACKEND, OK, REFUSED, code_for, fail_composition};
+use super::screen::Screen;
 use super::slice::print;
 use super::{BoardAction, Cli};
 use crate::app::actions::SliceRecords;
@@ -26,8 +27,10 @@ use crate::app::board::{
 use crate::app::hub::controls::{self, Failure};
 use crate::app::schedule::record;
 use crate::composition::Composition;
+use crate::domain::screen::{Line, Meaning, clean};
 use crate::domain::{
-    Instance, InstanceNumber, NewTask, RoleName, Ticket, TicketId, TicketState, check_typed_ruling,
+    Instance, InstanceNumber, NewTask, RoleName, TaskProblem, Ticket, TicketId, TicketState,
+    check_typed_ruling,
 };
 use crate::ports::{ClaimOutcome, NewQuestion, RUN_VAR};
 
@@ -138,7 +141,7 @@ pub fn run(cli: &Cli, action: &BoardAction) -> u8 {
             board::question(board, &command).map(|number| {
                 // A question asked inside a phase run is part of that run's record.
                 if let Err(reason) = record_in_run(*on, number) {
-                    eprintln!(
+                    crate::eprintln_zaf!(
                         "zaf {path}: question {number} is open on {on}, but its run did not record it: {reason}"
                     );
                     return BACKEND;
@@ -217,10 +220,11 @@ pub fn run(cli: &Cli, action: &BoardAction) -> u8 {
                     }))
                     .collect::<Vec<_>>(),
             });
-            let lines: Vec<String> = problems.iter().map(ToString::to_string).collect();
             // A body that parses prints nothing unless the JSON asks for its empty list.
-            if !problems.is_empty() || cli.json {
-                print(cli, &json, lines.join("\n"));
+            if cli.json {
+                print(cli, &json, "");
+            } else if !problems.is_empty() {
+                print!("{}", Screen::detect().draw(&lint_lines(&problems)));
             }
             if problems.is_empty() { OK } else { REFUSED }
         }),
@@ -232,9 +236,9 @@ pub fn run(cli: &Cli, action: &BoardAction) -> u8 {
             // Only a ruling typed at a shell can have been eaten by one: the hub's answer goes
             // to `controls::rule` unchecked.
             if let Err(refusal) = check_typed_ruling(text, *as_written) {
-                eprintln!("zaf {path}: {refusal}");
+                crate::eprintln_zaf!("zaf {path}: {refusal}");
                 if let Some(way_on) = refusal.way_on() {
-                    eprintln!("zaf {path}: {way_on}");
+                    crate::eprintln_zaf!("zaf {path}: {way_on}");
                 }
                 return REFUSED;
             }
@@ -256,7 +260,7 @@ pub fn run(cli: &Cli, action: &BoardAction) -> u8 {
         }
     };
     done.unwrap_or_else(|error| {
-        eprintln!("zaf {path}: {error}");
+        crate::eprintln_zaf!("zaf {path}: {error}");
         exit_code(&error)
     })
 }
@@ -268,7 +272,7 @@ fn read_body(path: &str, body: Option<&str>, file: Option<&std::path::Path>) -> 
         return Ok(body.to_owned());
     }
     let Some(file) = file else {
-        eprintln!("zaf {path}: give --body or --body-file");
+        crate::eprintln_zaf!("zaf {path}: give --body or --body-file");
         return Err(BACKEND);
     };
     let read = if file.as_os_str() == "-" {
@@ -277,7 +281,7 @@ fn read_body(path: &str, body: Option<&str>, file: Option<&std::path::Path>) -> 
         std::fs::read_to_string(file)
     };
     read.map_err(|error| {
-        eprintln!("zaf {path}: reading {}: {error}", file.display());
+        crate::eprintln_zaf!("zaf {path}: reading {}: {error}", file.display());
         BACKEND
     })
 }
@@ -299,6 +303,26 @@ pub fn rule_in(
     controls::rule(board.as_ref(), question, ruling)
 }
 
+/// One line for each problem: the field's name as a noun, the rest as a failure. The rest quotes
+/// the issue body, so it goes through [`clean`]: no control character of the board's reaches the
+/// terminal inside painted output. Drawn plain, the lines are the problems' own text.
+fn lint_lines(problems: &[TaskProblem]) -> Vec<Line> {
+    problems
+        .iter()
+        .map(|problem| {
+            let text = clean(&problem.to_string());
+            let name = clean(&problem.name());
+            match text.strip_prefix(&name) {
+                Some(rest) => vec![
+                    (Meaning::Noun, name.as_str().into()),
+                    (Meaning::Failed, rest.into()),
+                ],
+                None => vec![(Meaning::Failed, text.as_str().into())],
+            }
+        })
+        .collect()
+}
+
 /// The exit code a board error comes to.
 pub(super) fn exit_code(error: &BoardError) -> u8 {
     match error {
@@ -318,7 +342,7 @@ pub(super) fn exit_code(error: &BoardError) -> u8 {
 fn instance(path: &str) -> Result<Instance, u8> {
     let text = std::env::var(INSTANCE_VAR).unwrap_or_default();
     parse_instance(&text).ok_or_else(|| {
-        eprintln!(
+        crate::eprintln_zaf!(
             "zaf {path}: set {INSTANCE_VAR} to `<role> instance <number> on #<epic>`, got `{text}`"
         );
         BACKEND
@@ -339,3 +363,6 @@ fn parse_instance(text: &str) -> Option<Instance> {
     };
     Some(instance)
 }
+
+#[cfg(test)]
+mod tests;

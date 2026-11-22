@@ -488,6 +488,115 @@ fn a_colocated_repo_allows_the_git_read_verbs() {
     }
 }
 
+/// Claude Code's wildcard: `*` matches any text, spaces included, anywhere in the pattern.
+/// A trailing ` *` that is the rule's only wildcard also matches the bare command
+/// (`Bash(git log *)` matches `git log`).
+fn wildcard(pattern: &str, text: &str) -> bool {
+    if let Some(bare) = pattern.strip_suffix(" *")
+        && !bare.contains('*')
+        && bare == text
+    {
+        return true;
+    }
+    glob(pattern, text)
+}
+
+fn glob(pattern: &str, text: &str) -> bool {
+    match pattern.split_once('*') {
+        None => pattern == text,
+        Some((head, rest)) => text.strip_prefix(head).is_some_and(|tail| {
+            (0..=tail.len())
+                .filter(|at| tail.is_char_boundary(*at))
+                .any(|at| glob(rest, &tail[at..]))
+        }),
+    }
+}
+
+/// Whether a profile's rules, matched as Claude Code documents (a deny beats an allow), let
+/// `command` run.
+fn permitted(settings: &Value, command: &str) -> bool {
+    let matches = |rules: &Value| {
+        strings(rules).iter().any(|rule| {
+            rule.strip_prefix("Bash(")
+                .and_then(|rest| rest.strip_suffix(')'))
+                .is_some_and(|pattern| wildcard(pattern, command))
+        })
+    };
+    matches(&settings["permissions"]["allow"]) && !matches(&settings["permissions"]["deny"])
+}
+
+fn colocated_settings(profile: &str) -> (tempfile::TempDir, Value) {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    init_here(&state, &manifest("[requires]\njj = \"*\"\n")).expect("generates");
+    let settings = settings(&state, profile);
+    (dir, settings)
+}
+
+#[test]
+fn a_colocated_profile_allows_no_git_output_flag() {
+    for profile in ["lean", "build"] {
+        let (_dir, settings) = colocated_settings(profile);
+        for command in [
+            "git log --output=x",
+            "git show --output=x",
+            "git diff --output=x",
+            "git log --output x",
+            "git diff HEAD --output=x",
+            "git log -p --output=/tmp/x main",
+            "FOO=1 git log --output=x",
+        ] {
+            assert!(!permitted(&settings, command), "{profile} allows {command}");
+        }
+        assert!(permitted(&settings, "git log -p main"), "{profile}");
+    }
+}
+
+#[test]
+fn a_colocated_profile_allows_no_git_global_option() {
+    for profile in ["lean", "build"] {
+        let (_dir, settings) = colocated_settings(profile);
+        for command in [
+            "git -C /tmp status",
+            "git -c core.pager=x status",
+            "git --git-dir=/tmp/x log",
+            "git --git-dir /tmp/x log",
+            "git --work-tree=/tmp status",
+            "git --exec-path=/tmp status",
+            "git --config-env=a=B status",
+            "GIT_CONFIG_COUNT=1 git log",
+        ] {
+            assert!(!permitted(&settings, command), "{profile} allows {command}");
+        }
+    }
+}
+
+#[test]
+fn a_colocated_profile_still_allows_git_status_and_blame() {
+    for profile in ["lean", "build"] {
+        let (_dir, settings) = colocated_settings(profile);
+        for command in ["git status", "git status --short", "git blame src/main.rs"] {
+            assert!(permitted(&settings, command), "{profile} lacks {command}");
+        }
+    }
+}
+
+#[test]
+fn a_profile_without_jj_denies_no_git_rule_and_allows_none() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    init_here(&state, &manifest("")).expect("generates");
+    let settings = settings(&state, "lean");
+    for key in ["allow", "deny"] {
+        assert!(
+            !strings(&settings["permissions"][key])
+                .iter()
+                .any(|rule| rule.starts_with("Bash(git")),
+            "{key}"
+        );
+    }
+}
+
 #[test]
 fn no_writing_git_verb_is_allowed_and_without_jj_no_git_at_all() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -1376,6 +1485,133 @@ fn forbidden_entries_get_flag_forms() {
 }
 
 #[test]
+fn between_words_skips_zaf_entries() {
+    let forbidding = manifest(
+        "[forbidden]\ncommands = [\"zaf do land\", \"zaf forge merge\", \"jj git push\"]\n",
+    );
+    for (profile, patterns) in denies_of(&forbidding) {
+        assert!(
+            !patterns.iter().any(|p| p.starts_with("zaf *")),
+            "{profile}: {patterns:?}"
+        );
+        for wanted in ["jj *git *push", "jj *git *push *"] {
+            assert!(patterns.iter().any(|p| p == wanted), "{profile}: {wanted}");
+        }
+    }
+    assert_denied(
+        &forbidding,
+        &[
+            "zaf forge --json merge 12",
+            "zaf forge --more merge",
+            "zaf --json forge merge",
+        ],
+    );
+    for (profile, patterns) in denies_of(&forbidding) {
+        for line in [
+            "zaf board question 1 \"do we land this\"",
+            "zaf board report 1 \"do land\"",
+            "zaf ask -t 1 \"fact: do we land\"",
+        ] {
+            assert!(
+                !patterns
+                    .iter()
+                    .any(|pattern| pattern_matches(pattern, line)),
+                "{profile} denies `{line}`"
+            );
+        }
+    }
+}
+
+#[test]
+fn between_words_kept_for_other_tools() {
+    let forbidding = manifest("[forbidden]\ncommands = [\"jj git push\", \"gh pr merge\"]\n");
+    assert_denied(
+        &forbidding,
+        &["jj git --no-pager push", "gh pr -R owner/repo merge 12"],
+    );
+}
+
+#[test]
+fn zaf_forbidden_verbs_keep_flag_and_do_forms() {
+    let forbidding = manifest("[forbidden]\ncommands = [\"zaf do land\"]\n");
+    for (profile, patterns) in denies_of(&forbidding) {
+        for wanted in [
+            "zaf do land",
+            "zaf do land *",
+            "zaf -* do land",
+            "zaf -* do land *",
+            "zaf do -* land",
+            "zaf do -* land *",
+            "zaf -* do -* land",
+            "zaf -* do -* land *",
+        ] {
+            assert!(patterns.iter().any(|p| p == wanted), "{profile}: {wanted}");
+        }
+    }
+}
+
+#[test]
+fn profile_denies_push_and_merge_with_options_between() {
+    let forbidding = manifest("[forbidden]\ncommands = [\"jj git push\", \"gh pr merge\"]\n");
+    assert_denied(
+        &forbidding,
+        &[
+            "jj git --no-pager push",
+            "jj git push",
+            "jj --no-pager git push",
+            "jj git --no-pager push -b x",
+            "gh pr -R owner/repo merge 12",
+            "gh pr merge 12",
+            "gh -R owner/repo pr merge 12",
+        ],
+    );
+}
+
+#[test]
+fn profile_denies_gh_api_writes() {
+    let gh = manifest("[requires]\ngh = \"*\"\n");
+    assert_denied(
+        &gh,
+        &[
+            "gh api -X POST repos/o/r/issues",
+            "gh api -XPOST repos/o/r/issues",
+            "gh api --method PUT repos/o/r/x",
+            "gh api --method=DELETE repos/o/r/x",
+            "gh api repos/o/r/x -X PATCH",
+            "gh api -X post repos/o/r/issues",
+            "gh -R o/r api -X POST x",
+            "gh api repos/o/r/issues -f title=x",
+            "gh api -F body=@f repos/o/r/issues",
+            "gh api --field a=b x",
+            "gh api --raw-field a=b x",
+            "gh api --input f.json x",
+            "gh api graphql -f query=x",
+        ],
+    );
+}
+
+#[test]
+fn profile_allows_gh_api_reads() {
+    let gh = manifest("[requires]\ngh = \"*\"\n");
+    for (profile, patterns) in denies_of(&gh) {
+        for line in [
+            "gh api repos/o/r/pulls/1",
+            "gh api -X GET repos/o/r/pulls",
+            "gh api --method GET repos/o/r/pulls",
+            "gh api repos/o/my-fork/pulls --paginate",
+            "gh pr view 12",
+        ] {
+            assert!(
+                !patterns
+                    .iter()
+                    .any(|pattern| pattern_matches(pattern, line)),
+                "{profile} denies `{line}`: {patterns:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn required_jj_denies_its_hatches() {
     let jj = manifest("[requires]\njj = \"*\"\n");
     for (profile, patterns) in denies_of(&jj) {
@@ -1410,6 +1646,79 @@ fn required_jj_denies_its_hatches() {
             "jj --no-pager log -r x",
             "jj config list",
             "jj diff",
+        ] {
+            assert!(
+                !patterns
+                    .iter()
+                    .any(|pattern| pattern_matches(pattern, line)),
+                "{profile} denies `{line}`: {patterns:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn jj_profile_denies_each_hatch_form() {
+    let jj = manifest("[requires]\njj = \"*\"\n");
+    for (profile, patterns) in denies_of(&jj) {
+        for sub in [
+            "util",
+            "config set",
+            "config edit",
+            "run",
+            "workspace add",
+            "gerrit",
+            "git clone",
+            "git init",
+            "git remote",
+        ] {
+            for wanted in [
+                format!("jj {sub}"),
+                format!("jj {sub} *"),
+                format!("jj -* {sub}"),
+                format!("jj -* {sub} *"),
+            ] {
+                assert!(patterns.contains(&wanted), "{profile}: {wanted}");
+            }
+        }
+        for wanted in [
+            "jj *--tool*",
+            "jj *-R*",
+            "jj *--repository*",
+            "jj *--config*",
+        ] {
+            assert!(patterns.iter().any(|p| p == wanted), "{profile}: {wanted}");
+        }
+    }
+    assert_denied(
+        &jj,
+        &[
+            "jj run -- sh -c id",
+            "jj --no-pager run x",
+            "jj workspace add /tmp/x",
+            "jj gerrit upload",
+            "jj git clone u d",
+            "jj git init d",
+            "jj git remote add o u",
+            "jj diff --tool prog",
+            "jj diff --tool=prog",
+            "jj --tool prog diff",
+            "jj log -R /tmp/other",
+            "jj log -R/tmp/other",
+            "jj -R /tmp/other log",
+            "jj log --repository /tmp/other",
+            "jj log --repository=/tmp/other",
+            "jj util exec -- sh x.sh",
+            "jj config set --user x y",
+        ],
+    );
+    for (profile, patterns) in denies_of(&jj) {
+        for line in [
+            "jj log -r x",
+            "jj diff",
+            "jj workspace list",
+            "jj git fetch",
+            "jj config list",
         ] {
             assert!(
                 !patterns
@@ -1930,13 +2239,13 @@ fn stale_line_of_one_profile_matches_its_line() {
 
 /// The generation and the hash of what `init` writes for [`GUARD_FIXTURE`], fixed together: the
 /// pair that was current when `GENERATION` was last raised. Raising `GENERATION` means updating both.
-const GUARDED_GENERATION: u32 = 1;
-const GUARDED_HASH: &str = "51e0b7e3f3bd1394eb35ebb4da5a749a991d3672c78967adf7d4bb0239a9eeae";
+const GUARDED_GENERATION: u32 = 5;
+const GUARDED_HASH: &str = "12cb6b80f88415962b0f5dd3e928dc8eb52776355412d9f95a641adfcb944e10";
 
 /// The generation and the hash of what `init` does for [`PACK_GUARD_FIXTURE`], fixed together as
 /// the first case's pair is: the commands the pack step ran, in order, and every file written.
-const GUARDED_PACK_GENERATION: u32 = 1;
-const GUARDED_PACK_HASH: &str = "c3abd5c1336e01c82a010258d3655dd160a65d7fed1ee0e24a20093c032531b2";
+const GUARDED_PACK_GENERATION: u32 = 5;
+const GUARDED_PACK_HASH: &str = "faf71db2dd03ff10818749853046f565a08a97e79ad5d7d6c0a08a6785474be8";
 
 /// A fixture manifest with a `[pack]` section, reaching the plugin commands, the pack's tag record
 /// and the settings written after the install.

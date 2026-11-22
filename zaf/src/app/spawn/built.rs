@@ -8,12 +8,17 @@
 
 use std::path::Path;
 
+use semver::Version;
+
 use crate::app::build;
 use crate::app::schedule::scheduler::Opened;
 use crate::composition::Composition;
 use crate::domain::{Epic, EpicStage, of_version};
 
-/// Whether every epic of `version` is done, and at least one epic is of it.
+/// Whether every epic of `version` is done, and at least one epic is of it. An epic is done by
+/// [`Epic::finished_done`] (through its stage, which also asks it signed, planned and challenged):
+/// no task open and at least one done, so an epic whose every task was dropped keeps the version
+/// unbuilt.
 pub fn is_built(epics: &[Epic], version: &str) -> bool {
     of_version(epics, version).next().is_some()
         && of_version(epics, version).all(|epic| epic.stage() == EpicStage::Done)
@@ -36,6 +41,8 @@ pub fn open_release(
     version: &str,
     home: Option<&Path>,
 ) -> Result<Opened, String> {
+    let built = Version::parse(version)
+        .map_err(|error| format!("`{version}` is not a version: {error}"))?;
     let pull_request = match home {
         Some(home) => {
             let home = std::path::absolute(home).map_err(|error| error.to_string())?;
@@ -45,7 +52,7 @@ pub fn open_release(
     }
     .map_err(|error| error.to_string())?;
     Ok(Opened {
-        version: version.to_owned(),
+        version: built,
         number: pull_request.number,
         link: pull_request.link,
     })

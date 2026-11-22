@@ -8,7 +8,7 @@ use std::str::FromStr;
 use std::time::SystemTime;
 
 use super::{AccessCheck, CommitId, PortError};
-use crate::domain::Location;
+use crate::domain::{ChangedFiles, Location};
 use crate::newtype::text_newtype;
 
 /// The number of a pull request on the forge.
@@ -275,6 +275,9 @@ pub struct BranchChecks {
     /// The checks at that commit, as [`Forge::checks`] gives a pull request's; none with no head,
     /// or when none registered there.
     pub checks: Vec<Check>,
+    /// The time of the commit the branch is at, as the forge gives it; none with no head, or when
+    /// the forge gives none (never an error: the time only restarts a wait's clock).
+    pub reached_at: Option<SystemTime>,
 }
 
 /// One review comment on a pull request.
@@ -292,13 +295,20 @@ pub struct ReviewComment {
     pub posted_at: SystemTime,
 }
 
-/// A pull request's own times.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A pull request's own facts, as one read of it gives them.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PullRequest {
     /// When it was opened.
     pub opened_at: SystemTime,
     /// When it merged; none while it is open or if it closed unmerged.
     pub merged_at: Option<SystemTime>,
+    /// Whether the forge says it merges into its base now: true when it does, false when the
+    /// base conflicts with it, none when the forge does not say or is still working it out.
+    pub mergeable: Option<bool>,
+    /// The commit its head is at now, when the forge reports one.
+    pub head: Option<String>,
+    /// Whether it has merged; open or closed unmerged is not merged.
+    pub merged: bool,
 }
 
 text_newtype! {
@@ -332,8 +342,14 @@ pub trait Forge {
     /// forge gives no time for is an error naming the pull request.
     fn review_comments(&self, pr: PrNumber) -> Result<Vec<ReviewComment>, PortError>;
 
-    /// When the pull request opened and, once merged, when it merged. A time the forge does not
-    /// give is an error naming the pull request.
+    /// The pull request's checks at `head`, the commit a caller already read from
+    /// [`Forge::pull_request`]: as [`Forge::checks`] gives them, without reading the head again.
+    /// A forge that reads checks by the pull request alone (gh) ignores `head`.
+    fn checks_at(&self, pr: PrNumber, head: Option<&str>) -> Result<Vec<Check>, PortError>;
+
+    /// When the pull request opened and, once merged, when it merged, with its head and whether
+    /// it merged: one read of the forge for all of them. A time the forge does not give is an
+    /// error naming the pull request.
     fn pull_request(&self, pr: PrNumber) -> Result<PullRequest, PortError>;
 
     /// The commit id the pull request's head is at now, when the forge reports one.
@@ -343,9 +359,10 @@ pub trait Forge {
     /// open or closed unmerged is not merged.
     fn merged(&self, pr: PrNumber) -> Result<bool, PortError>;
 
-    /// The last file of the pull request's diff, in the order the forge lists the
-    /// changed files; none when the pull request changes no file.
-    fn last_changed_file(&self, pr: PrNumber) -> Result<Option<String>, PortError>;
+    /// Every file the pull request changes, in the order the forge lists them, a rename under
+    /// its old name and then its new one. `cut_short` says the list may be missing files: the
+    /// forge caps what it lists, or a page failed to read fully. Empty when it changes no file.
+    fn changed_files(&self, pr: PrNumber) -> Result<ChangedFiles, PortError>;
 
     /// The open code scanning alerts for the pull request's head ref.
     fn scanning_alerts(&self, pr: PrNumber) -> Result<Vec<ScanningAlert>, PortError>;

@@ -296,6 +296,46 @@ pub fn exec(program: &Path, args: &[std::ffi::OsString]) -> std::io::Error {
     std::io::Error::last_os_error()
 }
 
+/// The descriptors [`close_above_stdio`] goes through one by one when the kernel cannot mark a
+/// range at once: the process's limit, read before the fork, at most 65 536.
+pub fn descriptor_limit() -> libc::c_int {
+    // SAFETY: sysconf takes a plain name and returns a plain number.
+    let limit = unsafe { libc::sysconf(libc::_SC_OPEN_MAX) };
+    if limit <= 0 {
+        1024
+    } else {
+        libc::c_int::try_from(limit.min(65_536)).unwrap_or(65_536)
+    }
+}
+
+/// In a child between fork and exec: every descriptor from 3 up is closed when the program runs,
+/// so it inherits stdin, stdout and stderr and nothing else of its parent's (a terminal copy, a
+/// log, a pipe). They are marked close-on-exec rather than closed at once, so the pipe through
+/// which `std` hears that the exec failed still works: `close_range` on Linux, else `fcntl` on
+/// each up to `limit` ([`descriptor_limit`], read before the fork). Async-signal-safe: plain
+/// system calls on numbers, no memory touched.
+pub fn close_above_stdio(limit: libc::c_int) {
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: close_range takes plain numbers and only changes this process's descriptors.
+        let marked = unsafe {
+            libc::syscall(
+                libc::SYS_close_range,
+                3 as libc::c_uint,
+                libc::c_uint::MAX,
+                libc::CLOSE_RANGE_CLOEXEC,
+            )
+        };
+        if marked == 0 {
+            return;
+        }
+    }
+    for descriptor in 3..limit {
+        // SAFETY: fcntl takes plain numbers; one that is not open fails with EBADF, ignored.
+        unsafe { libc::fcntl(descriptor, libc::F_SETFD, libc::FD_CLOEXEC) };
+    }
+}
+
 /// A copy of the open file `fd` of this process, made close-on-exec so no child or new image
 /// keeps it: what a view holds of the terminal while the process's own output goes elsewhere.
 pub fn duplicate_fd(fd: std::os::fd::RawFd) -> std::io::Result<std::fs::File> {

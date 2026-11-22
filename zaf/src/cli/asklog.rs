@@ -20,7 +20,7 @@ pub fn run(cli: &Cli) -> u8 {
     let summary = match asklog(&composition.state_dir().join(ASK_LOG)) {
         Ok(summary) => summary,
         Err(error) => {
-            eprintln!("zaf {path}: {error}");
+            crate::eprintln_zaf!("zaf {path}: {error}");
             return BACKEND;
         }
     };

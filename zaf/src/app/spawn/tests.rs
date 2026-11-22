@@ -207,7 +207,8 @@ fn a_launch_through_the_runner_records_launch_and_exit_and_frees_its_slot() {
     let run_dir = state_dir.join(RUNS_DIR).join("planning-instance-1-on-2");
     let held = std::fs::read_to_string(run_dir.join(runs::HOLDER_FILE)).expect("holder");
     assert_eq!(Holder::parse(&held), Some(tick()));
-    let screen = status::status(&board, &state_dir, 2, &|_| true).expect("status reads the state");
+    let screen =
+        status::status_listing(&board, &state_dir, 2, &|_| true).expect("status reads the state");
     assert_eq!(screen.running.len(), 2);
     assert_eq!(screen.running[0].task, None);
     assert_eq!(screen.running[0].pid, Some(OWN_PID));
@@ -1147,7 +1148,7 @@ fn a_tick_that_outlives_its_instance_holds_no_slot_and_the_next_tick_releases_it
 
     // The first tick (100) still runs; both instances have died without an exit.
     let table = |held: &Holder| held.pid == 100;
-    let screen = status::status(&board, &state_dir, 2, &table).expect("status");
+    let screen = status::status_listing(&board, &state_dir, 2, &table).expect("status");
     assert_eq!(screen.slots.free, 2, "free at once, before any tick");
     assert_eq!(screen.orphaned.len(), 1);
 
@@ -1281,7 +1282,7 @@ fn a_task_with_a_pr_is_held_by_the_forge() {
     std::fs::write(state_dir.join("slices").join("3.pr"), "42").expect("pr record");
 
     let table = |held: &Holder| held.pid != 100;
-    let screen = status::status(&board, &state_dir, 2, &table).expect("status");
+    let screen = status::status_listing(&board, &state_dir, 2, &table).expect("status");
     assert!(screen.orphaned.is_empty(), "{:?}", screen.orphaned);
     assert_eq!(screen.claimed.len(), 1);
 
@@ -1299,7 +1300,7 @@ fn a_running_phase_holds_its_task() {
     phase_runs(&state_dir, task, 777);
 
     let table = |held: &Holder| held.pid != 100;
-    let screen = status::status(&board, &state_dir, 2, &table).expect("status");
+    let screen = status::status_listing(&board, &state_dir, 2, &table).expect("status");
     assert!(screen.orphaned.is_empty(), "{:?}", screen.orphaned);
 
     let second = prepare(&board, &state_dir, &manifest(), &table, &tick()).expect("second tick");
@@ -1323,7 +1324,7 @@ fn a_bare_orphan_is_still_released() {
     phase_runs(&state_dir, TicketId::from(4), 777);
 
     let table = |held: &Holder| held.pid != 100;
-    let screen = status::status(&board, &state_dir, 2, &table).expect("status");
+    let screen = status::status_listing(&board, &state_dir, 2, &table).expect("status");
     assert_eq!(screen.orphaned.len(), 1);
     assert_eq!(screen.orphaned[0].task, task.get());
 
@@ -1372,7 +1373,7 @@ fn dead_phase_claim_is_released() {
 
     // The process is still in the table, but the run recorded its exit: it no longer runs.
     let table = |_: &Holder| true;
-    let screen = status::status(&board, &state_dir, 2, &table).expect("status");
+    let screen = status::status_listing(&board, &state_dir, 2, &table).expect("status");
     assert_eq!(screen.orphaned.len(), 1);
 
     let tick = prepare(&board, &state_dir, &manifest(), &table, &tick()).expect("tick");
@@ -1405,7 +1406,7 @@ fn running_phase_claim_is_kept() {
     let (_, board, _, _) = claimed_by_a_phase_instance(&state_dir, 777);
 
     let table = |_: &Holder| true;
-    let screen = status::status(&board, &state_dir, 2, &table).expect("status");
+    let screen = status::status_listing(&board, &state_dir, 2, &table).expect("status");
     assert!(screen.orphaned.is_empty(), "{:?}", screen.orphaned);
 
     let tick = prepare(&board, &state_dir, &manifest(), &table, &tick()).expect("tick");

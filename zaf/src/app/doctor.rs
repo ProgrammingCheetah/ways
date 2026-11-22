@@ -32,21 +32,28 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::app::actions::ACTIONS_DIR;
 use crate::app::profile::{self, CONFIG_DIR_VAR, CREDENTIALS_FILE};
 use crate::composition::STATE_DIR;
+use crate::domain::screen::{Line, Meaning};
 use crate::manifest::{
-    BoardKind, DesignSection, ForgeKind, Manifest, Requirement, ToolName, files_read,
+    BoardKind, DesignSection, ForgeKind, Manifest, Requirement, ToolName, VcsKind, files_read,
 };
 use crate::ports::{AccessCheck, Board, Forge};
+
+pub(crate) use paint::plain;
+use paint::{bold, piece, with_commands};
 
 mod actions;
 pub mod fake;
 pub mod hub;
 mod needed;
+mod paint;
 mod phases;
+mod repository;
 
 pub use actions::ActionCheck;
 pub use hub::HubCheck;
 pub use needed::NeededCheck;
 pub use phases::PhaseCheck;
+pub use repository::{GIT_FLOOR, GitVersionCheck, RepositoryCheck};
 
 /// Where a credentials file holds its access token's expiry, in milliseconds since the epoch.
 const EXPIRES_AT: &str = "/claudeAiOauth/expiresAt";
@@ -104,6 +111,26 @@ impl ToolStatus {
     /// Whether the tool counts as present and right, or as not needed.
     pub fn is_ok(&self) -> bool {
         matches!(self, Self::Ok { .. } | Self::NotNeeded { .. })
+    }
+
+    /// What the status means on a screen: `ok` done, a not-needed tool an aside, the rest failed.
+    fn meaning(&self) -> Meaning {
+        match self {
+            Self::Ok { .. } => Meaning::Done,
+            Self::NotNeeded { .. } => Meaning::Dim,
+            Self::Missing | Self::TooOld { .. } | Self::Unknown => Meaning::Failed,
+        }
+    }
+}
+
+impl ToolCheck {
+    /// `<tool>: <status>`, as pieces: the tool a noun, the status by its meaning.
+    pub fn painted(&self) -> Line {
+        vec![
+            piece(Meaning::Noun, &self.tool),
+            bold(": "),
+            piece(self.status.meaning(), self.status.to_string()),
+        ]
     }
 }
 
@@ -190,10 +217,22 @@ impl BackendCheck {
     /// `<port> <what>: ok (<detail>)`, or `<port> <what> failed: <detail>`, `port` being
     /// `board` or `forge`.
     pub fn line(&self, port: &str) -> String {
+        plain(&self.painted(port))
+    }
+
+    /// [`BackendCheck::line`] as pieces: `ok` done, a failure red.
+    pub fn painted(&self, port: &str) -> Line {
         if self.ok {
-            format!("{port} {}: ok ({})", self.what, self.detail)
+            vec![
+                bold(format!("{port} {}: ", self.what)),
+                piece(Meaning::Done, "ok"),
+                bold(format!(" ({})", self.detail)),
+            ]
         } else {
-            format!("{port} {} failed: {}", self.what, self.detail)
+            vec![piece(
+                Meaning::Failed,
+                format!("{port} {} failed: {}", self.what, self.detail),
+            )]
         }
     }
 }
@@ -237,14 +276,31 @@ impl LoginCheck {
     /// `profile <name>: login ok`, or `login missing`, then in brackets what its credentials
     /// file is and the fix as a worksheet line, whichever apply.
     pub fn line(&self) -> String {
-        let state = if self.ok { "login ok" } else { "login missing" };
+        plain(&self.painted())
+    }
+
+    /// [`LoginCheck::line`] as pieces: `login ok` done, `login missing` red, the details an aside
+    /// with its commands cyan.
+    pub fn painted(&self) -> Line {
+        let (state, meaning) = if self.ok {
+            ("login ok", Meaning::Done)
+        } else {
+            ("login missing", Meaning::Failed)
+        };
+        let mut line = vec![
+            bold(format!("profile {}: ", self.profile)),
+            piece(meaning, state),
+        ];
         let details = match (self.credentials.words(), self.fix()) {
-            (None, None) => return format!("profile {}: {state}", self.profile),
+            (None, None) => return line,
             (Some(words), None) => words.to_owned(),
             (None, Some(fix)) => format!("fix: {fix}"),
             (Some(words), Some(fix)) => format!("{words}; fix: {fix}"),
         };
-        format!("profile {}: {state} ({details})", self.profile)
+        line.push(bold(" ("));
+        line.extend(with_commands(Meaning::Dim, &details));
+        line.push(bold(")"));
+        line
     }
 
     /// What the Engineer does about this login; `None` when nothing is wrong yet.
@@ -301,20 +357,45 @@ impl PackCheck {
     /// `profile <name>: pack <pack>@<marketplace> <version> ok`; a stale pack names both versions
     /// and its fix; a missing one says `pack missing` and that `zaf profile init` installs it.
     pub fn line(&self) -> String {
+        plain(&self.painted())
+    }
+
+    /// [`PackCheck::line`] as pieces: `ok` done, a stale or missing pack red, the fix an aside
+    /// with its command cyan.
+    pub fn painted(&self) -> Line {
+        let head = bold(format!("profile {}: ", self.profile));
         match (&self.pack, &self.version) {
-            (Some(pack), Some(have)) if self.stale() => format!(
-                "profile {}: pack {pack} {have} is stale: the source pack is {} \
-                 (fix: zaf profile init updates it)",
-                self.profile,
-                self.source_version.as_deref().unwrap_or(UNKNOWN_VERSION)
-            ),
-            (Some(pack), Some(version)) => {
-                format!("profile {}: pack {pack} {version} ok", self.profile)
-            }
-            _ => format!(
-                "profile {}: pack missing (fix: zaf profile init installs it)",
-                self.profile
-            ),
+            (Some(pack), Some(have)) if self.stale() => vec![
+                head,
+                bold("pack "),
+                piece(Meaning::Noun, pack),
+                bold(" "),
+                piece(Meaning::Noun, have),
+                piece(Meaning::Failed, " is stale"),
+                bold(format!(
+                    ": the source pack is {} ",
+                    self.source_version.as_deref().unwrap_or(UNKNOWN_VERSION)
+                )),
+                piece(Meaning::Dim, "(fix: "),
+                piece(Meaning::Verb, "zaf profile init"),
+                piece(Meaning::Dim, " updates it)"),
+            ],
+            (Some(pack), Some(version)) => vec![
+                head,
+                bold("pack "),
+                piece(Meaning::Noun, pack),
+                bold(" "),
+                piece(Meaning::Noun, version),
+                bold(" "),
+                piece(Meaning::Done, "ok"),
+            ],
+            _ => vec![
+                head,
+                piece(Meaning::Failed, "pack missing"),
+                piece(Meaning::Dim, " (fix: "),
+                piece(Meaning::Verb, "zaf profile init"),
+                piece(Meaning::Dim, " installs it)"),
+            ],
         }
     }
 }
@@ -350,6 +431,14 @@ pub struct Report {
     /// One entry per action of a `[phases]` list, in task type and list order; one that no tier
     /// provides, or that has no `kind` or no `ends`, fails the report.
     pub phases: Vec<PhaseCheck>,
+    /// The folder against the repository kind `[vcs]` names; none without a `[vcs]`. A failure
+    /// fails the report.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repository: Option<RepositoryCheck>,
+    /// `git --version` against the floor, for a `[vcs] kind = "git"` project; a failure fails the
+    /// report.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_version: Option<GitVersionCheck>,
     /// The manifest files the load read, highest layer first; informational. Printed as
     /// `manifest: <files>`.
     pub manifest: Vec<PathBuf>,
@@ -384,6 +473,8 @@ impl Report {
             && self.design.as_ref().is_none_or(|check| check.ok)
             && self.design_index.as_ref().is_none_or(|check| check.ok)
             && self.workspaces.ok
+            && self.repository.as_ref().is_none_or(|check| check.ok)
+            && self.git_version.as_ref().is_none_or(|check| check.ok)
             && self.actions_dir.ok
             && self.board.iter().all(|check| check.ok)
             && self.forge.iter().all(|check| check.ok)
@@ -394,41 +485,114 @@ impl Report {
         self.tools.iter().filter(|check| !check.status.is_ok())
     }
 
-    /// One line per check, the way the command line prints them.
+    /// One line per check, the way the command line prints them without colour.
     pub fn lines(&self) -> Vec<String> {
-        let mut lines: Vec<String> = self
-            .tools
-            .iter()
-            .map(|check| format!("{}: {}", check.tool, check.status))
-            .collect();
-        lines.extend(self.design.iter().map(PathCheck::line));
-        lines.extend(self.design_index.iter().map(PathCheck::line));
-        lines.extend(self.board.iter().map(|check| check.line("board")));
-        lines.extend(self.forge.iter().map(|check| check.line("forge")));
-        lines.push(self.actions_dir.line());
-        lines.extend(self.logins.iter().map(LoginCheck::line));
-        lines.extend(self.packs.iter().map(PackCheck::line));
-        lines.extend(profile::stale_line(&self.stale));
-        lines.extend(self.actions.iter().flat_map(ActionCheck::lines));
-        lines.extend(self.actions_error.clone());
-        lines.extend(self.needed.iter().flat_map(NeededCheck::lines));
-        lines.extend(self.phases.iter().flat_map(PhaseCheck::lines));
-        lines.push(self.workspaces.line());
-        lines.extend(self.hub.iter().map(HubCheck::line));
+        self.painted().iter().map(plain).collect()
+    }
+
+    /// One line per check as pieces, each with what it means; [`Report::lines`] is these joined.
+    /// The lines of a check that fails the report come first, a check's lines together; the rest
+    /// follow. Each half keeps the order the checks run in.
+    pub fn painted(&self) -> Vec<Line> {
+        let (failing, passing): (Vec<Group>, Vec<Group>) =
+            self.groups().into_iter().partition(|group| group.failed);
+        failing
+            .into_iter()
+            .chain(passing)
+            .flat_map(|group| group.lines)
+            .collect()
+    }
+
+    /// The lines of each check in the order the checks run: one group per check, so the lines
+    /// under a check's head stay with it.
+    fn groups(&self) -> Vec<Group> {
+        fn each<T>(
+            items: impl IntoIterator<Item = T>,
+            failed: impl Fn(&T) -> bool,
+            line: impl Fn(T) -> Line,
+        ) -> Vec<Group> {
+            items
+                .into_iter()
+                .map(|item| Group {
+                    failed: failed(&item),
+                    lines: vec![line(item)],
+                })
+                .collect()
+        }
+        let mut groups = each(&self.tools, |c| !c.status.is_ok(), ToolCheck::painted);
+        groups.extend(each(&self.design, |c| !c.ok, PathCheck::painted));
+        groups.extend(each(&self.design_index, |c| !c.ok, PathCheck::painted));
+        groups.extend(each(&self.board, |c| !c.ok, |check| check.painted("board")));
+        groups.extend(each(&self.forge, |c| !c.ok, |check| check.painted("forge")));
+        groups.extend(each(&self.repository, |c| !c.ok, RepositoryCheck::painted));
+        groups.extend(each(&self.git_version, |c| !c.ok, GitVersionCheck::painted));
+        groups.extend(each([&self.actions_dir], |c| !c.ok, PathCheck::painted));
+        // Informational: a missing login never fails the report, so it keeps its place.
+        groups.extend(each(&self.logins, |_| false, LoginCheck::painted));
+        groups.extend(each(&self.packs, |c| !c.ok, PackCheck::painted));
+        groups.extend(each(
+            profile::stale_line(&self.stale),
+            |_| true,
+            |stale| with_commands(Meaning::Failed, &stale),
+        ));
+        groups.extend(self.actions.iter().map(|check| Group {
+            failed: !check.ok,
+            lines: check.painted(),
+        }));
+        groups.extend(each(
+            &self.actions_error,
+            |_| true,
+            |error| with_commands(Meaning::Failed, error),
+        ));
+        groups.extend(self.needed.iter().map(|check| Group {
+            failed: !check.ok,
+            lines: check.painted(),
+        }));
+        groups.extend(self.phases.iter().map(|check| Group {
+            failed: !check.ok,
+            lines: check.painted(),
+        }));
+        groups.extend(each([&self.workspaces], |c| !c.ok, PathCheck::painted));
+        groups.extend(each(&self.hub, |_| false, HubCheck::painted));
         if !self.manifest.is_empty() {
             let files: Vec<String> = self
                 .manifest
                 .iter()
                 .map(|file| file.display().to_string())
                 .collect();
-            lines.push(format!("manifest: {}", files.join(", ")));
+            groups.push(Group::passing(vec![
+                bold("manifest: "),
+                piece(Meaning::Noun, files.join(", ")),
+            ]));
         }
         for file in &self.unread {
             if let Some(name) = file.file_name() {
-                lines.push(format!("unread: {STATE_DIR}/{}", name.to_string_lossy()));
+                groups.push(Group::passing(vec![
+                    bold("unread: "),
+                    piece(
+                        Meaning::Noun,
+                        format!("{STATE_DIR}/{}", name.to_string_lossy()),
+                    ),
+                ]));
             }
         }
-        lines
+        groups
+    }
+}
+
+/// One check's lines, and whether the check fails the report.
+struct Group {
+    failed: bool,
+    lines: Vec<Line>,
+}
+
+impl Group {
+    /// A check of one line that never fails the report.
+    fn passing(line: Line) -> Self {
+        Self {
+            failed: false,
+            lines: vec![line],
+        }
     }
 }
 
@@ -454,12 +618,27 @@ fn unread_tomls(root: &Path) -> Vec<PathBuf> {
 impl PathCheck {
     /// `<what>: ok (<path>)`, or the failure with the absolute path tried:
     /// `<what> not found: <path>`, and `workspaces dir not creatable: <path>`.
-    fn line(&self) -> String {
-        let path = self.path.display();
+    /// As pieces: `ok` done, a failure red, the path a noun.
+    fn painted(&self) -> Line {
+        let path = piece(Meaning::Noun, self.path.display().to_string());
         match (self.what, self.ok) {
-            (what, true) => format!("{what}: ok ({path})"),
-            ("workspaces dir", false) => format!("workspaces dir not creatable: {path}"),
-            (what, false) => format!("{what} not found: {path}"),
+            (what, true) => vec![
+                bold(format!("{what}: ")),
+                piece(Meaning::Done, "ok"),
+                bold(" ("),
+                path,
+                bold(")"),
+            ],
+            ("workspaces dir", false) => vec![
+                piece(Meaning::Failed, "workspaces dir not creatable"),
+                bold(": "),
+                path,
+            ],
+            (what, false) => vec![
+                piece(Meaning::Failed, format!("{what} not found")),
+                bold(": "),
+                path,
+            ],
         }
     }
 }
@@ -717,6 +896,15 @@ pub fn doctor_with(
     let (actions, actions_error) = actions::check_actions(root, zaf_home, manifest);
     let needed = needed::check_needed(root, zaf_home, manifest);
     let phases = phases::check_phases(root, zaf_home, manifest);
+    let repository = manifest
+        .vcs
+        .as_ref()
+        .map(|vcs| repository::check_repository(root, vcs.kind));
+    let git_version = manifest
+        .vcs
+        .as_ref()
+        .filter(|vcs| vcs.kind == VcsKind::Git)
+        .map(|_| repository::check_git_version(commands));
     Report {
         tools,
         design,
@@ -732,6 +920,8 @@ pub fn doctor_with(
         phases,
         manifest: files_read(root, zaf_home),
         unread: unread_tomls(root),
+        repository,
+        git_version,
         board: Vec::new(),
         forge: Vec::new(),
         hub: None,

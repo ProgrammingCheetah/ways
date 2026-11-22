@@ -28,10 +28,13 @@ fn epic_in(number: u64, signed: bool, challenged: bool, tasks: &[u64]) -> Epic {
             .map(|task| EpicTask {
                 number: TicketId::from(*task),
                 title: format!("Task {task}").into(),
+                body: "".into(),
+                url: "".into(),
                 state: Some(TicketState::Ready),
                 standing: Standing::Open,
                 group: None,
                 kind: None,
+                closed_at: None,
             })
             .collect(),
         challenged,
@@ -57,7 +60,10 @@ fn snapshot(ready: Vec<Ticket>) -> Snapshot {
 }
 
 fn settings(slots: u32) -> Settings {
-    Settings { slots }
+    Settings {
+        slots,
+        merge_per_tick: 1,
+    }
 }
 
 /// A launch that holds a slot: its process runs, whatever its role.

@@ -1,3 +1,4 @@
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
@@ -244,6 +245,7 @@ fn run_due(root: &Path, folder: &ReleaseFolder, phase: Phase) -> PhaseRun {
                 terminal: Terminal::Absent,
                 run: None,
                 phase: None,
+                vcs: None,
             }
             .with_phase(env),
         )
@@ -799,4 +801,165 @@ fn begin_phase_design_runs_with_signed_objectives() {
         folder.path().join("objectives.md"),
         "{seen:?}"
     );
+}
+
+#[test]
+fn the_ready_file_is_named_by_version_and_phase_under_zaf() {
+    assert_eq!(
+        ready_file(Path::new("/srv/ways"), "0.5.3", Phase::Objectives, "00ff"),
+        Path::new("/srv/ways/.zaf/begin/0.5.3/objectives.00ff.ready")
+    );
+    assert_eq!(
+        ready_file(Path::new("/srv/ways"), "0.5.3", Phase::Design, "00ff"),
+        Path::new("/srv/ways/.zaf/begin/0.5.3/design.00ff.ready")
+    );
+    let (one, two) = (session_token(), session_token());
+    assert_eq!(one.len(), 16);
+    assert!(one.chars().all(|c| c.is_ascii_hexdigit()), "{one}");
+    assert_ne!(one, two, "each session its own name");
+    assert_eq!(
+        phase_env(&folder_in(Path::new("/srv/ways")), VERSION, Phase::Design).ready,
+        None,
+        "zaf begin on a terminal watches for no file"
+    );
+}
+
+#[test]
+fn the_ready_file_or_exit_0_leads_to_the_signature_whatever_the_code() {
+    let failed = |exit: u8| PhaseRun::Undone {
+        outcome: RunOutcome {
+            result: RunResult::Fail,
+            name: "objectives".to_owned(),
+            tier: None,
+            exit,
+            meaning: Some("undeclared".to_owned()),
+            seconds: 1.0,
+            log: None,
+            on_terminal: true,
+        },
+    };
+    let not_run = PhaseRun::NotRun {
+        outcome: RunOutcome::not_run("objectives", None, "no such action".to_owned()),
+    };
+    assert!(
+        leads_to_sign(false, &PhaseRun::Done),
+        "exit 0, an older pack"
+    );
+    assert!(leads_to_sign(true, &PhaseRun::Done));
+    assert!(leads_to_sign(true, &failed(129)), "hung up once ready");
+    assert!(leads_to_sign(true, &failed(1)));
+    assert!(!leads_to_sign(false, &failed(1)), "ended early, not ready");
+    assert!(!leads_to_sign(false, &not_run));
+    assert!(!leads_to_sign(true, &not_run), "a run that never started");
+}
+
+#[test]
+fn begin_ready_writes_the_named_file_and_refuses_without_one() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let file = dir.path().join(".zaf/begin/0.5.3/design.ready");
+
+    let written = mark_ready(Some(&file), UNIX_EPOCH).expect("written");
+
+    assert_eq!(written, file);
+    assert_eq!(
+        std::fs::read_to_string(&file).expect("the file"),
+        "1970-01-01T00:00:00Z\n"
+    );
+    assert!(matches!(
+        mark_ready(None, UNIX_EPOCH),
+        Err(ReadyError::Unset)
+    ));
+    assert!(matches!(
+        mark_ready(Some(Path::new("")), UNIX_EPOCH),
+        Err(ReadyError::Unset)
+    ));
+    let elsewhere = dir.path().join("notes.md");
+    assert!(matches!(
+        mark_ready(Some(&elsewhere), UNIX_EPOCH),
+        Err(ReadyError::NotReadyFile(_))
+    ));
+    assert!(!elsewhere.exists(), "nothing written");
+    let refusal = ReadyError::Unset.to_string();
+    assert!(refusal.contains("ZAF_READY is unset"), "{refusal}");
+    assert!(!refusal.contains('\n'), "one sentence");
+}
+
+#[test]
+fn begin_ready_never_writes_through_a_link() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let folder = dir.path().join(".zaf/begin/0.5.3");
+    std::fs::create_dir_all(&folder).expect("folder");
+    let target = dir.path().join("precious.ready");
+    std::fs::write(&target, "keep me\n").expect("target");
+    let file = folder.join("design.cafe.ready");
+    std::os::unix::fs::symlink(&target, &file).expect("a planted link");
+
+    let refused = mark_ready(Some(&file), UNIX_EPOCH);
+
+    assert!(matches!(refused, Err(ReadyError::Io { .. })), "{refused:?}");
+    assert_eq!(
+        std::fs::read_to_string(&target).expect("still there"),
+        "keep me\n"
+    );
+    assert!(!is_ready(&file), "a link is no ready file");
+
+    // Said twice by the session: the file is there, and that is fine.
+    let real = folder.join("design.beef.ready");
+    mark_ready(Some(&real), UNIX_EPOCH).expect("written");
+    mark_ready(Some(&real), UNIX_EPOCH).expect("said again");
+    assert!(is_ready(&real));
+}
+
+#[test]
+fn a_signature_is_written_whole_beside_the_document_then_renamed() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let document = dir.path().join("design.md");
+    std::fs::write(&document, "old\n").expect("document");
+    std::fs::set_permissions(&document, std::fs::Permissions::from_mode(0o640)).expect("mode");
+
+    super::replace_whole(&document, "new\n").expect("replaced");
+
+    assert_eq!(std::fs::read_to_string(&document).expect("read"), "new\n");
+    let mode = std::fs::metadata(&document)
+        .expect("meta")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o640, "its mode is kept");
+    let left: Vec<_> = std::fs::read_dir(dir.path())
+        .expect("folder")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name())
+        .collect();
+    assert_eq!(left.len(), 1, "no temporary file left: {left:?}");
+}
+
+#[test]
+fn signing_a_linked_document_signs_the_file_it_links_to() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let kept = dir.path().join("kept");
+    std::fs::create_dir(&kept).expect("folder");
+    let real = kept.join("real-design.md");
+    std::fs::write(&real, "# Design\n").expect("real");
+    let release = dir.path().join("release");
+    std::fs::create_dir(&release).expect("release");
+    let document = release.join("design.md");
+    std::os::unix::fs::symlink(&real, &document).expect("a link");
+
+    super::replace_whole(&document, "# Design\nsigned\n").expect("replaced");
+
+    assert!(
+        std::fs::symlink_metadata(&document)
+            .expect("there")
+            .file_type()
+            .is_symlink(),
+        "the link stays a link"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&real).expect("real"),
+        "# Design\nsigned\n"
+    );
+    let left = |folder: &Path| std::fs::read_dir(folder).expect("folder").count();
+    assert_eq!(left(&kept), 1, "no temporary file left beside the real one");
+    assert_eq!(left(&release), 1, "nor beside the link");
 }

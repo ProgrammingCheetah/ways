@@ -124,6 +124,7 @@ impl Scene {
             project_root: root.path(),
             home: None,
             caller: &caller,
+            vcs: None,
         };
         let phase = self.view();
         let written = if resumed {

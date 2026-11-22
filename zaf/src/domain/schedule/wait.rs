@@ -5,9 +5,10 @@
 //! on an unsigned epic has no clock (the Engineer already has those), so a ticket that also waits
 //! on one is never overdue; and a dependency that can still complete sits in a place that has one
 //! of its own. A wait on the integration branch's checks (R29) is overdue as a check wait is,
-//! counted from when the ticket came to stand at its merge ([`base_clock`]): a pending check
-//! carries no time of its own, so on a queue busy for two hours it may ask early, which is better
-//! than a runner that is down holding every merge unheard. The wait on another ticket's merge
+//! counted from when the ticket came to stand at its merge or the branch reached its current head,
+//! the later ([`base_clock`]): a pending check carries no time of its own, so a base that moves
+//! starts the clock again, and a merge held behind other merges is asked about only when one
+//! head's checks stall. The wait on another ticket's merge
 //! (R30) has no clock: each of its ends is the scheduler's own.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -83,13 +84,22 @@ pub fn check_clock(facts: &TicketFacts) -> Option<SystemTime> {
         .max()
 }
 
-/// When the clock of a wait on the integration branch's checks started: since when the ticket has
-/// stood at its merge, which is the `since` it would have in the lane (when its phase failed, or
-/// else when the phase before ended, or else when it became ready). None when every phase ended,
-/// or no fact times it.
+/// When the clock of a wait on the integration branch's checks started: the later of since when
+/// the ticket has stood at its merge, which is the `since` it would have in the lane (when its
+/// phase failed, or else when the phase before ended, or else when it became ready), and when the
+/// branch reached its current head ([`BaseFacts::reached_at`](super::BaseFacts::reached_at)): a
+/// base that moves starts the clock again. With that time unknown, the ready time stands. None
+/// when every phase ended, or no fact times it.
 #[must_use]
 pub fn base_clock(facts: &TicketFacts) -> Option<SystemTime> {
-    ready_since(&current_phase(facts)?, facts)
+    let ready = ready_since(&current_phase(facts)?, facts)?;
+    Some(
+        facts
+            .merging
+            .base
+            .reached_at
+            .map_or(ready, |at| at.max(ready)),
+    )
 }
 
 /// The ticket's check wait, when it waits on the checks at its head at `now` and has for

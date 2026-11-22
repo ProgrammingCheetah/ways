@@ -25,7 +25,7 @@ pub fn run(cli: &Cli, task: TicketId, questions: &[String]) -> u8 {
     };
     // A blank or malformed instance is refused before anything is read and before any keeper runs.
     if let Err(reason) = Caller::from_env() {
-        eprintln!("zaf {path}: {reason}");
+        crate::eprintln_zaf!("zaf {path}: {reason}");
         return REFUSED;
     }
     let board = match composition.board() {
@@ -82,11 +82,11 @@ pub fn run(cli: &Cli, task: TicketId, questions: &[String]) -> u8 {
             fail(&path, &error)
         }
         Err(error @ (AskFailure::State { .. } | AskFailure::Exhausted(_))) => {
-            eprintln!("zaf {path}: {error}");
+            crate::eprintln_zaf!("zaf {path}: {error}");
             BACKEND
         }
         Err(error) => {
-            eprintln!("zaf {path}: {error}");
+            crate::eprintln_zaf!("zaf {path}: {error}");
             REFUSED
         }
     }

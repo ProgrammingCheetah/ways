@@ -45,7 +45,7 @@ Task = ["implement", "ci", "review", "merge"]
 "#;
 
 /// The pack's actions the phases run, and the steps they call.
-const ACTIONS: [&str; 18] = [
+const ACTIONS: [&str; 19] = [
     "workspace-open",
     "workspace-drop",
     "commit",
@@ -61,6 +61,7 @@ const ACTIONS: [&str; 18] = [
     "implement",
     "ci",
     "ci-wait",
+    "ci-rerun",
     "review",
     "merge",
     "fix",
@@ -183,6 +184,15 @@ impl Scene {
              case \"$*\" in\n\
              \"pr view 7 --json headRefOid --jq .headRefOid\"*)\n\
              printf '%s\\n' \"$head\"; exit 0 ;;\n\
+             \"pr view 7 --json state,createdAt,mergedAt,mergeable,headRefOid\"*)\n\
+             printf '{{\"state\":\"OPEN\",\"createdAt\":\"2027-01-15T09:00:00Z\",\"mergedAt\":null,\"headRefOid\":\"%s\"}}\\n' \"$head\"; exit 0 ;;\n\
+             \"pr checks 7 --json bucket,name,link\"*)\n\
+             if [ -n \"$head\" ] && [ -f \"$FAKE_GH_DIR/green-$head\" ]; then\n\
+             printf 'pass\\tci\\t\\n'\n\
+             else\n\
+             printf 'pending\\tci\\t\\n'\n\
+             fi\n\
+             exit 0 ;;\n\
              \"pr checks 7 --json name,bucket,completedAt\"*)\n\
              if [ -n \"$head\" ] && [ -f \"$FAKE_GH_DIR/green-$head\" ]; then\n\
              printf '[{{\"name\":\"ci\",\"bucket\":\"pass\",\"completedAt\":\"2027-01-15T09:30:00Z\"}}]\\n'\n\
@@ -804,6 +814,49 @@ fn a_forge_refusal_still_gets_nowhere_and_asks() {
     assert!(stdout.contains("merge got nowhere three times"), "{stdout}");
     assert_eq!(scene.runs_of("merge").len(), 3);
     assert!(scene.runs_of("fix").is_empty());
+}
+
+#[test]
+fn merge_question_names_head_not_held() {
+    let mut scene = Scene::published("one\nslice\n");
+    scene.project.on_first(
+        "issue create *",
+        "https://github.com/example/tracker/issues/60\n",
+    );
+    let head = scene.remote_slice();
+    scene.green();
+    // The workspace goes ahead of the pull request's head: a commit nothing pushed.
+    write(&scene.workspace(), "notes.txt", "one\nslice\nmore\n");
+    jj(&scene.workspace(), &["commit", "-m", "Ahead of the head"]);
+    let latest = scene.head();
+    assert_ne!(latest, head);
+
+    let before = scene.remote_slice();
+    scene.spawn_phase("review");
+    let merges = scene.runs_of("merge");
+    assert_eq!(merges.len(), 1, "{:?}", scene.runs());
+    let output = read(&merges[0], "output");
+    assert_eq!(read(&merges[0], "exit"), "4\n", "{output}");
+    let reason = format!("the workspace does not hold the pull request's head {head}");
+    assert!(output.contains(&reason), "{output}");
+    assert!(output.contains(&latest), "{output}");
+    assert!(scene.runs_of("fix").is_empty(), "a refusal is no fix");
+
+    scene.tick();
+    scene.tick();
+    // Three of them at one head: the question carries the same words.
+    let stdout = scene.tick();
+    assert!(stdout.contains("merge got nowhere three times"), "{stdout}");
+    assert!(
+        scene.project.gh_calls().iter().any(|call| {
+            call.starts_with("issue create") && call.contains(&reason) && call.contains(&latest)
+        }),
+        "{:?}",
+        scene.project.gh_calls()
+    );
+    // Nothing moved: the head is where it was and the workspace holds what it held.
+    assert_eq!(scene.remote_slice(), before);
+    assert_eq!(scene.head(), latest);
 }
 
 /// Question `number` raised on task 2, closed with `ruling` at `closed`.

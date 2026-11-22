@@ -25,12 +25,14 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use super::needed::machine_dependents;
+use super::paint::{bold, piece, with_commands};
 use crate::app::actions::{
     ActionKind, ActionMetadata, ActionMode, HOOK_EVENTS, HOOK_HAS_NO_TERMINAL, HOOKS_DIR,
     ResolveError, Resolved, Tier, can_shadow, hook_file_in, list, list_hooks, parse, resolve,
     resolve_in, same_file,
 };
 use crate::composition::STATE_DIR;
+use crate::domain::screen::{Line, Meaning};
 use crate::manifest::Manifest;
 
 /// Any of the three execute bits.
@@ -66,27 +68,48 @@ pub struct ActionCheck {
 }
 
 impl ActionCheck {
-    /// `action <name> (<tier>): ok, mode 755`, or `invalid` with a line per problem under it.
-    pub(super) fn lines(&self) -> Vec<String> {
-        let state = if self.ok { "ok" } else { "invalid" };
+    /// `action <name> (<tier>): ok, mode 755`, or `invalid` with a line per problem under it, as
+    /// pieces: `ok` done, `invalid` and each problem red, a shadow and
+    /// the notes dim, the name a noun.
+    pub(super) fn painted(&self) -> Vec<Line> {
+        let (state, meaning) = if self.ok {
+            ("ok", Meaning::Done)
+        } else {
+            ("invalid", Meaning::Failed)
+        };
         let mode = self
             .mode
             .as_deref()
             .map_or_else(|| "mode unknown".to_owned(), |mode| format!("mode {mode}"));
-        let head = format!("action {} ({}): {state}, {mode}", self.name, self.tier);
-        let mut lines = vec![head];
+        let mut lines = vec![vec![
+            bold("action "),
+            piece(Meaning::Noun, &self.name),
+            bold(format!(" ({}): ", self.tier)),
+            piece(meaning, state),
+            bold(format!(", {mode}")),
+        ]];
+        lines.extend(self.shadows.iter().map(|over| {
+            vec![piece(
+                Meaning::Dim,
+                format!("  shadows the machine file {}", over.display()),
+            )]
+        }));
+        lines.extend(self.machine_dependents.iter().map(|step| {
+            with_commands(
+                Meaning::Dim,
+                &format!("  the project depends on this machine: {step}"),
+            )
+        }));
         lines.extend(
-            self.shadows
+            self.notes
                 .iter()
-                .map(|over| format!("  shadows the machine file {}", over.display())),
+                .map(|note| with_commands(Meaning::Dim, &format!("  {note}"))),
         );
         lines.extend(
-            self.machine_dependents
+            self.problems
                 .iter()
-                .map(|step| format!("  the project depends on this machine: {step}")),
+                .map(|problem| with_commands(Meaning::Failed, &format!("  {problem}"))),
         );
-        lines.extend(self.notes.iter().map(|note| format!("  {note}")));
-        lines.extend(self.problems.iter().map(|problem| format!("  {problem}")));
         lines
     }
 }

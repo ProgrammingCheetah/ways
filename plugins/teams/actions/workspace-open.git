@@ -1,0 +1,98 @@
+#!/bin/sh
+# zaf description: open a slice's git worktree and same-named branch at the base, handing back the workspace path; a new slice is cut from the base as `origin` has it, fetched first: the base is read from ZAF_BASE, never from git config, and a lagging local base never moves where the slice starts
+# zaf 1: refused: ZAF_VCS is not git, the slice is open on another base, its directory is not a slice workspace, the base is unknown on origin, or the slice name leaves the workspaces directory
+# zaf 2: a backend failed (git is missing or refused, or the fetch failed)
+# zaf mode: 750
+# zaf group: team, release, implement, fix
+# changed: the git version of `workspace-open`: a git project takes this file for that name
+slice=$1
+base=$ZAF_BASE
+
+if [ -z "$ZAF_ROOT" ] || { [ "$#" -ne 1 ] && [ "$#" -ne 2 ]; }; then
+    echo "usage: workspace-open <slice> [<base>], with ZAF_ROOT and ZAF_BASE set" >&2
+    exit 1
+fi
+
+if [ "$ZAF_VCS" != "git" ]; then
+    echo "workspace-open.git is for a git project; ZAF_VCS is '$ZAF_VCS'" >&2
+    exit 1
+fi
+
+# The base is ZAF_BASE. A second argument (what `slice-open` passes) must say the same.
+if [ -z "$base" ]; then
+    echo "ZAF_BASE is not set: the base is never read from git config" >&2
+    exit 1
+fi
+if [ "$#" -eq 2 ] && [ "$2" != "$base" ]; then
+    echo "slice $slice is asked on base $2, but ZAF_BASE is $base" >&2
+    exit 1
+fi
+
+# A slice name is a relative path of plain parts, below the workspaces directory.
+case "/$slice/" in
+    *//* | */./* | */../*)
+        echo "slice name $slice is not a relative path inside the workspaces directory" >&2
+        exit 1
+        ;;
+esac
+case $slice in
+    "" | /* | -*)
+        echo "slice name $slice is not a relative path inside the workspaces directory" >&2
+        exit 1
+        ;;
+esac
+if ! git check-ref-format --branch "$slice" >/dev/null 2>&1; then
+    echo "slice name $slice is not a usable branch name" >&2
+    exit 1
+fi
+case $base in
+    -*)
+        echo "base $base is not a usable branch name" >&2
+        exit 1
+        ;;
+esac
+if ! git check-ref-format --branch "$base" >/dev/null 2>&1; then
+    echo "base $base is not a usable branch name" >&2
+    exit 1
+fi
+
+dir=$ZAF_ROOT/.zaf/workspaces/$slice
+
+root_git() {
+    git -C "$ZAF_ROOT" "$@"
+}
+
+if [ -e "$dir" ]; then
+    # Open already: it is handed back as it stands. Nothing is read from stored state and nothing
+    # changes.
+    if [ -e "$dir/.git" ]; then
+        here=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+        root=$(root_git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+        if [ -n "$here" ] && [ "$here" = "$root" ]; then
+            echo "$dir"
+            exit 0
+        fi
+    fi
+    echo "$dir exists and is not a slice workspace" >&2
+    exit 1
+fi
+
+# A slice is cut from the base as origin has it, never from a local base that may lag behind.
+root_git fetch --quiet origin || exit 2
+if ! root_git rev-parse --verify --quiet "refs/remotes/origin/$base^{commit}" >/dev/null; then
+    echo "unknown base $base on origin" >&2
+    exit 1
+fi
+
+# A worktree whose directory was removed by hand still holds its branch.
+root_git worktree prune || exit 2
+
+mkdir -p "$(dirname "$dir")" || exit 2
+if root_git show-ref --verify --quiet "refs/heads/$slice"; then
+    # The branch outlived an earlier workspace (a drop leaves it): the workspace opens on it.
+    root_git worktree add --quiet "$dir" "$slice" || exit 2
+else
+    root_git worktree add --quiet --no-track -b "$slice" "$dir" "refs/remotes/origin/$base" || exit 2
+fi
+
+echo "$dir"

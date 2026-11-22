@@ -107,7 +107,7 @@ Asking well:
    q2: not settled
        next: question ticket on #<task> (door: no)
    ```
-   or `conflict` with both pages. `settled`: build to it. `not settled` or `conflict`: never decide it; `zaf board question <task> "<question>"` (`--door` for a one-way decision, such as a change to stored data shape), finish what is not blocked, and hand back.
+   or `conflict` with both pages. `settled`: build to it. `not settled` or `conflict`: never decide it; `zaf board question <task> "<question>"` (`--door` for a one-way decision, such as a change to stored data shape), its last line `Proposed answer: <the answer you would build to>`, so the Engineer can rule by accepting it; finish what is not blocked, and hand back.
 4. `zaf progress at <task> build --role programmer`. Build. Every acceptance line gets the test the ticket names; a rule without a failing-when-broken test is unfinished. Commit in the workspace with the project's VCS (`jj commit -m "<imperative message>"` when the manifest says `[vcs] kind = "jj"`).
 5. `zaf progress at <task> check --role programmer`. `zaf check <task>` until it exits 0. A second exit 2 ends the round: hand back with the output's last lines.
 6. Hand back one paragraph: the files you changed, the last `zaf check` result, the answers you built on, the questions you raised, and every choice the ticket did not settle.

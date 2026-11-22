@@ -24,7 +24,7 @@ pub fn run(cli: &Cli, action: &ProgressAction) -> u8 {
     let role = match role_of(role, Caller::from_env()) {
         Ok(role) => role,
         Err(reason) => {
-            eprintln!("zaf {path}: {reason}");
+            crate::eprintln_zaf!("zaf {path}: {reason}");
             return REFUSED;
         }
     };
@@ -42,7 +42,7 @@ pub fn run(cli: &Cli, action: &ProgressAction) -> u8 {
     let plan = match stored {
         Ok(plan) => plan,
         Err(error) => {
-            eprintln!("zaf {path}: {error}");
+            crate::eprintln_zaf!("zaf {path}: {error}");
             return match error {
                 PhaseError::Store(_) => BACKEND,
                 _ => REFUSED,

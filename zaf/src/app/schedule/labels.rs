@@ -34,7 +34,7 @@ use serde_json::{Value, json};
 
 use super::gather::{Gathered, open_on};
 use super::shadow;
-use crate::app::spawn::blockers::blockers;
+use crate::app::spawn::blockers::{blockers, finished_epic_standing};
 use crate::domain::schedule::{Place, WaitingOn, label_for};
 use crate::domain::{Standing, Ticket, TicketId, TicketState};
 use crate::ports::{Board, PortError};
@@ -287,7 +287,12 @@ fn unplaced_waits(
         let standing = match standings.get(&blocker) {
             Some(&standing) => standing,
             None => {
-                let standing = board.standing(blocker)?;
+                let standing = finished_epic_standing(
+                    blocker,
+                    board.standing(blocker)?.into(),
+                    &gathered.epics,
+                )
+                .standing;
                 standings.insert(blocker, standing);
                 standing
             }

@@ -1,6 +1,93 @@
 use super::*;
 
+use crate::domain::screen::Text;
+
 const ESCAPE: char = '\x1b';
+
+const EVERY_MEANING: [Meaning; 8] = [
+    Meaning::Program,
+    Meaning::Verb,
+    Meaning::Noun,
+    Meaning::Done,
+    Meaning::Failed,
+    Meaning::Waiting,
+    Meaning::Dim,
+    Meaning::Bold,
+];
+
+fn piece(meaning: Meaning, text: &str) -> (Meaning, Text) {
+    (meaning, Text::from(text))
+}
+
+#[test]
+fn a_plain_draw_is_the_pieces_joined() {
+    let lines: Vec<Line> = vec![
+        vec![piece(Meaning::Verb, "write"), piece(Meaning::Noun, " a.md")],
+        vec![piece(Meaning::Dim, "why")],
+    ];
+    let drawn = Screen {
+        colour: false,
+        live: false,
+        rows: 24,
+        columns: 80,
+    }
+    .draw(&lines);
+    assert_eq!(drawn, "write a.md\nwhy\n");
+    assert!(!drawn.contains(ESCAPE));
+}
+
+#[test]
+fn a_coloured_draw_wraps_each_piece_in_its_code() {
+    let lines: Vec<Line> = vec![vec![piece(Meaning::Failed, "no"), piece(Meaning::Dim, "x")]];
+    let screen = Screen {
+        colour: true,
+        live: true,
+        rows: 24,
+        columns: 80,
+    };
+    assert_eq!(
+        screen.draw(&lines),
+        format!(
+            "\x1b[{}mno\x1b[0m\x1b[{}mx\x1b[0m\n",
+            code(Meaning::Failed),
+            code(Meaning::Dim)
+        )
+    );
+}
+
+#[test]
+fn a_coloured_draw_stripped_is_the_plain_draw() {
+    let lines: Vec<Line> = vec![
+        EVERY_MEANING.iter().map(|m| piece(*m, "word ")).collect(),
+        vec![piece(Meaning::Verb, "write"), piece(Meaning::Noun, " a/b")],
+    ];
+    let on = Screen {
+        colour: true,
+        live: true,
+        rows: 24,
+        columns: 80,
+    };
+    let off = Screen {
+        colour: false,
+        ..on
+    };
+    let drawn = on.draw(&lines);
+    assert!(drawn.contains(ESCAPE));
+    assert_eq!(strip_escapes(&drawn), off.draw(&lines));
+}
+
+#[test]
+fn strip_escapes_leaves_a_string_with_no_escape_unchanged() {
+    for text in ["", "plain\n", "a [31m b", "tab\tand ünïcode\n"] {
+        assert_eq!(strip_escapes(text), text);
+    }
+}
+
+#[test]
+fn strip_escapes_keeps_what_is_not_an_sgr_sequence() {
+    assert_eq!(strip_escapes("\x1b[2Kx\x1b[1;31my\x1b[0m"), "\x1b[2Kxy");
+    assert_eq!(strip_escapes("a\x1b[31"), "a\x1b[31");
+}
 
 fn coloured() -> Screen {
     Screen {
@@ -278,4 +365,59 @@ fn input_on_a_pipe_is_not_flushed() {
         typed,
     );
     assert!(answer);
+}
+
+const ERROR_LINE: &str = "zaf board claim: #7 is held by another instance";
+
+#[test]
+fn stderr_is_detected_on_its_own() {
+    // Stdout a terminal and stderr a pipe: the error line is plain.
+    let stdout = detect(true, None, Some("xterm"));
+    let stderr = detect(false, None, Some("xterm"));
+    assert!(stdout.colour);
+    assert_eq!(stderr.error_line(ERROR_LINE), ERROR_LINE);
+    assert!(!stderr.error_line(ERROR_LINE).contains(ESCAPE));
+    // The reverse: stdout a pipe and stderr a terminal paints stderr only.
+    let stdout = detect(false, None, Some("xterm"));
+    let stderr = detect(true, None, Some("xterm"));
+    assert_eq!(stdout.paint(Meaning::Program, "zaf"), "zaf");
+    assert!(stderr.error_line(ERROR_LINE).contains(ESCAPE));
+}
+
+#[test]
+fn an_error_starts_with_a_magenta_zaf() {
+    let line = coloured().error_line(ERROR_LINE);
+    let program = format!("\x1b[{}mzaf\x1b[0m", code(Meaning::Program));
+    assert!(line.starts_with(&program), "{line:?}");
+    assert_eq!(strip_escapes(&line), ERROR_LINE);
+    // Only the leading `zaf` is painted: the rest keeps its text.
+    let inside = "zaf begin: cannot start `zaf spawn --watch`: no";
+    let painted = coloured().error_line(inside);
+    assert_eq!(painted.matches(ESCAPE).count(), 2);
+    assert_eq!(strip_escapes(&painted), inside);
+    // A line that does not start with the program's name is as it was.
+    assert_eq!(coloured().error_line("zafx: no"), "zafx: no");
+    assert_eq!(
+        coloured().error_line("pull request 3 is open"),
+        "pull request 3 is open"
+    );
+}
+
+#[test]
+fn no_color_keeps_stderr_plain() {
+    for (no_color, term) in [
+        (Some("1"), Some("xterm")),
+        (Some("1"), None),
+        (None, Some("dumb")),
+    ] {
+        let stderr = detect(true, no_color, term);
+        assert_eq!(stderr.error_line(ERROR_LINE), ERROR_LINE);
+        assert!(!stderr.error_line(ERROR_LINE).contains(ESCAPE));
+    }
+    // An empty `NO_COLOR` is no setting.
+    assert!(
+        detect(true, Some(""), Some("xterm"))
+            .error_line(ERROR_LINE)
+            .contains(ESCAPE)
+    );
 }

@@ -9,7 +9,7 @@ use super::exit::{BACKEND, OK, REFUSED, fail, fail_composition, note_design_path
 use super::slice::{VERSION_VAR, fail_slice};
 
 use crate::adapters::process;
-use crate::app::actions::{ActionName, Caller, SliceRecords, parse, resolve};
+use crate::app::actions::{ActionName, Caller, SliceRecords, parse, resolve_for};
 use crate::app::brief::{
     ActionsView, BriefActionsError, BriefError, BriefPorts, BriefQuery, NodesChain, PhaseView,
     WhyThisRun, brief_for_run, why_this_run,
@@ -86,7 +86,7 @@ fn check_phase(
             format!("the {kind} list is {}", listed.join(", "))
         }
     };
-    eprintln!(
+    crate::eprintln_zaf!(
         "zaf {path}: `{phase}` is not a phase of {}: {reason}",
         ticket.id
     );
@@ -103,7 +103,8 @@ fn is_on_fail_of(composition: &Composition, list: &[ActionName], phase: &str) ->
         _ => composition.state_dir(),
     };
     list.iter().any(|name| {
-        let Ok(Some(found)) = resolve(composition.root(), &home, name.as_str()) else {
+        let vcs = composition.manifest().vcs_kind();
+        let Ok(Some(found)) = resolve_for(vcs, composition.root(), &home, name.as_str()) else {
             return false;
         };
         let Ok(text) = std::fs::read_to_string(&found.path) else {
@@ -131,7 +132,7 @@ fn resume(
         Ok(Some(pr)) => pr,
         Ok(None) => return Ok(None),
         Err(error) => {
-            eprintln!("zaf {path}: cannot read {task}'s pull request record: {error}");
+            crate::eprintln_zaf!("zaf {path}: cannot read {task}'s pull request record: {error}");
             return Err(BACKEND);
         }
     };
@@ -174,9 +175,13 @@ fn why_section(composition: &Composition, board: &dyn Board, task: TicketId) -> 
         _ => root.join(STATE_DIR),
     };
     let version = std::env::var(VERSION_VAR).ok();
+    let vcs = composition.vcs().ok();
+    // A filter that cannot be built leaves every check expected, as a failed read does.
+    let ci_filter = composition.ci_filter().ok();
     let ports = Ports {
         board,
         forge: forge.as_ref(),
+        ci_filter: ci_filter.as_deref(),
         manifest: composition.manifest(),
         root,
         home: &home,
@@ -184,6 +189,7 @@ fn why_section(composition: &Composition, board: &dyn Board, task: TicketId) -> 
         alive: &process::alive,
         version: version.as_deref(),
         now: std::time::SystemTime::now(),
+        vcs: vcs.as_deref(),
     };
     match why_this_run(&ports, task) {
         Ok(why) => why.render(),
@@ -231,7 +237,7 @@ pub fn run(cli: &Cli, task: TicketId, phase: Option<&str>) -> u8 {
     let caller = match Caller::from_env() {
         Ok(caller) => caller,
         Err(reason) => {
-            eprintln!("zaf {path}: {reason}");
+            crate::eprintln_zaf!("zaf {path}: {reason}");
             return REFUSED;
         }
     };
@@ -259,6 +265,7 @@ pub fn run(cli: &Cli, task: TicketId, phase: Option<&str>) -> u8 {
         project_root: composition.root(),
         home: home.as_deref(),
         caller: &caller,
+        vcs: composition.manifest().vcs_kind(),
     };
     let phase_view = resumed.as_ref().map(Resumed::view);
     match brief_for_run(&query, &ports, view, phase_view.as_ref(), why.as_deref()) {
@@ -273,7 +280,7 @@ pub fn run(cli: &Cli, task: TicketId, phase: Option<&str>) -> u8 {
         }
         Err(BriefActionsError::Brief(error)) => fail_brief(&path, error, &composition),
         Err(error @ BriefActionsError::Actions(_)) => {
-            eprintln!("zaf {path}: {error}");
+            crate::eprintln_zaf!("zaf {path}: {error}");
             BACKEND
         }
     }
@@ -290,11 +297,11 @@ fn fail_brief(path: &str, error: BriefError, composition: &Composition) -> u8 {
             fail(path, &error)
         }
         BriefError::Instance(_) => {
-            eprintln!("zaf {path}: {error}");
+            crate::eprintln_zaf!("zaf {path}: {error}");
             REFUSED
         }
         BriefError::Write { .. } => {
-            eprintln!("zaf {path}: {error}");
+            crate::eprintln_zaf!("zaf {path}: {error}");
             BACKEND
         }
     }

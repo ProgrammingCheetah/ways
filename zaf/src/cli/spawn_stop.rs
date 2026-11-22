@@ -112,12 +112,12 @@ pub fn run(cli: &Cli, task: TicketId) -> u8 {
             OK
         }
         Err(error @ StopError::NoInstance(_)) => {
-            eprintln!("zaf {path}: {error}");
+            crate::eprintln_zaf!("zaf {path}: {error}");
             REFUSED
         }
         Err(StopError::Port(error)) => exit::fail(&path, &error),
         Err(error) => {
-            eprintln!("zaf {path}: {error}");
+            crate::eprintln_zaf!("zaf {path}: {error}");
             BACKEND
         }
     }

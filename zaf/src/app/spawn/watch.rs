@@ -31,6 +31,8 @@ use crate::app::schedule::lock::{self, LockError, SchedulerLock};
 use crate::app::schedule::request::{self, Request, Requests};
 use crate::app::schedule::scheduler::{self, Asked, Ended, Found, Host, Memory, Opened};
 use crate::app::spawn;
+use crate::ports::PrNumber;
+use semver::Version;
 
 /// The variable a tick the hub runs carries: the pid of the scheduler it runs for. A `zaf spawn
 /// --once` that finds that scheduler holding the project's lock ticks here instead of asking it,
@@ -429,7 +431,7 @@ impl Host for HubHost {
         self.tick.open_release()
     }
 
-    fn built(&mut self, version: &str, number: &str, link: Option<&str>) {
+    fn built(&mut self, version: &Version, number: PrNumber, link: Option<&str>) {
         self.say(&scheduler::built_line(version, number, link));
     }
 

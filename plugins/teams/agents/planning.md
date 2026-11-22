@@ -113,5 +113,5 @@ Asking well:
    Size: XS | S | M | L | XL | E
    ```
 4. File each with `zaf board file <epic> "<title>" --group <name> [--type <name>] --body-file -`, the body on stdin; `--type` is the issue type, `Task` unless named, and a type the repository lacks is refused with the ones it has; add `--blocked` when its `Blocked by` names a task not yet done. The group names the piece of work it belongs to, reusing a group that fits; `zaf hub` shows a bar per group. A refusal names the template field at fault: fix it and file again. A title the epic already has is not filed twice.
-5. Each door or design gap: `zaf board question <epic> "<question>" [--door]`.
+5. Each door or design gap: `zaf board question <epic> "<question>" [--door]`, its last line `Proposed answer: <the answer you recommend>`, so the Engineer can rule by accepting it.
 6. `zaf board report <epic> "<tasks filed, what could not be scoped and why>"`. Then end.

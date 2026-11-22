@@ -6,6 +6,8 @@
 # zaf group: team, release, implement, fix
 # zaf target: task
 # zaf phases: build, check, publish, review
+# zaf vcs: jj
+# changed: marked `vcs: jj`: a git project takes a `slice-pr.git` and never this file
 
 # The task as a bare number; zaf has already read it as one.
 task=${1#\#}

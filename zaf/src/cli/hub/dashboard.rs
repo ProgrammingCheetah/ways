@@ -32,7 +32,7 @@ use crate::ports::Holder;
 /// state; any other failure is the machine's.
 pub fn bind(port: u16, path: &str) -> Result<Dashboard, u8> {
     Dashboard::bind(port).map_err(|error| {
-        eprintln!("zaf {path}: {error}");
+        crate::eprintln_zaf!("zaf {path}: {error}");
         match error {
             BindError::InUse { .. } => REFUSED,
             BindError::Failed { .. } => BACKEND,
@@ -156,7 +156,9 @@ where
     // outside any instance. A socket that cannot be made leaves the hub up, without that way.
     let socket = serving.link_home.as_deref().and_then(|home| {
         hub_link::LinkSocket::serve(home, link.clone(), hub_link::judge_over(home.to_owned()))
-            .map_err(|error| eprintln!("zaf hub: cannot offer the link to `zaf hub link`: {error}"))
+            .map_err(|error| {
+                crate::eprintln_zaf!("zaf hub: cannot offer the link to `zaf hub link`: {error}")
+            })
             .ok()
     });
     let page = dashboard.start_with(&draw(&first, width), state, serving.guard, serving.controls);

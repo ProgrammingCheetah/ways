@@ -1104,3 +1104,32 @@ fn a_github_manifest_reads_no_forgejo_keys() {
     assert_eq!(forge.kind, ForgeKind::Github);
     assert_eq!(forge.url, None);
 }
+
+fn load_merge(extra: &str) -> Result<Manifest, ManifestError> {
+    Manifest::from_table(format!("{MINIMAL}\n{extra}").parse().expect("toml"))
+}
+
+#[test]
+fn merge_per_tick_reads_eight() {
+    let manifest = load_merge("[merge]\nper_tick = 8\n").expect("loads");
+    assert_eq!(manifest.merge.per_tick, 8);
+}
+
+#[test]
+fn merge_per_tick_defaults_to_one() {
+    assert_eq!(load_merge("").expect("loads").merge.per_tick, 1);
+    assert_eq!(load_merge("[merge]\n").expect("loads").merge.per_tick, 1);
+}
+
+#[test]
+fn merge_per_tick_refuses_zero() {
+    let message = load_merge("[merge]\nper_tick = 0\n")
+        .expect_err("zero")
+        .to_string();
+    assert!(
+        message.contains("[merge]")
+            && message.contains("per_tick")
+            && message.contains("at least 1"),
+        "{message}"
+    );
+}

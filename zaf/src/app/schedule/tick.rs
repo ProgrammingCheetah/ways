@@ -11,9 +11,10 @@
 //! ([`Placement::of`]), names each one its epic or a question holds back ([`Held`]), then walks the
 //! lane, lowest ticket first. Each entry the gate lets through goes to the step of its kind: step 3
 //! runs a `zaf`-kind action inline ([`run_zaf_actions`]), step 4 launches a wait
-//! ([`launch_waits`]), step 6 starts at most one model phase ([`start_planned`]). Step 3 runs at
-//! most one merge that goes through (R29): once one exited 0 the base has moved, so every other
-//! merge of the lane waits for the next tick ([`run_one_merge`]). An entry the
+//! ([`launch_waits`]), step 6 starts at most one model phase ([`start_planned`]). Step 3 lands at
+//! most `[merge] per_tick` merges (D30): once that many merged, or the forge refused one after
+//! another had merged, every other merge of the lane waits for the next tick
+//! ([`run_merge_group`]). An entry the
 //! gate holds is step 5's: a failed wait with no `on-fail` raises its question, and an action
 //! getting nowhere raises one too; neither runs. Step 5 also asks about the waiting tickets and
 //! the open epics ([`waiting_causes`]): an overdue check wait, a dead dependency, a cycle, an
@@ -28,9 +29,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
-use super::ask::{Cause, FailedWait, Hold, ask_outcome, hold_of, waiting_causes};
+use super::ask::{Cause, FailedWait, Hold, ask_outcome, hold_of, is_red, waiting_causes};
 use super::gather::{Beside, Gathered};
 use crate::app::actions::{ActionKind, ActionName, ListedPhase};
 use crate::app::spawn::inline::run_zaf_actions;
@@ -38,11 +39,11 @@ use crate::app::spawn::outcome::{Ran, TickOutcome};
 use crate::app::spawn::start::{InUse, PlannedModel, start_planned};
 use crate::app::spawn::waits::launch_waits;
 use crate::domain::schedule::{
-    Failure, LaneEntry, Phase, PhaseEnd, PhaseStatus, Place, Placement, RunRecord, TicketFacts,
-    WaitingOn, current_phase, gets_nowhere, latest_counted_run, place,
+    Failure, GroupBase, LaneEntry, Phase, PhaseEnd, PhaseStatus, Place, Placement, RunRecord,
+    TicketFacts, WaitingOn, current_phase, gets_nowhere, latest_counted_run, place, weight,
 };
-use crate::domain::{Budget, TicketId, Units};
-use crate::ports::Board;
+use crate::domain::{Budget, CommitId, TicketId, Units};
+use crate::ports::{Board, PrNumber};
 
 /// Why an action may not start now, as the gate found it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -302,7 +303,20 @@ pub struct Steps<'a> {
     pub launch: &'a mut dyn FnMut(TicketId, &ActionName) -> Result<(), String>,
     /// Step 6: starts the planned model phase with `zaf spawn phase`, never waiting for it.
     pub start: &'a mut dyn FnMut(&PlannedModel) -> Result<(), String>,
-    /// Where a wait that could not launch is logged.
+    /// Step 3: the number of the task's pull request, read before its merge runs, since a merge
+    /// that lands forgets the record the number comes from; none when there is no record to read.
+    pub pr_of: &'a mut dyn FnMut(TicketId) -> Option<PrNumber>,
+    /// Step 3: whether the pull request of that number is merged, as the forge says now
+    /// (`Forge::merged`); one it cannot find or read is not merged.
+    pub merged: &'a mut dyn FnMut(PrNumber) -> bool,
+    /// Step 3: the integration branch's head on the forge now, read once after each landed merge;
+    /// none when it cannot be read.
+    pub branch_head: &'a mut dyn FnMut() -> Option<CommitId>,
+    /// Step 3: hands the merge runner the group's last commit with the group's base (D31, F30),
+    /// or none when there is no such commit to judge at; it keeps them in memory for this tick
+    /// only, for the re-check before the group's next merge.
+    pub group: &'a mut dyn FnMut(Option<GroupBase>),
+    /// Where a wait that could not launch, and each merge of step 3, is logged.
     pub log: &'a mut dyn FnMut(&str),
 }
 
@@ -320,6 +334,8 @@ pub struct Machine {
     pub launches_here: usize,
     /// The project's `[spawn] slots`.
     pub slots: usize,
+    /// The project's `[merge] per_tick`: the merges step 3 may land in one tick.
+    pub merge_per_tick: u32,
 }
 
 /// What the tick's phase steps did: the merged outcome, every step that failed, and the tickets
@@ -389,45 +405,188 @@ pub fn sort_lane(gathered: &Gathered, placement: &Placement, now: SystemTime) ->
     sorted
 }
 
-/// Step 3 with one merge a tick (R29): runs each of `entries` in order ([`run_zaf_actions`]),
-/// but once a merge has exited 0 it runs no other merge: the base just moved, and its checks are
-/// not known until the next gather. An entry is a merge when its action is a phase of its ticket
-/// that ends at `merged`. Each merge left for the next tick is named, as a held ticket is; an
-/// entry that is no merge runs whatever came before, and so does a merge after one that failed,
-/// which moved nothing.
-fn run_one_merge(
+/// The exit code of `zaf do` for an action that never ran.
+const NOT_RUN: u8 = 125;
+
+/// Whether `entry` is a merge: its action is a phase of its ticket that ends at `merged`.
+fn is_merge(gathered: &Gathered, entry: &LaneEntry) -> bool {
+    gathered
+        .tickets
+        .iter()
+        .filter(|facts| facts.ticket == entry.ticket)
+        .flat_map(|facts| &facts.phases)
+        .any(|phase| phase.name == entry.next && phase.ends.contains(&PhaseEnd::Merged))
+}
+
+/// Joins to the tick's merge list the tickets held only by R30 behind a ticket that merges in it:
+/// each goes right after that ticket, lowest first, so its merge runs after the fresh one has
+/// merged and re-checks its hold then (F31). A ticket that waits on anything besides that one
+/// merge, the integration branch's checks included, is not added, and nor is one behind a ticket
+/// that does not merge in this tick. Nothing is gathered or sorted again. Gives each ticket added
+/// with the ticket it follows.
+fn follow_fresh(
+    gathered: &Gathered,
+    zaf: &mut Vec<LaneEntry>,
+    now: SystemTime,
+) -> BTreeMap<TicketId, TicketId> {
+    let mut follows = BTreeMap::new();
+    let mut behind: BTreeMap<TicketId, Vec<LaneEntry>> = BTreeMap::new();
+    for facts in &gathered.tickets {
+        let Place::Waiting(waits) = place(facts, now) else {
+            continue;
+        };
+        let mut waits = waits.into_iter();
+        let (Some(WaitingOn::Merge(first)), None) = (waits.next(), waits.next()) else {
+            continue;
+        };
+        let (Some(current), Some(beside)) =
+            (current_phase(facts), gathered.beside.get(&facts.ticket))
+        else {
+            continue;
+        };
+        let next = current.next().clone();
+        let leads = zaf
+            .iter()
+            .any(|entry| entry.ticket == first && is_merge(gathered, entry));
+        if !leads
+            || kind_of(&beside.list, &next) != ActionKind::Zaf
+            || gets_nowhere(facts, &next)
+            || follows.contains_key(&facts.ticket)
+        {
+            continue;
+        }
+        let since = facts.ready_since.unwrap_or(now);
+        let entry = LaneEntry {
+            ticket: facts.ticket,
+            next,
+            since,
+            size: facts.size,
+            weight: weight(since, facts.priority, now),
+        };
+        if !is_merge(gathered, &entry) {
+            continue;
+        }
+        follows.insert(facts.ticket, first);
+        behind.entry(first).or_default().push(entry);
+    }
+    if behind.is_empty() {
+        return follows;
+    }
+    let mut joined = Vec::with_capacity(zaf.len() + follows.len());
+    for entry in zaf.drain(..) {
+        let ticket = entry.ticket;
+        joined.push(entry);
+        if let Some(mut followers) = behind.remove(&ticket) {
+            followers.sort_by_key(|follower| follower.ticket);
+            joined.extend(followers);
+        }
+    }
+    *zaf = joined;
+    follows
+}
+
+/// Why `entry`'s merge waits: how many merged in this tick. One merge names its ticket.
+fn left_over(landed: &[TicketId], entry: &LaneEntry) -> String {
+    match landed {
+        [only] => format!(
+            "{only} merged in this tick, so its {} waits for the next one",
+            entry.next
+        ),
+        _ => format!("{} merged in this tick", landed.len()),
+    }
+}
+
+/// Step 3 with up to `per_tick` merges a tick (D30, `[merge] per_tick`): runs each of `entries` in
+/// order ([`run_zaf_actions`]). After each merge it asks the forge whether the pull request number
+/// read before it ran merged (`Steps::pr_of`, `Steps::merged`), whatever the action's exit code: a merge that landed but exited 2
+/// because `board done` failed moved the branch, so it counts. Once `per_tick` have landed it runs
+/// no other merge, and once a merge did not land after one had, the forge refused it and the group
+/// ends (Q4): the others go next tick. Before any merge has landed a refusal ends nothing, because
+/// the base has not moved: that is today's tick, which `per_tick = 1` keeps (F35). An entry is a
+/// merge when its action is a phase of its ticket that ends at `merged`. Each merge left for the
+/// next tick is named, as a held ticket is; an entry that is no merge runs whatever came before.
+/// A ticket in `follows` is held by R30 behind the ticket it maps to and runs only once that one
+/// has landed ([`follow_fresh`]). Each merge's exit and length, and the group's, go to the log
+/// (F34).
+///
+/// After each merge that landed the tick reads the integration branch's head once
+/// (`Steps::branch_head`) and hands it, with the branch as it read at its start, to the runner
+/// (`Steps::group`): the group's last commit. The re-check before the next merge judges R29 at that
+/// start while the branch is still at that commit, so checks pending at a commit the group just made
+/// do not hold it; any other head is judged as it reads. It lives in memory for this tick, and is
+/// handed back empty when the group ends (F30).
+fn run_merge_group(
     gathered: &Gathered,
     entries: &[LaneEntry],
-    run: &mut dyn FnMut(TicketId, &ActionName) -> u8,
+    per_tick: u32,
+    follows: &BTreeMap<TicketId, TicketId>,
+    steps: &mut Steps<'_>,
 ) -> (Vec<Ran>, Vec<Held>) {
-    let merges = |entry: &LaneEntry| {
-        gathered
-            .tickets
-            .iter()
-            .filter(|facts| facts.ticket == entry.ticket)
-            .flat_map(|facts| &facts.phases)
-            .any(|phase| phase.name == entry.next && phase.ends.contains(&PhaseEnd::Merged))
-    };
+    let began = Instant::now();
     let mut ran = Vec::new();
     let mut deferred = Vec::new();
-    let mut merged: Option<TicketId> = None;
+    let mut landed: Vec<TicketId> = Vec::new();
+    let mut ended = false;
     for entry in entries {
-        let a_merge = merges(entry);
-        if let Some(merged) = merged.filter(|_| a_merge) {
+        // A ticket that follows the one fresh from a fix runs only once that one has merged: its
+        // hold is over then, and is not while that one stands.
+        if follows
+            .get(&entry.ticket)
+            .is_some_and(|first| !landed.contains(first))
+        {
+            continue;
+        }
+        let a_merge = is_merge(gathered, entry);
+        let full = u32::try_from(landed.len()).unwrap_or(u32::MAX) >= per_tick;
+        if a_merge && (full || ended) {
             deferred.push(Held {
                 ticket: entry.ticket,
-                reason: format!(
-                    "{merged} merged in this tick, so its {} waits for the next one",
-                    entry.next
-                ),
+                reason: left_over(&landed, entry),
             });
             continue;
         }
-        let done = run_zaf_actions(std::slice::from_ref(entry), run);
-        if a_merge && done.iter().any(|ran| ran.exit == 0) {
-            merged = Some(entry.ticket);
+        // The number is read now: a merge that lands deletes the record it comes from.
+        let pr = if a_merge {
+            (steps.pr_of)(entry.ticket)
+        } else {
+            None
+        };
+        let at = Instant::now();
+        let done = run_zaf_actions(std::slice::from_ref(entry), steps.run);
+        if a_merge {
+            let exit = done.first().map_or(NOT_RUN, |ran| ran.exit);
+            let did_land = exit != NOT_RUN && pr.is_some_and(|pr| (steps.merged)(pr));
+            (steps.log)(&format!(
+                "merge {} of {}: exit {exit}, {}, {:.1}s",
+                entry.ticket,
+                entry.next,
+                if did_land { "merged" } else { "not merged" },
+                at.elapsed().as_secs_f64()
+            ));
+            if did_land {
+                landed.push(entry.ticket);
+                // The group's own last commit, for the next merge's re-check (D31): the head the
+                // branch is at now, with the branch as this tick read it at its start. A head or
+                // a start that was not read leaves the next re-check as it always was.
+                let own = (steps.branch_head)().zip(gathered.base.as_ref());
+                (steps.group)(own.map(|(head, base)| GroupBase {
+                    head,
+                    base: base.facts.clone(),
+                }));
+            } else if !landed.is_empty() {
+                ended = true;
+            }
         }
         ran.extend(done);
+    }
+    (steps.group)(None);
+    if !landed.is_empty() || !deferred.is_empty() {
+        (steps.log)(&format!(
+            "merges: {} landed, {} left for the next tick, in {:.1}s",
+            landed.len(),
+            deferred.len(),
+            began.elapsed().as_secs_f64()
+        ));
     }
     (ran, deferred)
 }
@@ -449,18 +608,31 @@ pub fn tick(
     steps: &mut Steps<'_>,
 ) -> PhaseTick {
     let placement = Placement::of(&gathered.tickets, now);
-    let sorted = sort_lane(gathered, &placement, now);
+    let mut sorted = sort_lane(gathered, &placement, now);
+    let follows = follow_fresh(gathered, &mut sorted.zaf, now);
     let mut tick = PhaseTick {
         held: held(gathered, now),
         ..PhaseTick::default()
     };
-    let (ran, deferred) = run_one_merge(gathered, &sorted.zaf, steps.run);
+    // A red integration branch lands one merge a tick, its question ruled or not: any merge of a
+    // group may be what broke it (D31, Q2). Read from the forge each tick; nothing is stored.
+    let per_tick = if is_red(gathered) {
+        1
+    } else {
+        machine.merge_per_tick
+    };
+    let (ran, deferred) = run_merge_group(gathered, &sorted.zaf, per_tick, &follows, steps);
     tick.outcome.ran = ran;
     tick.held.extend(deferred);
     tick.outcome.waits = launch_waits(&sorted.waits, steps.launch, steps.log);
     let causes: Vec<Cause> = (sorted.failed_waits.iter().cloned().map(Cause::FailedWait))
         .chain(sorted.nowhere.iter().cloned().map(Cause::Nowhere))
-        .chain(waiting_causes(gathered, &placement, now))
+        .chain(waiting_causes(
+            gathered,
+            &placement,
+            now,
+            machine.merge_per_tick,
+        ))
         .collect();
     match ask_outcome(board, state_dir, &causes) {
         Ok(asked) => {

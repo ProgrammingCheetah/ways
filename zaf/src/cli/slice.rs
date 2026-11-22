@@ -59,7 +59,7 @@ fn print_hand_back(outcome: &RunOutcome) {
     match hand_back(log) {
         Ok(Some(value)) => println!("{value}"),
         Ok(None) => {}
-        Err(error) => eprintln!("zaf slice: cannot read {}: {error}", log.display()),
+        Err(error) => crate::eprintln_zaf!("zaf slice: cannot read {}: {error}", log.display()),
     }
 }
 
@@ -89,7 +89,7 @@ fn fail_missing(cli: &Cli, path: &str, name: &str) -> u8 {
 
 /// Prints a missing action and returns its code.
 fn report_missing(path: &str, name: &str) -> u8 {
-    eprintln!("zaf {path}: {}", missing_action(name));
+    crate::eprintln_zaf!("zaf {path}: {}", missing_action(name));
     BACKEND
 }
 
@@ -110,7 +110,7 @@ pub(super) fn refuse_not_open(path: &str, composition: &Composition, task: Ticke
 /// [`refuse_not_open`] for a project root and a zaf home.
 fn refuse(path: &str, root: &Path, home: Option<&Path>, task: TicketId) -> u8 {
     if provides(root, home, SLICE_OPEN) {
-        eprintln!("zaf {path}: {}", not_open(task));
+        crate::eprintln_zaf!("zaf {path}: {}", not_open(task));
         REFUSED
     } else {
         report_missing(path, SLICE_OPEN)
@@ -168,7 +168,7 @@ pub(super) fn fail_slice(path: &str, cli: &Cli, error: &SliceError) -> u8 {
         SliceError::NoVersion => format!("; set {VERSION_VAR}"),
         _ => String::new(),
     };
-    eprintln!("zaf {path}: {error}{hint}");
+    crate::eprintln_zaf!("zaf {path}: {error}{hint}");
     if cli.json {
         let step: Option<&'static str> = error.step().map(Into::into);
         println!("{}", json!({ "error": error.to_string(), "step": step }));

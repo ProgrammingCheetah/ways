@@ -4,10 +4,12 @@ use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::SystemTime;
 
+use super::calls::Calls;
+use crate::domain::RepoPath;
 use crate::ports::{
-    BaseName, BranchChecks, BranchName, Check, CheckBucket, CheckLink, CheckLog, CheckRun,
-    CommitId, Forge, MergeOutcome, MergeStrategy, NewPullRequest, Opened, PortError, PrNumber,
-    PrRef, PullRequest, ReviewComment, ScanningAlert, SliceName,
+    AccessCheck, BaseName, BranchChecks, BranchName, ChangedFiles, Check, CheckBucket, CheckLink,
+    CheckLog, CheckRun, CommitId, Forge, MergeOutcome, MergeStrategy, NewPullRequest, Opened,
+    PortError, PrNumber, PrRef, PullRequest, ReviewComment, ScanningAlert, SliceName,
 };
 
 /// What a pull request is opened from and into.
@@ -31,6 +33,7 @@ struct OpenPull {
     alerts: Vec<ScanningAlert>,
     head: Option<String>,
     files: Vec<String>,
+    files_cut_short: bool,
     merged: bool,
     closed: bool,
     merged_with: Option<MergeStrategy>,
@@ -38,6 +41,7 @@ struct OpenPull {
     handoff: Option<String>,
     opened_at: SystemTime,
     merged_at: Option<SystemTime>,
+    mergeable: Option<bool>,
 }
 
 #[derive(Debug, Default)]
@@ -59,9 +63,21 @@ struct State {
 #[derive(Debug, Default)]
 pub struct FakeForge {
     state: Mutex<State>,
+    calls: Calls,
 }
 
 impl FakeForge {
+    /// How many times the port's method `method` was called (`checks`, `head`, ...); 0 for one
+    /// never called. Only calls through [`Forge`] count, not the methods that arrange a scene.
+    pub fn calls(&self, method: &str) -> usize {
+        self.calls.of(method)
+    }
+
+    /// Sets every count [`FakeForge::calls`] reads to 0.
+    pub fn reset_calls(&self) {
+        self.calls.reset();
+    }
+
     /// Replaces a pull request's check runs.
     pub fn set_checks(&self, pr: PrNumber, checks: Vec<Check>) -> Result<(), PortError> {
         let mut state = self.state();
@@ -77,6 +93,7 @@ impl FakeForge {
             BranchChecks {
                 head: Some(CommitId::from(head)),
                 checks,
+                reached_at: None,
             },
         );
     }
@@ -125,10 +142,24 @@ impl FakeForge {
         Ok(())
     }
 
-    /// Replaces the files a pull request changes, in the order its diff lists them.
+    /// Replaces the files a pull request changes, in the order its diff lists them; a rename
+    /// is listed under both names, the old one first. The list is complete.
     pub fn set_changed_files(&self, pr: PrNumber, files: &[&str]) -> Result<(), PortError> {
         let mut state = self.state();
-        state.pull_mut(pr)?.files = files.iter().map(|file| (*file).to_owned()).collect();
+        let pull = state.pull_mut(pr)?;
+        pull.files = files.iter().map(|file| (*file).to_owned()).collect();
+        pull.files_cut_short = false;
+        Ok(())
+    }
+
+    /// Says whether the list of files a pull request changes may be cut short.
+    pub fn set_changed_files_cut_short(
+        &self,
+        pr: PrNumber,
+        cut_short: bool,
+    ) -> Result<(), PortError> {
+        let mut state = self.state();
+        state.pull_mut(pr)?.files_cut_short = cut_short;
         Ok(())
     }
 
@@ -144,6 +175,14 @@ impl FakeForge {
     pub fn set_merged_at(&self, pr: PrNumber, at: SystemTime) -> Result<(), PortError> {
         let mut state = self.state();
         state.pull_mut(pr)?.merged_at = Some(at);
+        Ok(())
+    }
+
+    /// Sets whether the forge says a pull request merges into its base: true, false, or none for
+    /// a forge that does not say; a new one says none.
+    pub fn set_mergeable(&self, pr: PrNumber, mergeable: Option<bool>) -> Result<(), PortError> {
+        let mut state = self.state();
+        state.pull_mut(pr)?.mergeable = mergeable;
         Ok(())
     }
 
@@ -236,6 +275,7 @@ impl FakeForge {
             alerts: Vec::new(),
             head: None,
             files: Vec::new(),
+            files_cut_short: false,
             merged: false,
             closed: false,
             merged_with: None,
@@ -243,6 +283,7 @@ impl FakeForge {
             handoff: None,
             opened_at: SystemTime::UNIX_EPOCH,
             merged_at: None,
+            mergeable: None,
         };
         state.pulls.insert(number, pull);
         Opened::New(PrRef::new(number, link_of(number)))
@@ -283,11 +324,13 @@ fn run_of(check: &Check) -> CheckRun {
 
 impl Forge for FakeForge {
     fn checks(&self, pr: PrNumber) -> Result<Vec<Check>, PortError> {
+        self.calls.record("checks");
         let mut state = self.state();
         Ok(state.pull_mut(pr)?.checks.clone())
     }
 
     fn branch_checks(&self, branch: &BranchName) -> Result<BranchChecks, PortError> {
+        self.calls.record("branch_checks");
         let mut state = self.state();
         state.branch_reads += 1;
         if state.branch_checks_fail {
@@ -296,29 +339,44 @@ impl Forge for FakeForge {
         Ok(state.branches.get(branch).cloned().unwrap_or(BranchChecks {
             head: None,
             checks: Vec::new(),
+            reached_at: None,
         }))
     }
 
     fn review_comments(&self, pr: PrNumber) -> Result<Vec<ReviewComment>, PortError> {
+        self.calls.record("review_comments");
         let mut state = self.state();
         Ok(state.pull_mut(pr)?.comments.clone())
     }
 
+    fn checks_at(&self, pr: PrNumber, _head: Option<&str>) -> Result<Vec<Check>, PortError> {
+        self.checks(pr)
+    }
+
     fn pull_request(&self, pr: PrNumber) -> Result<PullRequest, PortError> {
+        self.calls.record("pull_request");
         let mut state = self.state();
+        if state.merged_fails {
+            return Err(PortError::Backend("the forge is down".to_owned()));
+        }
         let pull = state.pull_mut(pr)?;
         Ok(PullRequest {
             opened_at: pull.opened_at,
             merged_at: pull.merged_at,
+            mergeable: pull.mergeable,
+            head: pull.head.clone(),
+            merged: pull.merged,
         })
     }
 
     fn head(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
+        self.calls.record("head");
         let mut state = self.state();
         Ok(state.pull_mut(pr)?.head.clone())
     }
 
     fn merged(&self, pr: PrNumber) -> Result<bool, PortError> {
+        self.calls.record("merged");
         let mut state = self.state();
         if state.merged_fails {
             return Err(PortError::Backend("the forge is down".to_owned()));
@@ -326,17 +384,24 @@ impl Forge for FakeForge {
         Ok(state.pull_mut(pr)?.merged)
     }
 
-    fn last_changed_file(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
+    fn changed_files(&self, pr: PrNumber) -> Result<ChangedFiles, PortError> {
+        self.calls.record("changed_files");
         let mut state = self.state();
-        Ok(state.pull_mut(pr)?.files.last().cloned())
+        let pull = state.pull_mut(pr)?;
+        Ok(ChangedFiles {
+            paths: pull.files.iter().cloned().map(RepoPath::from).collect(),
+            cut_short: pull.files_cut_short,
+        })
     }
 
     fn scanning_alerts(&self, pr: PrNumber) -> Result<Vec<ScanningAlert>, PortError> {
+        self.calls.record("scanning_alerts");
         let mut state = self.state();
         Ok(state.pull_mut(pr)?.alerts.clone())
     }
 
     fn handoff(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
+        self.calls.record("handoff");
         let mut state = self.state();
         if state.handoff_fails {
             return Err(PortError::Backend("the forge is down".to_owned()));
@@ -345,6 +410,7 @@ impl Forge for FakeForge {
     }
 
     fn set_handoff(&self, pr: PrNumber, text: &str) -> Result<(), PortError> {
+        self.calls.record("set_handoff");
         let mut state = self.state();
         if state.handoff_fails {
             return Err(PortError::Backend("the forge is down".to_owned()));
@@ -355,6 +421,7 @@ impl Forge for FakeForge {
 
     /// `main`, unless [`FakeForge::set_default_branch`] arranged another.
     fn default_branch(&self) -> Result<BranchName, PortError> {
+        self.calls.record("default_branch");
         Ok(self
             .state()
             .default_branch
@@ -364,6 +431,7 @@ impl Forge for FakeForge {
 
     /// The head becomes the slice and the base its line, as [`PrRequest`] holds them.
     fn open_pull_request(&self, request: &NewPullRequest) -> Result<Opened, PortError> {
+        self.calls.record("open_pull_request");
         let request = PrRequest {
             slice: SliceName::from(request.head.as_str()),
             base: BaseName::from(request.base.as_str()),
@@ -379,6 +447,7 @@ impl Forge for FakeForge {
         strategy: MergeStrategy,
         head: Option<&CommitId>,
     ) -> Result<MergeOutcome, PortError> {
+        self.calls.record("merge_pull_request");
         let mut state = self.state();
         let refusal = state.merge_refusal.clone();
         let pull = state.pull_mut(pr)?;
@@ -408,6 +477,7 @@ impl Forge for FakeForge {
     }
 
     fn check_runs(&self, pr: PrNumber) -> Result<Vec<CheckRun>, PortError> {
+        self.calls.record("check_runs");
         let mut state = self.state();
         let pull = state.pull_mut(pr)?;
         Ok(pull
@@ -416,7 +486,13 @@ impl Forge for FakeForge {
             .unwrap_or_else(|| pull.checks.iter().map(run_of).collect()))
     }
 
+    fn access(&self) -> Vec<AccessCheck> {
+        self.calls.record("access");
+        Vec::new()
+    }
+
     fn check_log(&self, link: &CheckLink) -> Result<CheckLog, PortError> {
+        self.calls.record("check_log");
         Ok(self
             .state()
             .logs
@@ -425,3 +501,6 @@ impl Forge for FakeForge {
             .unwrap_or(CheckLog::NoJob))
     }
 }
+
+#[cfg(test)]
+mod tests;

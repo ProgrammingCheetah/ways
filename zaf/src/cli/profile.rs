@@ -26,7 +26,7 @@ pub fn run(cli: &Cli, action: &ProfileAction) -> u8 {
     ) {
         Ok(report) => report,
         Err(error) => {
-            eprintln!("zaf {path}: {error}");
+            crate::eprintln_zaf!("zaf {path}: {error}");
             return if error.is_refusal() { REFUSED } else { BACKEND };
         }
     };
@@ -34,7 +34,7 @@ pub fn run(cli: &Cli, action: &ProfileAction) -> u8 {
         match serde_json::to_string_pretty(&report) {
             Ok(json) => println!("{json}"),
             Err(error) => {
-                eprintln!("zaf {path}: {error}");
+                crate::eprintln_zaf!("zaf {path}: {error}");
                 return BACKEND;
             }
         }

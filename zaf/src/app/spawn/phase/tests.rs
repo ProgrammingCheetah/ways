@@ -126,6 +126,7 @@ impl Inline {
         let ports = Ports {
             board: &self.board,
             forge: &self.forge,
+            ci_filter: None,
             manifest: &self.manifest,
             root: &self.root,
             home: &self.home,
@@ -133,8 +134,16 @@ impl Inline {
             alive,
             version: None,
             now: SystemTime::now(),
+            vcs: None,
         };
-        open_inline(&ports, TicketId::from(7), &ActionName::from("merge"), this)
+        open_inline(
+            &ports,
+            TicketId::from(7),
+            &ActionName::from("merge"),
+            this,
+            None,
+        )
+        .map(|opened| opened.run_dir)
     }
 }
 

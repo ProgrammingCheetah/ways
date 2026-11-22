@@ -3,15 +3,15 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+use super::gather_listing as gather;
 use super::*;
 use crate::app::schedule::ask::{base_deadline_marker, no_check_marker};
+use crate::domain::PullRequestFilter;
 use crate::domain::schedule::{HeadEnd, PhaseEnd, Place, WaitingOn, place};
-use crate::domain::{
-    CheckName, CommitId, Instance, InstanceNumber, RepoPath, TaskSize, TicketState,
-};
-use crate::fakes::{FakeBoard, FakeForge, PrRequest};
+use crate::domain::{CheckName, CommitId, Instance, InstanceNumber, TaskSize, TicketState};
+use crate::fakes::{FakeBoard, FakeCiFilter, FakeForge, PrRequest};
 use crate::manifest::Manifest;
-use crate::ports::{BaseName, Check, Holder, NewQuestion, SliceName};
+use crate::ports::{BaseName, Check, CiFilter, Holder, NewQuestion, SliceName};
 
 const MANIFEST: &str = r#"
 [project]
@@ -54,6 +54,9 @@ struct Scene {
     state_dir: PathBuf,
     board: FakeBoard,
     forge: FakeForge,
+    /// The workflows of the forge, none for a scene that has no filter port: then every check is
+    /// expected.
+    ci_filter: Option<FakeCiFilter>,
     manifest: Manifest,
 }
 
@@ -75,6 +78,7 @@ impl Scene {
             state_dir,
             board,
             forge: FakeForge::default(),
+            ci_filter: None,
             manifest: MANIFEST.parse().expect("manifest parses"),
         };
         scene.action("implement", "model", "pr-open");
@@ -184,6 +188,10 @@ impl Scene {
         read(&Ports {
             board: &self.board,
             forge: &self.forge,
+            ci_filter: self
+                .ci_filter
+                .as_ref()
+                .map(|filter| filter as &dyn CiFilter),
             manifest: &self.manifest,
             root: &self.root,
             home: &self.home,
@@ -191,6 +199,7 @@ impl Scene {
             alive: &|_: &Holder| false,
             version,
             now,
+            vcs: None,
         })
     }
 
@@ -387,6 +396,107 @@ fn a_dependency_not_done_is_read_with_where_it_stands() {
     assert!(!waits.contains(&WaitingOn::Ticket(id(26))), "{waits:?}");
 }
 
+/// Epic #50, open and unlabelled, with these tasks `(number, label, closed as not planned,
+/// closed at)`, and #7 of epic #2 blocked by it.
+fn epic_blocking_seven(scene: &Scene, tasks: &[(u64, TicketState, bool, Option<u64>)]) {
+    scene.board.add_challenged_epic(id(50), "Other epic");
+    for &(number, state, dropped, closed_at) in tasks {
+        scene.task(number, 50, state, "—");
+        if dropped {
+            scene.board.close_not_planned(id(number));
+        } else if let Some(secs) = closed_at {
+            scene.board.close_at(id(number), time(secs));
+        }
+    }
+    scene.task(7, EPIC, TicketState::Ready, "#50");
+    scene.board.set_opened_at(id(7), time(1000));
+}
+
+fn waits_on_epic(facts: &TicketFacts) -> bool {
+    matches!(
+        place(facts, time(100_000)),
+        Place::Waiting(waits) if waits.contains(&WaitingOn::Ticket(id(50)))
+    )
+}
+
+#[test]
+fn scheduler_unblocks_ticket_of_finished_epic() {
+    let scene = Scene::new();
+    epic_blocking_seven(
+        &scene,
+        &[
+            (51, TicketState::Done, false, Some(3000)),
+            (52, TicketState::Done, false, Some(2000)),
+            (53, TicketState::Ready, true, None),
+        ],
+    );
+
+    let facts = scene.facts_of(7);
+
+    assert_eq!(
+        facts.dependencies,
+        [Dependency {
+            ticket: id(50),
+            standing: Standing::Done,
+        }]
+    );
+    assert!(!waits_on_epic(&facts));
+    assert_eq!(
+        facts.ready_since,
+        Some(time(3000)),
+        "from the last task of the epic to close"
+    );
+    assert_eq!(
+        scene.board.closed_as(id(50)),
+        None,
+        "the epic stays open, and no label is written to it"
+    );
+}
+
+#[test]
+fn all_dropped_epic_keeps_ticket_waiting() {
+    let scene = Scene::new();
+    epic_blocking_seven(
+        &scene,
+        &[
+            (51, TicketState::Ready, true, None),
+            (52, TicketState::Ready, true, None),
+        ],
+    );
+
+    let facts = scene.facts_of(7);
+
+    assert_eq!(facts.dependencies[0].standing, Standing::Open);
+    assert!(waits_on_epic(&facts));
+}
+
+#[test]
+fn an_epic_with_a_task_open_keeps_its_blocked_ticket_waiting() {
+    let scene = Scene::new();
+    epic_blocking_seven(
+        &scene,
+        &[
+            (51, TicketState::Done, false, Some(3000)),
+            (52, TicketState::Ready, false, None),
+        ],
+    );
+
+    assert!(waits_on_epic(&scene.facts_of(7)));
+}
+
+#[test]
+fn read_pull_carries_mergeable() {
+    let scene = Scene::new();
+    scene.task(7, EPIC, TicketState::Claimed, "—");
+    let pr = scene.open_pr(7, CheckState::Pending);
+    let mergeable = |scene: &Scene| scene.facts_of(7).pull.expect("read").mergeable;
+    assert_eq!(mergeable(&scene), None);
+    scene.forge.set_mergeable(pr, Some(true)).expect("true");
+    assert_eq!(mergeable(&scene), Some(true));
+    scene.forge.set_mergeable(pr, Some(false)).expect("false");
+    assert_eq!(mergeable(&scene), Some(false));
+}
+
 #[test]
 fn a_pull_request_with_a_pending_check_is_read_at_its_head() {
     let scene = Scene::new();
@@ -426,10 +536,10 @@ fn gather_keeps_the_changed_file_the_forge_names() {
         .forge
         .set_changed_files(pr, &["src/a.rs", "src/lib.rs"])
         .expect("files");
-    let named = scene.forge.last_changed_file(pr).expect("forge reads");
+    let named = scene.forge.changed_files(pr).expect("forge reads");
     let pull = scene.facts_of(7).pull.expect("the pull request is read");
-    assert_eq!(pull.changed_file, named.map(RepoPath::from));
-    assert!(pull.changed_file.is_some());
+    assert_eq!(pull.changed_files, named);
+    assert!(pull.changes_a_file());
 }
 
 #[test]
@@ -438,7 +548,7 @@ fn gather_keeps_no_changed_file_when_the_forge_names_none() {
     scene.task(7, EPIC, TicketState::Claimed, "—");
     scene.open_pr(7, CheckState::Pending);
     let pull = scene.facts_of(7).pull.expect("the pull request is read");
-    assert_eq!(pull.changed_file, None);
+    assert!(!pull.changes_a_file());
 }
 
 #[test]
@@ -855,6 +965,7 @@ fn the_integration_branchs_checks_are_read_once_and_handed_to_every_ticket() {
             name: CheckName::from("ci"),
             result: CheckResult::Pending,
         }],
+        reached_at: None,
     };
     assert_eq!(
         gathered.base,
@@ -1025,6 +1136,89 @@ fn one_ticket_gathered_alone_is_placed_as_the_tick_places_it() {
     assert_eq!(place(&nine, time(100)), place(&whole.tickets[1], time(100)));
 }
 
+/// The group of a tick that began with the branch at `b0`, its checks ended, and whose own last
+/// merge left the branch at `head`.
+fn group_at(head: &str) -> GroupBase {
+    GroupBase {
+        head: CommitId::from(head),
+        base: BaseFacts {
+            head: Some(CommitId::from("b0")),
+            checks: vec![CheckFact {
+                name: CheckName::from("ci"),
+                result: CheckResult::Passed(time(40)),
+            }],
+            reached_at: None,
+        },
+    }
+}
+
+/// #7 at its merge, and the place the re-check before its merge gives it for `group`, the branch
+/// being as `scene` set it.
+fn rechecked(scene: &Scene, group: Option<&GroupBase>) -> Place {
+    let (facts, _) = scene.with_ports(Some("v1"), |ports| {
+        gather_one_in(ports, id(7), group)
+            .expect("it reads")
+            .expect("it is open")
+    });
+    place(&facts, time(100))
+}
+
+fn at_merge_behind_pending_checks_at(head: &str) -> Scene {
+    let scene = Scene::new();
+    scene.task(7, EPIC, TicketState::Claimed, "—");
+    scene.open_changing_pr(7, CheckState::Passed);
+    scene
+        .forge
+        .set_branch(BASE, head, vec![base_check(CheckState::Pending)]);
+    scene
+}
+
+#[test]
+fn the_groups_own_commit_does_not_hold_its_next_merge() {
+    // The group's first merge left the branch at b1, where checks are pending.
+    let scene = at_merge_behind_pending_checks_at("b1");
+    assert_eq!(
+        rechecked(&scene, None),
+        Place::Waiting([WaitingOn::Base(CommitId::from("b1"))].into()),
+        "judged as the branch reads, they hold it"
+    );
+    // The branch is still at the group's last commit: R29 is judged at the group's base.
+    assert!(
+        matches!(
+            rechecked(&scene, Some(&group_at("b1"))),
+            Place::InLane { ref next, .. } if next.as_str() == "merge"
+        ),
+        "{:?}",
+        rechecked(&scene, Some(&group_at("b1")))
+    );
+}
+
+#[test]
+fn a_foreign_push_mid_group_holds_the_next_merge() {
+    // Someone else pushed b2 after the group's b1, and checks are pending at b2.
+    let scene = at_merge_behind_pending_checks_at("b2");
+    assert_eq!(
+        rechecked(&scene, Some(&group_at("b1"))),
+        Place::Waiting([WaitingOn::Base(CommitId::from("b2"))].into())
+    );
+}
+
+#[test]
+fn the_next_tick_waits_at_the_groups_last_commit() {
+    // A tick that follows the group gathers with no group, so the checks at b1 hold the merge.
+    let scene = at_merge_behind_pending_checks_at("b1");
+    let gathered = scene.gather_for_version("v1");
+    assert_eq!(
+        place(&gathered.tickets[0], time(100)),
+        Place::Waiting([WaitingOn::Base(CommitId::from("b1"))].into())
+    );
+    // And the base the tick holds is the branch as read, never the group's.
+    assert_eq!(
+        gathered.base.map(|base| base.facts.head),
+        Some(Some(CommitId::from("b1")))
+    );
+}
+
 #[test]
 fn merges_are_ordered_only_among_the_tickets_of_one_integration_branch() {
     let mut scene = Scene::new();
@@ -1162,6 +1356,160 @@ impl Scene {
     }
 }
 
+/// The integration branch of version `1.0`, where the workflows are read.
+const INTEGRATION: &str = "feature/1.0";
+
+impl Scene {
+    /// A scene whose forge has one workflow at the integration branch, which runs on a pull
+    /// request only when it changes a file under `zaf/`.
+    fn filtered(mut self) -> Self {
+        let filter = FakeCiFilter::default();
+        filter.set_workflow(
+            INTEGRATION,
+            ".forgejo/workflows/zaf.yml",
+            PullRequestFilter::Paths(vec!["zaf/**".to_owned()]),
+        );
+        self.ci_filter = Some(filter);
+        self
+    }
+
+    /// `task`'s pull request with no check at its head, changing `files`.
+    fn unchecked_pr_changing(&self, task: u64, files: &[&str]) -> PrNumber {
+        let pr = self.open_unchecked_pr(task);
+        self.forge.set_changed_files(pr, files).expect("files");
+        pr
+    }
+
+    /// The facts of `task` gathered for version `1.0`, the question it raises read as the tick
+    /// reads it: whether its wait is overdue.
+    fn facts_for_version(&self, task: u64) -> TicketFacts {
+        self.gather_for_version("1.0")
+            .tickets
+            .into_iter()
+            .find(|facts| facts.ticket == id(task))
+            .expect("the task is gathered")
+    }
+}
+
+/// The ticket goes on to its merge and asks nothing, however long it has waited.
+fn asks_nothing(facts: &TicketFacts) -> bool {
+    goes_on_to_merge(facts)
+        && crate::domain::schedule::overdue(facts, time(20) + Duration::from_secs(24 * 3600))
+            .is_none()
+}
+
+#[test]
+fn docs_only_pull_request_raises_no_question() {
+    let scene = Scene::new().filtered();
+    scene.task(7, EPIC, TicketState::Claimed, "—");
+    scene.unchecked_pr_changing(7, &["docs/x.md"]);
+    let facts = scene.facts_for_version(7);
+    assert_eq!(
+        facts.pull.as_ref().map(|pull| pull.checks_expected),
+        Some(false)
+    );
+    assert!(asks_nothing(&facts), "{:?}", place(&facts, time(100)));
+    // The same pull request on a forge with no filter port waits for a check, as today.
+    let unfiltered = Scene::new();
+    unfiltered.task(7, EPIC, TicketState::Claimed, "—");
+    unfiltered.unchecked_pr_changing(7, &["docs/x.md"]);
+    let facts = unfiltered.facts_for_version(7);
+    assert_eq!(
+        facts.pull.as_ref().map(|pull| pull.checks_expected),
+        Some(true)
+    );
+    assert!(!goes_on_to_merge(&facts));
+}
+
+#[test]
+fn a_push_workflow_is_expected_only_for_the_slice_branch_it_matches() {
+    for (patterns, expected) in [(vec!["main"], false), (vec!["main", "feature/**"], true)] {
+        let mut scene = Scene::new();
+        let filter = FakeCiFilter::default();
+        filter.set_workflow(
+            INTEGRATION,
+            ".forgejo/workflows/zaf.yml",
+            PullRequestFilter::Branches(patterns.iter().map(|p| (*p).to_owned()).collect()),
+        );
+        scene.ci_filter = Some(filter);
+        scene.task(7, EPIC, TicketState::Claimed, "—");
+        scene.unchecked_pr_changing(7, &["docs/x.md"]);
+        let facts = scene.facts_for_version(7);
+        assert_eq!(
+            facts.pull.as_ref().map(|pull| pull.checks_expected),
+            Some(expected),
+            "{patterns:?}"
+        );
+    }
+}
+
+#[test]
+fn workflow_change_still_asks() {
+    let scene = Scene::new().filtered();
+    scene.task(7, EPIC, TicketState::Claimed, "—");
+    scene.unchecked_pr_changing(7, &["docs/x.md", ".forgejo/workflows/zaf.yml"]);
+    let facts = scene.facts_for_version(7);
+    assert_eq!(
+        facts.pull.as_ref().map(|pull| pull.checks_expected),
+        Some(true)
+    );
+    assert!(!goes_on_to_merge(&facts));
+    assert!(
+        crate::domain::schedule::overdue(&facts, time(20) + NO_CHECK_DEADLINE).is_some(),
+        "the No check question is raised"
+    );
+}
+
+#[test]
+fn rename_into_docs_still_asks() {
+    let scene = Scene::new().filtered();
+    scene.task(7, EPIC, TicketState::Claimed, "—");
+    // A code file moved into docs/: the forge lists the old name too.
+    scene.unchecked_pr_changing(7, &["zaf/src/lib.rs", "docs/lib.md"]);
+    let facts = scene.facts_for_version(7);
+    assert_eq!(
+        facts.pull.as_ref().map(|pull| pull.checks_expected),
+        Some(true)
+    );
+    assert!(!goes_on_to_merge(&facts));
+}
+
+#[test]
+fn failed_workflow_read_counts_as_expected() {
+    let scene = Scene::new().filtered();
+    scene.task(7, EPIC, TicketState::Claimed, "—");
+    scene.unchecked_pr_changing(7, &["docs/x.md"]);
+    if let Some(filter) = &scene.ci_filter {
+        filter.fail("forge down");
+    }
+    let facts = scene.facts_for_version(7);
+    assert_eq!(
+        facts.pull.as_ref().map(|pull| pull.checks_expected),
+        Some(true)
+    );
+    assert!(!goes_on_to_merge(&facts));
+}
+
+#[test]
+fn workflows_are_read_for_no_pull_request_with_a_check_and_once_per_base() {
+    let scene = Scene::new().filtered();
+    scene.task(7, EPIC, TicketState::Claimed, "—");
+    scene.task(8, EPIC, TicketState::Claimed, "—");
+    scene.task(9, EPIC, TicketState::Claimed, "—");
+    scene.unchecked_pr_changing(7, &["docs/x.md"]);
+    scene.unchecked_pr_changing(8, &["docs/y.md"]);
+    scene.open_changing_pr(9, CheckState::Pending);
+    let gathered = scene.gather_for_version("1.0");
+    let expected: Vec<bool> = gathered
+        .tickets
+        .iter()
+        .map(|facts| facts.pull.as_ref().expect("pull").checks_expected)
+        .collect();
+    // The pending one is not asked; the two with no check are not expected one.
+    assert_eq!(expected, vec![false, false, true]);
+    assert_eq!(scene.ci_filter.as_ref().map(FakeCiFilter::reads), Some(1));
+}
+
 fn goes_on_to_merge(facts: &TicketFacts) -> bool {
     matches!(
         place(facts, time(100)),
@@ -1291,4 +1639,99 @@ fn gather_keeps_waiting_when_rulings_cannot_be_read() {
         "{}",
         gathered.warnings[0]
     );
+}
+
+/// A VCS that counts how it is asked for trees.
+struct CountingVcs {
+    inner: crate::fakes::FakeVcs,
+    one_at_a_time: std::cell::Cell<usize>,
+    batches: std::cell::Cell<usize>,
+}
+
+impl crate::ports::Vcs for CountingVcs {
+    fn latest_commit(&self, workspace: &Path) -> Result<CommitId, PortError> {
+        self.inner.latest_commit(workspace)
+    }
+    fn holds(&self, workspace: &Path, head: &CommitId) -> Result<bool, PortError> {
+        self.inner.holds(workspace, head)
+    }
+    fn tree_of(&self, root: &Path, commit: &CommitId) -> Result<crate::domain::TreeId, PortError> {
+        self.one_at_a_time.set(self.one_at_a_time.get() + 1);
+        self.inner.tree_of(root, commit)
+    }
+    fn trees_of(
+        &self,
+        root: &Path,
+        commits: &[&CommitId],
+    ) -> Vec<(CommitId, crate::domain::TreeId)> {
+        self.batches.set(self.batches.get() + 1);
+        self.inner.trees_of(root, commits)
+    }
+    fn diff_stat(
+        &self,
+        workspace: &Path,
+        base: &BaseName,
+    ) -> Result<crate::ports::DiffStat, PortError> {
+        self.inner.diff_stat(workspace, base)
+    }
+    fn has_tag(&self, root: &Path, tag: &str) -> Result<bool, PortError> {
+        self.inner.has_tag(root, tag)
+    }
+    fn has_remote(&self, root: &Path) -> Result<bool, PortError> {
+        self.inner.has_remote(root)
+    }
+    fn tags(&self, root: &Path) -> Result<Vec<String>, PortError> {
+        self.inner.tags(root)
+    }
+    fn diff_hunks(
+        &self,
+        workspace: &Path,
+        base: &BaseName,
+        path: &str,
+    ) -> Result<String, PortError> {
+        self.inner.diff_hunks(workspace, base, path)
+    }
+}
+
+#[test]
+fn gather_finds_git_folder_once() {
+    let scene = Scene::new();
+    let vcs = CountingVcs {
+        inner: crate::fakes::FakeVcs::default(),
+        one_at_a_time: std::cell::Cell::new(0),
+        batches: std::cell::Cell::new(0),
+    };
+    // Four commits to read trees of: the head, and the head each of three runs began at.
+    let fix = ActionName::from("fix");
+    let runs: Vec<RunRecord> = ["h2", "h3", "h4"]
+        .iter()
+        .map(|head| RunRecord {
+            action: fix.clone(),
+            head: Some(CommitId::from(*head)),
+            head_end: HeadEnd::Unknown,
+            started_at: time(1),
+            alive: false,
+            exit: None,
+            questions: BTreeSet::new(),
+            last_line: None,
+        })
+        .collect();
+    let head = CommitId::from("h1");
+    let ports = Ports {
+        board: &scene.board,
+        forge: &scene.forge,
+        ci_filter: None,
+        manifest: &scene.manifest,
+        root: &scene.root,
+        home: &scene.home,
+        state_dir: &scene.state_dir,
+        alive: &|_: &Holder| false,
+        version: None,
+        now: time(100),
+        vcs: Some(&vcs),
+    };
+    read_trees(&ports, Some(&head), &runs, &[fix]);
+    // One lookup for all four commits, and none for each.
+    assert_eq!(vcs.batches.get(), 1);
+    assert_eq!(vcs.one_at_a_time.get(), 0);
 }

@@ -155,6 +155,9 @@ impl Scene {
                 .expect("git");
             assert!(status.success(), "git {args:?}");
         }
+        // Setup names `kind = "jj"` and doctor checks it: the folder is a colocated repository,
+        // the stand-in `jj` being no tool that would make the `.jj` folder.
+        fs::create_dir_all(root.join(".jj")).expect(".jj");
         Self {
             temp,
             root,

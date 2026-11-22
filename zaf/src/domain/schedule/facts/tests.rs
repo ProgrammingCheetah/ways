@@ -2,13 +2,15 @@ use super::super::tests::*;
 use super::*;
 
 #[test]
-fn changes_a_file_follows_changed_file() {
+fn changes_a_file_follows_changed_files() {
     let mut pull = pull("h1", 20);
-    pull.changed_file = None;
+    pull.changed_files = ChangedFiles::default();
     assert!(!pull.changes_a_file());
-    pull.changed_file = Some(RepoPath::from("src/lib.rs"));
+    pull.changed_files = ChangedFiles::of(&["src/lib.rs"]);
     assert!(pull.changes_a_file());
-    pull.changed_file = None;
+    pull.changed_files = ChangedFiles::of(&["zaf/x.rs", "docs/x.rs"]);
+    assert!(pull.changes_a_file());
+    pull.changed_files = ChangedFiles::default();
     assert!(!pull.changes_a_file());
 }
 
@@ -82,6 +84,63 @@ fn a_run_stayed_at_a_head_only_by_its_record() {
     assert!(!run("fix", Some("h1"), 5).stayed_at(Some(&commit("h1"))));
     // With no pull request, a run that began and ended at none stayed at none.
     assert!(run("implement", None, 5).leaves(None).stayed_at(None));
+}
+
+fn trees(read: &[(&str, &str)]) -> Trees {
+    let mut trees = Trees::default();
+    for (commit_id, tree) in read {
+        trees.insert(commit(commit_id), TreeId::from(*tree));
+    }
+    trees
+}
+
+#[test]
+fn stayed_at_counts_an_empty_commit_as_the_same_tree() {
+    // h2 and h3 are empty commits on h1: one tree.
+    let trees = trees(&[("h1", "t1"), ("h2", "t1"), ("h3", "t1")]);
+    let run = run("fix", Some("h2"), 5).leaves(Some("h3"));
+    assert!(run.stayed_at_tree(Some(&commit("h1")), &trees));
+    // By commit id alone it did move.
+    assert!(!run.stayed_at(Some(&commit("h1"))));
+    // The same commit is the same tree, read or not.
+    let same = self::run("fix", Some("h9"), 5).leaves(Some("h9"));
+    assert!(same.stayed_at_tree(Some(&commit("h9")), &Trees::default()));
+    // An unknown end is never at a head, and no head is only no head.
+    assert!(!self::run("fix", Some("h1"), 5).stayed_at_tree(Some(&commit("h1")), &trees));
+    assert!(
+        self::run("implement", None, 5)
+            .leaves(None)
+            .stayed_at_tree(None, &trees)
+    );
+    assert!(
+        !self::run("implement", None, 5)
+            .leaves(None)
+            .stayed_at_tree(Some(&commit("h1")), &trees)
+    );
+}
+
+#[test]
+fn stayed_at_false_for_a_changed_tree() {
+    let trees = trees(&[("h1", "t1"), ("h2", "t2"), ("h3", "t2")]);
+    // Began at the head's tree and left another: it moved.
+    let moved = run("fix", Some("h1"), 5).leaves(Some("h2"));
+    assert!(!moved.stayed_at_tree(Some(&commit("h1")), &trees));
+    // Began elsewhere and ended at the head's tree: it did not stay.
+    assert!(!moved.stayed_at_tree(Some(&commit("h2")), &trees));
+    // Both ends at another tree than the head's.
+    let before = run("fix", Some("h2"), 5).leaves(Some("h3"));
+    assert!(!before.stayed_at_tree(Some(&commit("h1")), &trees));
+}
+
+#[test]
+fn an_unreadable_tree_counts_by_its_commit_id() {
+    // h2's tree was not read: it is at h1 only when it is h1.
+    let trees = trees(&[("h1", "t1")]);
+    let run = run("fix", Some("h1"), 5).leaves(Some("h2"));
+    assert!(!run.stayed_at_tree(Some(&commit("h1")), &trees));
+    assert!(!run.stayed_at_tree(Some(&commit("h1")), &Trees::default()));
+    let same = self::run("fix", Some("h2"), 5).leaves(Some("h2"));
+    assert!(same.stayed_at_tree(Some(&commit("h2")), &trees));
 }
 
 #[test]

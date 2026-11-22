@@ -188,6 +188,7 @@ fn facts(task: TicketId, runs: Vec<zaf::domain::schedule::RunRecord>) -> TicketF
         ready_since: None,
         merging: Default::default(),
         no_check_ruled: None,
+        trees: Default::default(),
     }
 }
 
@@ -970,4 +971,101 @@ fn two_starts_cannot_go_one_over_the_slots() {
     assert!(refused.2.contains("every slot is in use (1 of 1)"), "{all}");
     assert_eq!(run_folders(&project).len(), 1, "{all}");
     release(&project);
+}
+
+/// The phases of a task that stands at its last: `review` done at the head, `merge` ends at
+/// `merged`, the land phase.
+const LAND_MANIFEST: &str = "[project]\nname = \"example\"\n\n\
+    [board]\nkind = \"github-issues\"\nrepo = \"example/tracker\"\n\n\
+    [forge]\nkind = \"github\"\nrepo = \"example/tracker\"\n\n\
+    [phases]\nTask = [\"review\", \"merge\"]\n";
+
+/// A project whose task 4 has pull request 12 at head `abc123`, reviewed there: its current phase
+/// is `merge`, which ends at `merged` and runs `body`.
+fn project_at_land(body: &str) -> Project {
+    let mut project = project_of(LAND_MANIFEST, |_| "true\n".to_owned());
+    let slices = project.root.join(".zaf/slices");
+    fs::create_dir_all(&slices).expect("slices");
+    fs::write(slices.join("4.pr"), "12").expect("record");
+    project
+        .on("pr view 12 --json headRefOid *", "abc123\n")
+        .on(
+            "pr view 12 --json state,createdAt,mergedAt,mergeable*",
+            r#"{"state":"OPEN","createdAt":"2027-01-15T09:00:00Z","mergedAt":null,"mergeable":"MERGEABLE","headRefOid":"abc123"}"#,
+        )
+        .on("pr view 12 --json state *", r#"{"state":"OPEN"}"#)
+        .on(
+            "pr checks 12 *",
+            r#"[{"name":"ci","bucket":"pass","completedAt":"2027-01-15T09:05:00Z"}]"#,
+        )
+        .on("api *pulls/12/files*", r#"[[{"filename":"a.txt"}]]"#)
+        .on(
+            "api *pulls/12/reviews*",
+            r#"[[{"user":{"login":"r"},"body":"ok","submitted_at":"2027-01-15T09:10:00Z","commit_id":"abc123"}]]"#,
+        )
+        .on("api *", "[[]]");
+    action(
+        &project,
+        "merge",
+        "# zaf kind: wait\n# zaf ends: merged\n",
+        body,
+    );
+    project
+}
+
+#[test]
+fn land_run_carries_the_derived_head() {
+    let project = project_at_land("");
+    let root = project.root.display().to_string();
+    action(
+        &project,
+        "merge",
+        "# zaf kind: wait\n# zaf ends: merged\n",
+        &format!(
+            "printf '%s' \"${{ZAF_HEAD-unset}}\" > '{root}/head'\n\
+             zaf do inner\n"
+        ),
+    );
+    action(
+        &project,
+        "inner",
+        "",
+        &format!("printf '%s' \"${{ZAF_HEAD-unset}}\" > '{root}/nested'\n"),
+    );
+
+    let (code, stdout, stderr) = outcome(&project.zaf(&["spawn", "phase", "4", "merge"]));
+
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    let folders = run_folders(&project);
+    assert_eq!(folders.len(), 1, "{folders:?}");
+    assert_eq!(exit_of(&folders[0]), "0\n");
+    // The head Land was derived at, to the action and to a `zaf do` it makes.
+    let read = |name: &str| fs::read_to_string(project.root.join(name)).expect(name);
+    assert_eq!(read("head"), "abc123");
+    assert_eq!(read("nested"), "abc123");
+    assert_eq!(
+        fs::read_to_string(folders[0].join("land-head")).expect("land-head"),
+        "abc123"
+    );
+}
+
+#[test]
+fn other_phases_get_no_zaf_head() {
+    // `implement` is no land phase, whatever head the caller's environment holds.
+    let mut project = project_running(|project| {
+        format!(
+            "printf '%s' \"${{ZAF_HEAD-unset}}\" > '{root}/head'\n",
+            root = project.root.display()
+        )
+    });
+    project.env("ZAF_HEAD", "forged");
+
+    let run = start(&project);
+
+    assert_eq!(exit_of(&run), "0\n");
+    assert_eq!(
+        fs::read_to_string(project.root.join("head")).expect("head"),
+        "unset"
+    );
+    assert!(!run.join("land-head").exists());
 }

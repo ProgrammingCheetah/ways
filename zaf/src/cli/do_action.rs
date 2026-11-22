@@ -18,7 +18,7 @@ use crate::app::actions::{
     run_action,
 };
 use crate::composition::{Composition, CompositionError, zaf_home};
-use crate::manifest::{ActionsSection, HOME_FILE};
+use crate::manifest::{ActionsSection, HOME_FILE, VcsKind};
 
 /// How many lines of the log a `FAIL` shows.
 pub(super) const TAIL_LINES: usize = 10;
@@ -65,13 +65,13 @@ pub fn run(cli: &Cli, args: &DoArgs) -> u8 {
     let only = args.tier.map(Tier::from);
     match (args.words.split_first(), args.show) {
         (None, _) if only.is_some() => {
-            eprintln!("zaf {path}: --tier takes an action name");
+            crate::eprintln_zaf!("zaf {path}: --tier takes an action name");
             BACKEND
         }
         (None, false) => list(cli, &path),
         (Some((name, [])), true) => show(cli, &name.to_string_lossy(), only),
         (_, true) => {
-            eprintln!("zaf {path}: --show takes one name");
+            crate::eprintln_zaf!("zaf {path}: --show takes one name");
             BACKEND
         }
         (Some((name, rest)), false) => {
@@ -116,14 +116,31 @@ struct Place {
 }
 
 impl Place {
+    /// The project's `[vcs]` kind: none outside a project and for a manifest with none.
+    fn vcs(&self) -> Option<VcsKind> {
+        self.project
+            .as_ref()
+            .and_then(|project| project.manifest().vcs_kind())
+    }
+
     /// Finds the place from the current directory. Outside a project the bound comes from the
     /// home's `config.toml`, the only manifest there is. A broken manifest is an error, never
     /// outside a project: the project's actions must not silently turn into the machine's.
     fn here() -> Result<Self, String> {
+        Self::found(Composition::discover_here())
+    }
+
+    /// [`here`](Self::here) from `start` instead of the current directory: the chair runs a phase
+    /// in the project of the tab it was started from.
+    fn at(start: &Path) -> Result<Self, String> {
+        Self::found(Composition::discover(start))
+    }
+
+    fn found(discovered: Result<Composition, CompositionError>) -> Result<Self, String> {
         let home = zaf_home().ok_or("no zaf home: set ZAF_HOME or HOME")?;
         let home = std::path::absolute(&home)
             .map_err(|error| format!("cannot read the zaf home {}: {error}", home.display()))?;
-        match Composition::discover_here() {
+        match discovered {
             Ok(composition) => Ok(Self {
                 root: Some(composition.root().to_owned()),
                 timeout_minutes: composition.manifest().actions.timeout_minutes,
@@ -217,6 +234,27 @@ pub(super) fn run_named_phase(name: &str, terminal: Terminal, phase: PhaseEnv) -
     )
 }
 
+/// [`run_named_phase`] in the project at `root`, from its root rather than the current directory:
+/// the chair runs a release phase of the tab on screen, on the pseudo-terminal it holds.
+pub(in crate::cli) fn run_named_phase_in(
+    root: &Path,
+    name: &str,
+    terminal: Terminal,
+    phase: PhaseEnv,
+) -> RunOutcome {
+    let version = phase.version.clone();
+    run_named_at(
+        Some(root),
+        name,
+        &[],
+        None,
+        terminal,
+        VersionFrom::Given(&version),
+        None,
+        Some(phase),
+    )
+}
+
 fn run_named_with(
     name: &str,
     args: &[OsString],
@@ -226,12 +264,31 @@ fn run_named_with(
     run: Option<RunStep<'_>>,
     phase: Option<PhaseEnv>,
 ) -> RunOutcome {
+    run_named_at(None, name, args, only, terminal, version, run, phase)
+}
+
+/// The run of one name, from `at` (the project's root, which is also the body's directory) or,
+/// with none, from the current directory.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the run's request, spread as its callers give it"
+)]
+fn run_named_at(
+    at: Option<&Path>,
+    name: &str,
+    args: &[OsString],
+    only: Option<Tier>,
+    terminal: Terminal,
+    version: VersionFrom<'_>,
+    run: Option<RunStep<'_>>,
+    phase: Option<PhaseEnv>,
+) -> RunOutcome {
     let not_run = |reason| RunOutcome::not_run(name, None, reason);
-    let place = match Place::here() {
+    let place = match at.map_or_else(Place::here, Place::at) {
         Ok(place) => place,
         Err(reason) => return not_run(reason),
     };
-    let cwd = match std::env::current_dir() {
+    let cwd = match at.map_or_else(std::env::current_dir, |root| Ok(root.to_owned())) {
         Ok(cwd) => cwd,
         Err(error) => return not_run(format!("no current directory: {error}")),
     };
@@ -309,6 +366,11 @@ fn run_named_with(
         terminal,
         run,
         phase: None,
+        vcs: place
+            .project
+            .as_ref()
+            .and_then(|project| project.manifest().vcs.as_ref())
+            .map(|vcs| vcs.kind),
     };
     run_action(&match phase {
         Some(phase) => request.with_phase(phase),
@@ -352,7 +414,7 @@ fn print_whole(log: &Path) {
     let copied = std::fs::File::open(log)
         .and_then(|mut file| std::io::copy(&mut file, &mut std::io::stdout().lock()));
     if let Err(error) = copied {
-        eprintln!("zaf do: cannot read {}: {error}", log.display());
+        crate::eprintln_zaf!("zaf do: cannot read {}: {error}", log.display());
     }
 }
 
@@ -364,7 +426,7 @@ fn print_tail(log: &Path) {
                 eprintln!("{line}");
             }
         }
-        Err(error) => eprintln!("zaf do: cannot read {}: {error}", log.display()),
+        Err(error) => crate::eprintln_zaf!("zaf do: cannot read {}: {error}", log.display()),
     }
 }
 
@@ -375,14 +437,14 @@ fn list(cli: &Cli, path: &str) -> u8 {
     let (place, caller) = match found {
         Ok(found) => found,
         Err(reason) => {
-            eprintln!("zaf {path}: {reason}");
+            crate::eprintln_zaf!("zaf {path}: {reason}");
             return BACKEND;
         }
     };
-    let listed = match list_actions(place.root.as_deref(), &place.home, &caller) {
+    let listed = match list_actions(place.vcs(), place.root.as_deref(), &place.home, &caller) {
         Ok(listed) => listed,
         Err(error) => {
-            eprintln!("zaf {path}: {error}");
+            crate::eprintln_zaf!("zaf {path}: {error}");
             return BACKEND;
         }
     };
@@ -427,7 +489,14 @@ fn show(cli: &Cli, name: &str, only: Option<Tier>) -> u8 {
         .and_then(|place| Ok((place, Caller::from_env()?)))
         .map_err(Refused::before_the_file)
         .and_then(|(place, caller)| {
-            read_action(place.root.as_deref(), &place.home, name, only, &caller)
+            read_action(
+                place.vcs(),
+                place.root.as_deref(),
+                &place.home,
+                name,
+                only,
+                &caller,
+            )
         });
     match bytes {
         Ok(bytes) => {

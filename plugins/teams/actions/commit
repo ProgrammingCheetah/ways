@@ -1,14 +1,23 @@
 #!/bin/sh
 # zaf description: commit a slice's work in its jj workspace, move the slice's bookmark onto the commit and hand back the commit id
-# zaf 1: refused: nothing to commit, the slice is not an open slice workspace, or the slice name leaves the workspaces directory
+# zaf 1: refused: nothing to commit, the slice is not an open slice workspace, or the slice name leaves the workspaces directory; with --empty, the workspace holds uncommitted work or its latest commit is already empty
 # zaf 2: a backend failed (jj is missing or refused)
 # zaf mode: 750
 # zaf group: team, release, implement, fix
+# zaf vcs: jj
+# changed: marked `vcs: jj`: a git project takes a `commit.git` and never this file
+# changed: --empty commits nothing but the message on the latest commit, refused with uncommitted work or when that commit is already empty
 slice=$1
 message=$2
+empty_commit=false
+
+if [ "$#" -eq 3 ] && [ "$3" = "--empty" ]; then
+    empty_commit=true
+    set -- "$1" "$2"
+fi
 
 if [ -z "$ZAF_ROOT" ] || [ "$#" -ne 2 ]; then
-    echo "usage: commit <slice> <message>, with ZAF_ROOT set" >&2
+    echo "usage: commit <slice> <message>, or commit <slice> <message> --empty, with ZAF_ROOT set" >&2
     exit 1
 fi
 
@@ -38,7 +47,18 @@ cd "$dir" || exit 2
 
 # jj snapshots the working copy first, so a file just written counts as work.
 empty=$(jj --no-pager --color=never log --no-graph -r @ -T empty) || exit 2
-if [ "$empty" = "true" ]; then
+if [ "$empty_commit" = "true" ]; then
+    # An empty commit holds only the message: refused over work, and over a latest commit with none.
+    if [ "$empty" != "true" ]; then
+        echo "uncommitted work in $slice: --empty commits nothing but the message" >&2
+        exit 1
+    fi
+    latest=$(jj --no-pager --color=never log --no-graph -r @- -T empty) || exit 2
+    if [ "$latest" = "true" ]; then
+        echo "the latest commit of $slice is already empty" >&2
+        exit 1
+    fi
+elif [ "$empty" = "true" ]; then
     echo "nothing to commit for $message" >&2
     exit 1
 fi

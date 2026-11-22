@@ -8,8 +8,14 @@
 //! named for that phase on the terminal and waits for it. A phase named in the request opens in
 //! place of the one due, the design only once the objectives are signed. zaf reads nothing of the session but the
 //! action's exit code: a code other than 0 leaves the phase undone.
+//!
+//! Run from the chair's phase pane, the action is also told `ZAF_READY` ([`ready_file`]): the
+//! session writes that file with `zaf begin ready` ([`mark_ready`]) once it judges its document
+//! done, and the chair ends the session. The file, or the action's own exit 0, then leads to the
+//! signature ([`leads_to_sign`]), whatever the code the ended session left.
 
-use std::io;
+use std::io::{self, Write};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -17,6 +23,7 @@ use super::actions::{PhaseEnv, RunOutcome, RunResult, Terminal};
 use super::epic::{EpicError, EpicLine, SignGuard, instance_above};
 use super::release::{EpicToSign, MalformedBlock, Phase, ReleaseFolder, phase_due};
 use super::spawn::runs;
+use crate::composition::STATE_DIR;
 use crate::domain::{DocumentSignature, Epic, SignatureState, of_version};
 use crate::ports::{Board, PortError};
 
@@ -149,7 +156,156 @@ pub fn phase_env(folder: &ReleaseFolder, version: &str, phase: Phase) -> PhaseEn
         phase: phase_word(phase).to_owned(),
         release_dir: folder.path().to_owned(),
         input,
+        ready: None,
     }
+}
+
+/// The folder under `.zaf/` that holds the ready files.
+pub const READY_DIR: &str = "begin";
+
+/// The file a session run from the chair writes when it judges `phase`'s document of `version`
+/// done: `<root>/.zaf/begin/<version>/<phase>.<token>.ready`, the chair's `ZAF_READY`. `token`
+/// is the session's own ([`session_token`]), so no file or link left there beforehand can stand
+/// in for it.
+pub fn ready_file(root: &Path, version: &str, phase: Phase, token: &str) -> PathBuf {
+    root.join(STATE_DIR)
+        .join(READY_DIR)
+        .join(version)
+        .join(format!("{}.{token}.ready", phase_word(phase)))
+}
+
+/// A token no one can guess, for a session's ready file: 16 hex digits from the system's random
+/// source, else from a randomly keyed hash of the time and the pid.
+pub fn session_token() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    use std::io::Read;
+    let mut bytes = [0_u8; 8];
+    let random = std::fs::File::open("/dev/urandom")
+        .and_then(|mut source| source.read_exact(&mut bytes))
+        .is_ok();
+    let number = if random {
+        u64::from_le_bytes(bytes)
+    } else {
+        let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
+        hasher.write_u128(
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map_or(0, |since| since.as_nanos()),
+        );
+        hasher.write_u32(std::process::id());
+        hasher.finish()
+    };
+    format!("{number:016x}")
+}
+
+/// Whether the session wrote its ready file at `path`: a regular file there, never a link.
+pub fn is_ready(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_file())
+}
+
+/// Whether a phase run that ended as `run` goes on to the signature: the action's own exit 0, or
+/// the ready file the session wrote (`ready`) whatever the code, since the chair ends a ready
+/// session itself and a hang-up leaves a code of its own. A run that never started never does.
+pub fn leads_to_sign(ready: bool, run: &PhaseRun) -> bool {
+    match run {
+        PhaseRun::Done => true,
+        PhaseRun::Undone { .. } => ready,
+        PhaseRun::NotRun { .. } => false,
+    }
+}
+
+/// Why `zaf begin ready` wrote nothing.
+#[derive(Debug, thiserror::Error)]
+pub enum ReadyError {
+    /// No one watches for the file: the session was not opened by the chair.
+    #[error(
+        "ZAF_READY is unset: no one watches this session for its ready file; end it with /exit and \
+         zaf asks for the signature"
+    )]
+    Unset,
+    /// `ZAF_READY` names something that is no ready file.
+    #[error("ZAF_READY names {}, which is no .ready file", .0.display())]
+    NotReadyFile(PathBuf),
+    /// The file could not be written.
+    #[error("cannot write {}: {source}", path.display())]
+    Io {
+        /// The ready file.
+        path: PathBuf,
+        /// What failed.
+        source: io::Error,
+    },
+}
+
+/// `zaf begin ready`: writes the ready file `ready` names (`ZAF_READY`), its folder made when
+/// missing, holding the time `at`. Refused when no file is named, or when the name is no `.ready`
+/// file, so the variable cannot point the write at any other file. The file is made new, never
+/// through a link (`O_EXCL`, `O_NOFOLLOW`); one already there as a regular file is the session
+/// saying it twice.
+pub fn mark_ready(ready: Option<&Path>, at: SystemTime) -> Result<PathBuf, ReadyError> {
+    let path = ready
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or(ReadyError::Unset)?;
+    if path
+        .extension()
+        .is_none_or(|extension| extension != "ready")
+    {
+        return Err(ReadyError::NotReadyFile(path.to_owned()));
+    }
+    let io_error = |source| ReadyError::Io {
+        path: path.to_owned(),
+        source,
+    };
+    if let Some(folder) = path.parent() {
+        std::fs::create_dir_all(folder).map_err(io_error)?;
+    }
+    let stamp = humantime::format_rfc3339_seconds(at).to_string();
+    let made = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path);
+    match made {
+        Ok(mut file) => file
+            .write_all(format!("{stamp}\n").as_bytes())
+            .map_err(io_error)?,
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists && is_ready(path) => {}
+        Err(error) => return Err(io_error(error)),
+    }
+    Ok(path.to_owned())
+}
+
+/// Writes `contents` to `path` whole or not at all: into a new file beside it, then renamed over
+/// it, so a chair that closes or a process killed midway leaves the document as it was. A path
+/// that is a link is followed first: the real file is replaced, in its own folder, and the link
+/// stays a link to it.
+fn replace_whole(path: &Path, contents: &str) -> io::Result<()> {
+    let path = &path.canonicalize()?;
+    let folder = path
+        .parent()
+        .filter(|folder| !folder.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let name = path
+        .file_name()
+        .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+    let temp = folder.join(format!(".{name}.{}.signing", std::process::id()));
+    let _ = std::fs::remove_file(&temp);
+    let written = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)?;
+        if let Ok(meta) = std::fs::metadata(path) {
+            file.set_permissions(meta.permissions())?;
+        }
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&temp, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written
 }
 
 /// Runs the action named for `phase` (`objectives` or `design`) once. The release folder is made
@@ -325,7 +481,7 @@ pub fn complete_phase(
     if std::fs::read_to_string(&path).map_err(io_error)? != text {
         return Ok(Completion::Changed(path));
     }
-    std::fs::write(&path, DocumentSignature::sign(&text, at)).map_err(io_error)?;
+    replace_whole(&path, &DocumentSignature::sign(&text, at)).map_err(io_error)?;
     Ok(Completion::Signed(path))
 }
 

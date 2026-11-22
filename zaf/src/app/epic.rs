@@ -13,6 +13,7 @@ use std::time::SystemTime;
 
 use super::spawn::SpawnError;
 use super::spawn::runs::{self, Run};
+use crate::domain::screen::{Line, Meaning, clean};
 use crate::domain::{
     BodyHash, Epic, EpicStage, EpicTask, GroupName, NewEpic, Signature, Standing, TicketBody,
     TicketId, TicketState, TicketTitle, TicketType, all_signed, of_version, with_release,
@@ -94,6 +95,40 @@ impl EpicLine {
     }
 }
 
+impl EpicLine {
+    /// [`Self::render`] as a screen line: the id a noun, the stage word in its meaning's colour
+    /// (`unsigned` waits on the Engineer, `done` is done), `(edited since signed)` a failure, the
+    /// tally dim and the title, board text, cleaned of control characters. Its pieces joined are
+    /// [`Self::render`] for any title with none.
+    pub fn line(&self) -> Line {
+        let mut line: Line = vec![
+            (Meaning::Noun, self.number.to_string().into()),
+            (Meaning::Dim, " ".into()),
+            (stage_meaning(self.stage), self.stage.to_string().into()),
+        ];
+        if self.signature_void {
+            line.push((Meaning::Dim, " ".into()));
+            line.push((Meaning::Failed, "(edited since signed)".into()));
+        }
+        line.push((
+            Meaning::Dim,
+            format!(" {} of {}  ", self.done, self.total).into(),
+        ));
+        line.push((Meaning::Bold, clean(self.title.as_ref()).into()));
+        line
+    }
+}
+
+/// What a stage word means: an epic nobody signed waits on the Engineer, a finished one is done,
+/// and one in between is dim, as the chair shows it.
+fn stage_meaning(stage: EpicStage) -> Meaning {
+    match stage {
+        EpicStage::Unsigned => Meaning::Waiting,
+        EpicStage::Done => Meaning::Done,
+        EpicStage::Signed | EpicStage::Planned | EpicStage::Challenged => Meaning::Dim,
+    }
+}
+
 /// One task of an epic as `zaf epic show` prints it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct TaskLine {
@@ -147,6 +182,30 @@ impl TaskLine {
     }
 }
 
+impl TaskLine {
+    /// [`Self::render`] as a screen line, indented by `indent`: the id a noun, the state and
+    /// group dim, the title cleaned of control characters.
+    pub fn line(&self, indent: &str) -> Line {
+        let state = match (self.closed, self.state) {
+            (Some("not_planned"), _) => "closed not planned".to_owned(),
+            (Some(word), _) => word.to_owned(),
+            (None, Some(state)) => state.to_string(),
+            (None, None) => "no state".to_owned(),
+        };
+        let group = self
+            .group
+            .as_ref()
+            .map(|group| format!(" [{group}]"))
+            .unwrap_or_default();
+        vec![
+            (Meaning::Dim, indent.to_owned().into()),
+            (Meaning::Noun, self.number.to_string().into()),
+            (Meaning::Dim, format!(" {state}{group}  ").into()),
+            (Meaning::Bold, clean(self.title.as_ref()).into()),
+        ]
+    }
+}
+
 /// An open epic as `zaf epic show` prints it: its line, then one line per task.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct EpicView {
@@ -166,6 +225,13 @@ impl EpicView {
         let mut lines = vec![self.epic.render()];
         lines.extend(self.tasks.iter().map(|task| format!("  {}", task.render())));
         lines.join("\n")
+    }
+
+    /// [`Self::render`] as screen lines: the epic's, then each task's indented under it.
+    pub fn lines(&self) -> Vec<Line> {
+        let mut lines = vec![self.epic.line()];
+        lines.extend(self.tasks.iter().map(|task| task.line("  ")));
+        lines
     }
 
     /// [`Self::render`], then a blank line and the epic's body: what `zaf epic show --more` prints,

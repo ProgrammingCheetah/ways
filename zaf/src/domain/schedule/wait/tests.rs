@@ -1,6 +1,8 @@
 use super::super::tests::*;
 use super::*;
-use crate::domain::schedule::{CheckName, CheckResult, Dependency, EpicFacts, PhaseEnd, PullFacts};
+use crate::domain::schedule::{
+    CheckFact, CheckName, CheckResult, Dependency, EpicFacts, PhaseEnd, PullFacts,
+};
 use crate::domain::{BodyHash, EpicTask, Signature};
 
 /// The pack's ticket with a pull request at `h1` opened at `opened` and no check.
@@ -55,6 +57,63 @@ fn no_check_is_overdue_after_ten_minutes() {
             since: time(20),
             awaited: Awaited::NoCheck,
         })
+    );
+}
+
+/// The pack's ticket with a pull request at `h1` opened at 20, the given checks at its head, and
+/// no check expected on it.
+fn none_expected_with(checks: Vec<CheckFact>) -> TicketFacts {
+    let mut facts = facts(pack());
+    facts.pull = Some(PullFacts {
+        checks,
+        checks_expected: false,
+        ..pull("h1", 20)
+    });
+    facts
+}
+
+#[test]
+fn no_check_expected_passes_with_no_check() {
+    let facts = none_expected_with(Vec::new());
+    assert!(facts.none_expected());
+    assert_eq!(facts.awaited_checks(), None);
+    for at in [20 + MINUTES_10, 20 + HOURS_2, 20 + 10 * HOURS_2] {
+        assert_eq!(overdue(&facts, time(at)), None, "at {at}");
+    }
+    assert!(
+        !matches!(place(&facts, time(20 + HOURS_2)), Place::Waiting(_)),
+        "{:?}",
+        place(&facts, time(20 + HOURS_2))
+    );
+    // The same pull request with a check expected waits and asks, as today.
+    let mut expected = facts.clone();
+    if let Some(pull) = expected.pull.as_mut() {
+        pull.checks_expected = true;
+    }
+    assert_eq!(
+        overdue(&expected, time(20 + MINUTES_10)).map(|overdue| overdue.awaited),
+        Some(Awaited::NoCheck)
+    );
+}
+
+#[test]
+fn no_check_expected_waits_for_a_check_that_turns_up() {
+    let pending_at_head = none_expected_with(vec![check("lint", CheckResult::Pending)]);
+    assert!(!pending_at_head.none_expected());
+    assert_eq!(pending_at_head.awaited_checks(), Some(&commit("h1")));
+    assert_eq!(
+        overdue(&pending_at_head, time(20 + HOURS_2)).map(|overdue| overdue.awaited),
+        Some(Awaited::Pending(vec![CheckName::from("lint")]))
+    );
+    // A red one fails as today: it is no pass, and nothing is awaited.
+    let red = none_expected_with(vec![failed(30)]);
+    assert_eq!(
+        red.pull.as_ref().and_then(PullFacts::checks_passed_at),
+        None
+    );
+    assert_eq!(red.awaited_checks(), None);
+    assert!(
+        !matches!(place(&red, time(100)), Place::InLane { ref next, .. } if next.as_str() == "merge")
     );
 }
 
@@ -280,10 +339,13 @@ fn planned_epic(planned: Option<u64>, challenged: bool) -> Epic {
         tasks: vec![EpicTask {
             number: id(2),
             title: "Task".into(),
+            body: "".into(),
+            url: "".into(),
             state: None,
             standing: Standing::Open,
             group: None,
             kind: None,
+            closed_at: None,
         }],
         planned_at: planned.map(time),
         challenged,
@@ -347,6 +409,7 @@ fn held_by_the_base() -> TicketFacts {
     facts.merging.base = BaseFacts {
         head: Some(commit("b1")),
         checks: vec![check("lint", CheckResult::Passed(time(31))), pending()],
+        reached_at: None,
     };
     facts
 }
@@ -404,4 +467,49 @@ fn a_wait_on_another_tickets_merge_has_no_clock() {
     let late = time(32) + CHECK_DEADLINE * 10;
     assert_eq!(place(&facts, late), waiting(&[WaitingOn::Merge(id(12))]));
     assert_eq!(overdue(&facts, late), None);
+}
+
+/// `held_by_the_base`, with the integration branch having reached its head at `reached`.
+fn held_at_a_head_reached(reached: Option<SystemTime>) -> TicketFacts {
+    let mut facts = held_by_the_base();
+    facts.merging.base.reached_at = reached;
+    facts
+}
+
+#[test]
+fn a_moved_base_starts_the_clock_again() {
+    // Ready since 32, a base head reached 10 minutes ago with a check pending there: the ticket
+    // has waited 3 hours in all, and 10 minutes at this head.
+    let now = time(32) + Duration::from_secs(3 * 60 * 60);
+    let reached = now - Duration::from_secs(10 * 60);
+    let facts = held_at_a_head_reached(Some(reached));
+    assert_eq!(base_clock(&facts), Some(reached));
+    assert_eq!(overdue(&facts, now), None);
+    // The head's own checks stalling for the deadline asks again.
+    assert!(overdue(&facts, reached + CHECK_DEADLINE).is_some());
+}
+
+#[test]
+fn a_stalled_base_head_is_overdue() {
+    let now = time(32) + Duration::from_secs(3 * 60 * 60);
+    let reached = now - Duration::from_secs(2 * 60 * 60);
+    let facts = held_at_a_head_reached(Some(reached));
+    assert_eq!(
+        overdue(&facts, now),
+        Some(OverdueCheck {
+            head: commit("b1"),
+            since: reached,
+            awaited: Awaited::Base(vec![CheckName::from("ci")]),
+        })
+    );
+}
+
+#[test]
+fn an_unknown_base_time_keeps_the_ready_clock() {
+    let facts = held_at_a_head_reached(None);
+    assert_eq!(base_clock(&facts), Some(time(32)));
+    assert!(overdue(&facts, time(32) + CHECK_DEADLINE).is_some());
+    // A head reached before the ticket stood at its merge does not move the clock back.
+    let older = held_at_a_head_reached(Some(time(10)));
+    assert_eq!(base_clock(&older), Some(time(32)));
 }

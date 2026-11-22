@@ -66,7 +66,8 @@ pub(super) fn run(
             "{source} ended without a REVIEWED line, log {log_path}"
         )));
     };
-    let last = ports.forge()?.last_changed_file(context.pr)?;
+    let changed = ports.forge()?.changed_files(context.pr)?;
+    let last = changed.last().map(|path| path.as_str().to_owned());
     if last.as_deref() != Some(reviewed) {
         return Err(PortError::Backend(format!(
             "{source} named `{reviewed}` as the last file reviewed, but the pull request's diff ends at {}, log {log_path}",

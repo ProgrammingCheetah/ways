@@ -6,6 +6,7 @@
 //! idempotent, so the ports are too: repeating a call on a done state succeeds quietly.
 
 mod board;
+mod ci_filter;
 mod design;
 mod errors;
 mod forge;
@@ -15,9 +16,11 @@ mod runner;
 mod shell;
 mod vcs;
 
+pub use crate::domain::ChangedFiles;
 pub use board::{
     AccessCheck, Board, ClaimOutcome, ClaimRecord, IssueTypes, NewQuestion, QUESTION_TITLE_LIMIT,
 };
+pub use ci_filter::CiFilter;
 pub use design::{Design, Page};
 pub use errors::PortError;
 pub use forge::{
@@ -32,4 +35,4 @@ pub use runner::{
     e_is_live, live_use,
 };
 pub use shell::Shell;
-pub use vcs::{BaseName, CommitId, DiffStat, FileStat, SliceName, Vcs};
+pub use vcs::{BaseName, CommitId, DiffStat, FileStat, SliceName, TreeId, Vcs};

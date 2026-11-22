@@ -25,10 +25,10 @@ use serde_json::{Value, json};
 
 use super::gather::{Gathered, Unreadable, gather};
 use crate::app::spawn::phase::Ports;
-use crate::domain::TicketId;
 use crate::domain::schedule::{
     Place, TicketFacts, WaitingOn, Weight, current_phase, place, weight,
 };
+use crate::domain::{Epic, Ticket, TicketId};
 
 /// One ticket in its place, with its weight when it is in the lane.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,8 +43,13 @@ pub struct Placed {
 
 /// The placement of every open ticket with a phase list at `now`, as the dry run's JSON carries
 /// it (see the module above).
-pub fn placement(ports: &Ports<'_>, now: SystemTime) -> Value {
-    match gather(ports) {
+pub fn placement(
+    ports: &Ports<'_>,
+    now: SystemTime,
+    epics: &[Epic],
+    questions: &[Ticket],
+) -> Value {
+    match gather(ports, epics, questions) {
         Ok(gathered) => to_json(&gathered, now),
         Err(error) => json!({ "error": error.to_string() }),
     }

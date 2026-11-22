@@ -68,6 +68,9 @@ pub struct WorkspaceFacts {
     /// The workspace's latest commit; none is never the pull request's head. The gatherer
     /// always fills it: a workspace it cannot read refuses the action instead.
     pub latest_commit: Option<String>,
+    /// The pull request's current head holds the workspace's work (`Vcs::holds`): the latest
+    /// commit is the head or under it, with the same tree. False when there is no head.
+    pub holds_head: bool,
 }
 
 /// The task's `.zaf/slices/<task>.pr` record, with the pull request it names.
@@ -113,13 +116,37 @@ impl PhaseFacts {
             .filter(|record| record.head.as_deref() == Some(head))
     }
 
-    /// The workspace's latest commit is the pull request's current head.
+    /// The pull request's current head holds the workspace's work: it is the workspace's latest
+    /// commit, or an empty commit on top of it. A review made at any other head never counts:
+    /// [`Self::current_result`] stays strictly per head.
     fn workspace_at_head(&self) -> bool {
-        let commit = self
-            .workspace
-            .as_ref()
-            .and_then(|workspace| workspace.latest_commit.as_deref());
-        commit.is_some() && commit == self.current_head()
+        self.current_head().is_some()
+            && self
+                .workspace
+                .as_ref()
+                .is_some_and(|workspace| workspace.holds_head)
+    }
+
+    /// The words of the refusal for a pull request whose last review is clean at its current
+    /// head while the workspace does not hold that head: it names the head and the workspace's
+    /// latest commit. None when there is no clean result, no workspace, or the workspace holds
+    /// the head. A head ahead of the workspace, changed from outside or missing from the local
+    /// store all read the same, and nothing is moved or fetched to tell them apart.
+    pub fn head_not_held(&self) -> Option<String> {
+        let result = self.current_result()?;
+        let workspace = self.workspace.as_ref()?;
+        if result.verdict != Verdict::Clean || workspace.holds_head {
+            return None;
+        }
+        let head = self.current_head()?;
+        let latest = workspace
+            .latest_commit
+            .as_deref()
+            .filter(|commit| !commit.is_empty())
+            .unwrap_or("none");
+        Some(format!(
+            "the workspace does not hold the pull request's head {head}: its latest commit is {latest}"
+        ))
     }
 
     /// The last task check is clean.

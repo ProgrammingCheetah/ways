@@ -342,7 +342,7 @@ pub enum Step {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginRow {
     /// The installed version, `None` when the plugin is not installed.
-    pub installed: Option<String>,
+    pub installed: Option<Version>,
     /// The version `main` declares.
     pub to: Version,
 }
@@ -536,8 +536,9 @@ pub fn plan(
     let plugin = declared.as_ref().and_then(|to| {
         let installed = places
             .claude_home
-            .and_then(|home| profile::installed_version(home, PLUGIN));
-        (installed.as_deref() != Some(to.to_string().as_str())).then(|| PluginRow {
+            .and_then(|home| profile::installed_version(home, PLUGIN))
+            .and_then(|text| Version::parse(&text).ok());
+        (installed.as_ref() != Some(to)).then(|| PluginRow {
             installed,
             to: to.clone(),
         })

@@ -7,12 +7,12 @@
 //! [`MergeFacts`] is what a ticket's merge reads beyond the ticket itself: the integration
 //! branch's checks ([`BaseFacts`], R29) and the ticket that merges before it (R30).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::SystemTime;
 
 use super::lane::Priority;
 use super::phase::{ActionName, Phase, PhaseEnd};
-use crate::domain::{CommitId, RepoPath, Standing, TaskSize, TicketId};
+use crate::domain::{ChangedFiles, CommitId, Standing, TaskSize, TicketId, TreeId};
 use crate::newtype::text_newtype;
 
 text_newtype! {
@@ -81,6 +81,38 @@ pub enum HeadEnd {
     Left(Option<CommitId>),
 }
 
+/// The trees of the commits a ticket's runs and its pull request name, as the caller read them
+/// (`Vcs::tree_of`), derived on each read and stored nowhere. A commit whose tree could not be
+/// read is absent, and counts by its id alone.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Trees(BTreeMap<CommitId, TreeId>);
+
+impl Trees {
+    /// Records the tree of `commit`.
+    pub fn insert(&mut self, commit: CommitId, tree: TreeId) {
+        self.0.insert(commit, tree);
+    }
+
+    /// Whether `left` and `right` are one place: the same commit, or two commits whose trees were
+    /// both read and are equal, so an empty commit is where its parent is. No head is the same as
+    /// no head, and never the same as a commit.
+    #[must_use]
+    pub fn same(&self, left: Option<&CommitId>, right: Option<&CommitId>) -> bool {
+        match (left, right) {
+            (None, None) => true,
+            (Some(left), Some(right)) => {
+                left == right
+                    || self
+                        .0
+                        .get(left)
+                        .zip(self.0.get(right))
+                        .is_some_and(|(left, right)| left == right)
+            }
+            _ => false,
+        }
+    }
+}
+
 /// One phase run folder of the ticket, read. The caller hands in only the ticket's own runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunRecord {
@@ -126,6 +158,17 @@ impl RunRecord {
     pub fn stayed_at(&self, head: Option<&CommitId>) -> bool {
         let ended_there = matches!(&self.head_end, HeadEnd::Left(left) if left.as_ref() == head);
         self.head.as_ref() == head && ended_there
+    }
+
+    /// Whether, by its record, it began and ended at the tree of `head` ([`Trees::same`]): an
+    /// empty commit on top of the head is no move. A commit whose tree is unread counts by its id,
+    /// as [`Self::stayed_at`] does. An unknown end is never at a head.
+    #[must_use]
+    pub fn stayed_at_tree(&self, head: Option<&CommitId>, trees: &Trees) -> bool {
+        let HeadEnd::Left(left) = &self.head_end else {
+            return false;
+        };
+        trees.same(self.head.as_ref(), head) && trees.same(left.as_ref(), head)
     }
 
     /// What it left behind, as its [`Report`].
@@ -189,20 +232,29 @@ pub struct PullFacts {
     pub merged_at: Option<SystemTime>,
     /// Its current head; none when the forge reports none.
     pub head: Option<CommitId>,
-    /// The file it changes, as the forge names it (`Forge::last_changed_file`); none when it
-    /// changes no file.
-    pub changed_file: Option<RepoPath>,
+    /// The files it changes, as the forge lists them (`Forge::changed_files`), a rename under
+    /// both names; empty when it changes no file.
+    pub changed_files: ChangedFiles,
     /// Its check runs at the current head, in the forge's order.
     pub checks: Vec<CheckFact>,
     /// Its reviews, at whatever head each was made.
     pub reviews: Vec<ReviewFact>,
+    /// Whether the forge says it merges into its base now (`PullRequest::mergeable`): none when
+    /// the forge does not say.
+    pub mergeable: Option<bool>,
+    /// Whether a check is expected on it ([`crate::domain::checks_expected`]): false only when its
+    /// changed files and its base's workflows say no workflow runs on it. The gather reads it only
+    /// for a pull request with no check at its head, and a read that fails leaves it true, so an
+    /// unsure read waits as today. While false and no check sits at the head, `ci-done` holds
+    /// with none ([`TicketFacts::none_expected`]); a check that turns up is waited for as any is.
+    pub checks_expected: bool,
 }
 
 impl PullFacts {
     /// Whether it changes at least one file.
     #[must_use]
     pub fn changes_a_file(&self) -> bool {
-        self.changed_file.is_some()
+        !self.changed_files.is_empty()
     }
 
     /// Whether every check at the head has ended: there is at least one and none is pending. No
@@ -275,6 +327,9 @@ pub struct BaseFacts {
     /// The checks at that commit, in the forge's order; none when unknown, or when none
     /// registered there.
     pub checks: Vec<CheckFact>,
+    /// When the branch reached that commit, as the forge gives the commit's time; none when
+    /// unknown, which keeps a waiting ticket's own clock ([`super::base_clock`]).
+    pub reached_at: Option<SystemTime>,
 }
 
 impl BaseFacts {
@@ -311,6 +366,34 @@ impl BaseFacts {
             .filter(|check| wanted(check.result))
             .map(|check| check.name.clone())
             .collect()
+    }
+}
+
+/// What a tick's group of merges remembers, in memory and for that tick alone (D31, F30): the
+/// integration branch's head right after the group's latest merge, and the branch as the tick read
+/// it at its start, the group's base. The checks pending at a commit the group itself just made are
+/// no reason to hold its next merge, so while the branch is still at `head`, R29 is judged at
+/// `base` ([`Self::judged`]). Any other head, a hand push or another tick's merge, is judged as it
+/// reads. Nothing of it is written down: the next tick waits for the checks at the group's last
+/// commit, as R29 says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupBase {
+    /// The branch's head read after the group's latest merge: the group's own last commit.
+    pub head: CommitId,
+    /// The branch as the tick read it at its start.
+    pub base: BaseFacts,
+}
+
+impl GroupBase {
+    /// The base R29 judges a merge at, given the branch `fresh` as just read: the group's base
+    /// while `fresh` is at the group's last commit, `fresh` itself at any other head or none.
+    #[must_use]
+    pub fn judged(&self, fresh: &BaseFacts) -> BaseFacts {
+        if fresh.head.as_ref() == Some(&self.head) {
+            self.base.clone()
+        } else {
+            fresh.clone()
+        }
     }
 }
 
@@ -398,6 +481,9 @@ pub struct TicketFacts {
     /// none is registered there ([`Self::ruled_no_check`]); a head the pull request has left lets
     /// nothing through.
     pub no_check_ruled: Option<CommitId>,
+    /// The trees of the pull request's head and of the heads its runs began and ended at, for
+    /// the count of getting nowhere (R18, [`super::nowhere`]). Empty when none was read.
+    pub trees: Trees,
 }
 
 impl TicketFacts {
@@ -435,10 +521,22 @@ impl TicketFacts {
         pull.checks.is_empty() && pull.head.is_some() && pull.head == self.no_check_ruled
     }
 
+    /// Whether no check is expected on the pull request's current head and none sits there: it has
+    /// a head, no check at all and [`PullFacts::checks_expected`] is false. A check at the head,
+    /// pending or failed, ends it, so a check that turns up is waited for.
+    #[must_use]
+    pub fn none_expected(&self) -> bool {
+        let Some(pull) = self.pull.as_ref() else {
+            return false;
+        };
+        pull.checks.is_empty() && pull.head.is_some() && !pull.checks_expected
+    }
+
     /// The head whose checks the ticket waits on: its phases wait on checks (one ends at
     /// `ci-done`), the pull request has a head, and the checks there have not all ended (none
     /// registered counts as not ended, unless the Engineer ruled that head through with none,
-    /// [`Self::ruled_no_check`]). None otherwise.
+    /// [`Self::ruled_no_check`], or none is expected there, [`Self::none_expected`]). None
+    /// otherwise.
     #[must_use]
     pub fn awaited_checks(&self) -> Option<&CommitId> {
         let pull = self.pull.as_ref()?;
@@ -447,7 +545,8 @@ impl TicketFacts {
             .phases
             .iter()
             .any(|phase| phase.ends.contains(&PhaseEnd::CiDone));
-        (waits_on_checks && !pull.checks_ended() && !self.ruled_no_check()).then_some(head)
+        (waits_on_checks && !pull.checks_ended() && !self.ruled_no_check() && !self.none_expected())
+            .then_some(head)
     }
 
     /// When the last run of `action` a ruled question counted started: the latest marker for it.

@@ -94,6 +94,12 @@ text_newtype! {
 }
 
 text_newtype! {
+    /// The id the VCS gave the tree of a commit: two commits with the same tree hold the same
+    /// files, whatever their own ids.
+    TreeId
+}
+
+text_newtype! {
     /// A path in the repository, as the forge names it: a file a pull request changes.
     RepoPath
 }

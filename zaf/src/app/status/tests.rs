@@ -1,3 +1,4 @@
+use super::status_listing as status;
 use super::*;
 use std::time::UNIX_EPOCH;
 
@@ -134,16 +135,16 @@ fn the_screen_joins_board_run_folders_and_guard() {
     let text = status.render_text();
     assert_eq!(
         text,
-        "ready     2 (#3 #4)\n\
-         claimed   1 (#5)\n\
-         questions 1 (#9)\n\
+        "questions 1 (#9)\n\
+         question  #9 Which columns are exported?\n\
          running   1\n\
          \x20 team instance 1 on #2\n\
+         ready     2 (#3 #4)\n\
+         claimed   1 (#5)\n\
          slots     1 free of 2\n\
          machine: 0 instances in 0 projects, 0.0 units in use\n\
          budget: no machine cap\n\
-         guard     yellow 72% ($72 of $100)\n\
-         question  #9 Which columns are exported?\n"
+         guard     yellow 72% ($72 of $100)\n"
     );
 }
 
@@ -432,11 +433,9 @@ fn a_dead_instance_frees_its_slot_at_once_and_its_claims_read_orphaned() {
     assert_eq!(status.orphaned.len(), 1);
     assert_eq!(status.orphaned[0].task, 5);
     let text = status.render_text();
-    assert!(text.contains("claimed   0\norphaned  1 (#5)\n"), "{text}");
-    assert!(
-        text.contains("running   0\nslots     2 free of 2\n"),
-        "{text}"
-    );
+    assert!(text.contains("orphaned  1 (#5)\n"), "{text}");
+    assert!(text.contains("claimed   0\n"), "{text}");
+    assert!(text.contains("running   0\n"), "{text}");
 }
 
 #[test]
@@ -527,10 +526,7 @@ fn the_running_line_counts_instances_and_each_is_listed_once() {
         .render_text();
 
     assert!(
-        text.contains(
-            "running   2\n  team instance 3 on #37\n  team instance 4 on #7\n\
-             slots     0 free of 2\n"
-        ),
+        text.contains("running   2\n  team instance 3 on #37\n  team instance 4 on #7\nready"),
         "{text}"
     );
 }
@@ -647,6 +643,40 @@ fn status_names_dead_blockers_and_keeps_a_plain_open_blocker_quiet() {
         json["dead_blockers"][1],
         serde_json::json!({ "blocker": 99, "on": 3, "reason": "not an issue" })
     );
+}
+
+#[test]
+fn status_names_an_epic_whose_every_task_was_dropped() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let board = FakeBoard::default();
+    board.add_challenged_epic(TicketId::from(90), "Export");
+    board.add_challenged_epic(TicketId::from(91), "Import");
+    board.add_challenged_epic(TicketId::from(92), "Empty");
+    for (number, epic) in [(3, 90), (4, 90), (5, 91)] {
+        let mut task = ticket(number, "Task", TicketState::Ready);
+        task.epic = Some(TicketId::from(epic));
+        board.add_ticket(task);
+    }
+    board.close_not_planned(TicketId::from(3));
+    board.close_not_planned(TicketId::from(4));
+    board.close_not_planned(TicketId::from(5));
+    // Epic 91 has one done task beside its dropped one.
+    let mut done = ticket(6, "Done", TicketState::Done);
+    done.epic = Some(TicketId::from(91));
+    board.add_ticket(done);
+
+    let status = status(&board, dir.path(), 2, &all_alive).expect("status");
+
+    let text = status.render_text();
+    assert!(
+        text.contains("problem   epic #90 Export: every task dropped\n"),
+        "{text}"
+    );
+    assert_eq!(text.matches("every task dropped").count(), 1, "{text}");
+    let json: serde_json::Value = serde_json::from_str(&status.to_json()).expect("json");
+    assert_eq!(json["problems"].as_array().map(Vec::len), Some(1));
+    assert_eq!(json["problems"][0]["kind"], "every_task_dropped");
+    assert!(json["dead_blockers"].is_array(), "existing fields stay");
 }
 
 #[test]
@@ -972,9 +1002,11 @@ fn status_prints_the_waits_of_a_merge_as_it_prints_the_others() {
             opened_at: since,
             merged_at: None,
             head: Some(CommitId::from("h1")),
-            changed_file: Some(crate::domain::RepoPath::from("src/lib.rs")),
+            changed_files: crate::domain::ChangedFiles::of(&["src/lib.rs"]),
             checks: Vec::new(),
             reviews: Vec::new(),
+            mergeable: None,
+            checks_expected: true,
         };
         facts(task, &list, TaskSize::S, since, Some(pull), Vec::new())
     };
@@ -988,6 +1020,7 @@ fn status_prints_the_waits_of_a_merge_as_it_prints_the_others() {
             name: CheckName::from("ci"),
             result: CheckResult::Pending,
         }],
+        reached_at: None,
     };
     let mut placed = gathered(vec![
         (after_a_fix, list.clone()),
@@ -1132,4 +1165,353 @@ fn status_json_lists_due_releases() {
             "command": "zaf begin --version 0.6.0",
         }])
     );
+}
+
+/// A board that logs each call it is asked, by name.
+struct CallLog {
+    board: FakeBoard,
+    calls: std::sync::Mutex<Vec<&'static str>>,
+}
+
+impl CallLog {
+    fn note(&self, call: &'static str) {
+        self.calls.lock().expect("log").push(call);
+    }
+
+    fn calls(&self) -> Vec<&'static str> {
+        self.calls.lock().expect("log").clone()
+    }
+}
+
+impl Board for CallLog {
+    fn ready(&self) -> Result<Vec<Ticket>, PortError> {
+        self.note("ready");
+        self.board.ready()
+    }
+    fn task(&self, number: TicketId) -> Result<Ticket, PortError> {
+        self.note("task");
+        self.board.task(number)
+    }
+    fn epics(&self) -> Result<Vec<Epic>, PortError> {
+        self.note("epics");
+        self.board.epics()
+    }
+    fn claim(
+        &self,
+        task: TicketId,
+        instance: &Instance,
+    ) -> Result<crate::ports::ClaimOutcome, PortError> {
+        self.note("claim");
+        self.board.claim(task, instance)
+    }
+    fn heartbeat(&self, task: TicketId, instance: &Instance) -> Result<(), PortError> {
+        self.note("heartbeat");
+        self.board.heartbeat(task, instance)
+    }
+    fn claims(&self) -> Result<Vec<ClaimRecord>, PortError> {
+        self.note("claims");
+        self.board.claims()
+    }
+    fn release(&self, task: TicketId, instance: &Instance) -> Result<(), PortError> {
+        self.note("release");
+        self.board.release(task, instance)
+    }
+    fn set_state(&self, task: TicketId, label: TicketState) -> Result<(), PortError> {
+        self.note("set_state");
+        self.board.set_state(task, label)
+    }
+    fn comment(&self, issue: TicketId, body: &str) -> Result<(), PortError> {
+        self.note("comment");
+        self.board.comment(issue, body)
+    }
+    fn report(&self, task: TicketId, instance: &Instance, body: &str) -> Result<(), PortError> {
+        self.note("report");
+        self.board.report(task, instance, body)
+    }
+    fn questions(&self) -> Result<Vec<Ticket>, PortError> {
+        self.note("questions");
+        self.board.questions()
+    }
+    fn open_doors(&self) -> Result<Vec<TicketId>, PortError> {
+        self.note("open_doors");
+        self.board.open_doors()
+    }
+    fn open_question(&self, question: &NewQuestion) -> Result<TicketId, PortError> {
+        self.note("open_question");
+        self.board.open_question(question)
+    }
+    fn record_ruling(
+        &self,
+        question: TicketId,
+        ruling: &str,
+    ) -> Result<Option<TicketId>, PortError> {
+        self.note("record_ruling");
+        self.board.record_ruling(question, ruling)
+    }
+}
+
+#[test]
+fn needs_you_reads_the_board_once() {
+    use crate::app::hub::next::NextKind;
+
+    let state = tempfile::tempdir().expect("state dir");
+    let log = CallLog {
+        board: FakeBoard::default(),
+        calls: std::sync::Mutex::default(),
+    };
+    log.board.add_epic(TicketId::from(7), "Unsigned epic");
+    log.board.add_ticket(Ticket {
+        epic: Some(TicketId::from(7)),
+        ..ticket(8, "Export rows", TicketState::Ready)
+    });
+    log.board
+        .open_question(&NewQuestion {
+            on: TicketId::from(7),
+            text: "Which name?".to_owned(),
+            door: true,
+        })
+        .expect("opens");
+    let (dir, manifest) = release_project(false, false);
+    let due = due_releases(dir.path(), &manifest, &[], &|_| false);
+    let screen = status(&log, state.path(), 1, &all_alive)
+        .expect("status")
+        .with_project("example", dir.path())
+        .with_releases(&due);
+    let read = log.calls();
+
+    let items = screen.needs_you();
+    let again = screen.needs_you();
+
+    assert_eq!(log.calls(), read, "needs_you makes no call of its own");
+    assert_eq!(items, again);
+    let kinds: Vec<NextKind> = items.iter().map(|item| item.kind).collect();
+    for kind in [NextKind::Sign, NextKind::Door, NextKind::Phase] {
+        assert!(kinds.contains(&kind), "{kinds:?} lacks {kind:?}");
+    }
+    for once in ["epics", "questions", "open_doors", "claims"] {
+        let times = read.iter().filter(|call| **call == once).count();
+        assert_eq!(times, 1, "{once} is read once: {read:?}");
+    }
+}
+
+#[test]
+fn the_lines_joined_are_the_rendered_text() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    launched(dir.path(), instance(1, 2), &[5]);
+    std::fs::write(
+        dir.path().join(SPAWN_STATE_FILE),
+        r#"{"next_instance": 2, "questions": [10, 77]}"#,
+    )
+    .expect("spawn.state");
+    let guard = guard::assess(
+        Some(100.0),
+        72.0,
+        &[70, 85, 95],
+        std::time::SystemTime::UNIX_EPOCH,
+    );
+    guard::write(dir.path(), &guard).expect("guard.json");
+    let mut status = status(&board(), dir.path(), 2, &all_alive).expect("status");
+    status.lane.push(LaneLine {
+        task: 3,
+        next: "implement".to_owned(),
+    });
+    status.waiting = Some(vec![WaitingLine {
+        task: 4,
+        on: "task 3".to_owned(),
+    }]);
+    status.releases.push(ReleaseLine {
+        version: "0.5.3".to_owned(),
+        phase: "design".to_owned(),
+        command: "zaf begin --version 0.5.3".to_owned(),
+    });
+    status.phases.push(PhaseLine {
+        task: 5,
+        action: "implement".to_owned(),
+        epic: Some(2),
+        started_at: "now".to_owned(),
+    });
+
+    for more in [false, true] {
+        let joined: String = status
+            .lines(more)
+            .iter()
+            .map(|line| {
+                let text: String = line.iter().map(|(_, text)| text.as_str()).collect();
+                format!("{text}\n")
+            })
+            .collect();
+        assert_eq!(joined, status.render(more), "more = {more}");
+    }
+    let lines = status.lines(true);
+    let meant = |meaning: Meaning, word: &str| {
+        lines
+            .iter()
+            .flatten()
+            .any(|(m, text)| *m == meaning && text.as_str().contains(word))
+    };
+    assert!(meant(Meaning::Verb, "zaf begin --version 0.5.3"));
+    assert!(meant(Meaning::Waiting, "question  "));
+    assert!(meant(Meaning::Noun, "#9"));
+    assert!(meant(Meaning::Dim, "0"), "a zero count is dim");
+}
+
+/// The index of the first plain line that starts with `prefix`.
+fn at(text: &str, prefix: &str) -> usize {
+    text.lines()
+        .position(|line| line.starts_with(prefix))
+        .unwrap_or_else(|| panic!("no line starts with {prefix:?}:\n{text}"))
+}
+
+#[test]
+fn what_waits_on_you_comes_first() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut screen = status(&board(), dir.path(), 2, &all_alive).expect("status");
+    screen.epics.push(EpicLine {
+        number: TicketId::from(7),
+        title: "Planned epic".into(),
+        stage: EpicStage::Planned,
+        signature_void: false,
+        done: 0,
+        total: 2,
+    });
+
+    let text = screen.render_text();
+
+    let question = at(&text, "question  #9 Which columns are exported?");
+    assert!(question < at(&text, "ready"), "{text}");
+    assert!(question < at(&text, "epic      #7"), "{text}");
+    assert!(question < at(&text, "running"), "{text}");
+    let more = screen.render(true);
+    assert!(
+        at(&more, "  rule it: zaf board ruling 9") < at(&more, "ready"),
+        "{more}"
+    );
+}
+
+#[test]
+fn its_first_block_is_the_inbox() {
+    use crate::app::hub::next::NextKind;
+
+    let state = tempfile::tempdir().expect("state dir");
+    let board = FakeBoard::default();
+    board.add_epic(TicketId::from(7), "Unsigned epic");
+    board.add_ticket(Ticket {
+        epic: Some(TicketId::from(7)),
+        ..ticket(8, "Export rows", TicketState::Ready)
+    });
+    board
+        .open_question(&NewQuestion {
+            on: TicketId::from(7),
+            text: "Which name?".to_owned(),
+            door: true,
+        })
+        .expect("opens");
+    board.add_question(ticket(20, "Quoting rule?", TicketState::Question));
+    let (dir, manifest) = release_project(false, false);
+    let due = due_releases(dir.path(), &manifest, &[], &|_| false);
+    let screen = status(&board, state.path(), 1, &all_alive)
+        .expect("status")
+        .with_project("example", dir.path())
+        .with_releases(&due);
+
+    let wanted: Vec<String> = screen
+        .needs_you()
+        .iter()
+        .filter_map(|item| match item.kind {
+            NextKind::Sign => Some(format!("epic      #{}", item.number.expect("an epic"))),
+            NextKind::Question | NextKind::Door | NextKind::Failed => {
+                Some(format!("question  #{}", item.number.expect("a question")))
+            }
+            NextKind::Phase => Some("release 0.6.0: ".to_owned()),
+            // Status draws no line for these: adding them is out of scope (#468).
+            NextKind::Unticked | NextKind::Broken => None,
+        })
+        .collect();
+
+    let text = screen.render_text();
+    let first_block: Vec<&str> = text
+        .lines()
+        .take_while(|line| !line.starts_with("running"))
+        .filter(|line| {
+            ["epic ", "question  ", "release "]
+                .iter()
+                .any(|lead| line.starts_with(lead))
+        })
+        .collect();
+    assert_eq!(wanted.len(), 4, "{wanted:?}");
+    assert_eq!(first_block.len(), wanted.len(), "{text}");
+    for (line, prefix) in first_block.iter().zip(&wanted) {
+        assert!(line.starts_with(prefix.as_str()), "{line:?} for {prefix:?}");
+    }
+}
+
+#[test]
+fn problems_come_before_running() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    launched(dir.path(), instance(1, 2), &[5]);
+    let board = FakeBoard::default();
+    board.add_ticket(ticket(3, "Export rows", TicketState::Ready));
+    board.add_ticket(ticket(5, "Import rows", TicketState::Ready));
+    board
+        .claim(TicketId::from(5), &instance(1, 2))
+        .expect("claims the ready task");
+
+    let text = status(&board, dir.path(), 2, &none_alive)
+        .expect("status")
+        .render_text();
+
+    let orphaned = at(&text, "orphaned  1 (#5)");
+    assert!(orphaned < at(&text, "running"), "{text}");
+    assert!(orphaned < at(&text, "ready"), "{text}");
+}
+
+#[test]
+fn reordering_keeps_every_line() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    launched(dir.path(), instance(1, 2), &[5]);
+    let mut screen = status(&board(), dir.path(), 2, &none_alive).expect("status");
+    screen.releases.push(ReleaseLine {
+        version: "0.5.3".to_owned(),
+        phase: "design".to_owned(),
+        command: "zaf begin --version 0.5.3".to_owned(),
+    });
+    screen.unparsed.push(UnparsedLine {
+        number: 4,
+        title: "Export header".to_owned(),
+        problems: vec!["Model: missing".to_owned()],
+    });
+    screen.cycles.push(vec![11, 12]);
+    screen.dead_blockers.push(DeadLine {
+        blocker: 8,
+        on: 9,
+        reason: "not an issue".to_owned(),
+    });
+    let red = guard::assess(Some(100.0), 99.0, &[70, 85, 95], UNIX_EPOCH);
+    let guard_line = format!("guard     {}", red.line());
+    screen.guard = Some(red);
+
+    let mut wanted = vec![
+        "questions 1 (#9)".to_owned(),
+        "question  #9 Which columns are exported?".to_owned(),
+        "release 0.5.3: design due, run zaf begin --version 0.5.3".to_owned(),
+        "orphaned  1 (#5)".to_owned(),
+        "Ready, does not parse:".to_owned(),
+        "  #4 Export header".to_owned(),
+        "    Model: missing".to_owned(),
+        "blocker cycle: #11 → #12 → #11".to_owned(),
+        "dead blocker #8 on #9: not an issue".to_owned(),
+        "running   0".to_owned(),
+        "ready     2 (#3 #4)".to_owned(),
+        "claimed   0".to_owned(),
+        "slots     2 free of 2".to_owned(),
+        "machine: 0 instances in 0 projects, 0.0 units in use".to_owned(),
+        "budget: no machine cap".to_owned(),
+        guard_line,
+    ];
+    let text = screen.render_text();
+    let mut got: Vec<String> = text.lines().map(str::to_owned).collect();
+
+    wanted.sort();
+    got.sort();
+    assert_eq!(got, wanted, "{text}");
 }

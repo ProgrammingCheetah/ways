@@ -73,6 +73,7 @@ impl World {
     /// The inputs of a read at `now`, which a test may change before it gathers.
     fn inputs(&self, now: SystemTime) -> StateInputs<'_> {
         StateInputs {
+            lists: None,
             project: "example",
             root: self.dir.path(),
             state_dir: self.dir.path(),
@@ -87,6 +88,7 @@ impl World {
             now,
             places: None,
             gathered: None,
+            releases: None,
         }
     }
 
@@ -133,6 +135,51 @@ fn epics_with_stage_and_groups() {
         ]
     );
     assert_eq!(epic.dollars, 0.0);
+}
+
+/// The every-task-dropped problems the hub reads from `world`.
+fn dropped_problems(world: &World) -> Vec<Problem> {
+    world
+        .gather(at(1_000))
+        .problems
+        .into_iter()
+        .filter(|problem| problem.kind == ProblemKind::EveryTaskDropped)
+        .collect()
+}
+
+#[test]
+fn hub_reports_every_task_dropped_epic() {
+    let world = World::new();
+    world.board.add_ticket(task(1, "Read", TicketState::Ready));
+    world.board.add_ticket(task(2, "Write", TicketState::Ready));
+    for number in [1, 2] {
+        world.board.close_not_planned(TicketId::from(number));
+    }
+
+    let problems = dropped_problems(&world);
+
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert_eq!(problems[0].detail, "epic #100 The hub: every task dropped");
+    assert_eq!((&problems[0].fix, problems[0].verb), (&None, None));
+    let json = serde_json::to_value(&problems[0]).expect("json");
+    assert_eq!(json["kind"], "every_task_dropped");
+}
+
+#[test]
+fn hub_reports_no_problem_for_one_done_rest_dropped() {
+    let world = World::new();
+    world.board.add_ticket(task(1, "Read", TicketState::Done));
+    world.board.add_ticket(task(2, "Write", TicketState::Ready));
+    world.board.close_not_planned(TicketId::from(2));
+
+    assert_eq!(dropped_problems(&world), []);
+}
+
+#[test]
+fn hub_reports_no_problem_for_epic_without_tasks() {
+    let world = World::new();
+
+    assert_eq!(dropped_problems(&world), []);
 }
 
 #[test]
@@ -266,6 +313,18 @@ fn running_instance() {
         ..world.inputs(started)
     });
     assert!(dead.instances.is_empty(), "a dead process is not running");
+    assert!(
+        state.orphaned.is_empty(),
+        "a running instance's claim is its own"
+    );
+    assert_eq!(
+        dead.orphaned,
+        [OrphanedClaim {
+            task: 2,
+            instance: "programmer instance 7 on #100".to_owned(),
+        }],
+        "the claim of an instance that ended is orphaned, as `zaf status` reads it"
+    );
 }
 
 #[test]
@@ -764,4 +823,146 @@ fn a_read_that_hangs_holds_one_thread() {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(read.is_some(), "read again after the hung read ended");
+}
+
+#[test]
+fn a_line_task_carries_its_waits_and_the_releases_due_are_read() {
+    use crate::app::actions::ActionName;
+    use crate::app::release::DueRelease;
+    use crate::domain::schedule::{Place, WaitingOn};
+
+    let world = World::new();
+    world
+        .board
+        .add_ticket(task(1, "In the lane", TicketState::Ready));
+    world
+        .board
+        .add_ticket(task(2, "Waits on a ruling", TicketState::Blocked));
+    world
+        .board
+        .add_ticket(task(3, "Not placed", TicketState::Ready));
+    let places: Places = [
+        (
+            TicketId::from(1),
+            Place::InLane {
+                next: ActionName::from("implement"),
+                since: at(10),
+            },
+        ),
+        (
+            TicketId::from(2),
+            Place::Waiting(
+                [
+                    WaitingOn::Question(TicketId::from(45)),
+                    WaitingOn::Ticket(TicketId::from(1)),
+                ]
+                .into(),
+            ),
+        ),
+    ]
+    .into();
+    let seen = std::cell::Cell::new(0);
+    let due = |epics: &[Epic]| {
+        seen.set(epics.len());
+        vec![DueRelease {
+            version: "0.5.3".to_owned(),
+            phase: crate::app::release::Phase::Design,
+        }]
+    };
+
+    let state = gather_state(&StateInputs {
+        places: Some(&places),
+        releases: Some(&due),
+        ..world.inputs(at(1_000))
+    });
+
+    let waits: Vec<(u64, Option<Vec<WaitState>>)> = state.epics[0]
+        .tasks
+        .iter()
+        .map(|task| (task.number, task.waits.clone()))
+        .collect();
+    let wait = |on, number| WaitState {
+        on,
+        number: Some(number),
+        commit: None,
+    };
+    assert_eq!(
+        waits,
+        [
+            (1, Some(Vec::new())),
+            (
+                2,
+                Some(vec![
+                    wait(WaitKind::Question, 45),
+                    wait(WaitKind::Ticket, 1)
+                ])
+            ),
+            (3, None),
+        ]
+    );
+    assert_eq!(
+        seen.get(),
+        1,
+        "the releases are worked out from the epics read"
+    );
+    assert_eq!(
+        state.releases_due,
+        [ReleaseDueState {
+            version: "0.5.3".to_owned(),
+            phase: "design".to_owned(),
+            command: "zaf begin --version 0.5.3".to_owned(),
+        }]
+    );
+    let json = serde_json::to_value(&state).expect("serializes");
+    assert_eq!(json["epics"][0]["tasks"][1]["waits"][0]["on"], "question");
+    assert_eq!(json["releases_due"][0]["phase"], "design");
+    assert_eq!(json["orphaned"], serde_json::json!([]));
+}
+
+/// A project whose manifest has `[phases]` and a forge, so the hub's read places its tickets.
+fn phased_project() -> (tempfile::TempDir, Composition) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        dir.path().join(".zaf.toml"),
+        "[project]\nname = \"demo\"\n[board]\nkind = \"github-issues\"\nrepo = \"owner/demo\"\n\
+         [forge]\nkind = \"github\"\nrepo = \"owner/demo\"\n[phases]\nTask = [\"implement\"]\n",
+    )
+    .expect("manifest");
+    let composition = Composition::load_with_home(dir.path(), None).expect("loads");
+    (dir, composition)
+}
+
+/// A board with an epic, a task under it and a question open on the task, its port calls counted
+/// from here.
+fn counted_board() -> FakeBoard {
+    let board = FakeBoard::default();
+    board.add_challenged_epic(TicketId::from(EPIC), "The hub");
+    board.add_ticket(task(101, "the task", TicketState::Ready));
+    board
+        .open_question(&NewQuestion {
+            on: TicketId::from(101),
+            text: "why?".to_owned(),
+            door: false,
+        })
+        .expect("opens");
+    board.reset_calls();
+    board
+}
+
+#[test]
+fn hub_read_reads_epics_once() {
+    let (_dir, composition) = phased_project();
+    let board = counted_board();
+    let state = read_project(&composition, Ok(&board), Vec::new(), at(10));
+    assert_eq!(board.calls("epics"), 1);
+    assert_eq!(state.epics.len(), 1, "{state:?}");
+}
+
+#[test]
+fn hub_read_reads_questions_once() {
+    let (_dir, composition) = phased_project();
+    let board = counted_board();
+    let state = read_project(&composition, Ok(&board), Vec::new(), at(10));
+    assert_eq!(board.calls("questions"), 1);
+    assert_eq!(state.questions.len(), 1, "{state:?}");
 }

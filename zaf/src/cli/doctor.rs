@@ -4,6 +4,7 @@ use std::io;
 
 use super::Cli;
 use super::exit::{self, OK, REFUSED};
+use super::screen::Screen;
 
 use crate::adapters::process;
 use crate::app::doctor::{
@@ -110,7 +111,7 @@ pub fn run(cli: &Cli) -> u8 {
     let composition = match Composition::discover_here() {
         Ok(composition) => composition,
         Err(error) => {
-            eprintln!("zaf {path}: {error}");
+            crate::eprintln_zaf!("zaf {path}: {error}");
             return REFUSED;
         }
     };
@@ -126,16 +127,20 @@ pub fn run(cli: &Cli) -> u8 {
         match serde_json::to_string_pretty(&report) {
             Ok(json) => println!("{json}"),
             Err(error) => {
-                eprintln!("zaf {path}: {error}");
+                crate::eprintln_zaf!("zaf {path}: {error}");
                 return exit::BACKEND;
             }
         }
     } else {
-        for line in report.lines() {
-            println!("{line}");
-        }
+        print!("{}", drawn(&Screen::detect(), &report));
     }
     if report.passed() { OK } else { REFUSED }
+}
+
+/// The report as `screen` draws it: each check's line painted by its meaning. With colour off it
+/// is [`Report::lines`], each ended by a newline.
+fn drawn(screen: &Screen, report: &Report) -> String {
+    screen.draw(&report.painted())
 }
 
 #[cfg(test)]
@@ -144,6 +149,98 @@ mod tests {
 
     use super::*;
     use crate::adapters::shell::SystemShell;
+    use crate::app::doctor::{ActionCheck, PathCheck, ToolCheck, ToolStatus};
+    use crate::cli::screen::{Environment, code, strip_escapes};
+    use crate::domain::screen::Meaning;
+
+    fn screen(colour: bool) -> Screen {
+        Screen::from_environment(Environment {
+            stdout_is_terminal: colour,
+            no_color: None,
+            term: Some("xterm"),
+        })
+    }
+
+    /// One passing check, one failing, and a project action that shadows a machine file.
+    fn report() -> Report {
+        let path = |what, ok| PathCheck {
+            what,
+            path: "/p/x".into(),
+            ok,
+        };
+        Report {
+            tools: vec![
+                ToolCheck {
+                    tool: "git".to_owned(),
+                    wanted: ">=2".to_owned(),
+                    status: ToolStatus::Ok {
+                        found: "2.4.0".to_owned(),
+                    },
+                },
+                ToolCheck {
+                    tool: "jj".to_owned(),
+                    wanted: ">=0.4".to_owned(),
+                    status: ToolStatus::Missing,
+                },
+            ],
+            design: None,
+            design_index: None,
+            workspaces: path("workspaces dir", true),
+            actions_dir: path("project actions dir", true),
+            logins: Vec::new(),
+            packs: Vec::new(),
+            stale: Vec::new(),
+            actions: vec![ActionCheck {
+                name: "gate".to_owned(),
+                tier: "project".to_owned(),
+                path: "/p/.zaf/actions/gate".into(),
+                mode: Some("755".to_owned()),
+                ok: true,
+                problems: Vec::new(),
+                shadows: Some("/home/.zaf/actions/gate".into()),
+                notes: Vec::new(),
+                machine_dependents: Vec::new(),
+            }],
+            actions_error: None,
+            needed: Vec::new(),
+            phases: Vec::new(),
+            manifest: Vec::new(),
+            unread: Vec::new(),
+            board: Vec::new(),
+            forge: Vec::new(),
+            hub: None,
+            repository: None,
+            git_version: None,
+        }
+    }
+
+    #[test]
+    fn the_coloured_report_stripped_is_the_plain_report() {
+        let report = report();
+        let coloured = drawn(&screen(true), &report);
+        let plain = drawn(&screen(false), &report);
+        assert!(coloured.contains('\x1b'));
+        assert_eq!(strip_escapes(&coloured), plain);
+        assert!(!plain.contains('\x1b'));
+        let lines: String = report
+            .lines()
+            .iter()
+            .map(|line| format!("{line}\n"))
+            .collect();
+        assert_eq!(plain, lines);
+    }
+
+    #[test]
+    fn ok_is_green_a_failure_red_a_shadow_dim() {
+        let coloured = drawn(&screen(true), &report());
+        let paint = |meaning, text: &str| format!("\x1b[{}m{text}\x1b[0m", code(meaning));
+        assert!(coloured.contains(&paint(Meaning::Done, "ok")));
+        assert!(coloured.contains(&paint(Meaning::Failed, "missing")));
+        assert!(coloured.contains(&paint(
+            Meaning::Dim,
+            "  shadows the machine file /home/.zaf/actions/gate"
+        )));
+    }
 
     fn commands() -> ShellCommands {
         let dir = std::env::temp_dir();

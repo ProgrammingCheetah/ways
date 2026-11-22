@@ -178,9 +178,11 @@ fn pull(checks: Vec<CheckFact>) -> PullFacts {
         opened_at: time(10),
         merged_at: None,
         head: Some(CommitId::from("abc123")),
-        changed_file: Some(crate::domain::RepoPath::from("src/lib.rs")),
+        changed_files: crate::domain::ChangedFiles::of(&["src/lib.rs"]),
         checks,
         reviews: Vec::new(),
+        mergeable: None,
+        checks_expected: true,
     }
 }
 
@@ -533,9 +535,11 @@ fn awaiting_checks(head: &str, checks: Vec<CheckFact>, runs: Vec<RunRecord>) -> 
         opened_at: time(T0),
         merged_at: None,
         head: Some(CommitId::from(head)),
-        changed_file: Some(crate::domain::RepoPath::from("src/lib.rs")),
+        changed_files: crate::domain::ChangedFiles::of(&["src/lib.rs"]),
         checks,
         reviews: Vec::new(),
+        mergeable: None,
+        checks_expected: true,
     };
     support::facts(7, &pr_list(), TaskSize::S, time(T0), Some(pull), runs)
 }
@@ -552,7 +556,7 @@ fn gathered_of(tickets: Vec<TicketFacts>) -> Gathered {
 /// The causes `gathered` raises at `now`.
 fn waiting_at(gathered: &Gathered, now: u64) -> Vec<Cause> {
     let now = time(now);
-    waiting_causes(gathered, &Placement::of(&gathered.tickets, now), now)
+    waiting_causes(gathered, &Placement::of(&gathered.tickets, now), now, 1)
 }
 
 /// Step 5 on what `gathered` raises at `now`.
@@ -711,7 +715,11 @@ fn only_question(board: &FakeBoard) -> String {
 fn no_check_at(file: Option<&str>) -> Gathered {
     let mut facts = awaiting_checks(HEAD_A, Vec::new(), vec![left(HEAD_A, T0 - 50)]);
     if let Some(pull) = facts.pull.as_mut() {
-        pull.changed_file = file.map(crate::domain::RepoPath::from);
+        pull.changed_files = crate::domain::ChangedFiles::complete(
+            file.map(crate::domain::RepoPath::from)
+                .into_iter()
+                .collect(),
+        );
     }
     gathered_of(vec![facts])
 }
@@ -975,10 +983,13 @@ fn epic(signed: Option<u64>, planned: Option<u64>, challenged: bool) -> Epic {
         tasks: vec![EpicTask {
             number: id(2),
             title: "Task".into(),
+            body: "".into(),
+            url: "".into(),
             state: None,
             standing: Standing::Open,
             group: None,
             kind: None,
+            closed_at: None,
         }],
         planned_at: planned.map(time),
         challenged,
@@ -1291,6 +1302,7 @@ fn base_at(head: &str, checks: Vec<CheckFact>) -> Base {
         facts: crate::domain::schedule::BaseFacts {
             head: Some(CommitId::from(head)),
             checks,
+            reached_at: None,
         },
     }
 }
@@ -1324,14 +1336,37 @@ fn a_red_integration_branch_raises_one_question_on_the_epic() {
                 "The integration branch feature/v1 is red: the checks ci / test, ci / build \
                  have failed at fed9876. The tickets of epic #1 merge into it, so they wait on \
                  this question. File a fix, or rule to carry on: once this is ruled they go on, \
-                 merges included, though the branch is still red at that commit. Red base: \
-                 feature/v1 at {HEAD_B}."
+                 merges included, though the branch is still red at that commit. Up to 1 \
+                 merges may have landed in one tick, so the suspects are the branch's latest \
+                 merges. Red base: feature/v1 at {HEAD_B}."
             )
         )]
     );
     // The same red head, at the next tick: the question is open, and no second one is raised.
     assert!(asks_at(&board, &gathered, T0 + 60).is_empty());
     assert_eq!(asked(&board).len(), 1);
+}
+
+#[test]
+fn the_red_question_names_per_tick_before_its_marker() {
+    let red = vec![check("ci", CheckResult::Failed(time(T0)))];
+    let (_, gathered) = over_base(Some(base_at(HEAD_B, red)));
+    let causes = waiting_causes(
+        &gathered,
+        &Placement::of(&gathered.tickets, time(T0)),
+        time(T0),
+        8,
+    );
+    let [cause] = causes.as_slice() else {
+        panic!("one cause: {causes:?}");
+    };
+    let text = cause.text();
+    let sentence = "Up to 8 merges may have landed in one tick, so the suspects are the \
+                    branch's latest merges.";
+    assert!(
+        text.ends_with(&format!("{sentence} {}", cause.marker())),
+        "{text}"
+    );
 }
 
 #[test]
@@ -1425,9 +1460,11 @@ fn held_at_its_merge() -> (FakeBoard, Gathered) {
         opened_at: time(T0),
         merged_at: None,
         head: Some(CommitId::from(HEAD_A)),
-        changed_file: Some(crate::domain::RepoPath::from("src/lib.rs")),
+        changed_files: crate::domain::ChangedFiles::of(&["src/lib.rs"]),
         checks: Vec::new(),
         reviews: Vec::new(),
+        mergeable: None,
+        checks_expected: true,
     };
     let base = base_at(HEAD_B, vec![check("ci / test", CheckResult::Pending)]);
     let mut facts = support::facts(7, &list, TaskSize::S, time(T0), Some(pull), Vec::new());

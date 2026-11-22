@@ -11,6 +11,7 @@ pub mod begin;
 pub mod board;
 pub mod brief;
 pub mod build;
+pub mod chair;
 pub mod changes;
 pub mod check;
 pub mod doctor;

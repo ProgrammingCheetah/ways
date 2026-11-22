@@ -9,8 +9,10 @@ use std::net::IpAddr;
 use std::path::Path;
 
 use super::Commands;
+use super::paint::{bold, piece, plain, with_commands};
 use crate::app::hub::lan_url;
 use crate::app::hub::lock::HubLock;
+use crate::domain::screen::{Line, Meaning};
 use crate::ports::Holder;
 
 /// The hub's user unit, the name `zaf hub service install` writes.
@@ -51,22 +53,37 @@ pub enum HubCheck {
 impl HubCheck {
     /// `hub service: …`, one line.
     pub fn line(&self) -> String {
+        plain(&self.painted())
+    }
+
+    /// [`HubCheck::line`] as pieces: a running hub done, the rest an aside, the URL a noun and a
+    /// command to run cyan.
+    pub fn painted(&self) -> Line {
+        let mut line = vec![bold("hub service: ")];
         match self {
-            Self::Running { port, url, .. } => {
-                format!("hub service: running on port {port} ({url})")
+            Self::Running { port, url, .. } => line.extend([
+                piece(Meaning::Done, "running"),
+                bold(format!(" on port {port} (")),
+                piece(Meaning::Noun, url),
+                bold(")"),
+            ]),
+            Self::NoLock => line.extend(with_commands(
+                Meaning::Dim,
+                "running, but no live hub holds the lock (check `zaf hub` logs)",
+            )),
+            Self::Stopped { state } => line.extend(with_commands(
+                Meaning::Dim,
+                &format!("installed, stopped ({state}; fix: systemctl --user start {HUB_UNIT})"),
+            )),
+            Self::NotInstalled => line.extend(with_commands(
+                Meaning::Dim,
+                &format!("not installed (fix: {INSTALL_COMMAND})"),
+            )),
+            Self::Unknown { detail } => {
+                line.push(piece(Meaning::Dim, format!("unknown ({detail})")));
             }
-            Self::NoLock => {
-                "hub service: running, but no live hub holds the lock (check `zaf hub` logs)"
-                    .to_owned()
-            }
-            Self::Stopped { state } => format!(
-                "hub service: installed, stopped ({state}; fix: systemctl --user start {HUB_UNIT})"
-            ),
-            Self::NotInstalled => {
-                format!("hub service: not installed (fix: {INSTALL_COMMAND})")
-            }
-            Self::Unknown { detail } => format!("hub service: unknown ({detail})"),
         }
+        line
     }
 }
 

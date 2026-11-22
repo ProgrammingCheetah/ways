@@ -46,6 +46,7 @@ use crate::app::schedule::request::{self, Request, Requests};
 use crate::app::schedule::scheduler::{self, Asked, Ended, Found, Host, Memory, Opened};
 use crate::app::spawn::{self, built};
 use crate::composition::Composition;
+use crate::ports::PrNumber;
 use semver::Version;
 
 /// How long the loop waits between two looks when nothing asked.
@@ -60,7 +61,7 @@ const PAUSE_STEP: Duration = Duration::from_millis(100);
 pub fn run(cli: &Cli, version: Option<&str>) -> u8 {
     let path = cli.verb.path();
     let Some(version) = version else {
-        eprintln!("zaf {path}: pass --version <v>, the milestone the instances build");
+        crate::eprintln_zaf!("zaf {path}: pass --version <v>, the milestone the instances build");
         return REFUSED;
     };
     let composition = match Composition::discover_here() {
@@ -70,7 +71,9 @@ pub fn run(cli: &Cli, version: Option<&str>) -> u8 {
     let minutes = composition.manifest().spawn.tick_minutes;
     let state_dir = composition.state_dir();
     let Some(me) = process::this() else {
-        eprintln!("zaf {path}: cannot read this process's start time, so it cannot hold the lock");
+        crate::eprintln_zaf!(
+            "zaf {path}: cannot read this process's start time, so it cannot hold the lock"
+        );
         return BACKEND;
     };
     let zaf = env!("CARGO_PKG_VERSION");
@@ -78,16 +81,18 @@ pub fn run(cli: &Cli, version: Option<&str>) -> u8 {
     {
         Ok(taken) => taken,
         Err(error @ LockError::Held(_)) => {
-            eprintln!("zaf {path}: {error}");
+            crate::eprintln_zaf!("zaf {path}: {error}");
             return REFUSED;
         }
         Err(error @ LockError::Io { .. }) => {
-            eprintln!("zaf {path}: {error}");
+            crate::eprintln_zaf!("zaf {path}: {error}");
             return BACKEND;
         }
     };
     let binary = Binary::this()
-        .map_err(|why| eprintln!("zaf {path}: warning: {why}; it does not restart as a new one"))
+        .map_err(|why| {
+            crate::eprintln_zaf!("zaf {path}: warning: {why}; it does not restart as a new one")
+        })
         .ok();
     let whereabouts = lock.holding().whereabouts();
     let how = match &taken {
@@ -404,15 +409,11 @@ impl Host for CliHost<'_> {
         built::open_release(&composition, self.version, None)
     }
 
-    fn built(&mut self, version: &str, number: &str, link: Option<&str>) {
+    fn built(&mut self, version: &Version, number: PrNumber, link: Option<&str>) {
         // In a terminal the scheduler's own line goes to the log, and the view ends with its end
         // screen; anywhere else the line stands and the watch goes on.
         self.say(&scheduler::built_line(version, number, link));
         let Some(view) = self.view.take() else {
-            return;
-        };
-        let Ok(built) = Version::parse(version) else {
-            self.view = Some(view);
             return;
         };
         let next = Composition::discover_here_quiet().ok().map(|composition| {
@@ -427,8 +428,8 @@ impl Host for CliHost<'_> {
             return;
         };
         view.finish(End {
-            version: built,
-            number: number.to_owned(),
+            version: version.clone(),
+            number,
             next,
         });
         self.ended = true;
@@ -469,6 +470,6 @@ impl Host for CliHost<'_> {
     }
 
     fn warn(&mut self, line: &str) {
-        eprintln!("zaf {}: {line}", self.path);
+        crate::eprintln_zaf!("zaf {}: {line}", self.path);
     }
 }

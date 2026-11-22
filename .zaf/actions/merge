@@ -8,6 +8,7 @@
 # zaf kind: zaf
 # zaf ends: merged
 # zaf on-fail: fix
+# changed: a `slice-merge` refused because the workspace does not hold the pull request's head ends with exit 4 and those words, naming the head and the workspace's latest commit, last in the log
 
 # The task as a bare number; zaf has already read it as one.
 task=${1#\#}
@@ -24,6 +25,18 @@ cd "$ZAF_ROOT" || exit 2
 status=0
 log=$(zaf do --more slice-merge "$1" 2>&1) || status=$?
 printf '%s\n' "$log"
+
+# `slice-merge` is refused when the workspace does not hold the pull request's head (the
+# workspace is ahead of it, the head changed from outside, or it is not in the local store): a
+# refusal that moves nothing, not a backend failure and not a conflict. Its words go last in the
+# log, so the question after three of them names the head and the workspace's latest commit.
+if [ "$status" -ne 0 ]; then
+    held=$(printf '%s\n' "$log" | grep -m 1 "the workspace does not hold the pull request's head") && {
+        printf '%s\n' "${held#*: }" >&2
+        exit 4
+    }
+fi
+
 case $status in
     0) exit 0 ;;
     1) ;;

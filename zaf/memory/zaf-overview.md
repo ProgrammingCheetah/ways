@@ -36,3 +36,4 @@ zaf is a process that stays up and schedules tickets. A ticket is a small state 
 - explained_by [[The scheduler]]
 - decided_in [[Scheduler rulings]]
 - continues_in [[Open decisions]]
+- shown_in [[The captain's chair]]

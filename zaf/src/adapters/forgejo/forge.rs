@@ -22,9 +22,9 @@ use super::rows::{
 use crate::adapters::notes::{HANDOFF_MARKER, marked, unmarked};
 use crate::domain::Location;
 use crate::ports::{
-    AccessCheck, Author, BranchChecks, BranchName, Check, CheckBucket, CheckLink, CheckLog,
-    CheckName, CheckRun, CheckState, CommitId, Forge, MergeOutcome, MergeStrategy, NewPullRequest,
-    Opened, PortError, PrNumber, PrRef, PullRequest, ReviewComment, ScanningAlert,
+    AccessCheck, Author, BranchChecks, BranchName, ChangedFiles, Check, CheckBucket, CheckLink,
+    CheckLog, CheckName, CheckRun, CheckState, CommitId, Forge, MergeOutcome, MergeStrategy,
+    NewPullRequest, Opened, PortError, PrNumber, PrRef, PullRequest, ReviewComment, ScanningAlert,
 };
 
 /// The author shown for a comment whose account was deleted.
@@ -43,6 +43,10 @@ const NOT_ALLOWED: u16 = 405;
 /// The status Forgejo answers a merge whose push found the base moved (`merge push out of
 /// date`), among other conflicts.
 const CONFLICT: u16 = 409;
+
+/// The most pages of a pull request's changed files read; a list still running after them is
+/// cut short.
+pub(super) const MAX_FILE_PAGES: usize = 100;
 
 /// The pull requests of one Forgejo repository.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,7 +84,7 @@ impl ForgejoForge {
         self.pull(pr)?
             .head_sha()
             .map(str::to_owned)
-            .ok_or_else(|| PortError::Backend(format!("pull request {pr}: Forgejo gave no head")))
+            .ok_or_else(|| no_head(pr))
     }
 
     /// The latest status of each context at `sha`, in name order: one per check.
@@ -103,6 +107,11 @@ impl ForgejoForge {
         comments.sort_by_key(|comment| comment.id);
         Ok(comments)
     }
+}
+
+/// The error for a pull request Forgejo gave no head for.
+fn no_head(pr: PrNumber) -> PortError {
+    PortError::Backend(format!("pull request {pr}: Forgejo gave no head"))
 }
 
 /// The bucket a commit status of `of` (`pull request #7`, `branch feature/v1`) falls in:
@@ -191,11 +200,7 @@ impl Forge for ForgejoForge {
     /// The latest status of each context at the head, finished at the time it was posted.
     fn checks(&self, pr: PrNumber) -> Result<Vec<Check>, PortError> {
         let head = self.head_of(pr)?;
-        let of = pull_request(pr);
-        self.statuses(&head)?
-            .into_iter()
-            .map(|row| check_of(&of, row))
-            .collect()
+        self.checks_at(pr, Some(&head))
     }
 
     /// The branch is read for the commit it is at (`GET branches/{branch}`), then the latest
@@ -209,6 +214,7 @@ impl Forge for ForgejoForge {
                 return Ok(BranchChecks {
                     head: None,
                     checks: Vec::new(),
+                    reached_at: None,
                 });
             }
             Err(error) => return Err(error),
@@ -217,6 +223,7 @@ impl Forge for ForgejoForge {
         let Some(head) = row.sha().map(str::to_owned) else {
             return Err(PortError::Backend(format!("{of}: Forgejo gave no commit")));
         };
+        let reached_at = row.committed_at();
         let checks = self
             .statuses(&head)?
             .into_iter()
@@ -225,6 +232,7 @@ impl Forge for ForgejoForge {
         Ok(BranchChecks {
             head: Some(CommitId::from(head)),
             checks,
+            reached_at,
         })
     }
 
@@ -233,14 +241,25 @@ impl Forge for ForgejoForge {
     fn review_comments(&self, pr: PrNumber) -> Result<Vec<ReviewComment>, PortError> {
         let number = pr.get();
         let reviews: Vec<ReviewRow> = self.api.list(&format!("pulls/{number}/reviews"))?;
+        let posted: Vec<ReviewRow> = reviews
+            .into_iter()
+            .filter(|review| review.state != DRAFT_REVIEW)
+            .collect();
+        // The reviews' line comments do not depend on each other: they are read together, and
+        // come back in the order the reviews did.
+        let endpoints: Vec<String> = posted
+            .iter()
+            .filter(|review| review.comments_count > 0)
+            .map(|review| format!("pulls/{number}/reviews/{}/comments", review.id))
+            .collect();
+        let mut line_lists = self
+            .api
+            .get_all::<Vec<ReviewCommentRow>, _>(&endpoints)?
+            .into_iter();
         let mut comments = Vec::new();
-        for review in reviews {
-            if review.state == DRAFT_REVIEW {
-                continue;
-            }
+        for review in posted {
             if review.comments_count > 0 {
-                let endpoint = format!("pulls/{number}/reviews/{}/comments", review.id);
-                let lines: Vec<ReviewCommentRow> = self.api.get(&endpoint)?;
+                let lines = line_lists.next().unwrap_or_default();
                 for line in lines {
                     let location = Location {
                         path: line.path,
@@ -299,7 +318,20 @@ impl Forge for ForgejoForge {
         Ok(PullRequest {
             opened_at,
             merged_at,
+            mergeable: row.mergeable,
+            head: row.head_sha().map(str::to_owned),
+            merged: row.merged,
         })
+    }
+
+    /// The latest status of each context at `head`; a head Forgejo gave none for is an error.
+    fn checks_at(&self, pr: PrNumber, head: Option<&str>) -> Result<Vec<Check>, PortError> {
+        let head = head.ok_or_else(|| no_head(pr))?;
+        let of = pull_request(pr);
+        self.statuses(head)?
+            .into_iter()
+            .map(|row| check_of(&of, row))
+            .collect()
     }
 
     fn head(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
@@ -310,9 +342,18 @@ impl Forge for ForgejoForge {
         Ok(self.pull(pr)?.merged)
     }
 
-    fn last_changed_file(&self, pr: PrNumber) -> Result<Option<String>, PortError> {
-        let files: Vec<ChangedFileRow> = self.api.list(&format!("pulls/{}/files", pr.get()))?;
-        Ok(files.into_iter().next_back().map(|file| file.filename))
+    fn changed_files(&self, pr: PrNumber) -> Result<ChangedFiles, PortError> {
+        let (rows, cut_short): (Vec<ChangedFileRow>, bool) = self
+            .api
+            .list_capped(&format!("pulls/{}/files", pr.get()), MAX_FILE_PAGES)?;
+        let mut files = ChangedFiles {
+            cut_short,
+            ..ChangedFiles::default()
+        };
+        for row in rows {
+            files.push(row.filename, row.previous_filename);
+        }
+        Ok(files)
     }
 
     /// Forgejo has no code scanning.

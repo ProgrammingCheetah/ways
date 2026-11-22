@@ -31,7 +31,7 @@ use crate::app::hub::{
 use crate::app::projects::Projects;
 use crate::app::report::PriceTable;
 use crate::app::report::ledger::{LEDGER_FILE, Ledger, LedgerRow};
-use crate::app::schedule::gather::gather_for;
+use crate::app::schedule::gather::{gather_for, read_lists};
 use crate::app::schedule::request;
 use crate::app::schedule::shadow;
 use crate::app::spawn::watch::Watches;
@@ -118,7 +118,7 @@ pub fn leave_tool_report(payload: &str, here: Option<&Path>, home: Option<&Path>
 /// no hub running, or with a hub that gives none, it prints no key and exits 1.
 fn link(path: &str) -> u8 {
     let Some(home) = zaf_home() else {
-        eprintln!("zaf {path}: this machine has no zaf home, so no hub runs");
+        crate::eprintln_zaf!("zaf {path}: this machine has no zaf home, so no hub runs");
         return REFUSED;
     };
     let me = hub_link::judge_over(home.clone())(std::process::id());
@@ -128,11 +128,11 @@ fn link(path: &str) -> u8 {
             OK
         }
         Err(error @ hub_link::LinkError::Io(_)) => {
-            eprintln!("zaf {path}: {error}");
+            crate::eprintln_zaf!("zaf {path}: {error}");
             BACKEND
         }
         Err(error) => {
-            eprintln!("zaf {path}: {error}");
+            crate::eprintln_zaf!("zaf {path}: {error}");
             REFUSED
         }
     }
@@ -256,7 +256,7 @@ pub fn leave_report_in(
     );
     let who = asker_of(verb, &event);
     if let Err(not_asked) = request::ask(state_dir, &who, now, &process::alive) {
-        eprintln!("zaf {}: {}", verb.path(), not_asked.left_to_the_timer(&who));
+        crate::eprintln_zaf!("zaf {}: {}", verb.path(), not_asked.left_to_the_timer(&who));
     }
     true
 }
@@ -396,7 +396,7 @@ fn show(cli: &Cli, port: Option<u16>, read_only: bool) -> u8 {
     {
         Ok(guard) => guard,
         Err(error) => {
-            eprintln!(
+            crate::eprintln_zaf!(
                 "zaf {path}: cannot make the hub's key from the system's random source: {error}"
             );
             return BACKEND;
@@ -414,7 +414,7 @@ fn show(cli: &Cli, port: Option<u16>, read_only: bool) -> u8 {
             return REFUSED;
         }
         Err(error) => {
-            eprintln!("zaf {path}: {error}");
+            crate::eprintln_zaf!("zaf {path}: {error}");
             return BACKEND;
         }
     };
@@ -469,7 +469,11 @@ fn show(cli: &Cli, port: Option<u16>, read_only: bool) -> u8 {
         };
         // Where the core places each ticket, as the tick gathers them; a gather that fails leaves
         // the labels' word.
-        let places: Option<Places> = gather_for(&composition, board.as_ref(), None)
+        let places: Option<Places> = read_lists(board.as_ref())
+            .map_err(|error| error.to_string())
+            .and_then(|(epics, questions)| {
+                gather_for(&composition, board.as_ref(), None, &epics, &questions)
+            })
             .ok()
             .flatten()
             .map(|gathered| {
@@ -561,7 +565,7 @@ fn show(cli: &Cli, port: Option<u16>, read_only: bool) -> u8 {
     match outcome {
         Ok(()) => OK,
         Err(message) => {
-            eprintln!("zaf {path}: {message}");
+            crate::eprintln_zaf!("zaf {path}: {message}");
             BACKEND
         }
     }
@@ -578,7 +582,7 @@ fn take_lock(home: Option<&Path>, port: Option<u16>) -> Result<Option<HubLock>, 
 
 /// Says where the hub that already serves is, on stderr.
 fn refuse_second(path: &str, first: &HubLock) {
-    eprintln!(
+    crate::eprintln_zaf!(
         "zaf {path}: a hub is already serving at {} (pid {})",
         lan_url(lan_address(), first.port),
         first.pid

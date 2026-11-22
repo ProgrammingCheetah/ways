@@ -185,7 +185,12 @@ fn checks_print_one_tab_separated_line_each() {
     let lines: Vec<String> = checks(&forge, pr)
         .expect("checks")
         .iter()
-        .map(check_line)
+        .map(|run| {
+            check_line(run)
+                .iter()
+                .map(|(_, text)| text.as_ref())
+                .collect()
+        })
         .collect();
     assert_eq!(
         lines,

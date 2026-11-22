@@ -5,9 +5,10 @@
 //! Each use case checks what it is given, then makes one port call; the waiting and the retries
 //! stay in the actions.
 
+use crate::domain::screen::{Line, Meaning, Text, clean};
 use crate::ports::{
-    BranchName, CheckLink, CheckLog, CheckName, CheckRun, CommitId, Forge, MergeOutcome,
-    MergeStrategy, NewPullRequest, Opened, PortError, PrBody, PrNumber, PrTitle,
+    BranchName, CheckBucket, CheckLink, CheckLog, CheckName, CheckRun, CommitId, Forge,
+    MergeOutcome, MergeStrategy, NewPullRequest, Opened, PortError, PrBody, PrNumber, PrTitle,
 };
 
 /// The most lines of a failed job's log `zaf forge log` prints: its last ones, where the failure
@@ -112,10 +113,24 @@ pub fn checks(forge: &dyn Forge, pr: PrNumber) -> Result<Vec<CheckRun>, PortErro
 }
 
 /// One check as `zaf forge checks` prints it: bucket, name and link, tab-separated; the link is
-/// empty when the forge gives none.
-pub fn check_line(run: &CheckRun) -> String {
+/// empty when the forge gives none. The bucket means what it did (a pass `Done`, a failure or a
+/// cancel `Failed`, a pending run `Waiting`, a skip `Dim`) and the name is a `Noun`. The name and
+/// the link come from the forge, so they go through [`clean`]; the plain line is the pieces
+/// joined.
+pub fn check_line(run: &CheckRun) -> Line {
+    let meaning = match run.bucket {
+        CheckBucket::Pass => Meaning::Done,
+        CheckBucket::Fail | CheckBucket::Cancel => Meaning::Failed,
+        CheckBucket::Pending => Meaning::Waiting,
+        CheckBucket::Skipping => Meaning::Dim,
+    };
     let link = run.link.as_ref().map_or("", CheckLink::as_str);
-    format!("{}\t{}\t{link}", run.bucket, run.name)
+    vec![
+        (meaning, Text::from(run.bucket.to_string())),
+        (Meaning::Dim, Text::from("\t")),
+        (Meaning::Noun, Text::from(clean(run.name.as_str()))),
+        (Meaning::Dim, Text::from(format!("\t{}", clean(link)))),
+    ]
 }
 
 /// `zaf forge head`: the commit the pull request's head is at, when the forge reports one.

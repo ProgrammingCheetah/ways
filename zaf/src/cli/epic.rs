@@ -75,7 +75,9 @@ fn start_build(version: &str) -> u8 {
         return OK;
     }
     let error = exec_spawn_watch(version);
-    eprintln!("zaf epic sign: cannot start `zaf spawn --watch --version {version}`: {error}");
+    crate::eprintln_zaf!(
+        "zaf epic sign: cannot start `zaf spawn --watch --version {version}`: {error}"
+    );
     BACKEND
 }
 
@@ -96,25 +98,27 @@ pub fn run(cli: &Cli, action: &EpicAction) -> u8 {
             if cli.json {
                 println!("{}", json!(lines));
             } else {
-                for line in &lines {
-                    println!("{}", line.render());
-                }
+                let drawn: Vec<_> = lines.iter().map(epic::EpicLine::line).collect();
+                print!("{}", Screen::detect().draw(&drawn));
             }
         }),
         EpicAction::Show { epic } => epic::show(board.as_ref(), *epic).map(|view| {
             if cli.json {
                 println!("{}", json!(view));
-            } else if cli.more {
-                println!("{}", view.render_more());
             } else {
-                println!("{}", view.render());
+                let drawn = Screen::detect().draw(&view.lines());
+                if cli.more {
+                    println!("{drawn}\n{}", view.body.as_str().trim_end());
+                } else {
+                    print!("{drawn}");
+                }
             }
         }),
         EpicAction::File { version, title } => {
             let body = match std::io::read_to_string(std::io::stdin()) {
                 Ok(body) => body,
                 Err(error) => {
-                    eprintln!("zaf {path}: reading the body on stdin: {error}");
+                    crate::eprintln_zaf!("zaf {path}: reading the body on stdin: {error}");
                     return BACKEND;
                 }
             };
@@ -167,7 +171,7 @@ pub fn run(cli: &Cli, action: &EpicAction) -> u8 {
                     if let Err(not_asked) =
                         request::ask(&state_dir, &who, SystemTime::now(), &process::alive)
                     {
-                        eprintln!("zaf {path}: {}", not_asked.left_to_the_timer(&who));
+                        crate::eprintln_zaf!("zaf {path}: {}", not_asked.left_to_the_timer(&who));
                     }
                     // The last epic of its version signed: the build is what the Engineer
                     // wants next, asked only where someone can answer. A board that cannot say
@@ -198,11 +202,11 @@ pub fn run(cli: &Cli, action: &EpicAction) -> u8 {
             | EpicError::EmptyBody
             | EpicError::BadVersion(_)),
         ) => {
-            eprintln!("zaf {path}: {error}");
+            crate::eprintln_zaf!("zaf {path}: {error}");
             REFUSED
         }
         Err(error @ EpicError::Runs(_)) => {
-            eprintln!("zaf {path}: {error}");
+            crate::eprintln_zaf!("zaf {path}: {error}");
             BACKEND
         }
     }
@@ -211,6 +215,85 @@ pub fn run(cli: &Cli, action: &EpicAction) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::epic::{EpicLine, EpicView};
+    use crate::cli::screen::{code, strip_escapes};
+    use crate::domain::screen::Meaning;
+    use crate::domain::{EpicStage, TicketId};
+
+    fn epic_line(number: u64, stage: EpicStage, void: bool, title: &str) -> EpicLine {
+        EpicLine {
+            number: TicketId::from(number),
+            title: title.into(),
+            stage,
+            done: 1,
+            total: 3,
+            signature_void: void,
+        }
+    }
+
+    fn lines() -> Vec<EpicLine> {
+        vec![
+            epic_line(1, EpicStage::Unsigned, false, "unsigned one"),
+            epic_line(2, EpicStage::Done, false, "done one"),
+            epic_line(3, EpicStage::Unsigned, true, "edited one"),
+        ]
+    }
+
+    fn screen(colour: bool) -> Screen {
+        Screen {
+            colour,
+            live: colour,
+            rows: 24,
+            columns: 80,
+        }
+    }
+
+    fn painted(meaning: Meaning, word: &str) -> String {
+        format!("\x1b[{}m{word}\x1b[0m", code(meaning))
+    }
+
+    #[test]
+    fn the_coloured_list_stripped_is_the_plain_list() {
+        let drawn: Vec<_> = lines().iter().map(EpicLine::line).collect();
+        let on = screen(true).draw(&drawn);
+        let off = screen(false).draw(&drawn);
+        assert!(on.contains('\x1b'));
+        assert!(!off.contains('\x1b'));
+        assert_eq!(strip_escapes(&on), off);
+        let today: String = lines()
+            .iter()
+            .map(|l| format!("{}\n", l.render()))
+            .collect();
+        assert_eq!(off, today);
+    }
+
+    #[test]
+    fn the_stage_word_takes_its_meaning() {
+        let drawn: Vec<_> = lines().iter().map(EpicLine::line).collect();
+        let on = screen(true).draw(&drawn);
+        let rows: Vec<&str> = on.lines().collect();
+        assert!(rows[0].contains(&painted(Meaning::Waiting, "unsigned")));
+        assert!(rows[1].contains(&painted(Meaning::Done, "done")));
+        assert!(rows[2].contains(&painted(Meaning::Failed, "(edited since signed)")));
+        assert!(rows[0].starts_with(&painted(Meaning::Noun, "#1")));
+    }
+
+    #[test]
+    fn a_title_cannot_move_the_terminal() {
+        let hostile = epic_line(4, EpicStage::Signed, false, "a\x1b[2Jb\u{9b}c\r");
+        let on = screen(true).draw(&[hostile.line()]);
+        assert_eq!(on.matches('\x1b').count(), on.matches("\x1b[").count());
+        assert!(!on.contains("\x1b[2J") && !on.contains('\u{9b}') && !on.contains('\r'));
+        let view = EpicView {
+            epic: hostile,
+            tasks: Vec::new(),
+            body: "".into(),
+        };
+        assert_eq!(
+            strip_escapes(&screen(true).draw(&view.lines())),
+            strip_escapes(&on)
+        );
+    }
 
     #[test]
     fn build_start_runs_the_current_executable() {

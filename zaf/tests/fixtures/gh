@@ -8,8 +8,11 @@
 set -eu
 scene=${FAKE_GH_DIR:?FAKE_GH_DIR is not set}
 mkdir -p "$scene/calls"
+# Calls may run together: a lock makes each call's number its own.
+until mkdir "$scene/calls.lock" 2>/dev/null; do sleep 0.01; done
 count=$(ls "$scene/calls" | wc -l)
 printf '%s\0' "$@" > "$scene/calls/$(printf '%05d' "$count")"
+rmdir "$scene/calls.lock"
 joined="$*"
 tab=$(printf '\t')
 while IFS="$tab" read -r pattern status response; do

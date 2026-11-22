@@ -337,6 +337,14 @@ pub fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
 }
 
+/// For a test that runs actions inside its own process, where the running binary is the test's and
+/// not zaf: a file where `$ZAF_HOME/state` goes, so the folder with a `zaf` link to the running
+/// binary cannot be made and an action's `PATH` falls back to the binary's folder (it says so on
+/// stderr). The `zaf` it names on `PATH` is then the built one ([`path_with_zaf`]), not the test.
+pub fn no_zaf_link_folder(home: &Path) {
+    fs::write(home.join("state"), "").expect("block state/bin");
+}
+
 /// A `PATH` of `dirs` in order, then the built `zaf`'s folder, then the one inherited: an action
 /// that says `zaf …` runs the binary under test, never one installed on the machine.
 pub fn path_with_zaf(dirs: &[&Path]) -> String {

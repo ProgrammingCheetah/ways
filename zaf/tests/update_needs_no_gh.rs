@@ -31,7 +31,7 @@ impl Scene {
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/forgejo/curl");
         symlink(fixture, bin.join("curl")).expect("curl");
         // The tools the stand-in uses; never `gh`.
-        for tool in ["mkdir", "find", "wc", "cat", "grep"] {
+        for tool in ["mkdir", "rmdir", "sleep", "find", "wc", "cat", "grep"] {
             symlink(on_path(tool), bin.join(tool)).expect("tool");
         }
         assert!(!bin.join("gh").exists());

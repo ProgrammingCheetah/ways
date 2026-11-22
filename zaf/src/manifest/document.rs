@@ -7,9 +7,9 @@ use std::str::FromStr;
 use super::sections::{
     ActionName, ActionsSection, AskSection, BoardKind, BoardSection, BranchesSection,
     ChecksSection, DesignKind, DesignSection, EnvSection, ForbiddenSection, ForgeKind,
-    ForgeSection, ForgeUrl, GateSection, IsolationKind, IsolationSection, PackSection,
-    ProjectSection, ReleaseSection, RoleSection, RunnerName, RunnerSection, SpawnSection,
-    StyleSection, ToolName, VcsSection, WorkspacesSection,
+    ForgeSection, ForgeUrl, GateSection, IsolationKind, IsolationSection, MergeSection,
+    PackSection, ProjectSection, ReleaseSection, RoleSection, RunnerName, RunnerSection,
+    SpawnSection, StyleSection, ToolName, VcsKind, VcsSection, WorkspacesSection,
 };
 use super::{ManifestError, Requirement, layers};
 use crate::domain::{MAX_QUESTIONS, RoleName};
@@ -67,6 +67,9 @@ pub struct Manifest {
     /// `[spawn]`.
     #[serde(default)]
     pub spawn: SpawnSection,
+    /// `[merge]`: `merge.per_tick: u32`, the merges one tick may land, at least 1. Default: 1.
+    #[serde(default)]
+    pub merge: MergeSection,
     /// `[isolation]`.
     #[serde(default)]
     pub isolation: IsolationSection,
@@ -87,6 +90,11 @@ pub struct Manifest {
 }
 
 impl Manifest {
+    /// The `[vcs]` kind; none when the manifest has no `[vcs]`.
+    pub fn vcs_kind(&self) -> Option<VcsKind> {
+        self.vcs.as_ref().map(|section| section.kind)
+    }
+
     /// The ordered phase actions of the task type `task_type`; none when `[phases]` has no list
     /// for it: `Manifest::phase_list(type) -> Option<&[ActionName]>`.
     pub fn phase_list(&self, task_type: &str) -> Option<&[ActionName]> {
@@ -248,6 +256,13 @@ impl Manifest {
         }
         if self.spawn.slots == 0 {
             return Err(invalid("spawn", "slots", "must be at least 1"));
+        }
+        if self.merge.per_tick == 0 {
+            return Err(invalid(
+                "merge",
+                "per_tick",
+                "must be a whole number of at least 1",
+            ));
         }
         if self.spawn.tick_minutes == 0 {
             return Err(invalid("spawn", "tick_minutes", "must be at least 1"));

@@ -138,6 +138,8 @@ impl BoardSection {
 pub enum VcsKind {
     /// Jujutsu.
     Jj,
+    /// Git.
+    Git,
 }
 
 /// `[vcs]`: absent means no VCS port.
@@ -316,6 +318,20 @@ impl Default for ReleaseSection {
             folder: PathBuf::from(DEFAULT_RELEASE_FOLDER),
             tag: None,
         }
+    }
+}
+
+/// `[merge] per_tick = <n>`: how many merges one tick may land.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MergeSection {
+    /// A whole number of at least 1; 0 fails the load. Default: 1.
+    pub per_tick: u32,
+}
+
+impl Default for MergeSection {
+    fn default() -> Self {
+        Self { per_tick: 1 }
     }
 }
 
@@ -781,4 +797,23 @@ fn check_env_name(name: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vcs_kind_git_parses() {
+        let section: VcsSection = toml::from_str("kind = \"git\"").expect("parses");
+        assert_eq!(section.kind, VcsKind::Git);
+        assert_eq!(section.kind.to_string(), "git");
+    }
+
+    #[test]
+    fn vcs_kind_stays_required() {
+        assert!(toml::from_str::<VcsSection>("").is_err());
+        let unknown = toml::from_str::<VcsSection>("kind = \"tarball\"").expect_err("refused");
+        assert!(unknown.to_string().contains("tarball"), "{unknown}");
+    }
 }

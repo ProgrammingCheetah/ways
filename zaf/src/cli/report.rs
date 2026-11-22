@@ -5,6 +5,7 @@ use std::time::SystemTime;
 
 use super::Cli;
 use super::exit::{self, BACKEND, OK};
+use super::screen::Screen;
 use crate::app::guard;
 use crate::app::report::ledger::{self, LEDGER_FILE, Ledger, LedgerRow};
 use crate::app::report::{self, PriceTable, Query, epics};
@@ -65,7 +66,7 @@ pub fn run(cli: &Cli, args: &ReportArgs) -> u8 {
         Err(error) => return exit::fail_composition(&path, &error),
     };
     if let Err(message) = ingest_ledger(&composition) {
-        eprintln!("zaf {path}: {message}");
+        crate::eprintln_zaf!("zaf {path}: {message}");
         return BACKEND;
     }
     if args.epics {
@@ -85,14 +86,14 @@ fn run_epics(cli: &Cli, composition: &Composition, args: &ReportArgs) -> u8 {
     let rows = match ledger_rows(composition, args.all) {
         Ok(rows) => rows,
         Err(message) => {
-            eprintln!("zaf {path}: {message}");
+            crate::eprintln_zaf!("zaf {path}: {message}");
             return BACKEND;
         }
     };
     let prices = match read_prices(composition) {
         Ok(prices) => prices,
         Err(message) => {
-            eprintln!("zaf {path}: {message}");
+            crate::eprintln_zaf!("zaf {path}: {message}");
             return BACKEND;
         }
     };
@@ -126,14 +127,14 @@ fn print_epics(cli: &Cli, rows: &[LedgerRow], board: &dyn Board, prices: &PriceT
     let view = match epics::epic_view(rows, board, prices) {
         Ok(view) => view,
         Err(error) => {
-            eprintln!("zaf {}: the board failed: {error}", cli.verb.path());
+            crate::eprintln_zaf!("zaf {}: the board failed: {error}", cli.verb.path());
             return BACKEND;
         }
     };
     if cli.json {
         println!("{}", view.to_json());
     } else {
-        print!("{}", view.render_text());
+        print!("{}", Screen::detect().draw(&view.lines()));
     }
     OK
 }
@@ -157,7 +158,7 @@ fn print_report(
     let prices = match read_prices(composition) {
         Ok(prices) => prices,
         Err(message) => {
-            eprintln!("zaf {path}: {message}");
+            crate::eprintln_zaf!("zaf {path}: {message}");
             return BACKEND;
         }
     };
@@ -173,7 +174,7 @@ fn print_report(
     if cli.json {
         println!("{}", report.to_json());
     } else {
-        print!("{}", report.render_text());
+        print!("{}", Screen::detect().draw(&report.lines()));
     }
     OK
 }

@@ -5,6 +5,7 @@ use std::time::SystemTime;
 use super::Cli;
 use super::exit::{self, BACKEND, OK};
 use super::report::default_config_dir;
+use super::screen::Screen;
 use crate::app::guard::{self, GuardState};
 use crate::app::report::{self, PriceTable, Query};
 use crate::composition::Composition;
@@ -45,7 +46,7 @@ fn compute(
             OK
         }
         Err(error) => {
-            eprintln!("zaf {path}: {error}");
+            crate::eprintln_zaf!("zaf {path}: {error}");
             BACKEND
         }
     }
@@ -58,8 +59,13 @@ fn print_state(cli: &Cli, state: &GuardState) {
             serde_json::to_string_pretty(state).unwrap_or_else(|_| "{}".to_owned())
         );
     } else {
-        println!("{}", state.line());
+        print!("{}", drawn(&Screen::detect(), state));
     }
+}
+
+/// The state line as `screen` draws it, ended by a newline.
+fn drawn(screen: &Screen, state: &GuardState) -> String {
+    screen.draw(&[state.pieces()])
 }
 
 #[cfg(test)]

@@ -130,8 +130,9 @@ pub fn outcome(report: &Report, phase: &Phase, facts: &TicketFacts) -> Outcome {
 
 /// The runs that make `action` getting nowhere, oldest first: its runs that ended, not by the
 /// machinery, began and ended at the pull request's current head (none when there is no pull
-/// request head) and started after the last ruled marker for it. A run whose end head is unknown
-/// never counts. It is getting nowhere once there are [`NOWHERE_LIMIT`] of them; done, failed,
+/// request head) and started after the last ruled marker for it. "At the head" is at the head's
+/// tree ([`RunRecord::stayed_at_tree`]), so an empty commit cannot dodge the count; a head whose
+/// tree was not read counts by its commit id. A run whose end head is unknown never counts. It is getting nowhere once there are [`NOWHERE_LIMIT`] of them; done, failed,
 /// done, failed at one head counts four.
 #[must_use]
 pub fn nowhere<'a>(facts: &'a TicketFacts, action: &ActionName) -> Vec<&'a RunRecord> {
@@ -140,7 +141,9 @@ pub fn nowhere<'a>(facts: &'a TicketFacts, action: &ActionName) -> Vec<&'a RunRe
     let mut runs: Vec<&RunRecord> = facts
         .runs
         .iter()
-        .filter(|run| &run.action == action && !run.live() && run.stayed_at(head))
+        .filter(|run| {
+            &run.action == action && !run.live() && run.stayed_at_tree(head, &facts.trees)
+        })
         .filter(|run| !is_machinery(run.exit.map(|exit| exit.code)))
         .filter(|run| after.is_none_or(|after| run.started_at > after))
         .collect();

@@ -21,7 +21,7 @@ text_newtype! {
 
 /// The id the VCS gave a commit, now the domain's (the scheduling core keys facts on the pull
 /// request's head); kept here so `crate::ports::CommitId` still names it.
-pub use crate::domain::CommitId;
+pub use crate::domain::{CommitId, TreeId};
 
 /// Lines added and removed in one file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +59,33 @@ pub trait Vcs {
     /// part of it. The workspace is the one the slice record names. A directory that is no
     /// workspace is [`PortError::NotFound`].
     fn latest_commit(&self, workspace: &Path) -> Result<CommitId, PortError>;
+
+    /// Whether `head` holds the workspace's work: the workspace's latest commit is `head` or an
+    /// ancestor of it, and the two commits' trees are equal, so an empty commit on top of the
+    /// latest commit holds it and a commit that changes anything does not. A head the repository
+    /// does not hold is `false`, never an error: the guard stays short of `land` and never merges
+    /// work it has not seen, and a read fetches nothing. A directory that is no workspace is
+    /// [`PortError::NotFound`].
+    fn holds(&self, workspace: &Path, head: &CommitId) -> Result<bool, PortError>;
+
+    /// The tree of `commit` in the repository at `root`: two commits hold the same files exactly
+    /// when their trees are equal, so an empty commit has its parent's tree. A commit the
+    /// repository does not hold, and a directory that is no repository, are
+    /// [`PortError::NotFound`].
+    fn tree_of(&self, root: &Path, commit: &CommitId) -> Result<TreeId, PortError>;
+
+    /// The trees of `commits` in the repository at `root`, in the order given; a commit whose tree
+    /// cannot be read is left out. An adapter that must look something up to read a tree does it
+    /// once here, not once for each commit. The default asks [`Vcs::tree_of`] for each.
+    fn trees_of(&self, root: &Path, commits: &[&CommitId]) -> Vec<(CommitId, TreeId)> {
+        commits
+            .iter()
+            .filter_map(|commit| {
+                let tree = self.tree_of(root, commit).ok()?;
+                Some(((*commit).clone(), tree))
+            })
+            .collect()
+    }
 
     /// The change in a workspace against its base, stat only. The workspace is the one the
     /// slice record names and the base comes from the branch pattern: the VCS reads neither

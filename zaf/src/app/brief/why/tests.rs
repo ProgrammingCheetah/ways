@@ -18,6 +18,7 @@ fn conflicted() -> FailedRun {
 #[test]
 fn a_failed_merge_names_its_exit_its_meaning_and_what_it_printed() {
     let why = WhyThisRun {
+        conflict: None,
         failed: Some(conflicted()),
         rulings: Vec::new(),
     };
@@ -42,6 +43,7 @@ fn a_failed_merge_names_its_exit_its_meaning_and_what_it_printed() {
 #[test]
 fn a_red_check_and_a_ruled_question_are_named() {
     let why = WhyThisRun {
+        conflict: None,
         failed: Some(FailedRun {
             phase: ActionName::from("review"),
             head: None,
@@ -76,6 +78,7 @@ fn a_red_check_and_a_ruled_question_are_named() {
 #[test]
 fn nothing_failed_still_carries_the_rulings_and_an_unread_one_says_why() {
     let why = WhyThisRun {
+        conflict: None,
         failed: None,
         rulings: Vec::new(),
     };
@@ -88,4 +91,54 @@ fn nothing_failed_still_carries_the_rulings_and_an_unread_one_says_why() {
         WhyThisRun::unread("pull request #9: not found"),
         "## Why this run\n\nzaf could not read why this run was started: pull request #9: not found\n\n"
     );
+}
+
+fn red_check_section(mergeable: Option<bool>) -> String {
+    WhyThisRun {
+        conflict: Conflict::of(
+            mergeable,
+            TicketId::from(443),
+            Some("feature/0.5.3".to_owned()),
+        ),
+        failed: Some(FailedRun {
+            phase: ActionName::from("review"),
+            head: Some("3f2a1c0".to_owned()),
+            exit: None,
+            meaning: None,
+            checks: vec!["build".to_owned()],
+            asked: Vec::new(),
+            output: None,
+        }),
+        rulings: Vec::new(),
+    }
+    .render()
+}
+
+#[test]
+fn why_names_conflict_with_base() {
+    let text = red_check_section(Some(false));
+    assert!(
+        text.starts_with(
+            "## Why this run\n\nThe pull request does not merge into `feature/0.5.3`: \
+             run `zaf do sync-base 443` first.\n\nPhase `review` failed at 3f2a1c0.\n"
+        ),
+        "{text}"
+    );
+}
+
+#[test]
+fn why_unchanged_when_mergeable() {
+    let text = red_check_section(Some(true));
+    assert!(
+        text.starts_with("## Why this run\n\nPhase `review` failed at 3f2a1c0.\n"),
+        "{text}"
+    );
+    assert!(!text.contains("sync-base"), "{text}");
+}
+
+#[test]
+fn why_unchanged_when_mergeable_unknown() {
+    let text = red_check_section(None);
+    assert_eq!(text, red_check_section(Some(true)));
+    assert!(!text.contains("sync-base"), "{text}");
 }

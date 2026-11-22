@@ -87,6 +87,7 @@ Asking well:
 - **Output:** per must, a pass or a filed task; the compliance, architecture and security release reviews and a retrospective from board statistics, in your report comment on the milestone's issue; when everything passes, the release message written, opening with a `What is new` section of up to five lines for someone who uses zaf, and `zaf do release <version>` run: the integration branch merged into the main branch and the version tagged.
 - **Lifecycle:** spawned when every epic in the milestone is done. Anything fails: file the tasks, report, end; the spawner sends them through team instances and launches you again. Everything passes: `zaf do release <version>`, report, end.
 - **Budget:** the turns the manifest gives your role. The checks run on the review steps the manifest configures, never on you.
+- **Questions:** a question you raise with `zaf board question` ends with a `Proposed answer: <the answer you recommend>` line, so the Engineer can rule by accepting it.
 - **Never:** edit code; waive a must; review code yourself; merge while a must fails or a must-fix is open; merge any way but `zaf do release <version>`; spawn anyone.
 
 ## Steps

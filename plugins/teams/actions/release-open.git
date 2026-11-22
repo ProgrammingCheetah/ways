@@ -1,0 +1,64 @@
+#!/bin/sh
+# zaf description: open the pull request from a version's integration branch to the forge's default branch, handing back its number on line 1 and its link on line 2; a version with an open one hands that one back, and a second is never opened
+# zaf 1: refused: the argument is not one <version> (letters, digits and . - _ + only, no leading -), it is not ZAF_VERSION's, ZAF_ROOT or ZAF_BASE is not set, or the integration branch is not on origin, so nothing is opened
+# zaf 2: a backend failed (git is missing or refused, the fetch failed, the manifest names no forge, or the forge is unreachable, refused, or gave no pull request number)
+# zaf mode: 750
+# zaf group: team, release
+# changed: the git version of `release-open`: a git project takes this file and a jj project takes `release-open`
+version=$1
+
+if [ -z "$ZAF_ROOT" ] || [ -z "$ZAF_BASE" ] || [ "$#" -ne 1 ]; then
+    echo "usage: release-open <version>, with ZAF_ROOT and ZAF_BASE set" >&2
+    exit 1
+fi
+case $version in
+    "" | -* | *[!A-Za-z0-9._+-]*)
+        echo "version $version is not a usable version" >&2
+        exit 1
+        ;;
+esac
+# ZAF_BASE is the integration branch of ZAF_VERSION: another version would open the wrong one.
+if [ -n "$ZAF_VERSION" ] && [ "$version" != "$ZAF_VERSION" ]; then
+    echo "version $version is not ZAF_VERSION $ZAF_VERSION" >&2
+    exit 1
+fi
+base=$ZAF_BASE
+case $base in
+    "" | -* | *\"* | *\\*)
+        echo "integration branch $base is not a usable branch name" >&2
+        exit 1
+        ;;
+esac
+
+# zaf reads the forge from the manifest at the project root.
+cd "$ZAF_ROOT" || exit 2
+
+# The branch must be on origin as origin has it now: fetch first. A repository without origin has
+# no integration branch there.
+if ! git remote get-url origin >/dev/null 2>&1; then
+    echo "no remote origin: $base is not on the remote" >&2
+    exit 1
+fi
+git fetch --quiet origin || exit 2
+ref=refs/heads/$base
+if ! listed=$(git ls-remote --heads origin "$ref"); then
+    exit 2
+fi
+if ! printf '%s\n' "$listed" | awk -v ref="$ref" '$2 == ref { found = 1 } END { exit !found }'; then
+    echo "$base is not on the remote origin: push the integration branch first" >&2
+    exit 1
+fi
+
+# With no base the forge opens into its default branch; one already open for the branch is handed
+# back, and zaf says so on stderr. Line 1 is its number, line 2 its link.
+opened=$(zaf forge open --link -- "$base" "Release $version" "The release pull request of $version, opened by zaf.") || exit 2
+number=$(printf '%s\n' "$opened" | head -n 1)
+link=$(printf '%s\n' "$opened" | tail -n +2 | head -n 1)
+case $number in
+    "" | *[!0-9]*)
+        echo "the forge gave no pull request number: $number" >&2
+        exit 2
+        ;;
+esac
+echo "$number"
+echo "$link"

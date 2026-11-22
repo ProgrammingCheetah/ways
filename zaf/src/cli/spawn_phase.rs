@@ -29,7 +29,7 @@ use super::exit::{self, BACKEND, OK, REFUSED};
 use super::slice::VERSION_VAR;
 use crate::adapters::process;
 use crate::app::actions::{
-    ACTION_VAR, CHAIN_VAR, Caller, DEPTH_VAR, HOOKS_DIR, LOG_VAR, MINUTE, Nesting,
+    ACTION_VAR, CHAIN_VAR, Caller, DEPTH_VAR, HEAD_VAR, HOOKS_DIR, LOG_VAR, MINUTE, Nesting,
     RunRequest as ActionRequest, RunResult, Terminal, hook, last_lines, run_hook_with_input,
 };
 use crate::app::schedule::{binary, record, request};
@@ -65,9 +65,13 @@ pub fn run(cli: &Cli, task: TicketId, action: &str) -> u8 {
         _ => root.join(STATE_DIR),
     };
     let version = std::env::var(VERSION_VAR).ok();
+    let vcs = composition.vcs().ok();
+    // A filter that cannot be built leaves every check expected, as a failed read does.
+    let ci_filter = composition.ci_filter().ok();
     let ports = Ports {
         board: board.as_ref(),
         forge: forge.as_ref(),
+        ci_filter: ci_filter.as_deref(),
         manifest: composition.manifest(),
         root,
         home: &home,
@@ -75,6 +79,7 @@ pub fn run(cli: &Cli, task: TicketId, action: &str) -> u8 {
         alive: &process::alive,
         version: version.as_deref(),
         now: std::time::SystemTime::now(),
+        vcs: vcs.as_deref(),
     };
     let launch = |started: &Started| detach(root, &started.run_dir);
     match phase::start(&ports, task, action, &launch) {
@@ -113,11 +118,11 @@ pub fn run(cli: &Cli, task: TicketId, action: &str) -> u8 {
             OK
         }
         Err(PhaseError::Refused(reason)) => {
-            eprintln!("zaf {path}: {reason}");
+            crate::eprintln_zaf!("zaf {path}: {reason}");
             REFUSED
         }
         Err(PhaseError::Failed(reason)) => {
-            eprintln!("zaf {path}: {reason}");
+            crate::eprintln_zaf!("zaf {path}: {reason}");
             BACKEND
         }
     }
@@ -150,7 +155,7 @@ fn detach(root: &Path, run_dir: &Path) -> Result<Holder, String> {
 
 /// A phase is not nested in the action that started it: it carries none of that action's state.
 fn clear_action_state(command: &mut Command) {
-    for var in [ACTION_VAR, DEPTH_VAR, CHAIN_VAR, LOG_VAR] {
+    for var in [ACTION_VAR, DEPTH_VAR, CHAIN_VAR, LOG_VAR, HEAD_VAR] {
         command.env_remove(var);
     }
 }
@@ -174,7 +179,7 @@ fn post_phase(path: &str, run_dir: &Path, launch: &phase::Launch, code: i32) {
     let name = format!("{HOOKS_DIR}/post-phase");
     let failure = |text: String| {
         if let Err(reason) = phase::record_hook_failure(run_dir, &text) {
-            eprintln!("zaf {path}: {reason}");
+            crate::eprintln_zaf!("zaf {path}: {reason}");
         }
     };
     let nesting = match Nesting::from_env() {
@@ -208,6 +213,7 @@ fn post_phase(path: &str, run_dir: &Path, launch: &phase::Launch, code: i32) {
             terminal: Terminal::Absent,
             run: None,
             phase: None,
+            vcs: composition.manifest().vcs.as_ref().map(|vcs| vcs.kind),
         },
         Some(&input),
     );
@@ -253,7 +259,7 @@ fn ask_for_tick(path: &str, exe: &Path, launch: &phase::Launch, run_dir: &Path) 
             // folder, which outlives this launcher, says so.
             Err(not_asked) => {
                 if let Err(reason) = phase::log_after_phase(run_dir, &format!("{not_asked}\n")) {
-                    eprintln!("zaf {path}: {reason}");
+                    crate::eprintln_zaf!("zaf {path}: {reason}");
                 }
                 return;
             }
@@ -276,9 +282,9 @@ fn ask_for_tick(path: &str, exe: &Path, launch: &phase::Launch, run_dir: &Path) 
             let code = status
                 .code()
                 .map_or_else(|| "a signal".to_owned(), |code| format!("exit {code}"));
-            eprintln!("zaf {path}: the tick ended with {code}");
+            crate::eprintln_zaf!("zaf {path}: the tick ended with {code}");
         }
-        Err(error) => eprintln!("zaf {path}: cannot run the tick: {error}"),
+        Err(error) => crate::eprintln_zaf!("zaf {path}: cannot run the tick: {error}"),
     }
 }
 
@@ -307,14 +313,14 @@ pub fn launcher(cli: &Cli, run_dir: &Path) -> u8 {
     let run_dir: PathBuf = match std::path::absolute(run_dir) {
         Ok(run_dir) => run_dir,
         Err(error) => {
-            eprintln!("zaf {path}: {}: {error}", run_dir.display());
+            crate::eprintln_zaf!("zaf {path}: {}: {error}", run_dir.display());
             return BACKEND;
         }
     };
     let launch = match phase::launch_of(&run_dir) {
         Ok(launch) => launch,
         Err(reason) => {
-            eprintln!("zaf {path}: {reason}");
+            crate::eprintln_zaf!("zaf {path}: {reason}");
             return BACKEND;
         }
     };
@@ -322,7 +328,7 @@ pub fn launcher(cli: &Cli, run_dir: &Path) -> u8 {
     let exe = match binary::path_to_start() {
         Ok(exe) => exe,
         Err(why) => {
-            eprintln!("zaf {path}: {why}");
+            crate::eprintln_zaf!("zaf {path}: {why}");
             return BACKEND;
         }
     };
@@ -335,7 +341,12 @@ pub fn launcher(cli: &Cli, run_dir: &Path) -> u8 {
         .env(RUN_VAR, &run_dir)
         .env(SIZE_VAR, &launch.size)
         .env(INSTANCE_VAR, &launch.instance);
+    // Not nested in the action that started it, so nothing it carried; then the run's own: the
+    // head Land was derived at, for a run of the land phase alone.
     clear_action_state(&mut command);
+    if let Some(head) = &launch.head {
+        command.env(HEAD_VAR, head);
+    }
     // What `zaf do` prints, a failure's headline and the tail of its log, goes to the run folder's
     // `output`, so the tick can quote the last line when the phase keeps failing (#550).
     match open_output(&run_dir) {
@@ -345,7 +356,7 @@ pub fn launcher(cli: &Cli, run_dir: &Path) -> u8 {
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
-            eprintln!("zaf {path}: cannot start {}: {error}", launch.action);
+            crate::eprintln_zaf!("zaf {path}: cannot start {}: {error}", launch.action);
             return BACKEND;
         }
     };
@@ -353,7 +364,7 @@ pub fn launcher(cli: &Cli, run_dir: &Path) -> u8 {
     if let Some(holder) = process::holder_of(child.id())
         && let Err(reason) = phase::record_pid(&run_dir, &holder)
     {
-        eprintln!("zaf {path}: {reason}");
+        crate::eprintln_zaf!("zaf {path}: {reason}");
     }
     match child.wait() {
         Ok(status) => {
@@ -367,12 +378,12 @@ pub fn launcher(cli: &Cli, run_dir: &Path) -> u8 {
                 ask_for_tick(&path, &exe, &launch, &run_dir);
             };
             if let Err(reason) = phase::end(&run_dir, code, &head_end, &after) {
-                eprintln!("zaf {path}: {reason}");
+                crate::eprintln_zaf!("zaf {path}: {reason}");
             }
             u8::try_from(code).unwrap_or(BACKEND)
         }
         Err(error) => {
-            eprintln!("zaf {path}: cannot wait on {}: {error}", launch.action);
+            crate::eprintln_zaf!("zaf {path}: cannot wait on {}: {error}", launch.action);
             BACKEND
         }
     }

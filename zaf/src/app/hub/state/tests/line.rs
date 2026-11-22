@@ -242,6 +242,7 @@ fn line_task_counts_phases_ended() {
         ready_since: None,
         merging: Default::default(),
         no_check_ruled: None,
+        trees: Default::default(),
     };
     let gathered = Gathered {
         tickets: vec![facts],
@@ -290,4 +291,172 @@ fn line_task_done_keeps_its_size() {
     assert_eq!(task.state, LineState::Done);
     assert_eq!((task.phases_done, task.phases_total), (4, 4));
     assert_eq!(task.phase, None);
+}
+
+/// A second epic, #190, challenged, with one done task #191.
+fn finished_epic(world: &World) {
+    let epic = TicketId::from(190);
+    world.board.add_challenged_epic(epic, "The finished epic");
+    world.board.add_ticket(Ticket {
+        epic: Some(epic),
+        ..task(191, "Built", TicketState::Done)
+    });
+}
+
+#[test]
+fn hub_line_clears_finished_epic_blocker() {
+    let world = World::new();
+    finished_epic(&world);
+    world.board.add_ticket(with_body(
+        2,
+        "Write",
+        TicketState::Blocked,
+        sized("S", "#190"),
+    ));
+
+    let state = world.gather(at(1_000));
+
+    let write = state.epics[0]
+        .tasks
+        .iter()
+        .find(|task| task.number == 2)
+        .expect("the task is on its line");
+    assert_eq!(
+        write.blocked_by,
+        [LineBlocker {
+            number: 190,
+            title: Some("The finished epic".to_owned()),
+            state: LineState::Done,
+        }],
+        "an open epic whose tasks are all done is not waited on"
+    );
+    assert!(
+        state.epics.iter().any(|epic| epic.number == 190),
+        "the epic stays open"
+    );
+}
+
+#[test]
+fn hub_line_keeps_an_unfinished_epic_blocker_waiting() {
+    let world = World::new();
+    finished_epic(&world);
+    world.board.add_ticket(Ticket {
+        epic: Some(TicketId::from(190)),
+        ..task(192, "Still open", TicketState::Ready)
+    });
+    world.board.add_ticket(with_body(
+        2,
+        "Write",
+        TicketState::Blocked,
+        sized("S", "#190"),
+    ));
+
+    let state = world.gather(at(1_000));
+
+    let write = state.epics[0]
+        .tasks
+        .iter()
+        .find(|task| task.number == 2)
+        .expect("the task is on its line");
+    assert_eq!(write.blocked_by[0].state, LineState::NotStarted);
+}
+
+/// A second open epic, #190, with the tasks #191 to #193.
+fn second_epic(world: &World) {
+    let epic = TicketId::from(190);
+    world.board.add_challenged_epic(epic, "The second epic");
+    for number in 191..=193 {
+        world.board.add_ticket(Ticket {
+            epic: Some(epic),
+            ..with_body(number, "Other", TicketState::Ready, sized("S", "—"))
+        });
+    }
+}
+
+#[test]
+fn line_reads_no_task_for_epic_tasks() {
+    let world = World::new();
+    second_epic(&world);
+    for number in 1..=3 {
+        world.board.add_ticket(with_body(
+            number,
+            "Mine",
+            TicketState::Ready,
+            sized("M", "#191"),
+        ));
+    }
+    world.board.reset_calls();
+
+    let state = world.gather(at(1_000));
+
+    assert_eq!(state.epics.len(), 2);
+    let tasks: usize = state.epics.iter().map(|epic| epic.tasks.len()).sum();
+    assert_eq!(tasks, 6);
+    assert_eq!(world.board.calls("task"), 0);
+}
+
+#[test]
+fn line_reads_outside_blocker_once() {
+    let world = World::new();
+    // #900 is no task of any epic.
+    world.board.add_ticket(Ticket {
+        epic: None,
+        ..task(900, "Outside", TicketState::Done)
+    });
+    for number in 1..=2 {
+        world.board.add_ticket(with_body(
+            number,
+            "Mine",
+            TicketState::Ready,
+            sized("S", "#900"),
+        ));
+    }
+    world.board.reset_calls();
+
+    let state = world.gather(at(1_000));
+
+    // Asked once for where it stands, never as a task.
+    assert_eq!(world.board.calls("standing"), 1);
+    assert_eq!(world.board.calls("task"), 0);
+    let blocker = &line_of(&state)[0].blocked_by[0];
+    assert_eq!((blocker.number, blocker.state), (900, LineState::Done));
+}
+
+#[test]
+fn line_task_fields_unchanged() {
+    let world = World::new();
+    world
+        .board
+        .add_ticket(with_body(1, "Read", TicketState::Ready, sized("XS", "—")));
+    world.board.add_ticket(with_body(
+        2,
+        "Write",
+        TicketState::Blocked,
+        sized("L", "#1, #9"),
+    ));
+    world.board.add_ticket(with_body(
+        3,
+        "Serve",
+        TicketState::Ready,
+        "not a task".to_owned(),
+    ));
+
+    let state = world.gather(at(1_000));
+
+    let shown: Vec<_> = line_of(&state)
+        .iter()
+        .map(|task| {
+            let blockers: Vec<u64> = task.blocked_by.iter().map(|b| b.number).collect();
+            (task.number, task.size, blockers, task.issue_url.clone())
+        })
+        .collect();
+    let link = |number: u64| Some(format!("https://board.invalid/tickets/{number}"));
+    assert_eq!(
+        shown,
+        [
+            (1, Some("XS"), vec![], link(1)),
+            (2, Some("L"), vec![1, 9], link(2)),
+            (3, None, vec![], link(3)),
+        ]
+    );
 }

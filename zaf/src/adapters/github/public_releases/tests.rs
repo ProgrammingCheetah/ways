@@ -383,6 +383,60 @@ fn plugin_version_touches_no_marketplace() {
 }
 
 #[test]
+fn one_listing_per_run() {
+    let fake = FakeCurl::new();
+    fake.on(
+        LIST,
+        200,
+        listing(&[
+            release("zaf-v0.5.3", false, false, json!("new"), &["a.tar.gz"]),
+            release("zaf-v0.5.2", false, false, json!("two"), &[]),
+            release("zaf-v0.5.1", false, false, json!("one"), &[]),
+            release("zaf-v0.5.0", false, false, json!("zero"), &[]),
+        ]),
+    )
+    .on(&format!("GET {DOWNLOAD}/zaf-v0.5.3/a.tar.gz"), 200, "bytes");
+    let releases = fake.releases(None);
+    let dir = tempfile::tempdir().expect("dir");
+
+    assert_eq!(releases.tags().expect("lists").len(), 4);
+    for tag in ["zaf-v0.5.2", "zaf-v0.5.1", "zaf-v0.5.0"] {
+        assert!(releases.notes(tag).expect("reads").is_some());
+    }
+    releases
+        .download("zaf-v0.5.3", &["a.tar.gz".to_owned()], dir.path())
+        .expect("downloads");
+
+    let calls = fake.calls();
+    let listings = calls
+        .iter()
+        .filter(|(argv, _)| {
+            argv.iter()
+                .any(|arg| arg.ends_with("/releases?per_page=100"))
+        })
+        .count();
+    assert_eq!(listings, 1);
+    assert_eq!(calls.len(), 2, "the listing and the download");
+}
+
+#[test]
+fn a_failed_listing_is_not_kept() {
+    let fake = FakeCurl::new();
+    // The first rule answers one call only (`!`), the next rule the later ones.
+    fake.answer(LIST, "403!", b"").on(
+        LIST,
+        200,
+        listing(&[release("zaf-v0.5.2", false, false, json!("x"), &[])]),
+    );
+    let releases = fake.releases(None);
+
+    assert!(matches!(releases.tags(), Err(PortError::Backend(_))));
+    assert_eq!(releases.tags().expect("lists again"), ["zaf-v0.5.2"]);
+    assert_eq!(releases.tags().expect("kept"), ["zaf-v0.5.2"]);
+    assert_eq!(fake.calls().len(), 2, "the failed listing and the next");
+}
+
+#[test]
 fn a_reply_that_is_not_a_release_list_is_a_backend_error() {
     let fake = FakeCurl::new();
     fake.on(LIST, 200, "<html>captive portal</html>");

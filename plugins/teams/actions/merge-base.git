@@ -1,0 +1,187 @@
+#!/bin/sh
+# zaf description: fetch `origin` and merge the base as it stands there into a slice's git worktree; up to date is quiet; a clean merge is committed; a conflicted one stops with its files listed and the merge left in progress in the workspace; with `--keep` (what `sync-base` runs for a programmer) the workspace's uncommitted work rides along, and the merge is refused only where git itself would overwrite a change, naming the file; with `--probe` (what `slice-merge` runs) nothing is merged: it answers whether the base merges into the slice cleanly, and the workspace, its index and every ref are left as they were
+# zaf 1: conflicted: the merge stops on conflicts and the files are in the log; without `--probe` the merge is left in progress in the workspace (`MERGE_HEAD` is set); with `--probe` the merge would stop on them
+# zaf 2: a backend failed or the call was refused (the arguments are not <slice> <base> [--keep | --probe], ZAF_VCS is not git, the slice is not open on that base, a merge is already in progress, it has uncommitted work (without `--keep`), git would overwrite a change of the workspace, git is older than 2.38, or the fetch failed); the workspace is unchanged
+# zaf mode: 750
+# zaf group: team, release, implement, fix, merge
+# changed: the git version of `merge-base`: a git project takes this file for that name
+# changed: a conflicted merge stays in progress in the workspace, for git cannot commit one, where jj keeps a conflict as data
+slice=$1
+base=$2
+
+# Exit 1 means conflicted here (docs/zaf-actions.md §3), so every refusal is exit 2.
+keep=no
+probe=no
+if [ "$#" -eq 3 ] && [ "$3" = "--keep" ]; then
+    keep=yes
+elif [ "$#" -eq 3 ] && [ "$3" = "--probe" ]; then
+    probe=yes
+elif [ "$#" -ne 2 ]; then
+    echo "usage: merge-base <slice> <base> [--keep | --probe], with ZAF_ROOT set" >&2
+    exit 2
+fi
+if [ -z "$ZAF_ROOT" ]; then
+    echo "usage: merge-base <slice> <base> [--keep | --probe], with ZAF_ROOT set" >&2
+    exit 2
+fi
+
+if [ "$ZAF_VCS" != "git" ]; then
+    echo "merge-base.git is for a git project; ZAF_VCS is '$ZAF_VCS'" >&2
+    exit 2
+fi
+
+# A slice name is a relative path of plain parts, below the workspaces directory.
+case "/$slice/" in
+    *//* | */./* | */../*)
+        echo "slice name $slice is not a relative path inside the workspaces directory" >&2
+        exit 2
+        ;;
+esac
+case $slice in
+    "" | /* | -*)
+        echo "slice name $slice is not a relative path inside the workspaces directory" >&2
+        exit 2
+        ;;
+esac
+case $base in
+    "" | -*)
+        echo "base $base is not a usable branch name" >&2
+        exit 2
+        ;;
+esac
+if ! git check-ref-format --branch "$base" >/dev/null 2>&1; then
+    echo "base $base is not a usable branch name" >&2
+    exit 2
+fi
+# The base is ZAF_BASE when the caller set it; git config never says which base a slice is on.
+if [ -n "$ZAF_BASE" ] && [ "$ZAF_BASE" != "$base" ]; then
+    echo "slice $slice is open on $ZAF_BASE, not $base" >&2
+    exit 2
+fi
+
+dir=$ZAF_ROOT/.zaf/workspaces/$slice
+
+# Only a worktree of this repository, on the slice's branch, is an open slice.
+open=false
+if [ -e "$dir/.git" ]; then
+    here=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+    root=$(git -C "$ZAF_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+    branch=$(git -C "$dir" symbolic-ref --short --quiet HEAD 2>/dev/null)
+    if [ -n "$here" ] && [ "$here" = "$root" ] && [ "$branch" = "$slice" ]; then
+        open=true
+    fi
+fi
+if [ "$open" != "true" ]; then
+    echo "slice $slice is not open" >&2
+    exit 2
+fi
+
+cd "$dir" || exit 2
+
+# `merge-tree --write-tree` and `--name-only` arrive together in git 2.38.0 (docs/git-lane-spike.md).
+version=$(git version | sed 's/^git version //') || exit 2
+major=${version%%.*}
+rest=${version#*.}
+minor=${rest%%.*}
+case $major$minor in
+    "" | *[!0-9]*)
+        echo "cannot read git's version from '$version'" >&2
+        exit 2
+        ;;
+esac
+if [ "$major" -lt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -lt 38 ]; }; then
+    echo "git $version is older than 2.38, which merge-base needs" >&2
+    exit 2
+fi
+
+# Nothing under .zaf/ is the slice's work.
+exclude=':(exclude).zaf'
+
+# A merge left in progress is resolved and committed before another one starts.
+if git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
+    if ! unmerged=$(git diff --name-only --diff-filter=U); then
+        exit 2
+    fi
+    if [ -n "$unmerged" ]; then
+        echo "slice $slice has a merge in progress with unresolved paths; resolve them first:" >&2
+        printf '%s\n' "$unmerged" >&2
+    else
+        echo "slice $slice has a merge in progress; commit it first" >&2
+    fi
+    exit 2
+fi
+
+# A probe reads HEAD and the base, never the working tree, so it asks nothing of it. The merge
+# itself needs the work committed, unless `--keep` carries it through.
+if [ "$keep" = "no" ] && [ "$probe" = "no" ]; then
+    if ! work=$(git status --porcelain -- . "$exclude"); then
+        exit 2
+    fi
+    if [ -n "$work" ]; then
+        echo "slice $slice has uncommitted work; commit it first" >&2
+        exit 2
+    fi
+fi
+
+# The base as origin has it, never a local one that may lag behind.
+git fetch --quiet origin || exit 2
+remote_base=refs/remotes/origin/$base
+if ! git rev-parse --verify --quiet "$remote_base^{commit}" >/dev/null; then
+    echo "unknown base $base on origin" >&2
+    exit 2
+fi
+
+# The base has nothing the slice lacks.
+if git merge-base --is-ancestor "$remote_base" HEAD; then
+    echo "$slice is up to date with $base: nothing to merge"
+    exit 0
+fi
+
+if [ "$probe" = "yes" ]; then
+    # Writes objects and nothing else: no ref, no index, no working tree.
+    status=0
+    out=$(git merge-tree --write-tree --name-only HEAD "$remote_base") || status=$?
+    case $status in
+        0)
+            exit 0
+            ;;
+        1)
+            # Line 1 is the tree; the conflicted paths follow, up to a blank line.
+            paths=$(printf '%s\n' "$out" | sed -n '2,${/^$/q;p;}')
+            echo "the merge of $base into $slice conflicts in:" >&2
+            printf '%s\n' "$paths" >&2
+            exit 1
+            ;;
+        *)
+            exit 2
+            ;;
+    esac
+fi
+
+status=0
+errfile=$(mktemp) || exit 2
+git merge --no-ff --no-edit -m "Merge $base into $slice" "$remote_base" >/dev/null 2>"$errfile" || status=$?
+err=$(cat "$errfile")
+rm -f "$errfile"
+
+if [ "$status" -eq 0 ]; then
+    if [ "$keep" = "yes" ] && [ -n "$(git status --porcelain -- . "$exclude")" ]; then
+        echo "merged $base into $slice cleanly; the uncommitted work is still in the workspace; nothing was pushed"
+    else
+        echo "merged $base into $slice cleanly; nothing was pushed"
+    fi
+    exit 0
+fi
+
+# A merge that stopped on conflicts is in progress; one that never started is a refusal by git.
+if git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
+    if ! paths=$(git diff --name-only --diff-filter=U); then
+        exit 2
+    fi
+    echo "the merge of $base into $slice is in the workspace, and it conflicts in:" >&2
+    printf '%s\n' "$paths" >&2
+    echo "resolve those paths in the workspace; nothing was pushed" >&2
+    exit 1
+fi
+printf '%s\n' "$err" >&2
+exit 2

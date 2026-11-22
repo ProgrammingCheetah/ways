@@ -93,7 +93,10 @@ fn diff(text: &mut String, view: &PhaseView<'_>) -> Result<(), BriefError> {
 fn findings(text: &mut String, view: &PhaseView<'_>) -> Result<(), BriefError> {
     let head = view.forge.head(view.pr).map_err(forge_error)?;
     let comments = view.forge.review_comments(view.pr).map_err(forge_error)?;
-    let checks = view.forge.checks(view.pr).map_err(forge_error)?;
+    let checks = view
+        .forge
+        .checks_at(view.pr, head.as_deref())
+        .map_err(forge_error)?;
     infallible(writeln!(text, "## Findings\n"));
     let Some(head) = head else {
         infallible(writeln!(

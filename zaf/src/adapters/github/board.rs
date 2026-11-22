@@ -10,7 +10,7 @@ use std::time::SystemTime;
 use super::GhCommand;
 use super::command::{GraphqlValue, number_from_url};
 use super::rows::{
-    ISSUE_FIELDS, IssueRow, NameRow, OPEN_TICKET_FIELDS, STANDING_FIELDS, StandingRow,
+    BatchData, ISSUE_FIELDS, IssueRow, NameRow, OPEN_TICKET_FIELDS, STANDING_FIELDS, StandingRow,
     TICKET_LIST_FIELDS,
 };
 use super::state::{LabelState, ProjectRef, ProjectState, StateStore};
@@ -46,6 +46,11 @@ const DUPLICATE: &str = "DUPLICATE";
 /// The issue types a repository defines.
 const ISSUE_TYPES: &str = "query($owner: String!, $name: String!) { \
     repository(owner: $owner, name: $name) { issueTypes(first: 50) { nodes { name } } } }";
+
+/// The fields of an issue the batched read asks for: [`ISSUE_FIELDS`] in GraphQL's words.
+const BATCH_ISSUE: &str = "number title body state labels(first: 100) { totalCount nodes { name } } \
+    parent { number } issueType { name } \
+    comments(first: 100) { totalCount nodes { body url createdAt } }";
 
 /// What [`ISSUE_TYPES`] returns.
 #[derive(Debug, serde::Deserialize)]
@@ -152,6 +157,61 @@ impl<S: StateStore> GithubBoard<S> {
         let number = number.get().to_string();
         self.gh
             .json(&["issue", "view", &number, "--json", ISSUE_FIELDS])
+    }
+
+    /// The issues `numbers`, in that order, each as `issue` reads it, from one GraphQL call. An
+    /// issue the answer lacks is [`PortError::NotFound`] naming its number. One whose comments or
+    /// labels the call did not carry whole is read with `gh issue view`, so a row never differs
+    /// from the one `issue` returns. A single number is read as `issue` does.
+    fn issues(&self, numbers: &[u64]) -> Result<Vec<IssueRow>, PortError> {
+        match numbers {
+            [] => return Ok(Vec::new()),
+            [only] => return self.issue(TicketId::from(*only)).map(|row| vec![row]),
+            _ => {}
+        }
+        let repo = self.gh.repo().as_ref();
+        let (owner, name) = repo
+            .split_once('/')
+            .ok_or_else(|| PortError::Backend(format!("`{repo}` is not owner/name")))?;
+        let aliases: String = numbers
+            .iter()
+            .map(|number| format!("i{number}: issue(number: {number}) {{ {BATCH_ISSUE} }} "))
+            .collect();
+        let query = format!(
+            "query($owner: String!, $name: String!) {{ \
+             repository(owner: $owner, name: $name) {{ {aliases}}} }}"
+        );
+        let data: BatchData = match self.gh.graphql(
+            &query,
+            &[
+                ("owner", GraphqlValue::Text(owner.to_owned())),
+                ("name", GraphqlValue::Text(name.to_owned())),
+            ],
+        ) {
+            Ok(data) => data,
+            // GitHub's error does not name the number; reading each finds the one that is missing.
+            Err(PortError::NotFound(_)) => {
+                return numbers
+                    .iter()
+                    .map(|number| self.issue(TicketId::from(*number)))
+                    .collect();
+            }
+            Err(error) => return Err(error),
+        };
+        let mut found = data.repository.unwrap_or_default();
+        numbers
+            .iter()
+            .map(|number| {
+                let issue = found
+                    .remove(&format!("i{number}"))
+                    .flatten()
+                    .ok_or_else(|| PortError::NotFound(format!("no issue #{number} in {repo}")))?;
+                match issue.into_row() {
+                    Some(row) => Ok(row),
+                    None => self.issue(TicketId::from(*number)),
+                }
+            })
+            .collect()
     }
 
     fn post_comment(&self, number: TicketId, body: &str) -> Result<(), PortError> {
@@ -280,7 +340,7 @@ impl<S: StateStore> Board for GithubBoard<S> {
             "--limit",
             LIST_LIMIT,
             "--json",
-            "number,title,labels,parent,state,stateReason,issueType",
+            "number,title,body,url,labels,parent,state,stateReason,issueType,closedAt",
         ])?;
         tasks.sort_by_key(|row| row.number);
         let states = self.states_of(&tasks)?;
@@ -309,6 +369,8 @@ impl<S: StateStore> Board for GithubBoard<S> {
                             EpicTask {
                                 number: TicketId::from(task.number),
                                 title: task.title.clone().into(),
+                                body: task.body.clone().into(),
+                                url: task.url.clone().into(),
                                 state,
                                 standing: standing_of(
                                     &task.state,
@@ -317,6 +379,10 @@ impl<S: StateStore> Board for GithubBoard<S> {
                                 ),
                                 group: task.group().map(Into::into),
                                 kind: task.kind(),
+                                closed_at: (task.state != OPEN)
+                                    .then_some(task.closed_at.as_deref())
+                                    .flatten()
+                                    .and_then(|at| humantime::parse_rfc3339(at).ok()),
                             }
                         })
                         .collect(),
@@ -545,8 +611,7 @@ impl<S: StateStore> Board for GithubBoard<S> {
             .collect();
         numbers.sort_unstable();
         let mut claims = Vec::new();
-        for number in numbers {
-            let row = self.issue(TicketId::from(number))?;
+        for row in self.issues(&numbers)? {
             let claimed = self.states(&row)?.contains(&TicketState::Claimed);
             claims.extend(row.claim(claimed));
         }

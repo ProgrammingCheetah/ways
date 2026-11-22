@@ -252,6 +252,38 @@ pub(super) fn dollars_by_epic(
     by_epic
 }
 
+/// What the ledger's runs of the project cost each task they named: their tokens and the seconds
+/// from each transcript's first time to its last. A run that named two tasks counts for both.
+pub(super) fn cost_by_task(
+    ledger: &[LedgerRow],
+    project: &str,
+    root: &Path,
+) -> HashMap<u64, super::state::TicketCost> {
+    let mut by_task: HashMap<u64, super::state::TicketCost> = HashMap::new();
+    for row in ledger {
+        if !is_this_project(&row.project, project, root) {
+            continue;
+        }
+        let tokens = row.input + row.cache_write + row.cache_read + row.output;
+        let time = |at: &Option<String>| {
+            at.as_deref()
+                .and_then(|at| humantime::parse_rfc3339_weak(at).ok())
+        };
+        let seconds = match (time(&row.first_time), time(&row.last_time)) {
+            (Some(first), Some(last)) => {
+                last.duration_since(first).map_or(0, |took| took.as_secs())
+            }
+            _ => 0,
+        };
+        for task in &row.tasks {
+            let cost = by_task.entry(*task).or_default();
+            cost.tokens += tokens;
+            cost.seconds += seconds;
+        }
+    }
+    by_task
+}
+
 /// The done tasks and the tasks that count (see [`EpicTask::counts`]): a task closed as not
 /// planned counts for nothing.
 pub(super) fn tally<'a>(tasks: impl Iterator<Item = &'a EpicTask>) -> (u32, u32) {

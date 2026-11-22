@@ -4,12 +4,15 @@ use std::collections::BTreeMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::SystemTime;
 
+use super::calls::Calls;
 use crate::domain::schedule::Priority;
 use crate::domain::{
     CHALLENGER_ROLE, Epic, EpicTask, GroupName, Instance, NewEpic, NewTask, OpenTicket, Signature,
     Standing, StandingAt, Ticket, TicketId, TicketState, TicketType,
 };
-use crate::ports::{Board, ClaimOutcome, ClaimRecord, IssueTypes, NewQuestion, PortError};
+use crate::ports::{
+    AccessCheck, Board, ClaimOutcome, ClaimRecord, IssueTypes, NewQuestion, PortError,
+};
 
 /// One issue and everything written on it.
 #[derive(Debug, Clone)]
@@ -100,6 +103,7 @@ pub fn link(number: TicketId) -> String {
 #[derive(Debug, Default)]
 pub struct FakeBoard {
     state: Mutex<State>,
+    calls: Calls,
 }
 
 impl FakeBoard {
@@ -298,6 +302,84 @@ impl FakeBoard {
             .is_some_and(|issue| issue.closed)
     }
 
+    /// How many times the port's method `method` was called (`epics`, `task`, ...); 0 for one never
+    /// called. Only calls through [`Board`] count, not the methods that arrange a scene.
+    pub fn calls(&self, method: &str) -> usize {
+        self.calls.of(method)
+    }
+
+    /// Sets every count [`FakeBoard::calls`] reads to 0.
+    pub fn reset_calls(&self) {
+        self.calls.reset();
+    }
+
+    /// Every open epic, as [`Board::epics`] lists it, without counting a call.
+    fn open_epics(&self) -> Vec<Epic> {
+        let state = self.state();
+        state
+            .issues
+            .values()
+            .filter(|issue| issue.epic && !issue.closed)
+            .map(|epic| Epic {
+                id: epic.ticket.id,
+                title: epic.ticket.title.clone(),
+                body: epic.ticket.body.clone(),
+                tasks: state
+                    .issues
+                    .values()
+                    .filter(|task| task.ticket.epic == Some(epic.ticket.id))
+                    .map(|task| EpicTask {
+                        number: task.ticket.id,
+                        title: task.ticket.title.clone(),
+                        body: task.ticket.body.clone(),
+                        url: task.ticket.url.clone(),
+                        state: task.ticket.state,
+                        standing: task.standing(),
+                        group: task.group.clone(),
+                        kind: task.ticket.kind.clone(),
+                        closed_at: task.closed.then_some(task.closed_at).flatten(),
+                    })
+                    .collect(),
+                signature: epic.signature.clone(),
+                // The fake keeps no time on a comment.
+                planned_at: None,
+                challenged: epic
+                    .reports
+                    .iter()
+                    .any(|(instance, _)| instance.role.as_str() == CHALLENGER_ROLE),
+            })
+            .collect()
+    }
+
+    /// The issue types the repository defines, without counting a call.
+    fn defined_types(&self) -> IssueTypes {
+        let names = self.state().types.clone().unwrap_or_else(|| {
+            DEFAULT_ISSUE_TYPES
+                .iter()
+                .map(|name| TicketType::from(*name))
+                .collect()
+        });
+        IssueTypes {
+            repo: REPO.to_owned(),
+            names,
+        }
+    }
+
+    /// Where an issue stands and when it closed, without counting a call.
+    fn standing_of(&self, number: TicketId) -> StandingAt {
+        let state = self.state();
+        state.issues.get(&number).map_or(
+            StandingAt {
+                standing: Standing::Missing,
+                closed_at: None,
+            },
+            |issue| StandingAt {
+                standing: issue.standing(),
+                closed_at: issue.closed.then_some(issue.closed_at).flatten(),
+            },
+        )
+    }
+
     fn state(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -323,55 +405,31 @@ impl State {
 
 impl Board for FakeBoard {
     fn epics(&self) -> Result<Vec<Epic>, PortError> {
-        let state = self.state();
-        let epics = state
-            .issues
-            .values()
-            .filter(|issue| issue.epic && !issue.closed)
-            .map(|epic| Epic {
-                id: epic.ticket.id,
-                title: epic.ticket.title.clone(),
-                body: epic.ticket.body.clone(),
-                tasks: state
-                    .issues
-                    .values()
-                    .filter(|task| task.ticket.epic == Some(epic.ticket.id))
-                    .map(|task| EpicTask {
-                        number: task.ticket.id,
-                        title: task.ticket.title.clone(),
-                        state: task.ticket.state,
-                        standing: task.standing(),
-                        group: task.group.clone(),
-                        kind: task.ticket.kind.clone(),
-                    })
-                    .collect(),
-                signature: epic.signature.clone(),
-                // The fake keeps no time on a comment.
-                planned_at: None,
-                challenged: epic
-                    .reports
-                    .iter()
-                    .any(|(instance, _)| instance.role.as_str() == CHALLENGER_ROLE),
-            })
-            .collect();
-        Ok(epics)
+        self.calls.record("epics");
+        Ok(self.open_epics())
+    }
+
+    fn epic(&self, id: TicketId) -> Result<Epic, PortError> {
+        self.calls.record("epic");
+        self.open_epics()
+            .into_iter()
+            .find(|epic| epic.id == id)
+            .ok_or_else(|| PortError::NotFound(format!("{id} is not an open epic")))
     }
 
     fn issue_types(&self) -> Result<IssueTypes, PortError> {
-        let names = self.state().types.clone().unwrap_or_else(|| {
-            DEFAULT_ISSUE_TYPES
-                .iter()
-                .map(|name| TicketType::from(*name))
-                .collect()
-        });
-        Ok(IssueTypes {
-            repo: REPO.to_owned(),
-            names,
-        })
+        self.calls.record("issue_types");
+        Ok(self.defined_types())
+    }
+
+    fn access(&self) -> Vec<AccessCheck> {
+        self.calls.record("access");
+        Vec::new()
     }
 
     fn file_task(&self, task: &NewTask) -> Result<TicketId, PortError> {
-        let types = self.issue_types()?;
+        self.calls.record("file_task");
+        let types = self.defined_types();
         if !types.defines(&task.kind) {
             return Err(PortError::Rejected(format!(
                 "{} has no issue type {}",
@@ -398,6 +456,7 @@ impl Board for FakeBoard {
     }
 
     fn file_epic(&self, epic: &NewEpic) -> Result<TicketId, PortError> {
+        self.calls.record("file_epic");
         // The id, the ticket and its epic mark are set under one lock: no other call takes
         // the id, and no reader sees the epic as a task.
         let mut state = self.state();
@@ -417,30 +476,24 @@ impl Board for FakeBoard {
     }
 
     fn sign(&self, epic: TicketId, signature: &Signature) -> Result<(), PortError> {
+        self.calls.record("sign");
         let mut state = self.state();
         state.issue_mut(epic)?.signature = Some(signature.clone());
         Ok(())
     }
 
     fn standing(&self, number: TicketId) -> Result<Standing, PortError> {
-        self.standing_at(number).map(|at| at.standing)
+        self.calls.record("standing");
+        Ok(self.standing_of(number).standing)
     }
 
     fn standing_at(&self, number: TicketId) -> Result<StandingAt, PortError> {
-        let state = self.state();
-        Ok(state.issues.get(&number).map_or(
-            StandingAt {
-                standing: Standing::Missing,
-                closed_at: None,
-            },
-            |issue| StandingAt {
-                standing: issue.standing(),
-                closed_at: issue.closed.then_some(issue.closed_at).flatten(),
-            },
-        ))
+        self.calls.record("standing_at");
+        Ok(self.standing_of(number))
     }
 
     fn ready(&self) -> Result<Vec<Ticket>, PortError> {
+        self.calls.record("ready");
         let ready = self
             .state()
             .issues
@@ -453,6 +506,7 @@ impl Board for FakeBoard {
 
     /// The open issues in the state `blocked`, in number order.
     fn blocked(&self) -> Result<Vec<Ticket>, PortError> {
+        self.calls.record("blocked");
         let blocked = self
             .state()
             .issues
@@ -466,6 +520,7 @@ impl Board for FakeBoard {
     /// The open tasks not in `done`, in number order: every ticket added that is no epic and no
     /// question, whatever its state, each with its `priority/<n>` label and the time it opened.
     fn open_tickets(&self) -> Result<Vec<OpenTicket>, PortError> {
+        self.calls.record("open_tickets");
         let open = self
             .state()
             .issues
@@ -482,6 +537,7 @@ impl Board for FakeBoard {
     }
 
     fn task(&self, number: TicketId) -> Result<Ticket, PortError> {
+        self.calls.record("task");
         self.state()
             .issues
             .get(&number)
@@ -490,6 +546,7 @@ impl Board for FakeBoard {
     }
 
     fn claim(&self, task: TicketId, instance: &Instance) -> Result<ClaimOutcome, PortError> {
+        self.calls.record("claim");
         let mut state = self.state();
         let issue = state.issue_mut(task)?;
         if let Some(claim) = &issue.claim {
@@ -515,6 +572,7 @@ impl Board for FakeBoard {
     }
 
     fn heartbeat(&self, task: TicketId, instance: &Instance) -> Result<(), PortError> {
+        self.calls.record("heartbeat");
         let mut state = self.state();
         let issue = state.issue_mut(task)?;
         let claim = issue
@@ -527,6 +585,7 @@ impl Board for FakeBoard {
     }
 
     fn claims(&self) -> Result<Vec<ClaimRecord>, PortError> {
+        self.calls.record("claims");
         let claims = self
             .state()
             .issues
@@ -537,6 +596,7 @@ impl Board for FakeBoard {
     }
 
     fn release(&self, task: TicketId, instance: &Instance) -> Result<(), PortError> {
+        self.calls.record("release");
         let mut state = self.state();
         let issue = state.issue_mut(task)?;
         if !issue
@@ -561,6 +621,7 @@ impl Board for FakeBoard {
     }
 
     fn set_state(&self, task: TicketId, label: TicketState) -> Result<(), PortError> {
+        self.calls.record("set_state");
         let mut state = self.state();
         let issue = state.issue_mut(task)?;
         issue.ticket.state = Some(label);
@@ -573,12 +634,14 @@ impl Board for FakeBoard {
     }
 
     fn comment(&self, issue: TicketId, body: &str) -> Result<(), PortError> {
+        self.calls.record("comment");
         let mut state = self.state();
         state.issue_mut(issue)?.comments.push(body.to_owned());
         Ok(())
     }
 
     fn report(&self, task: TicketId, instance: &Instance, body: &str) -> Result<(), PortError> {
+        self.calls.record("report");
         let mut state = self.state();
         let issue = state.issue_mut(task)?;
         let existing = issue
@@ -593,6 +656,7 @@ impl Board for FakeBoard {
     }
 
     fn questions(&self) -> Result<Vec<Ticket>, PortError> {
+        self.calls.record("questions");
         let questions = self
             .state()
             .issues
@@ -604,6 +668,7 @@ impl Board for FakeBoard {
     }
 
     fn open_doors(&self) -> Result<Vec<TicketId>, PortError> {
+        self.calls.record("open_doors");
         let mut doors: Vec<TicketId> = self
             .state()
             .issues
@@ -616,6 +681,7 @@ impl Board for FakeBoard {
     }
 
     fn questions_on(&self, task: TicketId) -> Result<Vec<(Ticket, Option<String>)>, PortError> {
+        self.calls.record("questions_on");
         let mut state = self.state();
         state.question_reads += 1;
         if state.question_reads_fail {
@@ -632,6 +698,7 @@ impl Board for FakeBoard {
     }
 
     fn open_question(&self, question: &NewQuestion) -> Result<TicketId, PortError> {
+        self.calls.record("open_question");
         let mut state = self.state();
         state.issue_mut(question.on)?;
         let highest = state
@@ -663,6 +730,7 @@ impl Board for FakeBoard {
         question: TicketId,
         ruling: &str,
     ) -> Result<Option<TicketId>, PortError> {
+        self.calls.record("record_ruling");
         let mut state = self.state();
         let issue = state.issue_mut(question)?;
         match &issue.ruling {

@@ -14,6 +14,8 @@ mod transcript;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+use crate::domain::screen::{self, Line, Meaning, Text};
+
 pub use prices::{PriceTable, Rates};
 pub use transcript::{Attribution, Run, parse_run};
 
@@ -281,25 +283,29 @@ fn median(mut values: Vec<f64>) -> f64 {
 impl Report {
     /// The report as `tools/burn.py` prints it; `no runs` when nothing was read.
     pub fn render_text(&self) -> String {
+        screen::plain(&self.lines())
+    }
+
+    /// The report as lines: each table's header is a heading, the rest plain words.
+    pub fn lines(&self) -> Vec<Line> {
         use std::fmt::Write as _;
+        let plain = |text: String| vec![(Meaning::Plain, Text::from(text))];
+        let heading = |text: String| vec![(Meaning::Bold, Text::from(text))];
         if self.runs == 0 {
-            return "no runs\n".to_owned();
+            return vec![plain("no runs".to_owned())];
         }
-        let mut out = String::new();
-        let mut line = |text: String| {
-            out.push_str(&text);
-            out.push('\n');
-        };
-        line(format!(
-            "runs {}  turns {}  est ${:.0}",
-            self.runs, self.turns, self.est_usd
-        ));
-        line(format!(
-            "{:<18} {:>6} {:>12} {:>12} {:>8} {:>7}",
-            "model", "turns", "cache write", "cache read", "output", "est $"
-        ));
+        let mut lines = vec![
+            plain(format!(
+                "runs {}  turns {}  est ${:.0}",
+                self.runs, self.turns, self.est_usd
+            )),
+            heading(format!(
+                "{:<18} {:>6} {:>12} {:>12} {:>8} {:>7}",
+                "model", "turns", "cache write", "cache read", "output", "est $"
+            )),
+        ];
         for m in &self.models {
-            line(format!(
+            lines.push(plain(format!(
                 "{:<18} {:>6} {:>11.1}M {:>11.1}M {:>7.2}M {:>7.0}",
                 m.model,
                 m.turns,
@@ -307,11 +313,11 @@ impl Report {
                 m.cache_read as f64 / 1e6,
                 m.output as f64 / 1e6,
                 m.est_usd
-            ));
+            )));
         }
         if let Some(g) = &self.growth {
-            line(String::new());
-            line(format!(
+            lines.push(plain(String::new()));
+            lines.push(plain(format!(
                 "subagent runs {}: median {:.0} turns, context {:.0}k at turn 1 -> {:.0}k at the end; fixed part {:.0}% of context reads, growth {:.0}%",
                 g.runs,
                 g.median_turns,
@@ -319,13 +325,13 @@ impl Report {
                 g.median_context_last / 1e3,
                 g.fixed_percent,
                 g.growth_percent
-            ));
+            )));
         }
-        line(String::new());
-        line(format!(
+        lines.push(plain(String::new()));
+        lines.push(heading(format!(
             "{:<10} {:>6} {:>5} {:>6} {:>6} {:>6}  run",
             "model", "est $", "turns", "ctx1", "ctxN", "out"
-        ));
+        )));
         for r in &self.table {
             let model: String = r.model.chars().skip(7).take(10).collect();
             let prompt: String = r.first_prompt.chars().take(70).collect();
@@ -342,9 +348,9 @@ impl Report {
                 r.kind,
                 prompt
             );
-            line(row);
+            lines.push(plain(row));
         }
-        out
+        lines
     }
 
     /// The report as JSON for the spawner.

@@ -20,9 +20,11 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
+use super::paint::{bold, piece, with_commands};
 use crate::app::actions::{ResolveError, Tier, list, parse, resolve_in};
 use crate::app::check::step::FLAGGED_SUFFIX;
 use crate::composition::STATE_DIR;
+use crate::domain::screen::{Line, Meaning};
 use crate::manifest::{CommandLine, Manifest};
 
 /// The slice family: action language, written by the project (§1 principle 9).
@@ -55,17 +57,38 @@ pub struct NeededCheck {
 impl NeededCheck {
     /// `needed <name> (<tier>): ok, needed by <who>`, or the failure and its who, with a line per
     /// problem under it.
-    pub(super) fn lines(&self) -> Vec<String> {
-        let who = self.needed_by.join(", ");
+    /// As pieces: `ok` done, the failure and each problem red.
+    pub(super) fn painted(&self) -> Vec<Line> {
+        let by = bold(format!(", needed by {}", self.needed_by.join(", ")));
         let head = match (&self.tier, self.ok) {
-            (Some(tier), true) => format!("needed {} ({tier}): ok, needed by {who}", self.name),
-            (Some(tier), false) => {
-                format!("needed {} ({tier}): missing, needed by {who}", self.name)
+            (Some(tier), ok) => {
+                let (state, meaning) = if ok {
+                    ("ok", Meaning::Done)
+                } else {
+                    ("missing", Meaning::Failed)
+                };
+                vec![
+                    bold("needed "),
+                    piece(Meaning::Noun, &self.name),
+                    bold(format!(" ({tier}): ")),
+                    piece(meaning, state),
+                    by,
+                ]
             }
-            (None, _) => format!("needed {}: no provider, needed by {who}", self.name),
+            (None, _) => vec![
+                bold("needed "),
+                piece(Meaning::Noun, &self.name),
+                bold(": "),
+                piece(Meaning::Failed, "no provider"),
+                by,
+            ],
         };
         let mut lines = vec![head];
-        lines.extend(self.problems.iter().map(|problem| format!("  {problem}")));
+        lines.extend(
+            self.problems
+                .iter()
+                .map(|problem| with_commands(Meaning::Failed, &format!("  {problem}"))),
+        );
         lines
     }
 }

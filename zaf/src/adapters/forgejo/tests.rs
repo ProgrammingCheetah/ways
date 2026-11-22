@@ -1529,4 +1529,361 @@ fn access_fails_both_when_the_instance_does_not_answer_or_no_token_is_set() {
     );
 }
 
+/// A Forgejo scene with one open epic, #1, whose dependencies are `tasks`.
+fn epic_scene(tasks: &[Value]) -> FakeCurl {
+    let fake = FakeCurl::new();
+    fake.on(
+        &format!("GET {API}/issues?state=open&type=issues&labels=epic*"),
+        200,
+        &json!([issue_with_body(1, &["epic"], "open", "An epic.")]),
+    );
+    fake.on(&format!("GET {API}/issues/1/comments"), 200, &comments(&[]));
+    fake.on(
+        &format!("GET {API}/issues/1/dependencies?*"),
+        200,
+        &Value::Array(tasks.to_vec()),
+    );
+    fake
+}
+
+#[test]
+fn forgejo_epic_task_carries_body_and_url() {
+    let fake = epic_scene(&[
+        issue_with_body(2, &["task", "state/ready"], "open", "Goal: the first"),
+        issue_with_body(3, &["task", "state/done"], "closed", "Goal: the second"),
+    ]);
+    let epics = fake.board().epics().expect("epics read");
+    let tasks = &epics[0].tasks;
+    assert_eq!(tasks.len(), 2);
+    assert_eq!(tasks[0].body, "Goal: the first".into());
+    assert_eq!(tasks[0].url, format!("{URL}/{REPO}/issues/2").into());
+    assert_eq!(tasks[1].body, "Goal: the second".into());
+    assert_eq!(tasks[1].url, format!("{URL}/{REPO}/issues/3").into());
+}
+
+#[test]
+fn forgejo_epic_read_calls_unchanged() {
+    let fake = epic_scene(&[
+        issue(2, &["task", "state/ready"], "open"),
+        issue(3, &["task", "state/done"], "closed"),
+    ]);
+    fake.board().epics().expect("epics read");
+    let asked = fake.asked();
+    // The epic list first, then its comments and its dependencies, which run together and so
+    // come in either order: no call for a task.
+    assert_eq!(asked.len(), 3, "{asked:?}");
+    assert!(asked[0].contains("/issues?state=open&type=issues&labels=epic"));
+    let mut rest: Vec<&str> = asked[1..].iter().map(String::as_str).collect();
+    rest.sort_unstable();
+    assert!(rest[0].contains("/issues/1/comments"), "{asked:?}");
+    assert!(rest[1].contains("/issues/1/dependencies"), "{asked:?}");
+}
+
+#[test]
+fn epics_reads_run_together() {
+    let slow = SlowCurl::new();
+    let board = ForgejoBoard::from(slow.api("epics-together.test"));
+    board.epics().expect("epics read");
+    assert!(slow.peak() > 1, "the reads ran one at a time");
+    assert!(slow.peak() <= 8, "{} at once", slow.peak());
+    assert_eq!(slow.running(), 0, "a read was left running");
+}
+
+#[test]
+fn epics_result_unchanged_with_pool() {
+    let slow = SlowCurl::new();
+    let epics = ForgejoBoard::from(slow.api("epics-unchanged.test"))
+        .epics()
+        .expect("epics read");
+    // The instance listed #13 first; the board's order is by number, each epic with its own task.
+    let read: Vec<(u64, Vec<u64>)> = epics
+        .iter()
+        .map(|epic| {
+            (
+                epic.id.get(),
+                epic.tasks.iter().map(|task| task.number.get()).collect(),
+            )
+        })
+        .collect();
+    let expected: Vec<(u64, Vec<u64>)> = (1..=13).map(|n| (n, vec![n + 100])).collect();
+    assert_eq!(read, expected);
+    assert_eq!(epics[2].title, "epic 3".into());
+    assert_eq!(epics[2].body, "body 3".into());
+    // Every epic's comments and dependencies were each read once, and nothing else.
+    let calls = std::fs::read_to_string(slow.scene.path().join("peaks"))
+        .expect("peaks")
+        .lines()
+        .count();
+    // One page-size read, one epic list, 13 comment lists and 13 dependency lists.
+    assert_eq!(calls, 28);
+}
+
+/// A scene for the slow fake `curl` in `tests/fixtures/forgejo-slow/`, which counts the calls in
+/// flight.
+struct SlowCurl {
+    scene: tempfile::TempDir,
+}
+
+impl SlowCurl {
+    fn new() -> Self {
+        Self {
+            scene: tempfile::tempdir().expect("scene directory"),
+        }
+    }
+
+    /// The directory holding the script as an executable `curl`, written once for the process.
+    fn bin() -> &'static Path {
+        static BIN: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+        BIN.get_or_init(|| {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().expect("bin directory");
+            let curl = dir.path().join("curl");
+            fs::write(
+                &curl,
+                include_str!("../../../tests/fixtures/forgejo-slow/curl"),
+            )
+            .expect("script");
+            fs::set_permissions(&curl, fs::Permissions::from_mode(0o755)).expect("mode");
+            dir
+        })
+        .path()
+    }
+
+    /// A door to `host`; two doors to one host share its bound.
+    fn api(&self, host: &str) -> ForgejoApi {
+        let inherited = std::env::var_os("PATH").unwrap_or_default();
+        let search_path = std::env::join_paths(
+            std::iter::once(Self::bin().to_path_buf()).chain(std::env::split_paths(&inherited)),
+        )
+        .expect("search path");
+        ForgejoApi::new(
+            ForgeUrl::from(format!("http://{host}")),
+            RepoName::from(REPO),
+            EnvVarName::from("FORGEJO_TOKEN"),
+            Some(ForgejoToken::from(TOKEN)),
+        )
+        .env("PATH", search_path)
+        .env("FAKE_CURL_DIR", self.scene.path())
+    }
+
+    /// The most calls that were in flight together.
+    fn peak(&self) -> usize {
+        fs::read_to_string(self.scene.path().join("peaks"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| line.parse().ok())
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// How many calls are in flight now.
+    fn running(&self) -> usize {
+        fs::read_dir(self.scene.path().join("running")).map_or(0, Iterator::count)
+    }
+}
+
+fn urls(prefix: &str, count: usize) -> Vec<String> {
+    (0..count)
+        .map(|number| format!("{prefix}/{number}"))
+        .collect()
+}
+
+#[test]
+fn batch_runs_at_most_eight() {
+    let slow = SlowCurl::new();
+    let found: Vec<Value> = slow
+        .api("batch-eight.test")
+        .get_all(&urls("issues", 20))
+        .expect("a batch");
+    assert_eq!(found.len(), 20);
+    assert!(slow.peak() <= 8, "{} at once", slow.peak());
+    assert!(slow.peak() > 1, "the reads ran one at a time");
+}
+
+#[test]
+fn single_reads_share_the_bound() {
+    let slow = SlowCurl::new();
+    let api = slow.api("single-bound.test");
+    std::thread::scope(|scope| {
+        let reads: Vec<_> = (0..20)
+            .map(|number| {
+                let api = &api;
+                scope.spawn(move || api.get::<Value>(&format!("issues/{number}")))
+            })
+            .collect();
+        for read in reads {
+            read.join().expect("thread").expect("a read");
+        }
+    });
+    assert!(slow.peak() <= 8, "{} at once", slow.peak());
+    assert!(slow.peak() > 1, "the reads ran one at a time");
+}
+
+#[test]
+fn batches_share_the_bound() {
+    let slow = SlowCurl::new();
+    let (one, other) = (slow.api("batch-share.test"), slow.api("batch-share.test"));
+    std::thread::scope(|scope| {
+        let first = scope.spawn(|| one.get_all::<Value, _>(&urls("issues", 20)));
+        let second = scope.spawn(|| other.list_all::<Value, _>(&urls("list", 20)));
+        assert_eq!(first.join().expect("thread").expect("a batch").len(), 20);
+        assert_eq!(second.join().expect("thread").expect("a batch").len(), 20);
+    });
+    assert!(slow.peak() <= 8, "{} at once", slow.peak());
+    assert!(slow.peak() > 1, "the reads ran one at a time");
+}
+
+#[test]
+fn batch_keeps_order() {
+    let slow = SlowCurl::new();
+    let endpoints = urls("issues", 12);
+    let found: Vec<Value> = slow
+        .api("batch-order.test")
+        .get_all(&endpoints)
+        .expect("a batch");
+    for (endpoint, value) in endpoints.iter().zip(&found) {
+        let url = value["url"].as_str().expect("a url");
+        assert!(url.ends_with(endpoint), "{url} for {endpoint}");
+    }
+    let lists: Vec<Vec<Value>> = slow
+        .api("batch-order.test")
+        .list_all(&urls("list", 12))
+        .expect("a batch");
+    for (number, list) in lists.iter().enumerate() {
+        let url = list[0]["url"].as_str().expect("a url");
+        assert!(url.contains(&format!("list/{number}?")), "{url}");
+    }
+}
+
+#[test]
+fn batch_returns_first_error() {
+    let slow = SlowCurl::new();
+    let mut endpoints = urls("issues", 20);
+    endpoints[3] = "fail/3".to_owned();
+    endpoints[9] = "fail/9".to_owned();
+    let read = slow.api("batch-error.test").get_all::<Value, _>(&endpoints);
+    match read {
+        Err(PortError::Backend(message)) => {
+            assert!(message.contains("fail/3"), "{message}");
+            assert!(message.contains("broken"), "{message}");
+        }
+        other => panic!("expected the first read's error, got {other:?}"),
+    }
+    assert_eq!(slow.running(), 0, "a read was left running");
+}
+
+#[test]
+fn batch_returns_error_when_skipped_reads_sit_below_failure() {
+    // A second batch holds the host's places, so this one's threads wait at the gate and the
+    // reads that start after a failure skip; some of those sit below the failed one.
+    let slow = SlowCurl::new();
+    let (holder, asked) = (slow.api("batch-skip.test"), slow.api("batch-skip.test"));
+    let mut endpoints = urls("issues", 32);
+    for endpoint in &mut endpoints[1..] {
+        *endpoint = format!("fail/{endpoint}");
+    }
+    std::thread::scope(|scope| {
+        let holding = scope.spawn(|| holder.get_all::<Value, _>(&urls("issues", 16)));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let read = asked.get_all::<Value, _>(&endpoints);
+        assert!(
+            matches!(&read, Err(PortError::Backend(message)) if message.contains("broken")),
+            "expected the read's error, got {read:?}"
+        );
+        holding.join().expect("thread").expect("a batch");
+    });
+}
+
+#[test]
+fn batch_unread_slot_without_error_is_internal_error() {
+    let slots: Vec<Option<Result<u32, PortError>>> = vec![Some(Ok(1)), None, Some(Ok(3))];
+    match super::api::collect_slots(slots) {
+        Err(PortError::Backend(message)) => assert!(message.contains("internal"), "{message}"),
+        other => panic!("expected an internal error, got {other:?}"),
+    }
+    // A failure after an unread slot is still the error returned.
+    let slots: Vec<Option<Result<u32, PortError>>> = vec![
+        Some(Ok(1)),
+        None,
+        Some(Err(PortError::Backend("broken".into()))),
+    ];
+    assert_eq!(
+        super::api::collect_slots(slots),
+        Err(PortError::Backend("broken".into()))
+    );
+    let slots: Vec<Option<Result<u32, PortError>>> = vec![Some(Ok(1)), Some(Ok(2))];
+    assert_eq!(super::api::collect_slots(slots), Ok(vec![1, 2]));
+}
+
+/// The facts of `count` pull requests, each read on a thread of its own as a gather's reads are
+/// when they run together, in the order of their numbers.
+fn gathered(forge: &ForgejoForge, count: u64) -> Vec<crate::domain::schedule::PullFacts> {
+    std::thread::scope(|scope| {
+        let reads: Vec<_> = (1..=count)
+            .map(|number| {
+                scope.spawn(move || {
+                    crate::app::schedule::gather::read_pull(
+                        forge,
+                        crate::ports::PrNumber::from(number),
+                    )
+                })
+            })
+            .collect();
+        reads
+            .into_iter()
+            .map(|read| read.join().expect("thread").expect("the facts"))
+            .collect()
+    })
+}
+
+#[test]
+fn pull_reads_run_together() {
+    use crate::ports::{Forge, PrNumber};
+    // One pull request's three reviews' line comments are read together.
+    let slow = SlowCurl::new();
+    let forge = ForgejoForge::from(slow.api("pull-one.test"));
+    forge.review_comments(PrNumber::from(1)).expect("comments");
+    assert!(
+        slow.peak() > 1,
+        "one pull request's reads ran one at a time"
+    );
+    assert!(slow.peak() <= 8, "{} at once", slow.peak());
+
+    // Five pull requests' facts in one gather run together under the host's bound.
+    let slow = SlowCurl::new();
+    let forge = ForgejoForge::from(slow.api("pull-five.test"));
+    gathered(&forge, 5);
+    assert!(slow.peak() > 1, "the pull requests were read one at a time");
+    assert!(slow.peak() <= 8, "{} at once", slow.peak());
+    assert_eq!(slow.running(), 0, "a read was left running");
+}
+
+#[test]
+fn pull_facts_unchanged_with_pool() {
+    let slow = SlowCurl::new();
+    let forge = ForgejoForge::from(slow.api("pull-same.test"));
+    let together = gathered(&forge, 5);
+    for (index, facts) in together.iter().enumerate() {
+        let number = u64::try_from(index + 1).expect("a number");
+        let alone =
+            crate::app::schedule::gather::read_pull(&forge, crate::ports::PrNumber::from(number))
+                .expect("the facts");
+        assert_eq!(facts, &alone, "pull request {number}");
+        assert_eq!(facts.head.as_ref().map(|head| head.as_str()), Some("abc"));
+        assert_eq!(facts.changed_files.paths.len(), 1);
+        assert_eq!(facts.checks.len(), 1);
+        // Three reviews and a line comment on each.
+        assert_eq!(facts.reviews.len(), 6);
+        let posted: Vec<_> = facts
+            .reviews
+            .iter()
+            .map(|review| review.posted_at)
+            .collect();
+        assert!(
+            posted.windows(2).all(|pair| pair[0] <= pair[1]),
+            "oldest first"
+        );
+    }
+}
+
 mod forge;

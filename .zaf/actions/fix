@@ -1,11 +1,12 @@
 #!/bin/sh
-# zaf description: phase fix, started by a phase that failed on something a programmer answers (a red check, a must-fix, a merge whose base conflicts, a ruled question): run the programmer on the fix brief, whose `Why this run` says which, then publish the slice again with `slice-pr`
+# zaf description: phase fix, started by a phase that failed on something a programmer answers (a red check, a must-fix, a merge whose base conflicts, a ruled question): CI runs again first, with `ci-rerun`, and when that pushed its empty commit the phase ends there, no programmer started; when `ci-rerun` refuses, run the programmer on the fix brief, whose `Why this run` says which, then publish the slice again with `slice-pr`
 # zaf 1: refused: the argument is not <task>, or a step refused (the slice or the pull request was refused)
-# zaf 2: a backend failed (a verb or a step failed, or the programmer exited non-zero)
+# zaf 2: a backend failed (a verb or a step failed, `ci-rerun` failed, or the programmer exited non-zero)
 # zaf mode: 755
 # zaf target: task
 # zaf kind: model
 # zaf ends: exit
+# changed: runs `ci-rerun` before the brief and the programmer, so a red head gets its one fresh CI run first; exit 0 ends the fix with no programmer, exit 1 goes on as before, any other code ends it with 2; no `ci-rerun` follows the programmer's round
 
 # The task as a bare number; zaf has already read it as one.
 task=${1#\#}
@@ -25,6 +26,19 @@ stop() {
 }
 
 cd "$ZAF_ROOT" || exit 2
+
+# One fresh CI run comes before any programmer, whatever started this fix. 0: `ci-rerun` pushed
+# its empty commit, CI runs again at the new head, and no programmer starts. 1: it refused (no
+# check failed at the head, or this tree has had its fresh run), so the programmer goes on. Any
+# other code, 125 included, is a backend that failed. A ruling waits at most one CI run and stays
+# in the next brief's `Why this run`. After the programmer's round no `ci-rerun` runs: the tree's
+# one fresh run came first.
+zaf do ci-rerun "$task"
+case $? in
+    0) exit 0 ;;
+    1) ;;
+    *) exit 2 ;;
+esac
 
 # The first line `zaf brief` prints is the pack's path, the second its size.
 brief=$(zaf brief "$task" --phase fix) || stop $?

@@ -73,7 +73,7 @@ pub fn run(action: &ServiceAction, path: &str) -> u8 {
     let host = match Host::this() {
         Ok(host) => host,
         Err(error) => {
-            eprintln!("zaf {path}: {error}");
+            crate::eprintln_zaf!("zaf {path}: {error}");
             return BACKEND;
         }
     };

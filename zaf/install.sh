@@ -863,7 +863,7 @@ main() {
   if [ "$DIR_GIVEN" = 1 ]; then
     set_dir "$DIR" || return 1
   else
-    set_dir "$HOME/.local/bin"
+    set_dir "$HOME/.local/bin" || return 1
   fi
   show_intro
   ask_folder
