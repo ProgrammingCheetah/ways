@@ -77,6 +77,8 @@ pub struct EpicRow {
     pub tickets: Vec<TicketRow>,
     /// Its groups, each with the claimed tasks in it.
     pub groups: Vec<GroupRow>,
+    /// One row per model that declared phases on the epic's own number, by role.
+    pub models: Vec<ModelRow>,
 }
 
 /// A `group:<name>` label and the epic's tasks that carry it.

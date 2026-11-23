@@ -1,0 +1,10 @@
+{"type":"user","timestamp":"2026-11-22T10:00:00Z","message":{"role":"user","content":"sign"}}
+{"type":"assistant","timestamp":"2026-11-22T10:00:01Z","message":{"content":[{"type":"tool_use","name":"mcp__zaf__spawn","input":{"args":["start","1008"]}}]}}
+{"type":"assistant","timestamp":"2026-11-22T10:00:02Z","message":{"content":[{"type":"tool_use","name":"mcp__zaf__epic","input":{"args":["wait","1008"]}}]}}
+{"type":"assistant","timestamp":"2026-11-22T10:00:03Z","message":{"content":[{"type":"tool_use","name":"mcp__zaf__status","input":{"args":[]}}]}}
+{"type":"assistant","timestamp":"2026-11-22T10:00:04Z","message":{"content":[{"type":"tool_use","name":"mcp__zaf__board","input":{"args":["ruling","1008","yes"]}}]}}
+{"type":"assistant","timestamp":"2026-11-22T10:00:05Z","message":{"content":[{"type":"tool_use","name":"mcp__zaf__board","input":{"args":["question","1008","why"]}}]}}
+{"type":"assistant","timestamp":"2026-11-22T10:00:06Z","message":{"content":[{"type":"tool_use","name":"mcp__zaf__spawn","input":{"args":["trace","1008"]}}]}}
+{"type":"assistant","timestamp":"2026-11-22T10:00:07Z","message":{"content":[{"type":"tool_use","name":"mcp__zaf__do","input":{"args":["release"]}}]}}
+{"type":"assistant","timestamp":"2026-11-22T10:00:08Z","message":{"content":[{"type":"tool_use","name":"mcp__zaf__do","input":{"args":["ship"]}}]}}
+{"type":"assistant","timestamp":"2026-11-22T10:00:09Z","message":{"content":[{"type":"text","text":"mcp__zaf__spawn phase 1 implement"}]}}

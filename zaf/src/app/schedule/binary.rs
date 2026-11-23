@@ -33,6 +33,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::domain::without_deleted;
+
 /// How long a new binary gets to answer `--version`.
 pub const VERSION_WAIT: Duration = Duration::from_secs(10);
 
@@ -133,18 +135,6 @@ fn start_path(
     }
     let exe = exe.map_err(|error| format!("cannot find the zaf binary: {error}"))?;
     Ok(without_deleted(exe))
-}
-
-/// `path` without the ` (deleted)` the system adds to the path of a running image whose file was
-/// replaced or removed.
-pub fn without_deleted(path: PathBuf) -> PathBuf {
-    match path
-        .to_str()
-        .and_then(|text| text.strip_suffix(" (deleted)"))
-    {
-        Some(path) => PathBuf::from(path),
-        None => path,
-    }
 }
 
 /// The binary this scheduler was started from, and what it has seen of it since.

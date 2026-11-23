@@ -20,6 +20,7 @@ pub mod forge;
 pub mod guard;
 pub mod hub;
 pub mod init;
+pub mod mcp;
 pub mod profile;
 pub mod projects;
 pub mod release;

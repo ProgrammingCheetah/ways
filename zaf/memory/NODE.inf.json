@@ -31,7 +31,7 @@
     },
     {
       "name": "domain/",
-      "role": "principle.md (the design rules), vocabulary.md (the scheduler direction's words, one meaning each) and scheduler.md (the scheduler)",
+      "role": "principle.md (the design rules), vocabulary.md (the scheduler direction's words, one meaning each) scheduler.md (the scheduler) and the-mcp.md (zaf's MCP server and the facts checked of it)",
       "node": false
     },
     {

@@ -19,7 +19,7 @@ fn every_verb_is_listed() {
         [
             "board", "ask", "brief", "check", "changes", "verify", "slice", "spawn", "asklog",
             "status", "report", "guard", "doctor", "setup", "profile", "do", "hub", "progress",
-            "update", "epic", "begin", "forge",
+            "update", "epic", "begin", "forge", "mcp",
         ]
     );
     let forge = command.find_subcommand("forge").expect("forge");
@@ -208,6 +208,40 @@ fn verb_paths_name_the_action() {
     assert_eq!(cli.verb.path(), "board claim");
     let cli = Cli::try_parse_from(["zaf", "asklog"]).expect("parses");
     assert_eq!(cli.verb.path(), "asklog");
+}
+
+#[test]
+fn command_paths_carry_the_words_and_the_two_flags() {
+    let path = |args: &[&str]| {
+        let line = std::iter::once("zaf").chain(args.iter().copied());
+        Cli::try_parse_from(line)
+            .expect("parses")
+            .verb
+            .command_path()
+    };
+    fn words(path: &CommandPath) -> Vec<&str> {
+        path.words.iter().map(String::as_str).collect()
+    }
+
+    assert_eq!(words(&path(&["do", "land"])), ["do", "land"]);
+    assert_eq!(
+        words(&path(&["do", "--tier", "machine", "land", "7"])),
+        ["do", "land"]
+    );
+    assert_eq!(words(&path(&["do"])), ["do"]);
+    assert_eq!(words(&path(&["forge", "merge", "3"])), ["forge", "merge"]);
+    assert_eq!(words(&path(&["board", "claim", "2"])), ["board", "claim"]);
+
+    let bare = path(&["spawn"]);
+    let watching = path(&["spawn", "--watch"]);
+    assert_eq!(words(&bare), ["spawn"]);
+    assert_eq!(words(&watching), ["spawn"]);
+    assert!(!bare.watch && watching.watch && !watching.serves);
+
+    let bare = path(&["hub"]);
+    let serving = path(&["hub", "--port", "0"]);
+    assert_eq!(words(&serving), ["hub"]);
+    assert!(!bare.serves && serving.serves && !serving.watch);
 }
 
 #[test]

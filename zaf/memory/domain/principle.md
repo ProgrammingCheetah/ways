@@ -28,6 +28,7 @@ permalink: zaf/domain/principle
 - [rule] Each level changes only what it owns #ownership
 - [rule] A phase reports facts (exit code, question raised, head) and the lane works out the outcome; a phase never says "done" #report
 - [rule] Signing an epic and ruling a question stay with the Engineer, at the top of the same tree #engineer
+- [rule] Lane verbs (`spawn` but `trace`, `board claim`, `board done`, `slice`) are refused to instances in code, by the MCP's policy table: zaf moves tickets, nobody moves themselves #lane
 - [example] A script that reported "done" after its programmer had only asked a question broke test 2 (2026-11-12) #bug
 - [analogy] React passes props down and bubbles events up; Rust passes ownership down and returns results up #analogy
 

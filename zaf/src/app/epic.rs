@@ -11,6 +11,7 @@
 use std::path::Path;
 use std::time::SystemTime;
 
+use super::release::{self, DueRelease};
 use super::spawn::SpawnError;
 use super::spawn::runs::{self, Run};
 use crate::domain::screen::{Line, Meaning, clean};
@@ -263,6 +264,43 @@ pub fn list(board: &dyn Board) -> Result<Vec<EpicLine>, EpicError> {
     Ok(epics.iter().map(EpicLine::from).collect())
 }
 
+/// `zaf epic list`: the open epics, and after them the releases whose objectives or design are
+/// due.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EpicList {
+    /// Every open epic and where it stands.
+    pub epics: Vec<EpicLine>,
+    /// The releases due, oldest first; none when nothing is due.
+    pub due: Vec<DueRelease>,
+}
+
+impl EpicList {
+    /// The lines printed: each epic's line, then each due release's `release <v>: <phase> due`
+    /// and the way on. With no release due, the epic lines alone.
+    pub fn lines(&self) -> Vec<Line> {
+        let epics = self.epics.iter().map(EpicLine::line);
+        let due = self
+            .due
+            .iter()
+            .flat_map(|due| release::due_lines(&due.version, due.phase.name()));
+        epics.chain(due).collect()
+    }
+}
+
+/// `list_with_due(board, due)`: every open epic, and the releases due as `due` reads them from
+/// those epics (the same read `zaf status` makes).
+pub fn list_with_due(
+    board: &dyn Board,
+    due: impl FnOnce(&[Epic]) -> Vec<DueRelease>,
+) -> Result<EpicList, EpicError> {
+    let epics = board.epics().map_err(EpicError::Board)?;
+    let due = due(&epics);
+    Ok(EpicList {
+        epics: epics.iter().map(EpicLine::from).collect(),
+        due,
+    })
+}
+
 /// What `zaf epic file` did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileOutcome {
@@ -408,6 +446,8 @@ pub fn build_ready(
     };
     Ok(all_signed(&epics, &version).then_some(version))
 }
+
+pub mod wait;
 
 #[cfg(test)]
 mod tests;

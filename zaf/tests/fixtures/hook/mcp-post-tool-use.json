@@ -1,0 +1,29 @@
+{
+  "session_id": "<session-id>",
+  "transcript_path": "<transcript-path>",
+  "cwd": "<cwd>",
+  "prompt_id": "<prompt-id>",
+  "permission_mode": "auto",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "mcp__zaf__check",
+  "tool_input": {
+    "args": [
+      "pr"
+    ]
+  },
+  "tool_response": [
+    {
+      "type": "text",
+      "text": "ok"
+    }
+  ],
+  "tool_use_id": "<tool-use-id>",
+  "duration_ms": 6,
+  "mcp_server": {
+    "name": "zaf",
+    "source": "dynamic"
+  }
+}

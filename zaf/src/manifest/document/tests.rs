@@ -1133,3 +1133,89 @@ fn merge_per_tick_refuses_zero() {
         "{message}"
     );
 }
+
+const HOME_BUG_REPORT: &str = r#"
+[actions.bug-report]
+kind = "forgejo"
+url = "https://forge.example"
+repo = "example/home"
+token_env = "BUG_TOKEN"
+"#;
+
+fn settings_of(manifest: &Manifest, action: &str) -> Vec<(String, String)> {
+    manifest
+        .actions
+        .settings(action)
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .collect()
+}
+
+fn pair(key: &str, value: &str) -> (String, String) {
+    (key.to_owned(), value.to_owned())
+}
+
+#[test]
+fn action_settings_load_from_the_home() {
+    let manifest = load_layers(&[(".zaf.toml", MINIMAL)], Some(HOME_BUG_REPORT)).expect("loads");
+    assert_eq!(
+        settings_of(&manifest, "bug-report"),
+        vec![
+            pair("kind", "forgejo"),
+            pair("repo", "example/home"),
+            pair("token_env", "BUG_TOKEN"),
+            pair("url", "https://forge.example"),
+        ]
+    );
+    assert!(settings_of(&manifest, "other").is_empty());
+}
+
+#[test]
+fn project_overrides_one_action_setting() {
+    let project = with("[actions.bug-report]\nrepo = \"example/project\"\n");
+    let manifest = load_layers(&[(".zaf.toml", &project)], Some(HOME_BUG_REPORT)).expect("loads");
+    assert_eq!(
+        settings_of(&manifest, "bug-report"),
+        vec![
+            pair("kind", "forgejo"),
+            pair("repo", "example/project"),
+            pair("token_env", "BUG_TOKEN"),
+            pair("url", "https://forge.example"),
+        ]
+    );
+}
+
+#[test]
+fn timeout_sits_beside_action_settings() {
+    let text =
+        with("[actions]\ntimeout_minutes = 45\n[actions.bug-report]\nrepo = \"example/b\"\n");
+    let manifest = load(&text).expect("loads");
+    assert_eq!(manifest.actions.timeout_minutes, 45);
+    assert_eq!(
+        settings_of(&manifest, "bug-report"),
+        vec![pair("repo", "example/b")]
+    );
+    let zero = with("[actions]\ntimeout_minutes = 0\n[actions.bug-report]\nrepo = \"example/b\"\n");
+    let message = load(&zero).expect_err("zero").to_string();
+    assert!(
+        message.contains("[actions]") && message.contains("timeout_minutes"),
+        "{message}"
+    );
+}
+
+#[test]
+fn non_string_action_setting_is_refused() {
+    let number = with("[actions.bug-report]\nretries = 3\n");
+    let message = load(&number).expect_err("integer").to_string();
+    assert!(
+        message.contains("[actions.bug-report]")
+            && message.contains("retries")
+            && message.contains("string"),
+        "{message}"
+    );
+    let bare = with("[actions]\nbug-report = \"x\"\n");
+    let message = load(&bare).expect_err("not a table").to_string();
+    assert!(message.contains("bug-report"), "{message}");
+    let bad_name = with("[actions.\"a b\"]\nkey = \"x\"\n");
+    let message = load(&bad_name).expect_err("name").to_string();
+    assert!(message.contains("a b"), "{message}");
+}

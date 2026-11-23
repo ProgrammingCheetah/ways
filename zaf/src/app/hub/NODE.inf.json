@@ -121,6 +121,6 @@
     "Designed in docs/zaf-actions.md §5 and Forgejo epic #1 (the control hub)",
     "The loops that feed the page and the processes that run a tick or a watch live in cli/hub/; this module never names an adapter",
     "The page itself is zaf/web, served from its committed build",
-    "guard/, link/, lock/, next/, service/ and watch/ hold only tests.rs"
+    "guard/, hook/, link/, lock/, next/, service/ and watch/ hold only tests.rs"
   ]
 }

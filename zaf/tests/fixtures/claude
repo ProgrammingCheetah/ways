@@ -3,8 +3,25 @@
 # or runs a real plugin command: a test puts this directory first on PATH.
 #
 # It says it is logged in and does nothing else; `claude plugin …` lists nothing and succeeds.
+#
+# `claude mcp` keeps one `zaf` server per config dir, as a marker file in `CLAUDE_CONFIG_DIR`:
+# `add-json … zaf` writes it, `remove … zaf` deletes it, and `get zaf` shows it as Claude does
+# (a failed get with "No MCP server found with name: zaf" when there is none).
 set -eu
+marker="${CLAUDE_CONFIG_DIR:-/nonexistent}/.stub-mcp-zaf"
 case "$*" in
     "auth status"*) printf '{"loggedIn": true}\n' ;;
+    "mcp get zaf")
+        if [ -f "$marker" ]; then
+            printf 'zaf:\n  Scope: User config (available in all your projects)\n  Status: ✓ Connected\n  Type: stdio\n  Command: zaf\n  Args: mcp\n  Environment:\n\nTo remove this server, run: claude mcp remove "zaf" -s user\n'
+        else
+            printf 'No MCP server found with name: zaf\n'
+            exit 1
+        fi
+        ;;
+    "mcp add-json --scope user zaf "*)
+        if [ -d "${CLAUDE_CONFIG_DIR:-/nonexistent}" ]; then : > "$marker"; fi
+        ;;
+    "mcp remove --scope user zaf") rm -f "$marker" ;;
     *) ;;
 esac

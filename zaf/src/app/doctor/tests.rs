@@ -25,7 +25,57 @@ fn doctor(root: &Path, manifest: &Manifest, commands: &dyn Commands) -> Report {
 
 /// [`doctor`] over profiles nobody generated: no homes, so none is named stale (a profile never
 /// generated is the pack check's and the worksheet's to say).
+///
+/// A home that exists is given the settings `zaf profile init` writes, and its `claude mcp get zaf`
+/// shows zaf's entry, so the profile's MCP row is `ok` unless a test used [`raw`].
 fn doctor_unstamped(root: &Path, manifest: &Manifest, commands: &dyn Commands) -> Report {
+    provide_slice_actions(root);
+    write_good_settings(root, manifest);
+    super::doctor(root, None, manifest, &WithProfileMcp(commands))
+}
+
+/// Gives every generated profile whose home exists the settings `zaf profile init` writes.
+fn write_good_settings(root: &Path, manifest: &Manifest) {
+    for name in profile::generated(manifest) {
+        let home = profile::home(&root.join(STATE_DIR), name);
+        if home.is_dir() {
+            fs::write(home.join("settings.json"), good_settings().to_string()).expect("settings");
+        }
+    }
+}
+
+/// The settings of a profile with every MCP part in place, for a project with no `.mcp.json`.
+fn good_settings() -> serde_json::Value {
+    serde_json::json!({
+        "permissions": {
+            "allow": ["mcp__zaf__*", "Bash(jj *)"],
+            "deny": ["Bash(zaf)", "Bash(zaf *)"],
+        },
+        "disableClaudeAiConnectors": true,
+        "disabledMcpjsonServers": [],
+    })
+}
+
+/// A [`Commands`] that answers a profile's `claude mcp get zaf` with zaf's entry and hands every
+/// other call to `inner`.
+struct WithProfileMcp<'a>(&'a dyn Commands);
+
+impl Commands for WithProfileMcp<'_> {
+    fn run(&self, program: &str, args: &[&str]) -> io::Result<CommandOutput> {
+        if program == "env" && args.ends_with(&["claude", "mcp", "get", "zaf"]) {
+            return Ok(CommandOutput {
+                text: profile::GET_SHOWS_OURS.to_owned(),
+                success: true,
+            });
+        }
+        self.0.run(program, args)
+    }
+}
+
+/// [`super::doctor`] with the profiles stamped and nothing else done for them: no settings, and
+/// the commands as given, so a test sets the profile's MCP row itself.
+fn raw(root: &Path, manifest: &Manifest, commands: &dyn Commands) -> Report {
+    profile::write_stamps(&root.join(STATE_DIR), manifest);
     provide_slice_actions(root);
     super::doctor(root, None, manifest, commands)
 }
@@ -45,6 +95,15 @@ fn provide_slice_actions(root: &Path) {
         .expect("action");
         fs::set_permissions(&file, fs::Permissions::from_mode(0o755)).expect("mode");
     }
+}
+
+/// The calls the profiles' checks made: every call but the Engineer's own `claude mcp get zaf`.
+fn profile_calls(commands: &FakeCommands) -> Vec<Vec<String>> {
+    commands
+        .calls()
+        .into_iter()
+        .filter(|call| call != &["claude", "mcp", "get", "zaf"])
+        .collect()
 }
 
 fn status_of(report: &Report, tool: &str) -> ToolStatus {
@@ -116,7 +175,8 @@ fn doctor_names_a_stale_profile() {
     );
 
     profile::write_stamps(&state, &edited);
-    let report = super::doctor(dir.path(), None, &edited, &logged_in());
+    write_good_settings(dir.path(), &edited);
+    let report = super::doctor(dir.path(), None, &edited, &WithProfileMcp(&logged_in()));
     assert!(report.passed(), "{:?}", report.lines());
 }
 
@@ -407,7 +467,7 @@ fn a_profile_whose_auth_status_succeeds_has_its_login() {
         "{lines:?}"
     );
     assert_eq!(
-        commands.calls(),
+        profile_calls(&commands),
         [lean, build].map(|home| {
             vec![
                 "env".to_owned(),
@@ -451,7 +511,7 @@ fn a_profile_not_generated_yet_is_missing_without_asking() {
     let report = doctor_unstamped(dir.path(), &manifest(""), &commands);
     assert_eq!(report.logins.len(), 2);
     assert!(report.logins.iter().all(|check| !check.ok));
-    assert!(commands.calls().is_empty());
+    assert!(profile_calls(&commands).is_empty());
 }
 
 /// The moment the credentials tests run at, two seconds after the epoch.
@@ -475,11 +535,19 @@ fn a_claude_home(root: &Path) -> PathBuf {
 /// The build profile's doctor line, with `claude auth status` answered by `commands`.
 fn build_line(root: &Path, commands: &FakeCommands, claude_home: Option<&Path>) -> String {
     let now = UNIX_EPOCH + NOW;
-    doctor_with(root, None, &manifest(""), commands, claude_home, now)
-        .lines()
-        .into_iter()
-        .find(|line| line.starts_with("profile build:"))
-        .expect("a build line")
+    write_good_settings(root, &manifest(""));
+    doctor_with(
+        root,
+        None,
+        &manifest(""),
+        &WithProfileMcp(commands),
+        claude_home,
+        now,
+    )
+    .lines()
+    .into_iter()
+    .find(|line| line.starts_with("profile build:"))
+    .expect("a build line")
 }
 
 fn logged_in() -> FakeCommands {
@@ -517,11 +585,12 @@ fn doctor_reports_a_stale_copy() {
 
     provide_slice_actions(dir.path());
     profile::write_stamps(&dir.path().join(STATE_DIR), &manifest(""));
+    write_good_settings(dir.path(), &manifest(""));
     let report = doctor_with(
         dir.path(),
         None,
         &manifest(""),
-        &logged_out(),
+        &WithProfileMcp(&logged_out()),
         None,
         UNIX_EPOCH + NOW,
     );
@@ -772,7 +841,7 @@ fn a_profile_not_generated_yet_has_its_pack_missing_without_asking() {
         )
     );
     assert!(!report.passed(), "a missing pack fails the report");
-    assert!(commands.calls().is_empty());
+    assert!(profile_calls(&commands).is_empty());
 }
 
 #[test]
@@ -783,6 +852,127 @@ fn a_project_without_a_pack_has_no_pack_lines() {
     let report = doctor(dir.path(), &manifest(""), &commands);
     assert!(report.packs.is_empty());
     assert!(report.lines().iter().all(|line| !line.contains("pack")));
+}
+
+/// A project whose lean and build profiles hold zaf's entry and `settings` (when given), checked
+/// with `get` as what their `claude mcp get zaf` prints; the profile rows and the report.
+fn profile_mcp_rows(
+    settings: Option<serde_json::Value>,
+    mcp_json: Option<&str>,
+    get: Option<&str>,
+) -> (Vec<String>, bool) {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let (lean, build) = profile_homes(dir.path());
+    if let Some(text) = mcp_json {
+        put(dir.path(), ".mcp.json", text);
+    }
+    if let Some(settings) = settings {
+        for home in [&lean, &build] {
+            fs::write(home.join("settings.json"), settings.to_string()).expect("settings");
+        }
+    }
+    let commands = match get {
+        Some(text) => FakeCommands::new().with("env", text),
+        None => FakeCommands::new().failing("env", "No MCP server found with name: zaf"),
+    };
+    let report = raw(dir.path(), &manifest(""), &commands);
+    let rows = report
+        .lines()
+        .into_iter()
+        .filter(|line| line.starts_with("profile ") && line.contains(": mcp "))
+        .collect();
+    (rows, report.passed())
+}
+
+#[test]
+fn doctor_profile_mcp_ok() {
+    let (rows, _) = profile_mcp_rows(Some(good_settings()), None, Some(profile::GET_SHOWS_OURS));
+    assert_eq!(rows, ["profile lean: mcp ok", "profile build: mcp ok"]);
+    let dir = tempfile::tempdir().expect("temp dir");
+    profile_homes(dir.path());
+    let report = doctor(dir.path(), &manifest(""), &FakeCommands::new());
+    assert!(report.passed(), "{:?}", report.lines());
+    let json = serde_json::to_value(&report).expect("serializes");
+    assert_eq!(json["profile_mcp"][0]["ok"], true);
+}
+
+#[test]
+fn doctor_profile_mcp_server_missing_fails() {
+    let (rows, passed) = profile_mcp_rows(Some(good_settings()), None, None);
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    for row in &rows {
+        assert!(row.contains("server zaf missing"), "{row}");
+        assert!(row.contains("zaf profile init"), "{row}");
+    }
+    assert!(!passed);
+}
+
+#[test]
+fn doctor_profile_still_allowing_bash_zaf_fails() {
+    let mut settings = good_settings();
+    settings["permissions"]["allow"] = serde_json::json!(["mcp__zaf__*", "Bash(zaf *)"]);
+    let (rows, passed) = profile_mcp_rows(Some(settings), None, Some(profile::GET_SHOWS_OURS));
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    for row in &rows {
+        assert!(row.contains("Bash(zaf *) still allowed"), "{row}");
+        assert!(row.contains("zaf profile init"), "{row}");
+    }
+    assert!(!passed);
+}
+
+#[test]
+fn doctor_profile_with_connectors_on_fails() {
+    let mut settings = good_settings();
+    settings["disableClaudeAiConnectors"] = serde_json::json!(false);
+    let (rows, passed) = profile_mcp_rows(Some(settings), None, Some(profile::GET_SHOWS_OURS));
+    assert!(
+        rows.iter()
+            .all(|row| row.contains("disableClaudeAiConnectors")),
+        "{rows:?}"
+    );
+    assert!(!passed);
+    let mut settings = good_settings();
+    settings
+        .as_object_mut()
+        .expect("object")
+        .remove("disableClaudeAiConnectors");
+    let (rows, passed) = profile_mcp_rows(Some(settings), None, Some(profile::GET_SHOWS_OURS));
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert!(!passed);
+}
+
+#[test]
+fn doctor_profile_missing_mcpjson_name_fails() {
+    let mut settings = good_settings();
+    settings["disabledMcpjsonServers"] = serde_json::json!(["memory"]);
+    let mcp_json = r#"{"mcpServers":{"memory":{},"other":{}}}"#;
+    let (rows, passed) = profile_mcp_rows(
+        Some(settings),
+        Some(mcp_json),
+        Some(profile::GET_SHOWS_OURS),
+    );
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    for row in &rows {
+        assert!(row.contains("disabledMcpjsonServers lacks other"), "{row}");
+        assert!(!row.contains("lacks memory"), "{row}");
+    }
+    assert!(!passed);
+}
+
+#[test]
+fn a_profile_without_settings_or_not_generated_is_named_or_left_out() {
+    // A home with no settings file fails; a home not made gets no row and asks nothing.
+    let (rows, passed) = profile_mcp_rows(None, None, Some(profile::GET_SHOWS_OURS));
+    assert!(
+        rows.iter().all(|row| row.contains("settings.json")),
+        "{rows:?}"
+    );
+    assert!(!passed);
+    let dir = tempfile::tempdir().expect("temp dir");
+    let commands = FakeCommands::new();
+    let report = doctor_unstamped(dir.path(), &manifest(""), &commands);
+    assert!(report.profile_mcp.is_empty());
+    assert!(profile_calls(&commands).is_empty());
 }
 
 /// Writes `text` to `<root>/<name>`, making its folder.
@@ -833,6 +1023,83 @@ fn doctor_warns_about_an_unread_toml() {
         .collect();
     assert_eq!(warnings, ["unread: .zaf/extra.toml"]);
     assert!(report.passed(), "a warning does not fail the report");
+}
+
+/// The override notes of a report, as lines.
+fn override_notes(report: &Report) -> Vec<String> {
+    report
+        .lines()
+        .into_iter()
+        .filter(|line| line.starts_with("role override "))
+        .collect()
+}
+
+#[test]
+fn bash_zaf_lines_fire_on_a_code_span_and_the_word_bash() {
+    let text = "# Role\n\nrun `zaf check pr` in Bash\nand `zaf board ready`, then stop";
+    assert_eq!(bash_zaf_lines(text), [3]);
+}
+
+#[test]
+fn bash_zaf_lines_stay_quiet_on_a_line_naming_the_tool() {
+    let text = "call the tool `check` (`mcp__zaf__check`), not `zaf check` in Bash";
+    assert!(bash_zaf_lines(text).is_empty());
+}
+
+#[test]
+fn bash_zaf_lines_stay_quiet_on_never() {
+    for text in [
+        "Never type `zaf` in Bash; it is denied.",
+        "never run `zaf check` in Bash",
+        "NEVER run `zaf check` in Bash",
+    ] {
+        assert!(bash_zaf_lines(text).is_empty(), "{text}");
+    }
+}
+
+#[test]
+fn doctor_notes_a_role_override_typing_zaf_in_bash() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    put(
+        dir.path(),
+        ".zaf/roles/programmer.md",
+        "# Programmer\n\nWhen done, run `zaf check pr` in Bash.\n",
+    );
+    put(dir.path(), ".zaf/roles/planning.md", "Plan well.\n");
+    let report = doctor(dir.path(), &manifest(""), &FakeCommands::new());
+    assert_eq!(
+        override_notes(&report),
+        [
+            "role override .zaf/roles/programmer.md:3 tells a model to type zaf in Bash; \
+             instances call zaf's MCP tools (mcp__zaf__<verb>)"
+        ]
+    );
+    assert_eq!(report.role_overrides.len(), 1);
+    assert_eq!(report.role_overrides[0].line, 3);
+    assert!(report.passed(), "a note does not fail the report");
+}
+
+#[test]
+fn doctor_quiet_on_an_override_naming_the_tool() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    put(
+        dir.path(),
+        ".zaf/roles/programmer.md",
+        "Call the tool `check` (`mcp__zaf__check`).\nNever type `zaf` in Bash; it is denied.\n",
+    );
+    let report = doctor(dir.path(), &manifest(""), &FakeCommands::new());
+    assert!(override_notes(&report).is_empty(), "{:?}", report.lines());
+    assert!(report.role_overrides.is_empty());
+}
+
+#[test]
+fn doctor_quiet_without_role_overrides() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let report = doctor(dir.path(), &manifest(""), &FakeCommands::new());
+    assert!(override_notes(&report).is_empty());
+    fs::create_dir_all(dir.path().join(".zaf/roles")).expect("roles");
+    let report = doctor(dir.path(), &manifest(""), &FakeCommands::new());
+    assert!(override_notes(&report).is_empty(), "an empty folder too");
 }
 
 /// A board whose backend answers the checks it was given.
@@ -1123,6 +1390,78 @@ fn hub_not_installed() {
             .iter()
             .any(|line| line.contains("zaf hub service install"))
     );
+}
+
+/// What `claude mcp get zaf` prints when another entry holds the name.
+const GET_SHOWS_OTHER: &str = "zaf:\n  Scope: User config (available in all your projects)\n  Status: \u{2713} Connected\n  Type: stdio\n  Command: /opt/other/zaf\n  Args: serve\n  Environment:\n\nTo remove this server, run: claude mcp remove \"zaf\" -s user\n";
+
+fn mcp_lines(commands: &FakeCommands) -> (Vec<String>, bool) {
+    let dir = tempfile::tempdir().expect("project");
+    let with_claude = doctor(dir.path(), &manifest(""), commands);
+    let without = doctor(dir.path(), &manifest(""), &FakeCommands::new());
+    let lines = with_claude
+        .lines()
+        .into_iter()
+        .filter(|line| line.starts_with("mcp:"))
+        .collect();
+    assert_eq!(
+        with_claude.passed(),
+        without.passed(),
+        "the mcp row never moves the exit"
+    );
+    (lines, with_claude.passed())
+}
+
+#[test]
+fn doctor_mcp_row_ok_at_user_scope() {
+    let commands = FakeCommands::new().with("claude", profile::GET_SHOWS_OURS);
+    let (lines, _) = mcp_lines(&commands);
+    assert_eq!(lines, ["mcp: ok (user scope)"]);
+    assert!(commands.calls().contains(&vec![
+        "claude".into(),
+        "mcp".into(),
+        "get".into(),
+        "zaf".into()
+    ]));
+}
+
+#[test]
+fn doctor_mcp_row_missing_names_the_fix() {
+    // A failed `get` is how Claude says it knows no such server.
+    let failing = FakeCommands::new().failing("claude", "No MCP server found with name: zaf");
+    // No `claude` at all gives the same row, not a doctor error.
+    for commands in [failing, FakeCommands::new()] {
+        let (lines, passed) = mcp_lines(&commands);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].starts_with("mcp: missing"), "{lines:?}");
+        assert!(lines[0].contains("zaf setup"), "{lines:?}");
+        assert!(lines[0].contains(&profile::mcp_add_line(None)), "{lines:?}");
+        assert!(passed, "the report still passes");
+    }
+}
+
+#[test]
+fn doctor_mcp_row_different_entry() {
+    let commands = FakeCommands::new().with("claude", GET_SHOWS_OTHER);
+    let (lines, passed) = mcp_lines(&commands);
+    assert_eq!(
+        lines,
+        ["mcp: a different zaf entry (fix: zaf setup asks to replace it)"]
+    );
+    assert!(passed, "the report still passes");
+}
+
+#[test]
+fn doctor_mcp_row_never_fails_the_report() {
+    for check in [McpCheck::Ok, McpCheck::Missing, McpCheck::Different] {
+        let dir = tempfile::tempdir().expect("project");
+        let mut report = doctor(dir.path(), &manifest(""), &FakeCommands::new());
+        report.mcp = McpCheck::Ok;
+        let before = report.passed();
+        report.mcp = check;
+        assert_eq!(report.passed(), before, "{check:?}");
+        assert!(report.lines().contains(&check.line()), "{check:?}");
+    }
 }
 
 /// A report whose design dir (ok) runs before its design index (missing).

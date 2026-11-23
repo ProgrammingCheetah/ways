@@ -1,0 +1,4 @@
+{"type":"assistant","timestamp":"2026-11-22T10:00:01Z","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"assistant","timestamp":"2026-11-22T10:00:02Z","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cd /x && ZAF_INSTANCE=y zaf status"}}]}}
+{"type":"assistant","timestamp":"2026-11-22T10:00:03Z","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"echo \"$(/opt/bin/zaf doctor)\"; true"}}]}}
+{"type":"assistant","timestamp":"2026-11-22T10:00:04Z","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"env FOO=1 zaf do x\nls | zaf board ready"}}]}}

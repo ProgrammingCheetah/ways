@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use common::{Project, outcome, write};
 use zaf::app::profile;
 use zaf::manifest::{CommandLine, Manifest};
-use zaf::ports::{GateRun, PortError, Shell};
+use zaf::ports::{GateRun, GateVerdict, PortError, Shell};
 
 const HEAD: &str = r#"[project]
 name = "example"
@@ -273,11 +273,18 @@ fn gate_line_calling_itself_stops() {
     );
 }
 
-/// A shell profile generation must never use: with no `[pack]` it runs no command.
+/// A shell profile generation uses for nothing but zaf's MCP: with no `[pack]` it runs no other
+/// command. Every profile already shows zaf's entry, so `get` is the one line it sees.
 struct NoShell;
 
 impl Shell for NoShell {
     fn run(&self, line: &CommandLine) -> Result<GateRun, PortError> {
+        if line.as_ref().contains(" claude mcp get ") {
+            return Ok(GateRun {
+                verdict: GateVerdict::Passed,
+                output: "zaf:\n  Scope: User config (available in all your projects)\n  Type: stdio\n  Command: zaf\n  Args: mcp\n".to_owned(),
+            });
+        }
         panic!("profile generation ran a command: {line}");
     }
 }
@@ -322,14 +329,14 @@ fn gate_line_is_allowed_for_a_programmer() {
     };
     let (allow, deny) = (rules("allow"), rules("deny"));
     assert!(!deny.is_empty(), "the forbidden merge paths are denied");
+    // A programmer runs zaf through its MCP tools: Bash `zaf` is denied, which beats the gate
+    // lines' own allow rules, and `Bash(zaf *)` is not an allow.
+    assert!(allow.iter().any(|rule| rule == "mcp__zaf__*"), "{allow:?}");
+    assert!(!allow.iter().any(|rule| rule == "Bash(zaf *)"), "{allow:?}");
     for command in ["zaf do gate-light", "zaf do test alpha_test"] {
         assert!(
-            allow.iter().any(|rule| matches(rule, command)),
-            "a programmer may run `{command}`: {allow:?}"
-        );
-        assert!(
-            !deny.iter().any(|rule| matches(rule, command)),
-            "nothing forbidden covers `{command}`: {deny:?}"
+            deny.iter().any(|rule| matches(rule, command)),
+            "Bash `zaf` is denied for `{command}`: {deny:?}"
         );
     }
     assert!(

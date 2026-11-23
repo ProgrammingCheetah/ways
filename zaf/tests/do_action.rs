@@ -889,7 +889,121 @@ fn request<'a>(
         run: None,
         phase: None,
         vcs: None,
+        settings: BTreeMap::new(),
     }
+}
+
+/// A project whose manifest holds `[actions.probe]` with `repo` and `token-env`.
+fn project_with_settings() -> Project {
+    let project = Project::new(&format!(
+        "{MANIFEST}\n[actions.probe]\nrepo = \"example/bugs\"\ntoken-env = \"BUG_TOKEN\"\n"
+    ));
+    set_up(&project);
+    project
+}
+
+/// The `ZAF_SETTING_*` lines of `env` output.
+fn setting_lines(text: &str) -> BTreeMap<String, String> {
+    let mut env = env_lines(text);
+    env.retain(|key, _| key.starts_with("ZAF_SETTING_"));
+    env
+}
+
+#[test]
+fn action_settings_reach_their_own_run() {
+    let project = project_with_settings();
+    action(&project, "probe", "", "env > \"$ZAF_ROOT/probe.env\"");
+
+    // A setting the caller holds for the same name does not stand in for the table's.
+    let run = zaf_in(
+        &project,
+        &project.root,
+        &["do", "probe"],
+        &[("ZAF_SETTING_REPO", "from the caller")],
+    );
+    assert_eq!(outcome(&run).0, 0, "{}", said(&run));
+    let settings = setting_lines(&read(&project.root.join("probe.env")));
+    assert_eq!(
+        settings,
+        BTreeMap::from([
+            ("ZAF_SETTING_REPO".to_owned(), "example/bugs".to_owned()),
+            ("ZAF_SETTING_TOKEN_ENV".to_owned(), "BUG_TOKEN".to_owned()),
+        ])
+    );
+}
+
+#[test]
+fn action_settings_stay_out_of_other_runs() {
+    let project = project_with_settings();
+    action(&project, "other", "", "env > \"$ZAF_ROOT/other.env\"");
+
+    let run = zaf(&project, &["do", "other"]);
+    assert_eq!(outcome(&run).0, 0, "{}", said(&run));
+    assert_eq!(
+        setting_lines(&read(&project.root.join("other.env"))),
+        BTreeMap::new()
+    );
+}
+
+#[test]
+fn nested_run_drops_the_parents_settings() {
+    let project = project_with_settings();
+    action(&project, "child", "", "env > \"$ZAF_ROOT/child.env\"");
+    action(&project, "probe", "", "zaf do child");
+
+    let run = zaf(&project, &["do", "probe"]);
+    assert_eq!(outcome(&run).0, 0, "{}", said(&run));
+    assert_eq!(
+        setting_lines(&read(&project.root.join("child.env"))),
+        BTreeMap::new()
+    );
+}
+
+#[test]
+fn nested_run_gets_its_own_settings_and_not_the_parents() {
+    let project = Project::new(&format!(
+        "{MANIFEST}\n[actions.probe]\nrepo = \"parent\"\nonly-parent = \"x\"\n\n[actions.child]\nrepo = \"child\"\n"
+    ));
+    set_up(&project);
+    action(&project, "child", "", "env > \"$ZAF_ROOT/child.env\"");
+    action(&project, "probe", "", "zaf do child");
+
+    let run = zaf(&project, &["do", "probe"]);
+    assert_eq!(outcome(&run).0, 0, "{}", said(&run));
+    assert_eq!(
+        setting_lines(&read(&project.root.join("child.env"))),
+        BTreeMap::from([("ZAF_SETTING_REPO".to_owned(), "child".to_owned())])
+    );
+}
+
+#[test]
+fn a_run_outside_a_project_gets_the_homes_settings() {
+    let project = project();
+    let outside = project.temp.path().join("elsewhere");
+    fs::create_dir_all(&outside).expect("outside");
+    write(
+        &project.home,
+        "config.toml",
+        "[actions.probe]\nrepo = \"example/home\"\ntoken-env = \"HOME_TOKEN\"\n",
+    );
+    machine_action(&project, "probe", "env > \"$ZAF_HOME/probe.env\"");
+    machine_action(&project, "other", "env > \"$ZAF_HOME/other.env\"");
+
+    let run = zaf_in(&project, &outside, &["do", "probe"], &[]);
+    assert_eq!(outcome(&run).0, 0, "{}", said(&run));
+    assert_eq!(
+        setting_lines(&read(&project.home.join("probe.env"))),
+        BTreeMap::from([
+            ("ZAF_SETTING_REPO".to_owned(), "example/home".to_owned()),
+            ("ZAF_SETTING_TOKEN_ENV".to_owned(), "HOME_TOKEN".to_owned()),
+        ])
+    );
+    let run = zaf_in(&project, &outside, &["do", "other"], &[]);
+    assert_eq!(outcome(&run).0, 0, "{}", said(&run));
+    assert_eq!(
+        setting_lines(&read(&project.home.join("other.env"))),
+        BTreeMap::new()
+    );
 }
 
 #[test]
@@ -2662,6 +2776,35 @@ fn tier_machine_obeys_the_mode() {
     assert!(take_machine_mark(&project, "team-only"));
     assert!(!project.root.join("hand-only.ran").exists());
     assert!(!project.root.join("team-only.ran").exists());
+}
+
+#[test]
+fn instances_see_machine_bug_report() {
+    let project = project();
+    let pack = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/teams/actions");
+    let machine = project.home.join("actions");
+    fs::create_dir_all(&machine).expect("machine tier");
+    for name in ["bug-report", "bug-report-query"] {
+        fs::copy(pack.join(name), machine.join(name)).expect("the pack's action");
+    }
+
+    for instance in [PROGRAMMER, TEAM, RELEASE] {
+        let names = listed_for(&project, Some(instance));
+        for name in ["bug-report", "bug-report-query"] {
+            assert!(names.contains(&name.to_owned()), "{instance}: {names:?}");
+        }
+        let run = zaf_as(&project, &["do", "--json"], Some(instance));
+        let (code, stdout, stderr) = outcome(&run);
+        assert_eq!(code, 0, "{stdout}{stderr}");
+        let rows: Vec<serde_json::Value> = serde_json::from_str(&stdout).expect("json");
+        for name in ["bug-report", "bug-report-query"] {
+            let row = rows
+                .iter()
+                .find(|row| row["name"] == name)
+                .unwrap_or_else(|| panic!("{name} in {stdout}"));
+            assert_eq!(row["tier"], "machine", "{instance}: {name}");
+        }
+    }
 }
 
 /// Task 2 of epic 1, as `gh issue view` prints it.

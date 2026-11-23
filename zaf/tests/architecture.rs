@@ -320,6 +320,31 @@ fn the_yaml_reader_is_named_only_in_the_ci_filter_adapter() {
     );
 }
 
+/// The protocol and async crates: only the server's adapter may name them, never the domain or
+/// the app layer.
+const SERVER_CRATES: [&str; 2] = ["rmcp", "tokio"];
+
+#[test]
+fn domain_and_app_name_no_rmcp_or_tokio() {
+    let mut breaks = Vec::new();
+    for (path, text) in source_files() {
+        if !(within(&path, "domain") || within(&path, "app")) {
+            continue;
+        }
+        let code = code_of(&text);
+        for name in SERVER_CRATES {
+            if names_crate(&code, name) {
+                breaks.push(format!("src/{path} names {name}"));
+            }
+        }
+    }
+    assert!(
+        breaks.is_empty(),
+        "rmcp or tokio in the domain or the app layer:\n{}",
+        breaks.join("\n")
+    );
+}
+
 #[test]
 fn the_glob_matcher_is_named_only_in_the_ci_rule() {
     let breaks = naming_outside("globset", "domain/ci");

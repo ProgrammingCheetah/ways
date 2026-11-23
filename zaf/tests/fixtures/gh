@@ -5,14 +5,31 @@
 #   rules        one rule per line: <glob over the joined argv> TAB <exit code> TAB <response file>
 #   <response>   what the first matching rule prints: to stdout on exit 0, to stderr otherwise
 #   calls/       where every call's argv is recorded, one file per call, arguments NUL-separated
+#   env/         the same call numbers: the token variables the call saw, NAME=value or NAME unset
+#   stdin/       the same call numbers: what the call read on stdin, kept only when $FAKE_GH_STDIN is set
 set -eu
 scene=${FAKE_GH_DIR:?FAKE_GH_DIR is not set}
 mkdir -p "$scene/calls"
 # Calls may run together: a lock makes each call's number its own.
 until mkdir "$scene/calls.lock" 2>/dev/null; do sleep 0.01; done
 count=$(ls "$scene/calls" | wc -l)
-printf '%s\0' "$@" > "$scene/calls/$(printf '%05d' "$count")"
+number=$(printf '%05d' "$count")
+printf '%s\0' "$@" > "$scene/calls/$number"
 rmdir "$scene/calls.lock"
+# The token variables this call saw, and its stdin when the test asks for it.
+mkdir -p "$scene/env"
+for name in GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN GH_HOST; do
+    value=$(printenv "$name" || true)
+    if [ -n "$value" ]; then
+        printf '%s=%s\n' "$name" "$value"
+    else
+        printf '%s unset\n' "$name"
+    fi
+done > "$scene/env/$number"
+if [ -n "${FAKE_GH_STDIN:-}" ]; then
+    mkdir -p "$scene/stdin"
+    cat > "$scene/stdin/$number"
+fi
 joined="$*"
 tab=$(printf '\t')
 while IFS="$tab" read -r pattern status response; do

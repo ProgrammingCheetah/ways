@@ -107,6 +107,30 @@ impl Project {
         self.zaf_in(&self.root, args)
     }
 
+    /// Runs the built `zaf` with a terminal (a pty the test opens) on its stdin, and its stdout
+    /// and stderr captured.
+    pub fn zaf_with_terminal_stdin(&self, args: &[&str]) -> Output {
+        use std::os::fd::{FromRawFd, OwnedFd};
+        let (mut master, mut slave) = (-1, -1);
+        // SAFETY: both out-pointers are valid ints; the rest may be null.
+        let opened = unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(opened, 0, "openpty");
+        // SAFETY: openpty gave two fresh descriptors nothing else owns.
+        let (_master, slave) =
+            unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+        let mut command = self.command_in(&self.root, args);
+        command.stdin(Stdio::from(slave));
+        command.output().expect("run zaf")
+    }
+
     /// Runs the built `zaf` in `dir`.
     pub fn zaf_in(&self, dir: &Path, args: &[&str]) -> Output {
         self.command_in(dir, args).output().expect("run zaf")
@@ -134,7 +158,9 @@ impl Project {
             .env("FAKE_GH_DIR", &self.scene)
             .env("ZAF_HOME", &self.home)
             .env_remove("ZAF_INSTANCE")
-            .env_remove("ZAF_VERSION");
+            .env_remove("ZAF_VERSION")
+            // A suite run inside Claude Code is not a run of the Engineer's own.
+            .env_remove("CLAUDECODE");
         // A suite run inside an action (the gate is one) must not hand its caller's
         // action state to the runs it makes, nor its phase run, which records the questions
         // asked inside it.

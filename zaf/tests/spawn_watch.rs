@@ -594,7 +594,7 @@ fn signing_that_cannot_ask_for_a_tick_still_signs_and_says_so() {
     let _scheduler = scheduler_up(&project);
     fs::create_dir_all(project.root.join(".zaf/tick.request")).expect("in the way");
 
-    let (code, stdout, stderr) = outcome(&project.zaf(&["epic", "sign", "1"]));
+    let (code, stdout, stderr) = outcome(&project.zaf_with_terminal_stdin(&["epic", "sign", "1"]));
 
     assert_eq!(code, 0, "{stdout}{stderr}");
     assert!(stdout.starts_with("signed #1 sha256:"), "{stdout}");

@@ -55,6 +55,29 @@ impl<R: BufRead, W: Write> ReplaceAction for TerminalAsker<R, W> {
         }
         shown.is_ok() && read.is_ok() && answer.trim() == "y"
     }
+
+    /// A fresh registration asks `<plan>? [Y/n]` and an empty line says yes; a replacement shows
+    /// what was found and asks `<plan>? [y/N]`, where only `y` says yes. Closed input, an
+    /// unreadable line or any other answer says no.
+    fn register_mcp(&mut self, name: &str, difference: &str) -> bool {
+        let fresh = difference.is_empty();
+        let separator = if difference.is_empty() || difference.ends_with('\n') {
+            ""
+        } else {
+            "\n"
+        };
+        let choice = if fresh { "[Y/n]" } else { "[y/N]" };
+        let shown = write!(self.output, "{difference}{separator}{name}? {choice} ")
+            .and_then(|()| self.output.flush());
+        let mut answer = String::new();
+        let read = self.input.read_line(&mut answer);
+        if !answer.ends_with('\n') {
+            let _ = writeln!(self.output);
+        }
+        let said = answer.trim();
+        let yes = said == "y" || (fresh && said.is_empty() && answer.ends_with('\n'));
+        shown.is_ok() && read.is_ok() && yes
+    }
 }
 
 /// The asker setup is given: one on this terminal's stdin and stdout, only when the run is the
@@ -370,12 +393,21 @@ pub fn run(cli: &Cli) -> u8 {
     let check = (!ready).then(|| StepEnd::Failed(fixes_text(fixes.len()).as_str().into()));
     end_row(&mut steps, &rows, "Check", check);
     drop(steps);
+    // What is left of the Engineer's own Claude comes last when setup is ready, so the command to
+    // run later is the last thing on the screen; a run with fixes ends with the fixes alone.
+    let mcp = report.mcp.lines();
     if ready {
         let vcs = composition.vcs().ok();
         let version = next_version(composition.root(), composition.manifest(), vcs.as_deref());
         print!("{}", draw_next(&screen, &version.to_string()));
+        for line in mcp {
+            println!("{line}");
+        }
         OK
     } else {
+        for line in mcp {
+            println!("{line}");
+        }
         print!("{}", draw_fixes(&screen, &fixes));
         REFUSED
     }
@@ -394,6 +426,9 @@ fn print_report(report: &SetupReport) {
         }
     }
     for line in report.actions.lines() {
+        println!("{line}");
+    }
+    for line in report.mcp.lines() {
         println!("{line}");
     }
     for line in report.doctor.lines() {
@@ -561,6 +596,44 @@ mod tests {
         for other in ["n\n", "N\n", "Y\n", "yes\n", "ok\n", "yn\n"] {
             assert!(!ask(other, DIFF).0, "{other:?} must keep");
         }
+    }
+
+    /// What the asker returned and wrote for a registration question.
+    fn register(input: &str, difference: &str) -> (bool, String) {
+        let mut written = Vec::new();
+        let answer = TerminalAsker {
+            input: input.as_bytes(),
+            output: &mut written,
+        }
+        .register_mcp("register zaf's MCP in your Claude (user scope)", difference);
+        (answer, String::from_utf8(written).expect("text"))
+    }
+
+    #[test]
+    fn a_fresh_registration_says_yes_on_enter_and_y() {
+        for yes in ["\n", "y\n", "y"] {
+            assert!(register(yes, "").0, "{yes:?}");
+        }
+        for no in ["n\n", "N\n", "no\n", "x\n", ""] {
+            assert!(!register(no, "").0, "{no:?}");
+        }
+        assert_eq!(
+            register("\n", "").1,
+            "register zaf's MCP in your Claude (user scope)? [Y/n] "
+        );
+    }
+
+    #[test]
+    fn a_replacement_says_yes_only_on_y() {
+        assert!(register("y\n", "found:\nx\n").0);
+        for no in ["\n", "n\n", "yes\n", ""] {
+            assert!(!register(no, "found:\nx\n").0, "{no:?}");
+        }
+        assert!(
+            register("n\n", "found:\nx\n")
+                .1
+                .starts_with("found:\nx\nregister zaf's MCP in your Claude (user scope)? [y/N] ")
+        );
     }
 
     #[test]

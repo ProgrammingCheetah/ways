@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use super::{EpicRow, GroupRow, Snapshot, TicketRow};
+use super::{EpicRow, GroupRow, ModelRow, Snapshot, TicketRow};
 use crate::app::actions::Phase;
 
 /// The columns the label before a bar takes, so the bars line up.
@@ -51,6 +51,7 @@ fn epic_lines(epic: &EpicRow, width: usize, lines: &mut Vec<String>) {
         &tail,
         width,
     ));
+    model_lines(&epic.models, "  ", width, lines);
     // Every ticket label of the epic is as wide as the longest, so the bars line up.
     let tickets = || {
         epic.tickets
@@ -71,7 +72,7 @@ fn epic_lines(epic: &EpicRow, width: usize, lines: &mut Vec<String>) {
     ));
     for ticket in &epic.tickets {
         lines.push(ticket_line(ticket, columns, width));
-        model_lines(ticket, width, lines);
+        model_lines(&ticket.models, "    ", width, lines);
     }
     for group in &epic.groups {
         group_lines(group, columns, width, lines);
@@ -89,7 +90,7 @@ fn group_lines(group: &GroupRow, columns: usize, width: usize, lines: &mut Vec<S
     ));
     for ticket in &group.tickets {
         lines.push(ticket_line(ticket, columns, width));
-        model_lines(ticket, width, lines);
+        model_lines(&ticket.models, "    ", width, lines);
     }
 }
 
@@ -146,10 +147,11 @@ fn fit(text: &str, room: usize) -> String {
     format!("{}…", kept.trim_end())
 }
 
-/// The rows under a ticket, one per model that declared phases: its role, a bar over the phases
-/// it declared and the phase it is in, `write ×2` from the second time it enters it.
-fn model_lines(ticket: &TicketRow, width: usize, lines: &mut Vec<String>) {
-    for model in &ticket.models {
+/// The rows under a ticket or an epic, one per model that declared phases on it, each led by
+/// `indent`: its role, a bar over the phases it declared and the phase it is in, `write ×2` from
+/// the second time it enters it.
+fn model_lines(models: &[ModelRow], indent: &str, width: usize, lines: &mut Vec<String>) {
+    for model in models {
         let step = model
             .current
             .as_ref()
@@ -161,7 +163,7 @@ fn model_lines(ticket: &TicketRow, width: usize, lines: &mut Vec<String>) {
             (Some(current), times) => format!("{current} ×{times}"),
         };
         lines.push(row(
-            &format!("    {}", model.role),
+            &format!("{indent}{}", model.role),
             LABEL_COLUMNS,
             (
                 u32::try_from(step).unwrap_or(0),

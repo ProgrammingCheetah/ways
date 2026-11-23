@@ -427,6 +427,8 @@ fn jj_profile_unchanged_by_git_rules() {
             "Bash(jj util)",
             "Bash(jj workspace add *)",
             "Bash(jj workspace add)",
+            "Bash(zaf *)",
+            "Bash(zaf)",
         ]
     );
 }

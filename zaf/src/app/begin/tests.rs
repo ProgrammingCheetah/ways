@@ -246,6 +246,7 @@ fn run_due(root: &Path, folder: &ReleaseFolder, phase: Phase) -> PhaseRun {
                 run: None,
                 phase: None,
                 vcs: None,
+                settings: std::collections::BTreeMap::new(),
             }
             .with_phase(env),
         )

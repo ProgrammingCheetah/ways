@@ -81,7 +81,7 @@
     "The gate commands live in the repo-root .zaf.toml [gate] (full, light, tests), each `cd zaf && cargo ...`",
     "The design spec is docs/zuri-ai-framework.md (§7.4 for the ports-and-adapters layout); the crate has no README of its own",
     "web/dist is committed and compiled in by src/app/hub/dashboard/assets.rs, so cargo needs no Node; Node is only for changing the page",
-    "Dependencies are only clap, serde, toml, serde_json, thiserror, derive_more, strum, semver, humantime, libc, rusqlite (the ledger) and sha2; every backend is reached by shelling out",
+    "Dependencies are only clap, serde, toml, serde_json, thiserror, derive_more, strum, semver, humantime, libc, rusqlite (the ledger), sha2, and rmcp with tokio (only the MCP server, adapters/mcp_rmcp.rs and the runtime of `zaf mcp`); every backend is reached by shelling out",
     "What is built is in docs/zaf-actions.md; where zaf is going is in zuri.domain.md and memory/"
   ]
 }

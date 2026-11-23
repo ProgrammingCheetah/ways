@@ -36,9 +36,10 @@ use super::profile::{self, ProfileError};
 use crate::composition::STATE_DIR;
 use crate::domain::screen::{Fix, PlanRow, Text};
 use crate::manifest::{
-    BoardKind, DesignKind, ForgeKind, HOME_FILE, LEGACY_FILE, Manifest, ProjectFiles, ROOT_FILE,
+    BoardKind, CommandLine, DesignKind, ForgeKind, HOME_FILE, LEGACY_FILE, Manifest, ProjectFiles,
+    ROOT_FILE,
 };
-use crate::ports::Shell;
+use crate::ports::{GateVerdict, Shell};
 
 pub mod fixes;
 pub use fixes::{Backend, Check, fixes};
@@ -67,6 +68,21 @@ pub const HOME_CONFIG: &str = "\
 #
 # [actions]
 # timeout_minutes = 30
+#
+# An action's own settings are a table, [actions.<name>]; each key reaches that action's run
+# alone, as ZAF_SETTING_<KEY> (upper case, `-` as `_`). The bug-report and bug-report-query
+# actions read these four keys: kind is github-issues or forgejo-issues, url is the instance's
+# address, repo is the repository that takes the reports, and token_env names the environment
+# variable that holds its token (the token itself never goes in a file). bug-report-query reads
+# its own table, [actions.bug-report-query], with the same keys.
+# Update zaf on this machine before you add a table: an older zaf refuses a key it does not
+# know, and every verb then fails to load this file.
+#
+# [actions.bug-report]
+# kind = \"forgejo-issues\"
+# url = \"https://forge.example.com\"
+# repo = \"owner/name\"
+# token_env = \"BUG_REPORT_TOKEN\"
 ";
 
 /// What `.zaf/.gitignore` held when the homes were ensured.
@@ -439,6 +455,8 @@ pub struct SetupReport {
     pub profiles: Option<profile::Report>,
     /// The pack's actions put into the zaf home, and the names already there.
     pub actions: PackActions,
+    /// What was done about zaf's MCP in the Engineer's own Claude.
+    pub mcp: EngineerMcp,
     /// Doctor, run after the folders and the clone.
     pub doctor: Report,
     /// How the board signs in.
@@ -464,6 +482,13 @@ impl SetupReport {
         let mut checks: Vec<Check> = self.pending.clone();
         checks.extend(self.doctor.tools.iter().cloned().map(Check::Tool));
         checks.extend(self.doctor.packs.iter().cloned().map(Check::Pack));
+        checks.extend(
+            self.doctor
+                .profile_mcp
+                .iter()
+                .cloned()
+                .map(Check::ProfileMcp),
+        );
         checks.push(Check::Folder(self.doctor.workspaces.clone()));
         checks.push(Check::Folder(self.doctor.actions_dir.clone()));
         checks.extend(self.doctor.board.iter().map(|check| Check::Backend {
@@ -495,6 +520,144 @@ pub trait ReplaceAction {
     /// `# changed:` line when the installed copy lacks it, and `difference`, the diff of the two.
     /// Only `true` replaces.
     fn replace(&mut self, name: &str, why: Option<&Text>, difference: &str) -> bool;
+
+    /// Whether zaf's MCP is registered in the Engineer's own Claude (user scope): `name` is the
+    /// plan line ([`ENGINEER_MCP_PLAN`], or [`ENGINEER_MCP_REPLACE`] when another `zaf` entry is
+    /// there) and `difference` is empty for a fresh registration, else the entry found beside
+    /// zaf's. Only `true` registers.
+    fn register_mcp(&mut self, name: &str, difference: &str) -> bool;
+}
+
+/// The plan line shown before zaf's MCP is registered in the Engineer's Claude.
+pub const ENGINEER_MCP_PLAN: &str = "register zaf's MCP in your Claude (user scope)";
+/// The plan line shown before another `zaf` entry in the Engineer's Claude is replaced by zaf's.
+pub const ENGINEER_MCP_REPLACE: &str = "replace the zaf MCP entry in your Claude (user scope)";
+
+/// What `setup` did about zaf's MCP in the Engineer's own Claude.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EngineerMcp {
+    /// Zaf's entry was there: nothing was said and nothing issued after the `get`.
+    Ours,
+    /// The entry was added.
+    Registered,
+    /// Another `zaf` entry was removed and zaf's added.
+    Replaced,
+    /// Nothing was issued: the Engineer said no, or no one could be asked.
+    Left {
+        /// Whether another `zaf` entry is registered.
+        replacing: bool,
+    },
+    /// A `claude mcp` command failed; setup went on.
+    Failed {
+        /// The command that failed.
+        line: String,
+        /// What it printed, or why it did not run.
+        output: String,
+        /// The command to run later, when the failure left the Engineer's Claude without a `zaf`
+        /// entry it had.
+        left: Option<String>,
+    },
+}
+
+impl EngineerMcp {
+    /// The worksheet lines `setup` prints; none when zaf's entry was already there.
+    pub fn lines(&self) -> Vec<String> {
+        let add = profile::mcp_add_line(None);
+        match self {
+            Self::Ours => Vec::new(),
+            Self::Registered => vec![format!("{ENGINEER_MCP_PLAN}: done")],
+            Self::Replaced => vec![format!("{ENGINEER_MCP_REPLACE}: done")],
+            Self::Left { replacing: false } => vec![format!(
+                "zaf's MCP is not registered in your Claude; to register it run: {add}"
+            )],
+            Self::Left { replacing: true } => vec![format!(
+                "a different zaf MCP entry is registered in your Claude; to replace it run: {} && {add}",
+                profile::mcp_remove_line(None)
+            )],
+            Self::Failed { line, output, left } => {
+                let said = output.split_whitespace().collect::<Vec<_>>().join(" ");
+                let mut lines = vec![format!("{line} failed: {said}")];
+                if let Some(command) = left {
+                    lines.push(format!(
+                        "zaf's MCP is not registered in your Claude; to register it run: {command}"
+                    ));
+                }
+                lines
+            }
+        }
+    }
+
+    /// Whether a `claude mcp` command failed.
+    pub fn failed(&self) -> bool {
+        matches!(self, Self::Failed { .. })
+    }
+}
+
+/// Brings zaf's MCP into the Engineer's own Claude at user scope, in the `CLAUDE_CONFIG_DIR` the
+/// environment holds (unset is `~/.claude`; setup never sets it).
+///
+/// Issues `claude mcp get zaf` and nothing more when it shows zaf's entry. When it shows nothing,
+/// asks `asker` to register and on yes adds. When it shows another `zaf` entry, asks to replace it
+/// and on yes removes then adds. With no asker, or on no, nothing but the `get` is issued.
+fn register_engineers_mcp(shell: &dyn Shell, asker: Option<&mut dyn ReplaceAction>) -> EngineerMcp {
+    let get = profile::mcp_get_line(None);
+    let ran = match shell.run(&CommandLine::from(get.clone())) {
+        Ok(ran) => ran,
+        Err(error) => {
+            return EngineerMcp::Failed {
+                line: get,
+                output: error.to_string(),
+                left: None,
+            };
+        }
+    };
+    let found = match profile::McpRegistration::from_get(&ran.output, ran.verdict) {
+        profile::McpRegistration::Ours => return EngineerMcp::Ours,
+        profile::McpRegistration::Missing => None,
+        profile::McpRegistration::Other(shown) => Some(shown),
+    };
+    let replacing = found.is_some();
+    let yes = asker.is_some_and(|asker| match &found {
+        None => asker.register_mcp(ENGINEER_MCP_PLAN, ""),
+        Some(shown) => asker.register_mcp(
+            ENGINEER_MCP_REPLACE,
+            &format!("found:\n{shown}\nzaf's:\n{}\n", profile::ZAF_MCP_ENTRY),
+        ),
+    });
+    if !yes {
+        return EngineerMcp::Left { replacing };
+    }
+    let add = profile::mcp_add_line(None);
+    if replacing {
+        let remove = profile::mcp_remove_line(None);
+        if let Some(failed) = run_mcp_line(shell, &remove, None) {
+            return failed;
+        }
+        if let Some(failed) = run_mcp_line(shell, &add, Some(add.clone())) {
+            return failed;
+        }
+        return EngineerMcp::Replaced;
+    }
+    match run_mcp_line(shell, &add, None) {
+        Some(failed) => failed,
+        None => EngineerMcp::Registered,
+    }
+}
+
+/// Runs one `claude mcp` line; `Some` is how it failed.
+fn run_mcp_line(shell: &dyn Shell, line: &str, left: Option<String>) -> Option<EngineerMcp> {
+    let failed = |output: String| {
+        Some(EngineerMcp::Failed {
+            line: line.to_owned(),
+            output,
+            left: left.clone(),
+        })
+    };
+    match shell.run(&CommandLine::from(line.to_owned())) {
+        Ok(ran) if ran.verdict == GateVerdict::Passed => None,
+        Ok(ran) => failed(ran.output),
+        Err(error) => failed(error.to_string()),
+    }
 }
 
 /// What [`install_pack_actions`] did.
@@ -773,6 +936,53 @@ pub fn changed_actions(home: &Path, pack_actions: &Path) -> (Vec<String>, usize)
     (changed, files.len())
 }
 
+/// What the machine's actions are against the pack copy they came from: see [`machine_edits`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MachineEdits {
+    /// The machine's regular files equal to the old pack's copy, sorted: unedited, so a new pack
+    /// that differs replaces them.
+    pub unedited: Vec<String>,
+    /// The machine's regular files that differ from the old pack's copy, or that it has no
+    /// readable copy of, sorted: edited (or taken for it), so they are kept.
+    pub edited: Vec<String>,
+}
+
+/// Sorts the regular files of the zaf `home`'s `actions/` by the old pack's copy in `old_pack`: equal
+/// to it (bytes and mode bits, as [`changed_actions`] compares) is unedited; different from it, or
+/// with no old copy that can be read (a cache pruned, an action installed by hand), is edited.
+/// "Edited" is derived on every read and stored nowhere. A link or a folder is in neither list.
+/// Changes nothing.
+pub fn machine_edits(home: &Path, old_pack: Option<&Path>) -> MachineEdits {
+    let mut edits = MachineEdits::default();
+    let Ok(entries) = fs::read_dir(home.join(ACTIONS_DIR)) else {
+        return edits;
+    };
+    for entry in entries.flatten() {
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        let installed = entry.path();
+        if check_name(&name).is_err()
+            || !fs::symlink_metadata(&installed).is_ok_and(|m| m.is_file())
+        {
+            continue;
+        }
+        let unedited = old_pack
+            .map(|folder| folder.join(&name))
+            .filter(|old| fs::symlink_metadata(old).is_ok_and(|m| m.is_file()))
+            .and_then(|old| differs(&installed, &old).ok())
+            == Some(false);
+        if unedited {
+            edits.unedited.push(name);
+        } else {
+            edits.edited.push(name);
+        }
+    }
+    edits.unedited.sort();
+    edits.edited.sort();
+    edits
+}
+
 /// Copies `installed`, with its mode bits, to a new file `<dir>/<name>.<UTC time>` (as
 /// `20261118T091500Z`), making `dir`; a name already taken gets `.1`, `.2` and so on after it, so
 /// nothing is overwritten. Returns where the copy is.
@@ -1006,7 +1216,7 @@ fn setup_with(
     commands: &dyn Commands,
     shell: &dyn Shell,
     claude_home: Option<&Path>,
-    asker: Option<&mut dyn ReplaceAction>,
+    mut asker: Option<&mut dyn ReplaceAction>,
 ) -> Result<SetupReport, SetupError> {
     let mut homes = ensure_homes(Some(root), home)?;
     if homes.ignore == Some(IgnoreState::Star) {
@@ -1028,13 +1238,16 @@ fn setup_with(
             home,
             manifest,
             commands,
-            asker,
+            asker
+                .as_mut()
+                .map(|asker| &mut **asker as &mut dyn ReplaceAction),
             SystemTime::now(),
         )
         .map_err(SetupError::Actions)?
     } else {
         PackActions::default()
     };
+    let mcp = register_engineers_mcp(shell, asker);
     let report = doctor_with(
         root,
         home,
@@ -1049,6 +1262,7 @@ fn setup_with(
         clone,
         profiles,
         actions,
+        mcp,
         doctor: report,
         board: board_backend(manifest),
         forge: forge_backend(manifest),

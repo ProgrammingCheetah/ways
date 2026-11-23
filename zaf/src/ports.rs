@@ -14,7 +14,9 @@ mod gate;
 mod releases;
 mod runner;
 mod shell;
+mod tool_host;
 mod vcs;
+mod verb_runner;
 
 pub use crate::domain::ChangedFiles;
 pub use board::{
@@ -35,4 +37,6 @@ pub use runner::{
     e_is_live, live_use,
 };
 pub use shell::Shell;
+pub use tool_host::ToolHost;
 pub use vcs::{BaseName, CommitId, DiffStat, FileStat, SliceName, TreeId, Vcs};
+pub use verb_runner::{VerbOutcome, VerbRun, VerbRunner};

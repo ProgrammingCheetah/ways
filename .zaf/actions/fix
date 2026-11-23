@@ -6,7 +6,7 @@
 # zaf target: task
 # zaf kind: model
 # zaf ends: exit
-# changed: runs `ci-rerun` before the brief and the programmer, so a red head gets its one fresh CI run first; exit 0 ends the fix with no programmer, exit 1 goes on as before, any other code ends it with 2; no `ci-rerun` follows the programmer's round
+# changed: runs `ci-rerun` before the brief and the programmer, so a red head gets its one fresh CI run first; exit 0 ends the fix with no programmer, exit 1 goes on as before, any other code ends it with 2; no `ci-rerun` follows the programmer's round; the prompt names the findings as a call of the `check` tool, no longer as a `zaf` command line
 
 # The task as a bare number; zaf has already read it as one.
 task=${1#\#}
@@ -50,7 +50,7 @@ workspace=$ZAF_ROOT/.zaf/workspaces/$ZAF_SLICE
 # the phase that failed and how (a conflicted merge names its paths), and every ruling since the
 # last model run.
 CLAUDE_CONFIG_DIR="$ZAF_ROOT/.zaf/profiles/lean" claude -p \
-    "Task #$task, fix round: the pack's Why this run says what failed. Pack: $pack. Workspace: $workspace. Findings: zaf check pr:$ZAF_PR:$task --status --more" \
+    "Task #$task, fix round: the pack's Why this run says what failed. Pack: $pack. Workspace: $workspace. Findings: the check tool with args [\"pr:$ZAF_PR:$task\", \"--status\"] and more true" \
     --model sonnet --effort high --add-dir "$ZAF_ROOT" || exit 2
 
 zaf do slice-pr "$task" || stop $?

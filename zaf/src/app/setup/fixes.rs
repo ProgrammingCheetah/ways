@@ -12,7 +12,9 @@
 
 use std::path::Path;
 
-use crate::app::doctor::{BackendCheck, PackCheck, PathCheck, ToolCheck, ToolStatus};
+use crate::app::doctor::{
+    BackendCheck, PackCheck, PathCheck, ProfileMcpCheck, ToolCheck, ToolStatus,
+};
 use crate::domain::screen::{Command, Fix, Text};
 
 /// One tool zaf knows: why it needs it and the page that says how to install it.
@@ -95,6 +97,8 @@ pub enum Check {
     PackRefused(String),
     /// A generated profile's pack, checked.
     Pack(PackCheck),
+    /// A generated profile's MCP server and settings, checked.
+    ProfileMcp(ProfileMcpCheck),
     /// A folder the manifest names, checked.
     Folder(PathCheck),
     /// The design repo could not be cloned.
@@ -150,6 +154,16 @@ fn fix(check: &Check) -> Option<Fix> {
             why: Text::from("zaf runs its models in profiles that carry the pack"),
         }),
         Check::Pack(_) => None,
+        Check::ProfileMcp(check) if !check.ok => Some(Fix {
+            problem: Text::from(format!(
+                "profile `{}` lacks zaf's MCP server or its settings ({})",
+                check.profile,
+                check.problems.join("; ")
+            )),
+            command: Some(Command::from("zaf profile init")),
+            why: Text::from("zaf runs its models' verbs through its MCP server in the profile"),
+        }),
+        Check::ProfileMcp(_) => None,
         Check::Folder(check) if !check.ok => Some(folder(check)),
         Check::Folder(_) => None,
         Check::CloneFailed { repo, dir, said } => Some(Fix {

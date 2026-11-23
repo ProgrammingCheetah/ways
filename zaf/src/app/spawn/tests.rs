@@ -1248,10 +1248,11 @@ fn each_role_has_its_pack_brief() {
         CHALLENGER_BRIEF
     );
     for brief in [PLANNING_BRIEF, CHALLENGER_BRIEF] {
-        assert!(brief.contains("zaf epic show <epic>"), "{brief}");
-        assert!(brief.contains("zaf board report <epic>"), "{brief}");
+        assert!(brief.contains(r#"`["show", "<epic>"]`"#), "{brief}");
+        assert!(brief.contains(r#"`["report", "<epic>","#), "{brief}");
+        assert!(!brief.contains("`zaf "), "{brief}");
     }
-    assert!(PLANNING_BRIEF.contains("zaf board file <epic>"));
+    assert!(PLANNING_BRIEF.contains(r#"`["file", "<epic>", "<title>"]`"#));
 }
 
 /// A task claimed by instance 1, which dies with the first tick (pid 100): the claim is left to

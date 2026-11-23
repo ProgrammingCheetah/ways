@@ -1,0 +1,214 @@
+#!/bin/sh
+# tools/mcp-only-check <since> [<orchestrator transcript>]: O2 and O5's transcript check (D24).
+# Reads every Claude Code transcript (*.jsonl) under .zaf/profiles/*/projects/ of the project it
+# runs in (the current directory), keeping the entries at or after <since> (an RFC 3339 time, or a
+# span such as 2h or 30m counted back from now), and the orchestrator's transcript when given (read
+# whole). Prints one line per Bash tool call that runs zaf in a command position:
+#   <file>:<line>: Bash runs zaf: <command, first 120 characters>
+# In the orchestrator's transcript alone it also prints one line per lane tool call, after the Bash
+# lines and in transcript order (D24, I1): an assistant tool_use block matched on its parsed name and
+# input.args, never on text:
+#   <file>:<line>: lane tool: <tool verb> <args joined by spaces>
+# A lane tool is mcp__zaf__spawn with phase or stop first, mcp__zaf__board with claim or done first,
+# any mcp__zaf__slice, and mcp__zaf__do whose action (the first word that is not a flag, --tier taking
+# the word after it) is a name in a list of the project's [phases] table (.zaf.toml, else
+# .zaf/config.toml; implement, ci, review, merge when neither has one), fix, or a slice- action.
+# Exit 0 when there is none, 1 when there is any, 2 on a bad <since>, a missing file or a missing jq.
+# Transcripts are untrusted input: a malformed line is skipped, nothing in them is executed, and
+# control characters are replaced before anything is printed.
+usage() {
+    echo "usage: tools/mcp-only-check <since> [<orchestrator transcript>]" >&2
+    echo "  <since>: an RFC 3339 time (2026-11-22T10:00:00Z) or a span back from now (2h, 30m, 45s, 1d)" >&2
+    exit 2
+}
+
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+    usage
+fi
+since=$1
+orchestrator=${2-}
+if [ "$#" -eq 2 ] && [ ! -f "$orchestrator" ]; then
+    usage
+fi
+command -v jq >/dev/null 2>&1 || {
+    echo "mcp-only-check: jq is required" >&2
+    exit 2
+}
+
+# An RFC 3339 time as seconds since the epoch; an error for anything else.
+epoch_def='
+def epoch:
+  capture("^(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(\\.[0-9]+)?(?<z>Z|[+-][0-9]{2}:[0-9]{2})$") as $m
+  | ($m.d + "Z" | fromdateiso8601) as $t
+  | if $m.z == "Z" then $t
+    else ((($m.z[1:3] | tonumber) * 3600 + ($m.z[4:6] | tonumber) * 60) as $o
+          | if $m.z[0:1] == "+" then $t - $o else $t + $o end)
+    end;
+'
+
+case $since in
+*[!0-9smhd]* | "") span="" ;;
+*) span=$since ;;
+esac
+if [ -n "$span" ] && printf '%s' "$span" | grep -Eq '^[0-9]+[smhd]$'; then
+    n=${span%?}
+    case $span in
+    *s) mult=1 ;;
+    *m) mult=60 ;;
+    *h) mult=3600 ;;
+    *d) mult=86400 ;;
+    esac
+    since_epoch=$(($(date +%s) - n * mult))
+else
+    since_epoch=$(jq -n -r --arg s "$since" "$epoch_def"'$s | epoch' 2>/dev/null) || usage
+    case $since_epoch in
+    "" | *[!0-9-]*) usage ;;
+    esac
+fi
+
+prog=$epoch_def'
+# Quoted strings are not command positions; only a $( ) or backtick substitution inside a
+# double-quoted one still runs, so those stay, and the rest of the string goes.
+def stripq:
+  gsub("\"(?<dq>(?:[^\"\\\\]|\\\\.)*)\"|\\x27(?<sq>[^\\x27]*)\\x27";
+       "\"\"" + ((.dq // "") | [scan("\\$\\([^)]*\\)|`[^`]*`")] | join(" ")));
+
+# zaf in a command position: the start, or after ; && || | ( $( a backtick or a newline, past
+# VAR=value assignments and env; the word zaf, or a path ending in /zaf.
+def runs_zaf:
+  test("(^|[;&|(`\\n]|\\$\\()[ \\t]*((env|[A-Za-z_][A-Za-z0-9_]*=[^ \\t\\n]*)[ \\t]+)*([^ \\t\\n;&|()`]*/)?zaf([ \\t\\n;&|)`]|$)");
+
+input_line_number as $n
+| (fromjson? // empty)
+| select(type == "object" and .type == "assistant")
+| select($since == null
+         or ((try (.timestamp | epoch) catch null) as $t | $t != null and $t >= $since))
+| (.message.content? // empty)
+| select(type == "array")
+| .[]
+| select(type == "object" and .type == "tool_use" and .name == "Bash")
+| (.input.command? // empty)
+| select(type == "string")
+| select(stripq | runs_zaf)
+| gsub("[\\x01-\\x1f\\x7f]"; " ")
+| "\($file):\($n): Bash runs zaf: \(.[0:120])"
+'
+
+# Prints the failures of one transcript; $1 is its path, $2 the since epoch or null.
+scan_file() {
+    # -R reads each line as a string, so a malformed line is skipped by fromjson? and never stops the file.
+    # A jq that fails is no pass: the failure is marked and the run exits 2.
+    jq -R -r --arg file "$1" --argjson since "$2" "$prog" "$1" || {
+        echo "mcp-only-check: jq failed on $1" >&2
+        : >"$found.err"
+    }
+}
+
+# The phase names of the project's [phases] table, one per line: every quoted string in the table's
+# arrays, from the first of .zaf.toml and .zaf/config.toml that has any, else the defaults.
+phase_names() {
+    for toml in .zaf.toml .zaf/config.toml; do
+        [ -f "$toml" ] || continue
+        names=$(awk '
+            function strings(line,    i, c, q, cur, n) {
+                q = ""
+                cur = ""
+                n = length(line)
+                for (i = 1; i <= n; i++) {
+                    c = substr(line, i, 1)
+                    if (q != "") {
+                        if (c == q) { print cur; q = ""; cur = "" } else cur = cur c
+                    } else if (c == "\"" || c == "\047") q = c
+                    else if (c == "#") break
+                }
+            }
+            /^[ \t]*\[\[?[A-Za-z0-9_."\047 -]+\]\]?[ \t]*(#.*)?$/ {
+                head = $0
+                sub(/#.*/, "", head)
+                gsub(/[ \t]/, "", head)
+                inp = (head == "[phases]")
+                next
+            }
+            inp {
+                line = $0
+                if (match(line, /^[ \t]*[A-Za-z0-9_"\047.-]+[ \t]*=/)) line = substr(line, RLENGTH + 1)
+                strings(line)
+            }
+        ' "$toml")
+        if [ -n "$names" ]; then
+            printf '%s\n' "$names"
+            return
+        fi
+    done
+    printf '%s\n' implement ci review merge
+}
+
+# The lane tools of an orchestrator's transcript; $phases is a JSON array of the phase action names.
+lane_prog='
+def clean: gsub("[\\x01-\\x1f\\x7f]"; " ");
+def argv:
+  (.input.args? // [])
+  | if type == "array" then map(if type == "string" then . else tojson end)
+    elif type == "string" then [.]
+    else [] end;
+# The first word that is not a flag; --tier takes the word after it.
+def action:
+  if length == 0 then null
+  elif .[0] == "--tier" then .[2:] | action
+  elif (.[0] | startswith("-")) then .[1:] | action
+  else .[0] end;
+def lane($words; $verb):
+  if $verb == "spawn" then ($words[0] // "") | IN("phase", "stop")
+  elif $verb == "board" then ($words[0] // "") | IN("claim", "done")
+  elif $verb == "slice" then true
+  elif $verb == "do" then
+    ($words | action) as $a
+    | $a != null and (($phases | index($a)) != null or $a == "fix" or ($a | startswith("slice-")))
+  else false end;
+
+input_line_number as $n
+| (fromjson? // empty)
+| select(type == "object" and .type == "assistant")
+| (.message.content? // empty)
+| select(type == "array")
+| .[]
+| select(type == "object" and .type == "tool_use" and (.name | type) == "string"
+         and (.name | startswith("mcp__zaf__")))
+| (.name | ltrimstr("mcp__zaf__")) as $verb
+| argv as $args
+| ($args | map(split(" ") | map(select(length > 0))) | add // []) as $words
+| select(lane($words; $verb))
+| "\($file):\($n): lane tool: \(([$verb] + $args) | join(" ") | clean)"
+'
+
+# Prints the lane tool calls of the orchestrator transcript $1; $2 is the JSON array of phase names.
+scan_lane() {
+    jq -R -r --arg file "$1" --argjson phases "$2" "$lane_prog" "$1" || {
+        echo "mcp-only-check: jq failed on $1" >&2
+        : >"$found.err"
+    }
+}
+
+found=$(mktemp "${TMPDIR:-/tmp}/mcp-only-check.XXXXXX") || exit 2
+trap 'rm -f "$found" "$found.err"' EXIT HUP INT TERM
+
+if [ -d .zaf/profiles ]; then
+    find .zaf/profiles -mindepth 3 -path '.zaf/profiles/*/projects/*' -type f -name '*.jsonl' | sort |
+        while IFS= read -r file; do
+            scan_file "$file" "$since_epoch"
+        done >>"$found"
+fi
+if [ -n "$orchestrator" ]; then
+    scan_file "$orchestrator" null >>"$found"
+    phases_json=$(phase_names | jq -R . | jq -s -c .) || exit 2
+    scan_lane "$orchestrator" "$phases_json" >>"$found"
+fi
+
+if [ -e "$found.err" ]; then
+    exit 2
+fi
+if [ -s "$found" ]; then
+    cat "$found"
+    exit 1
+fi
+exit 0

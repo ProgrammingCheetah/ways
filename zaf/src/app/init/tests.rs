@@ -548,6 +548,13 @@ impl crate::ports::Shell for NoShell {
         &self,
         line: &crate::manifest::CommandLine,
     ) -> Result<crate::ports::GateRun, crate::ports::PortError> {
+        // zaf's MCP is already in every profile; nothing else may run.
+        if line.as_ref().contains(" claude mcp get ") {
+            return Ok(crate::ports::GateRun {
+                verdict: crate::ports::GateVerdict::Passed,
+                output: crate::app::profile::GET_SHOWS_OURS.to_owned(),
+            });
+        }
         panic!("no pack, no shell: {}", line.as_ref());
     }
 }

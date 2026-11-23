@@ -214,6 +214,8 @@ fn post_phase(path: &str, run_dir: &Path, launch: &phase::Launch, code: i32) {
             run: None,
             phase: None,
             vcs: composition.manifest().vcs.as_ref().map(|vcs| vcs.kind),
+            // A hook is no action: it has no settings table.
+            settings: std::collections::BTreeMap::new(),
         },
         Some(&input),
     );

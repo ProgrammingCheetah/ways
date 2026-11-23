@@ -140,3 +140,28 @@ fn progress_role_defaults_to_the_instance() {
     assert_eq!(code, 1, "{stderr}");
     assert!(stderr.contains("ZAF_INSTANCE"), "{stderr}");
 }
+
+#[test]
+fn progress_with_no_task_reports_on_the_instance_ticket() {
+    let mut project = Project::new(MANIFEST);
+    project.env("ZAF_INSTANCE", "planning instance 1 on #900");
+    let (code, _, stderr) = outcome(&project.zaf(&["progress", "plan", "read", "file"]));
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(plan_file(&project, "900.planning"), "plan read file\n");
+    let (code, stdout, stderr) = outcome(&project.zaf(&["progress", "at", "read"]));
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stdout.contains("#900 planning: read"), "{stdout}");
+    // A task given wins over the instance's ticket.
+    let (code, _, stderr) = outcome(&project.zaf(&["progress", "plan", "330", "write"]));
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(plan_file(&project, "330.planning"), "plan write\n");
+}
+
+#[test]
+fn progress_with_no_task_and_no_instance_is_refused() {
+    let bare = Project::new(MANIFEST);
+    let (code, _, stderr) = outcome(&bare.zaf(&["progress", "at", "--role", "keeper", "read"]));
+    assert_eq!(code, 1, "{stderr}");
+    assert!(stderr.contains("ZAF_INSTANCE"), "{stderr}");
+    assert!(reports(&bare).is_empty());
+}

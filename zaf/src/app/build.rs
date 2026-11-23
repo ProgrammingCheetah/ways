@@ -291,6 +291,11 @@ impl Runs<'_> {
             run: None,
             phase: None,
             vcs: manifest.vcs.as_ref().map(|vcs| vcs.kind),
+            settings: manifest
+                .actions
+                .settings(name)
+                .map(|(key, value)| (key.to_owned(), value.to_owned()))
+                .collect(),
         }
         .with_phase(PhaseEnv {
             version: self.version.to_owned(),

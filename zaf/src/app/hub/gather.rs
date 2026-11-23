@@ -327,6 +327,7 @@ fn epic_row(
         questions: u32::try_from(questions).unwrap_or(u32::MAX),
         tickets: Vec::new(),
         groups: Vec::new(),
+        models: model_rows(inputs.state_dir, tree.id),
     };
     let mut groups: BTreeMap<&str, Vec<&EpicTask>> = BTreeMap::new();
     for task in &tree.tasks {
@@ -379,14 +380,19 @@ fn ticket_row(
         phase: derive_phase(&facts),
         word,
         since,
-        models: plans_of(inputs.state_dir, task.number)
-            .into_iter()
-            .map(|(plan, _)| ModelRow {
-                iteration: plan.iteration(),
-                current: plan.current().map(str::to_owned),
-                role: plan.role,
-                phases: plan.phases,
-            })
-            .collect(),
+        models: model_rows(inputs.state_dir, task.number),
     })
+}
+
+/// One row per model that declared phases on `ticket`, read from the plan store.
+fn model_rows(state_dir: &Path, ticket: TicketId) -> Vec<ModelRow> {
+    plans_of(state_dir, ticket)
+        .into_iter()
+        .map(|(plan, _)| ModelRow {
+            iteration: plan.iteration(),
+            current: plan.current().map(str::to_owned),
+            role: plan.role,
+            phases: plan.phases,
+        })
+        .collect()
 }

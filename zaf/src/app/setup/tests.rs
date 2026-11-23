@@ -12,6 +12,13 @@ struct RecordingShell {
     version: &'static str,
     install_path: Option<PathBuf>,
     lines: Mutex<Vec<String>>,
+    /// What the Engineer's own `claude mcp get zaf` shows; `None` is no server. Zaf's entry
+    /// unless a test says otherwise.
+    engineer: Mutex<Option<String>>,
+    /// The `claude mcp` lines issued with no `CLAUDE_CONFIG_DIR`, the Engineer's own Claude.
+    engineer_lines: Mutex<Vec<String>>,
+    /// Whether the Engineer's `claude mcp add-json` fails.
+    engineer_add_fails: bool,
 }
 
 impl RecordingShell {
@@ -24,7 +31,46 @@ impl RecordingShell {
             version,
             install_path: None,
             lines: Mutex::new(Vec::new()),
+            engineer: Mutex::new(Some(profile::GET_SHOWS_OURS.to_owned())),
+            engineer_lines: Mutex::new(Vec::new()),
+            engineer_add_fails: false,
         }
+    }
+
+    /// A shell whose Engineer's Claude shows `shown` for `claude mcp get zaf`.
+    fn engineer_shows(self, shown: Option<&str>) -> Self {
+        *self.engineer.lock().expect("lock") = shown.map(str::to_owned);
+        self
+    }
+
+    /// The `claude mcp` lines issued to the Engineer's own Claude.
+    fn engineer_lines(&self) -> Vec<String> {
+        self.engineer_lines.lock().expect("lock").clone()
+    }
+
+    fn engineer_run(&self, text: &str) -> GateRun {
+        self.engineer_lines
+            .lock()
+            .expect("lock")
+            .push(text.to_owned());
+        let (verdict, output) = if text.starts_with("claude mcp get ") {
+            match &*self.engineer.lock().expect("lock") {
+                Some(shown) => (GateVerdict::Passed, shown.clone()),
+                None => (
+                    GateVerdict::Failed,
+                    "No MCP server found with name: zaf\n".to_owned(),
+                ),
+            }
+        } else if text.starts_with("claude mcp add-json ") && self.engineer_add_fails {
+            (GateVerdict::Failed, "mcp said no\n".to_owned())
+        } else if text.starts_with("claude mcp add-json ") {
+            *self.engineer.lock().expect("lock") = Some(profile::GET_SHOWS_OURS.to_owned());
+            (GateVerdict::Passed, String::new())
+        } else {
+            *self.engineer.lock().expect("lock") = None;
+            (GateVerdict::Passed, String::new())
+        };
+        GateRun { verdict, output }
     }
 
     /// An install that records the pack at `path`, as Claude records its `installPath`.
@@ -42,8 +88,18 @@ impl RecordingShell {
 
 impl Shell for RecordingShell {
     fn run(&self, line: &CommandLine) -> Result<GateRun, PortError> {
-        self.lines.lock().expect("lock").push(line.to_string());
         let text = line.as_ref();
+        if text.starts_with("claude mcp ") {
+            return Ok(self.engineer_run(text));
+        }
+        // zaf's MCP is already in every profile, and these tests are about the plugin lines.
+        if text.contains(" claude mcp get ") {
+            return Ok(GateRun {
+                verdict: GateVerdict::Passed,
+                output: profile::GET_SHOWS_OURS.to_owned(),
+            });
+        }
+        self.lines.lock().expect("lock").push(line.to_string());
         if text.contains(" claude plugin install ") {
             let mut quoted = text.split('\'');
             if let (Some(home), Some(id)) = (quoted.nth(1), quoted.nth(1)) {
@@ -75,9 +131,12 @@ impl Shell for RecordingShell {
     }
 }
 
-/// Whether a doctor call is the login check of a generated profile.
+/// Whether a doctor call is a read of Claude: the login check of a generated profile, or the
+/// Engineer's own `claude mcp get zaf`.
 fn is_login_check(call: &[String]) -> bool {
-    call.len() == 5 && call[0] == "env" && call[2..] == ["claude", "auth", "status"]
+    (call.len() == 5 && call[0] == "env" && call[2..] == ["claude", "auth", "status"])
+        || call == ["claude", "mcp", "get", "zaf"]
+        || (call.len() == 6 && call[0] == "env" && call[2..] == ["claude", "mcp", "get", "zaf"])
 }
 
 /// [`super::setup`] with no Claude home and a fresh shell: nothing is linked.
@@ -183,10 +242,43 @@ fn ensure_homes_makes_folders_and_files_and_changes_nothing_the_second_time() {
 }
 
 #[test]
-fn the_home_config_is_all_comments_so_it_adds_no_setting() {
+fn home_config_stays_all_comments() {
     for line in HOME_CONFIG.lines() {
-        assert!(line.is_empty() || line.starts_with('#'), "{line}");
+        assert!(line.starts_with('#'), "{line:?}");
     }
+    assert!(HOME_CONFIG.contains("# [actions.bug-report]\n"));
+    for key in ["kind", "url", "repo", "token_env"] {
+        assert!(
+            HOME_CONFIG.contains(&format!("# {key} = \"")),
+            "the example sets {key}"
+        );
+    }
+}
+
+#[test]
+fn home_config_bug_report_example_loads_uncommented() {
+    let (_dir, root, home) = places();
+    fs::create_dir_all(&home).expect("home");
+    fs::write(root.join(".zaf.toml"), HEAD).expect("manifest");
+    let from = HOME_CONFIG
+        .find("# [actions.bug-report]")
+        .expect("the example table");
+    let table: String = HOME_CONFIG[from..]
+        .lines()
+        .map(|line| format!("{}\n", line.strip_prefix("# ").expect("a commented line")))
+        .collect();
+    fs::write(home.join("config.toml"), &table).expect("home config");
+    let loaded = Manifest::load_layers(&root, Some(&home)).expect("the home config loads");
+    let settings: Vec<(&str, &str)> = loaded.actions.settings("bug-report").collect();
+    assert_eq!(
+        settings,
+        [
+            ("kind", "forgejo-issues"),
+            ("repo", "owner/name"),
+            ("token_env", "BUG_REPORT_TOKEN"),
+            ("url", "https://forge.example.com"),
+        ]
+    );
 }
 
 #[test]
@@ -230,7 +322,7 @@ fn setup_replaces_an_old_star_gitignore_and_keeps_another() {
     provide_slice_actions(&root);
     profile::write_stamps(&root.join(STATE_DIR), &manifest(""));
     fs::write(root.join(".zaf/.gitignore"), "*\n").expect("an old file");
-    let commands = FakeCommands::new();
+    let commands = FakeCommands::new().with_profile_mcp();
     let report = setup(&root, Some(&home), &manifest(""), &commands).expect("sets up");
     assert_eq!(report.homes.ignore, Some(IgnoreState::Replaced));
     assert!(report.is_ready(), "{:?}", report.fixes());
@@ -269,7 +361,7 @@ fn setup_is_idempotent() {
     provide_slice_actions(&root);
     let manifest = manifest("");
     profile::write_stamps(&root.join(STATE_DIR), &manifest);
-    let commands = FakeCommands::new();
+    let commands = FakeCommands::new().with_profile_mcp();
     let first = setup(&root, Some(&home), &manifest, &commands).expect("sets up");
     assert!(first.is_ready());
     fs::write(root.join(".zaf/roles/keep.md"), "mine").expect("a role file");
@@ -288,6 +380,7 @@ fn the_fixes_name_each_failing_tool() {
     let (_dir, root, home) = places();
     let manifest = manifest("[requires]\njj = \"*\"\ngh = \"*\"\nnodes = \">=1\"\nagy = \"*\"\n");
     let commands = FakeCommands::new()
+        .with_profile_mcp()
         .with("nodes", "nodes 0.9.0")
         .with("agy", "agy dev");
     let report = setup(&root, Some(&home), &manifest, &commands).expect("sets up");
@@ -333,7 +426,7 @@ fn a_declared_sibling_design_repo_is_cloned_when_missing() {
 
     fs::create_dir(dir.path().join("b-design")).expect("the clone");
     fs::write(dir.path().join("b-design/index.md"), "").expect("the clone's index");
-    let again = FakeCommands::new();
+    let again = FakeCommands::new().with_profile_mcp();
     let report = setup(&root, Some(&home), &manifest, &again).expect("sets up");
     assert_eq!(report.clone, Some(CloneOutcome::Present));
     assert!(
@@ -366,7 +459,7 @@ fn other_design_kinds_clone_nothing() {
     let (_dir, root, home) = places();
     let manifest = manifest("[design]\nkind = \"repo-dir\"\npath = \"docs\"\n");
     fs::create_dir(root.join("docs")).expect("docs");
-    let commands = FakeCommands::new();
+    let commands = FakeCommands::new().with_profile_mcp();
     let report = setup(&root, Some(&home), &manifest, &commands).expect("sets up");
     assert_eq!(report.clone, None);
     assert!(
@@ -744,6 +837,110 @@ fn setup_keeps_edited_machine_action() {
     );
 }
 
+/// A pack folder holding the regular files of the ways pack's `actions/`, copied with their modes.
+fn ways_pack(dir: &Path) -> PathBuf {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/teams/actions");
+    let pack = dir.join("ways-pack");
+    let actions = pack.join("actions");
+    fs::create_dir_all(&actions).expect("pack folders");
+    for entry in fs::read_dir(source).expect("the ways pack") {
+        let path = entry.expect("entry").path();
+        if fs::symlink_metadata(&path).expect("metadata").is_file() {
+            fs::copy(&path, actions.join(path.file_name().expect("a name"))).expect("copy");
+        }
+    }
+    pack
+}
+
+#[test]
+fn setup_installs_bug_report_actions() {
+    let (dir, root, home) = places();
+    let pack = ways_pack(dir.path());
+    let shell = RecordingShell::installing_at(&pack);
+
+    let report = super::setup_with(
+        &root,
+        Some(&home),
+        &manifest(TAGGED),
+        &FakeCommands::new(),
+        &shell,
+        None,
+        None,
+    )
+    .expect("sets up");
+
+    for name in ["bug-report", "bug-report-query"] {
+        assert!(
+            report.actions.installed.contains(&name.to_owned()),
+            "{name} installed: {:?}",
+            report.actions.installed
+        );
+        let installed = home.join("actions").join(name);
+        assert_eq!(mode_of(&installed), 0o755, "{name} keeps its mode");
+        assert_eq!(read(&installed), read(&pack.join("actions").join(name)));
+        assert!(
+            read(&installed)
+                .lines()
+                .any(|line| line.starts_with("# changed: ")),
+            "{name} carries a `# changed:` line"
+        );
+    }
+    assert!(report.actions.kept.is_empty());
+}
+
+#[test]
+fn setup_offers_edited_bug_report() {
+    let (dir, root, home) = places();
+    let pack = ways_pack(dir.path());
+    let shell = RecordingShell::installing_at(&pack);
+    super::setup_with(
+        &root,
+        Some(&home),
+        &manifest(TAGGED),
+        &FakeCommands::new(),
+        &shell,
+        None,
+        None,
+    )
+    .expect("first");
+    let edited = home.join("actions/bug-report");
+    fs::write(&edited, "#!/bin/sh\n# own\n").expect("edit");
+
+    // No asker: kept and listed as differing, as any standard action is.
+    let report = setup_asking(&root, &home, &shell, &FakeCommands::new(), None);
+    assert_eq!(read(&edited), "#!/bin/sh\n# own\n");
+    assert_eq!(report.actions.differs, ["bug-report"]);
+    assert!(report.actions.installed.is_empty());
+    assert!(report.actions.kept.contains(&"bug-report-query".to_owned()));
+
+    // An asker is offered it, and on no it is kept.
+    let mut asker = Asker::new(false);
+    let report = setup_asking(
+        &root,
+        &home,
+        &shell,
+        &FakeCommands::new().failing("git", DIFF),
+        Some(&mut asker),
+    );
+    assert_eq!(asker.asked, [("bug-report".to_owned(), DIFF.to_owned())]);
+    assert_eq!(read(&edited), "#!/bin/sh\n# own\n");
+    assert!(report.actions.replaced.is_empty());
+
+    // On yes it is replaced by the pack's, the old copy kept.
+    let mut asker = Asker::new(true);
+    let report = setup_asking(
+        &root,
+        &home,
+        &shell,
+        &FakeCommands::new().failing("git", DIFF),
+        Some(&mut asker),
+    );
+    assert_eq!(report.actions.replaced.len(), 1);
+    assert_eq!(report.actions.replaced[0].0, "bug-report");
+    assert_eq!(read(&edited), read(&pack.join("actions/bug-report")));
+    assert_eq!(mode_of(&edited), 0o755);
+}
+
 #[test]
 fn setup_installs_nothing_without_a_pack_or_its_actions() {
     let (dir, root, home) = places();
@@ -942,6 +1139,8 @@ const DIFF: &str = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n"
 struct Asker {
     answer: bool,
     asked: Vec<(String, String)>,
+    /// The registration questions, each with what differs.
+    mcp_asked: Vec<(String, String)>,
 }
 
 impl Asker {
@@ -949,6 +1148,7 @@ impl Asker {
         Self {
             answer,
             asked: Vec::new(),
+            mcp_asked: Vec::new(),
         }
     }
 }
@@ -958,6 +1158,135 @@ impl ReplaceAction for Asker {
         self.asked.push((name.to_owned(), difference.to_owned()));
         self.answer
     }
+
+    fn register_mcp(&mut self, name: &str, difference: &str) -> bool {
+        self.mcp_asked
+            .push((name.to_owned(), difference.to_owned()));
+        self.answer
+    }
+}
+
+const ADD_FOR_ENGINEER: &str = "claude mcp add-json --scope user zaf '{\"type\":\"stdio\",\"command\":\"zaf\",\"args\":[\"mcp\"]}'";
+
+/// Sets up through `shell` asking `asker`, in a fresh project.
+fn setup_registering(shell: &RecordingShell, asker: Option<&mut dyn ReplaceAction>) -> SetupReport {
+    let (_dir, root, home) = places();
+    super::setup_with(
+        &root,
+        Some(&home),
+        &manifest(TAGGED),
+        &FakeCommands::new(),
+        shell,
+        None,
+        asker,
+    )
+    .expect("sets up")
+}
+
+#[test]
+fn setup_registers_zaf_mcp_on_yes() {
+    let shell = RecordingShell::new().engineer_shows(None);
+    let mut asker = Asker::new(true);
+
+    let report = setup_registering(&shell, Some(&mut asker));
+
+    assert_eq!(
+        asker.mcp_asked,
+        [(ENGINEER_MCP_PLAN.to_owned(), String::new())]
+    );
+    assert_eq!(
+        ENGINEER_MCP_PLAN,
+        "register zaf's MCP in your Claude (user scope)"
+    );
+    assert_eq!(
+        shell.engineer_lines(),
+        ["claude mcp get zaf", ADD_FOR_ENGINEER]
+    );
+    assert!(
+        shell
+            .engineer_lines()
+            .iter()
+            .all(|line| !line.contains("CLAUDE_CONFIG_DIR="))
+    );
+    assert_eq!(report.mcp, EngineerMcp::Registered);
+}
+
+#[test]
+fn setup_skips_zaf_mcp_on_no_and_names_the_command() {
+    let shell = RecordingShell::new().engineer_shows(None);
+    let mut asker = Asker::new(false);
+
+    let report = setup_registering(&shell, Some(&mut asker));
+
+    assert_eq!(asker.mcp_asked.len(), 1);
+    assert_eq!(shell.engineer_lines(), ["claude mcp get zaf"]);
+    assert_eq!(report.mcp, EngineerMcp::Left { replacing: false });
+    let lines = report.mcp.lines();
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].ends_with(ADD_FOR_ENGINEER), "{lines:?}");
+
+    // With no one to ask, it is the same: nothing is issued and the command is named.
+    let shell = RecordingShell::new().engineer_shows(None);
+    let report = setup_registering(&shell, None);
+    assert_eq!(shell.engineer_lines(), ["claude mcp get zaf"]);
+    assert_eq!(report.mcp.lines(), lines);
+}
+
+#[test]
+fn setup_leaves_registered_zaf_mcp_alone() {
+    let shell = RecordingShell::new();
+    let mut asker = Asker::new(true);
+
+    let report = setup_registering(&shell, Some(&mut asker));
+
+    assert!(asker.mcp_asked.is_empty());
+    assert_eq!(shell.engineer_lines(), ["claude mcp get zaf"]);
+    assert_eq!(report.mcp, EngineerMcp::Ours);
+    assert!(report.mcp.lines().is_empty());
+}
+
+#[test]
+fn setup_asks_before_replacing_a_different_zaf_entry() {
+    let other = "zaf:\n  Scope: User config (available in all your projects)\n  Type: stdio\n  Command: /elsewhere/zaf\n  Args: mcp\n  Environment:\n";
+
+    let shell = RecordingShell::new().engineer_shows(Some(other));
+    let mut asker = Asker::new(false);
+    let report = setup_registering(&shell, Some(&mut asker));
+    assert_eq!(asker.mcp_asked.len(), 1);
+    assert_eq!(asker.mcp_asked[0].0, ENGINEER_MCP_REPLACE);
+    assert!(asker.mcp_asked[0].1.contains("/elsewhere/zaf"));
+    assert!(asker.mcp_asked[0].1.contains(profile::ZAF_MCP_ENTRY));
+    assert_eq!(shell.engineer_lines(), ["claude mcp get zaf"]);
+    assert_eq!(report.mcp, EngineerMcp::Left { replacing: true });
+
+    let shell = RecordingShell::new().engineer_shows(Some(other));
+    let mut asker = Asker::new(true);
+    let report = setup_registering(&shell, Some(&mut asker));
+    assert_eq!(
+        shell.engineer_lines(),
+        [
+            "claude mcp get zaf",
+            "claude mcp remove --scope user zaf",
+            ADD_FOR_ENGINEER
+        ]
+    );
+    assert_eq!(report.mcp, EngineerMcp::Replaced);
+}
+
+#[test]
+fn a_failed_mcp_add_is_named_and_setup_goes_on() {
+    let mut shell = RecordingShell::new().engineer_shows(None);
+    shell.engineer_add_fails = true;
+    let mut asker = Asker::new(true);
+
+    let report = setup_registering(&shell, Some(&mut asker));
+
+    assert!(report.mcp.failed());
+    let lines = report.mcp.lines();
+    assert!(
+        lines[0].contains(ADD_FOR_ENGINEER) && lines[0].contains("mcp said no"),
+        "{lines:?}"
+    );
 }
 
 /// Sets up once, so the pack's actions are installed, then edits `action-03` and returns what a
@@ -1231,6 +1560,10 @@ impl ReplaceAction for WhyAsker {
         self.asked
             .push((name.to_owned(), why.cloned(), difference.to_owned()));
         self.answer
+    }
+
+    fn register_mcp(&mut self, _name: &str, _difference: &str) -> bool {
+        false
     }
 }
 

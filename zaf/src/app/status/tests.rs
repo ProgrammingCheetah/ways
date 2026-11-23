@@ -1094,23 +1094,26 @@ fn epic_of(version: &str) -> Epic {
 }
 
 #[test]
-fn status_names_a_release_with_objectives_due() {
+fn status_due_release_points_to_chair() {
     let (dir, manifest) = release_project(false, false);
     let text = releases_screen(dir.path(), &manifest, &[]).render_text();
-    assert!(
-        text.contains("release 0.6.0: objectives due, run zaf begin --version 0.6.0\n"),
-        "{text}"
+    let wanted = format!(
+        "release 0.6.0: objectives due\n{}\n",
+        crate::app::release::WAY_ON
     );
+    assert!(text.contains(&wanted), "{text}");
+    assert!(!text.contains("zaf begin"), "{text}");
 }
 
 #[test]
 fn status_names_a_release_with_design_due() {
     let (dir, manifest) = release_project(true, false);
     let text = releases_screen(dir.path(), &manifest, &[]).render_text();
-    assert!(
-        text.contains("release 0.6.0: design due, run zaf begin --version 0.6.0\n"),
-        "{text}"
+    let wanted = format!(
+        "release 0.6.0: design due\n{}\n",
+        crate::app::release::WAY_ON
     );
+    assert!(text.contains(&wanted), "{text}");
 }
 
 #[test]
@@ -1153,7 +1156,7 @@ fn a_version_is_released_when_the_vcs_holds_its_tag() {
 }
 
 #[test]
-fn status_json_lists_due_releases() {
+fn status_json_due_release_way_on() {
     let (dir, manifest) = release_project(false, false);
     let json = releases_screen(dir.path(), &manifest, &[]).to_json();
     let json: serde_json::Value = serde_json::from_str(&json).expect("json");
@@ -1163,6 +1166,7 @@ fn status_json_lists_due_releases() {
             "version": "0.6.0",
             "phase": "objectives",
             "command": "zaf begin --version 0.6.0",
+            "way_on": crate::app::release::WAY_ON,
         }])
     );
 }
@@ -1323,6 +1327,7 @@ fn the_lines_joined_are_the_rendered_text() {
         version: "0.5.3".to_owned(),
         phase: "design".to_owned(),
         command: "zaf begin --version 0.5.3".to_owned(),
+        way_on: crate::app::release::WAY_ON.to_owned(),
     });
     status.phases.push(PhaseLine {
         task: 5,
@@ -1349,7 +1354,7 @@ fn the_lines_joined_are_the_rendered_text() {
             .flatten()
             .any(|(m, text)| *m == meaning && text.as_str().contains(word))
     };
-    assert!(meant(Meaning::Verb, "zaf begin --version 0.5.3"));
+    assert!(meant(Meaning::Verb, crate::app::release::WAY_ON));
     assert!(meant(Meaning::Waiting, "question  "));
     assert!(meant(Meaning::Noun, "#9"));
     assert!(meant(Meaning::Dim, "0"), "a zero count is dim");
@@ -1474,6 +1479,7 @@ fn reordering_keeps_every_line() {
         version: "0.5.3".to_owned(),
         phase: "design".to_owned(),
         command: "zaf begin --version 0.5.3".to_owned(),
+        way_on: crate::app::release::WAY_ON.to_owned(),
     });
     screen.unparsed.push(UnparsedLine {
         number: 4,
@@ -1493,7 +1499,8 @@ fn reordering_keeps_every_line() {
     let mut wanted = vec![
         "questions 1 (#9)".to_owned(),
         "question  #9 Which columns are exported?".to_owned(),
-        "release 0.5.3: design due, run zaf begin --version 0.5.3".to_owned(),
+        "release 0.5.3: design due".to_owned(),
+        crate::app::release::WAY_ON.to_owned(),
         "orphaned  1 (#5)".to_owned(),
         "Ready, does not parse:".to_owned(),
         "  #4 Export header".to_owned(),

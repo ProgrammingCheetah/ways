@@ -36,9 +36,8 @@ use super::resolve::{
 };
 use super::slice_env::{SliceContext, SliceEnv, VERSION_VAR};
 use crate::adapters::process;
-use crate::app::schedule::binary;
 use crate::composition::{STATE_DIR, ZAF_HOME_VAR};
-use crate::domain::TicketId;
+use crate::domain::{TicketId, without_deleted};
 use crate::manifest::VcsKind;
 
 /// The exit code of a body that never ran; no action may declare it.
@@ -71,6 +70,25 @@ pub const CHAIN_VAR: &str = "ZAF_ACTION_CHAIN";
 
 /// The running action's log: where a nested call writes the path of its own.
 pub const LOG_VAR: &str = "ZAF_ACTION_LOG";
+
+/// The prefix of the variables that carry an action's own settings (`[actions.<name>]`).
+pub const SETTING_PREFIX: &str = "ZAF_SETTING_";
+
+/// The variable a setting reaches its action's run as: the key upper-cased, `-` written as `_`,
+/// after [`SETTING_PREFIX`]. `None` for a key no variable can carry (anything but letters, digits,
+/// `-` and `_`, or empty).
+pub fn setting_var(key: &str) -> Option<String> {
+    let carries = !key.is_empty()
+        && key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    carries.then(|| {
+        format!(
+            "{SETTING_PREFIX}{}",
+            key.to_ascii_uppercase().replace('-', "_")
+        )
+    })
+}
 
 /// The prefix of zaf's own variables, which no `[env]` name may start with.
 const RESERVED_PREFIX: &str = "ZAF_";
@@ -341,6 +359,10 @@ pub struct RunRequest<'a> {
     /// sets none and removes one the caller held. On a git project a name also resolves to its
     /// `<name>.git` first and passes over a file marked `vcs: jj` (a hook never does).
     pub vcs: Option<VcsKind>,
+    /// The settings of the action being run (`[actions.<name>]`), key and value: each reaches the
+    /// body as `ZAF_SETTING_<KEY>` ([`setting_var`]), and no other `ZAF_SETTING_*` variable does,
+    /// the caller's own included. Empty for an action with no table.
+    pub settings: BTreeMap<String, String>,
 }
 
 impl RunRequest<'_> {
@@ -1137,6 +1159,17 @@ fn spawn_body(request: &RunRequest<'_>, body: Body<'_>, slice_env: &SliceEnv) ->
             unsafe { command.pre_exec(move || take_pty_as_terminal(limit)) };
         }
     }
+    // A parent's settings are the parent's: a nested run starts from none and gets its own.
+    for (name, _) in std::env::vars_os() {
+        if name.to_string_lossy().starts_with(SETTING_PREFIX) {
+            command.env_remove(name);
+        }
+    }
+    for (key, value) in &request.settings {
+        if let Some(var) = setting_var(key) {
+            command.env(var, value);
+        }
+    }
     match request.project_root {
         Some(root) => command.env(ROOT_VAR, root),
         None => command.env_remove(ROOT_VAR),
@@ -1213,7 +1246,7 @@ fn put_running_zaf_first(command: &mut Command, home: &Path) {
     if cfg!(test) {
         return;
     }
-    let Ok(exe) = std::env::current_exe().map(binary::without_deleted) else {
+    let Ok(exe) = std::env::current_exe().map(without_deleted) else {
         return;
     };
     let folder = match zaf_folder(home, &exe) {

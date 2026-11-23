@@ -32,6 +32,14 @@ case "$*" in
         printf '{"version": 2, "plugins": {"%s": [{"scope": "user", "version": "%s", "installPath": "%s"}]}}\n' \
             "$3" "$FAKE_PACK_VERSION" "$FAKE_PACK_PATH" > "$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json" ;;
     "plugin list") echo "No plugins installed" ;;
+    "mcp add-json"*)
+        mkdir -p "$CLAUDE_CONFIG_DIR"; : > "$CLAUDE_CONFIG_DIR/.fake-mcp" ;;
+    "mcp get zaf")
+        if [ -e "${CLAUDE_CONFIG_DIR:-/nonexistent}/.fake-mcp" ]; then
+            printf 'zaf:\n  Scope: User config (available in all your projects)\n  Status: Connected\n  Type: stdio\n  Command: zaf\n  Args: mcp\n  Environment:\n\n'
+        else
+            echo "No MCP server found with name: zaf" >&2; exit 1
+        fi ;;
     *) ;;
 esac
 "#;

@@ -323,8 +323,15 @@ impl PackShell {
 
 impl Shell for PackShell {
     fn run(&self, line: &CommandLine) -> Result<GateRun, PortError> {
-        self.lines.lock().expect("lock").push(line.to_string());
         let text = line.as_ref();
+        // zaf's MCP is already in every profile, and these tests are about the plugin lines.
+        if text.contains(" claude mcp get ") {
+            return Ok(GateRun {
+                verdict: GateVerdict::Passed,
+                output: crate::app::profile::GET_SHOWS_OURS.to_owned(),
+            });
+        }
+        self.lines.lock().expect("lock").push(line.to_string());
         if self.passes && text.contains(" claude plugin install ") {
             let home = text.split('\'').nth(1).expect("a profile home");
             let record = serde_json::json!({

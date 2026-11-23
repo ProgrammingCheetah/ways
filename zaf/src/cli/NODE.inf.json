@@ -105,6 +105,16 @@
       "node": true
     },
     {
+      "name": "mcp.rs",
+      "role": "the MCP server's CLI layer: the tool catalog read from clap's verbs",
+      "node": false
+    },
+    {
+      "name": "mcp/",
+      "role": "catalog.rs (the visible verbs as tools, and the line checker over clap) and its tests",
+      "node": false
+    },
+    {
       "name": "profile.rs",
       "role": "profile init: the hermetic Claude profiles under .zaf/profiles/",
       "node": false
@@ -160,6 +170,11 @@
       "node": false
     },
     {
+      "name": "spawn_start.rs",
+      "role": "`spawn start --version <v>`: starts the project's scheduler detached through the app-layer start and prints its pid and log; a scheduler already holding the lock is handed back with its pid and nothing is started (both exit 0); an invalid version exits 1, a start that failed exits 2; --json gives pid, started, log",
+      "node": false
+    },
+    {
       "name": "spawn_stop.rs",
       "role": "`spawn stop <task>`: ends the instance running the task and every process of its group (terminate, then kill after a grace) and releases its claim; exit 1 when none runs",
       "node": false
@@ -196,7 +211,7 @@
     },
     {
       "name": "update.rs",
-      "role": "zaf update [--check]: GitHub releases of ProgrammingCheetah/ways, one line on a change, exit 1 on a check that finds a newer release",
+      "role": "zaf update [--check|--yes]: GitHub releases of ProgrammingCheetah/ways, one line on a change, exit 1 on a check that finds a newer release; --yes runs the plan with the Assumed answers, no terminal, ends on one line naming what was replaced and kept, exit 2 on a failed step, nothing changed inside an instance",
       "node": false
     },
     {

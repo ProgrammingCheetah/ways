@@ -131,6 +131,26 @@
       "name": "slot/",
       "role": "tests.rs",
       "node": false
+    },
+    {
+      "name": "mcp_rmcp.rs",
+      "role": "McpServer: the MCP server over stdio on rmcp, written by hand against its ServerHandler (no #[tool] macros); tools listed from the ToolHost port, a call run on a blocking task and mapped to one text block, isError and _meta[\"zaf/exit\"]; an unknown tool or ill-shaped arguments is a protocol error; the only module that names rmcp and tokio besides the runtime `zaf mcp` makes",
+      "node": false
+    },
+    {
+      "name": "mcp_rmcp/",
+      "role": "tests.rs",
+      "node": false
+    },
+    {
+      "name": "verb_process.rs",
+      "role": "VerbProcess: the VerbRunner port over the zaf binary on disk as a child process of its own group, in ZAF_ROOT, else CLAUDE_PROJECT_DIR, else the server's directory, without the nesting markers; ticks at an interval and kills the group on cancel",
+      "node": false
+    },
+    {
+      "name": "verb_process/",
+      "role": "tests.rs",
+      "node": false
     }
   ],
   "notes": [

@@ -211,16 +211,56 @@ fn epic_sign_quiet_with_json() {
     assert!(!spawned.exists());
 }
 
+/// No `issue comment` call on the board: the epic was left unsigned.
+fn assert_unsigned(project: &Project) {
+    assert!(
+        !project
+            .gh_calls()
+            .iter()
+            .any(|call| call.starts_with("issue comment")),
+        "the epic was signed: {:?}",
+        project.gh_calls()
+    );
+}
+
 #[test]
-fn epic_sign_quiet_with_stdin_closed() {
+fn epic_sign_refused_with_piped_stdin() {
+    let (project, spawned) = project(&[epic(1, "0.3.0", false)]);
+    let mut command = project.command_in(&project.root, &["epic", "sign", "1"]);
+    command.stdin(Stdio::piped());
+
+    let (code, stdout, stderr) = outcome(&command.output().expect("run zaf"));
+
+    assert_eq!(code, 1, "{stdout}{stderr}");
+    assert!(stderr.contains("Sign in zaf's chair."), "{stderr}");
+    assert!(!stdout.contains("signed #1"), "{stdout}");
+    assert_unsigned(&project);
+    assert!(!spawned.exists());
+}
+
+#[test]
+fn epic_sign_refused_with_claudecode() {
     let (project, spawned) = project(&[epic(1, "0.3.0", false)]);
 
-    let (code, stdout, stderr) = outcome(&project.zaf(&["epic", "sign", "1"]));
+    // On a terminal, so it is CLAUDECODE alone that refuses.
+    let (code, shown) = sign_on_pty(&project, &[], &[("CLAUDECODE", "1")], "y\n");
 
-    assert_eq!(code, 0, "{stdout}{stderr}");
-    assert!(stdout.starts_with("signed #1 sha256:"), "{stdout}");
-    assert!(!stdout.contains("Start the build"), "{stdout}");
+    assert_eq!(code, 1, "{shown}");
+    assert!(shown.contains("Sign in zaf's chair."), "{shown}");
+    assert!(!shown.contains("signed #1"), "{shown}");
+    assert_unsigned(&project);
     assert!(!spawned.exists());
+}
+
+#[test]
+fn epic_sign_on_terminal_still_signs() {
+    let (project, _spawned) = project(&[epic(1, "0.3.0", false), epic(2, "0.3.0", false)]);
+
+    let (code, shown) = sign_on_pty(&project, &[], &[], "");
+
+    assert_eq!(code, 0, "{shown}");
+    assert!(shown.contains("signed #1 sha256:"), "{shown}");
+    assert!(!shown.contains("Sign in zaf's chair."), "{shown}");
 }
 
 #[test]

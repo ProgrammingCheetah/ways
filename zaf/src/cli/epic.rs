@@ -1,11 +1,22 @@
-//! `zaf epic list|show|sign|file`: the open epics and where each stands, the Engineer's signature,
-//! and filing an epic of a version.
+//! `zaf epic list|show|sign|file|wait`: the open epics and where each stands, the Engineer's
+//! signature, filing an epic of a version, and waiting on one.
 //!
-//! `list` prints one line per open epic, `#<n> <stage> <done> of <total>  <title>`; `show`
+//! `wait <epic> [--minutes <n>]` (default 60, at least 1) blocks until a question on the epic or
+//! its tasks waits on the Engineer, a problem shows (one naming the epic or its tasks, or a
+//! project-wide one that appeared after the call began) or the epic is done; it prints what `show`
+//! prints, each open question (`#<q> on #<t>: <text>`) and a line `returned: …` naming which,
+//! and exits 0. With nothing by the minutes it prints `nothing yet` and exits 0; an epic that is
+//! not open exits 1, a board that cannot be read on the first read exits 2.
+//!
+//! `list` prints one line per open epic, `#<n> <stage> <done> of <total>  <title>`, then for each
+//! release whose objectives or design are due `release <v>: <phase> due` and the way on to the
+//! chair ([`crate::app::release::WAY_ON`]), read as `zaf status` reads them; `show`
 //! prints that line for one epic and then one indented line per task,
 //! `#<t> <state> [<group>]  <title>`, and with `--more` a blank line and the epic's body. `sign`
 //! prints `signed #<n> sha256:<hex>`, or `#<n> is already signed` when the signature holds the
-//! body; it exits 1 inside an instance or for a ticket that is no open epic. A new signature asks
+//! body; it exits 1 inside an instance, inside Claude Code (`CLAUDECODE` set) or with no terminal
+//! on stdin (`Sign in zaf's chair.`, before anything else is read), or for a ticket that is no
+//! open epic. A new signature asks
 //! the running scheduler for a tick; a request that cannot be written says so on stderr and
 //! changes neither the signature nor the exit. When that signature is the last one of its
 //! version, at a terminal, outside an instance and without `--json`, it asks `Every epic of <v> is
@@ -15,7 +26,7 @@
 //! stdin and prints the new epic's id (the open epic's of that version and title, when there is
 //! one); an empty title or body exits 1, as does a board that cannot file an epic.
 
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::json;
 
@@ -26,10 +37,12 @@ use super::setup::as_instance;
 use super::{Cli, EpicAction};
 use crate::adapters::process;
 use crate::app::actions::Terminal;
+use crate::app::chair::gatherer::floor_of;
+use crate::app::epic::wait::{self, Clock, ProjectGather, Waited};
 use crate::app::epic::{self, EpicError, FileOutcome, SignGuard, SignOutcome};
-use crate::app::schedule::{binary, request};
+use crate::app::schedule::request;
 use crate::composition::Composition;
-use crate::domain::Signature;
+use crate::domain::{Signature, without_deleted};
 
 /// Whether a new signature may ask to start the build: the Engineer's own run (no instance),
 /// at a terminal, with text output.
@@ -53,7 +66,7 @@ fn spawn_watch_command(exe: std::path::PathBuf, version: &str) -> std::process::
 /// Becomes `zaf spawn --watch --version <version>` in this process's place, run by this very
 /// binary (as `zaf update` finds it); it comes back only with the error of an exec that failed.
 pub(super) fn exec_spawn_watch(version: &str) -> std::io::Error {
-    let exe = match std::env::current_exe().map(binary::without_deleted) {
+    let exe = match std::env::current_exe().map(without_deleted) {
         Ok(exe) => exe,
         Err(error) => return error,
     };
@@ -81,9 +94,114 @@ fn start_build(version: &str) -> u8 {
     BACKEND
 }
 
+/// Where `zaf epic sign` is run from, as its refusal reads it: the environment and the terminal
+/// are read once, here, so a test sets both without touching the process.
+#[derive(Debug, Clone, Copy)]
+struct Seat {
+    /// `CLAUDECODE` is set: this process runs inside Claude Code.
+    claude_code: bool,
+    /// Stdin is a terminal.
+    stdin_terminal: bool,
+}
+
+impl Seat {
+    /// This process's own seat.
+    fn here() -> Self {
+        use std::io::IsTerminal;
+        Self {
+            claude_code: std::env::var_os("CLAUDECODE").is_some(),
+            stdin_terminal: std::io::stdin().is_terminal(),
+        }
+    }
+
+    /// Whether signing is refused here: inside Claude Code, or with no terminal on stdin. Only
+    /// the Engineer's own terminal signs, and the chair signs too.
+    fn refuses_signing(self) -> bool {
+        self.claude_code || !self.stdin_terminal
+    }
+}
+
+/// The least time between two reads of the board while `zaf epic wait` waits.
+const WAIT_EVERY: Duration = Duration::from_secs(15);
+
+/// The wall clock `zaf epic wait` waits by.
+struct WallClock(Instant);
+
+impl Clock for WallClock {
+    fn now(&self) -> Duration {
+        self.0.elapsed()
+    }
+
+    fn sleep(&self, time: Duration) {
+        std::thread::sleep(time);
+    }
+}
+
+/// `zaf epic wait <epic> [--minutes <n>]`: what ended the wait, printed as `epic show` and the
+/// open questions and a line naming the reason (exit 0), or `nothing yet` (exit 0); an epic that
+/// is not open exits 1, a board that cannot be read on the first read exits 2.
+fn wait_verb(
+    cli: &Cli,
+    composition: &Composition,
+    board: &dyn crate::ports::Board,
+    epic: crate::domain::TicketId,
+    minutes: u32,
+) -> u8 {
+    let path = cli.verb.path();
+    let gather = ProjectGather {
+        root: composition.root().to_owned(),
+    };
+    let every = WAIT_EVERY.max(floor_of(composition.manifest().board.kind));
+    let limit = Duration::from_secs(u64::from(minutes) * 60);
+    let waited = match wait::wait(&gather, &WallClock(Instant::now()), epic, limit, every) {
+        Ok(waited) => waited,
+        Err(error @ wait::WaitError::NotAnEpic(_)) => {
+            crate::eprintln_zaf!("zaf {path}: {error}");
+            return REFUSED;
+        }
+        Err(error @ wait::WaitError::Board(_)) => {
+            crate::eprintln_zaf!("zaf {path}: {error}");
+            return BACKEND;
+        }
+    };
+    let Waited::Returned {
+        reason, questions, ..
+    } = waited
+    else {
+        if cli.json {
+            println!("{}", json!({ "returned": "nothing_yet" }));
+        } else {
+            println!("nothing yet");
+        }
+        return OK;
+    };
+    // An epic closed since the first read is no open epic to show.
+    let view = epic::show(board, epic).ok();
+    if cli.json {
+        println!(
+            "{}",
+            json!({ "returned": reason, "epic": view, "questions": questions })
+        );
+        return OK;
+    }
+    match &view {
+        Some(view) => print!("{}", Screen::detect().draw(&view.lines())),
+        None => println!("{epic} is closed"),
+    }
+    for question in &questions {
+        println!("{}", crate::domain::printable(&question.render()));
+    }
+    println!("{}", reason.line());
+    OK
+}
+
 /// Runs the verb.
 pub fn run(cli: &Cli, action: &EpicAction) -> u8 {
     let path = cli.verb.path();
+    if matches!(action, EpicAction::Sign { .. }) && Seat::here().refuses_signing() {
+        crate::eprintln_zaf!("zaf {path}: Sign in zaf's chair.");
+        return REFUSED;
+    }
     let composition = match Composition::discover_here() {
         Ok(composition) => composition,
         Err(error) => return exit::fail_composition(&path, &error),
@@ -92,14 +210,20 @@ pub fn run(cli: &Cli, action: &EpicAction) -> u8 {
         Ok(board) => board,
         Err(error) => return exit::fail_composition(&path, &error),
     };
+    if let EpicAction::Wait { epic, minutes } = action {
+        return wait_verb(cli, &composition, board.as_ref(), *epic, *minutes);
+    }
     let mut build: Option<String> = None;
     let done = match action {
-        EpicAction::List => epic::list(board.as_ref()).map(|lines| {
+        EpicAction::Wait { .. } => unreachable!("`wait` is run before this match"),
+        EpicAction::List => epic::list_with_due(board.as_ref(), |epics| {
+            super::status::due_releases(&composition, epics)
+        })
+        .map(|list| {
             if cli.json {
-                println!("{}", json!(lines));
+                println!("{}", json!(list.epics));
             } else {
-                let drawn: Vec<_> = lines.iter().map(epic::EpicLine::line).collect();
-                print!("{}", Screen::detect().draw(&drawn));
+                print!("{}", Screen::detect().draw(&list.lines()));
             }
         }),
         EpicAction::Show { epic } => epic::show(board.as_ref(), *epic).map(|view| {
@@ -215,6 +339,18 @@ pub fn run(cli: &Cli, action: &EpicAction) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signing_is_refused_inside_claude_code_or_without_a_terminal() {
+        let seat = |claude_code, stdin_terminal| Seat {
+            claude_code,
+            stdin_terminal,
+        };
+        assert!(seat(true, true).refuses_signing());
+        assert!(seat(false, false).refuses_signing());
+        assert!(seat(true, false).refuses_signing());
+        assert!(!seat(false, true).refuses_signing());
+    }
     use crate::app::epic::{EpicLine, EpicView};
     use crate::cli::screen::{code, strip_escapes};
     use crate::domain::screen::Meaning;
@@ -297,14 +433,14 @@ mod tests {
 
     #[test]
     fn build_start_runs_the_current_executable() {
-        let exe = binary::without_deleted(std::env::current_exe().unwrap());
+        let exe = without_deleted(std::env::current_exe().unwrap());
         let command = spawn_watch_command(exe.clone(), "0.5.2");
         assert_eq!(command.get_program(), exe.as_os_str());
         assert_ne!(command.get_program(), "zaf");
         let args: Vec<_> = command.get_args().collect();
         assert_eq!(args, ["spawn", "--watch", "--version", "0.5.2"]);
         let deleted = std::path::PathBuf::from("/opt/zaf (deleted)");
-        let command = spawn_watch_command(binary::without_deleted(deleted), "0.5.2");
+        let command = spawn_watch_command(without_deleted(deleted), "0.5.2");
         assert_eq!(command.get_program(), "/opt/zaf");
     }
 }

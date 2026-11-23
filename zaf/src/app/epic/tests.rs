@@ -138,6 +138,68 @@ fn the_list_shows_each_open_epic_with_its_stage_and_tally() {
     assert_eq!(printed["stage"], "unsigned");
 }
 
+/// A project root with the release folder of `0.6.0`: its objectives signed or not, and its
+/// design written and signed when `design` is set.
+fn release_root(
+    objectives_signed: bool,
+    design: bool,
+) -> (tempfile::TempDir, crate::manifest::Manifest) {
+    use crate::domain::DocumentSignature;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let folder = dir.path().join(".teams/releases/0.6.0");
+    std::fs::create_dir_all(&folder).expect("folder");
+    let objectives = if objectives_signed {
+        DocumentSignature::sign("The objectives.\n", UNIX_EPOCH)
+    } else {
+        "The objectives.\n".to_owned()
+    };
+    std::fs::write(folder.join("objectives.md"), objectives).expect("objectives");
+    if design {
+        let text = DocumentSignature::sign("The design.\n", UNIX_EPOCH);
+        std::fs::write(folder.join("design.md"), text).expect("design");
+    }
+    let manifest =
+        "[project]\nname = \"demo\"\n[board]\nkind = \"github-issues\"\nrepo = \"owner/demo\"\n";
+    (dir, manifest.parse().expect("manifest"))
+}
+
+fn list_of(dir: &Path, manifest: &crate::manifest::Manifest) -> String {
+    let list = list_with_due(&board(), |epics| {
+        release::due_releases(dir, manifest, epics, &|_| false)
+    })
+    .expect("lists");
+    crate::domain::screen::plain(&list.lines())
+}
+
+#[test]
+fn epic_list_shows_due_release_way_on() {
+    let (dir, manifest) = release_root(true, false);
+    let text = list_of(dir.path(), &manifest);
+    assert_eq!(
+        text,
+        format!(
+            "#10 unsigned 0 of 0  tickets\nrelease 0.6.0: design due\n{}\n",
+            release::WAY_ON
+        )
+    );
+    assert!(!text.contains("zaf begin"), "{text}");
+}
+
+#[test]
+fn epic_list_without_due_release_unchanged() {
+    let (dir, manifest) = release_root(true, true);
+    let text = list_of(dir.path(), &manifest);
+    assert_eq!(text, "#10 unsigned 0 of 0  tickets\n");
+    let plain_list = crate::domain::screen::plain(
+        &list(&board())
+            .expect("lists")
+            .iter()
+            .map(EpicLine::line)
+            .collect::<Vec<_>>(),
+    );
+    assert_eq!(text, plain_list);
+}
+
 #[test]
 fn show_lists_the_epics_tasks_closed_ones_too_in_id_order() {
     let board = board();

@@ -1,0 +1,5 @@
+{"type":"user","timestamp":"2026-11-22T10:00:00Z","message":{"role":"user","content":"start"}}
+this line is not json
+{"type":"assistant","timestamp":"2026-11-22T10:00:01Z","message":{"content":[{"type":"text","text":"zaf board ready"},{"type":"tool_use","name":"mcp__zaf__board_ready","input":{}}]}}
+{"type":"assistant","timestamp":"2026-11-22T10:00:02Z","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"echo zaf; git log --grep \"zaf status\" 'zaf board ready'"}}]}}
+{"type":"assistant","timestamp":"2026-11-22T10:00:03Z","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"ls zaf-x zaf/src && cat zaf.toml | rg zaf"}}]}}

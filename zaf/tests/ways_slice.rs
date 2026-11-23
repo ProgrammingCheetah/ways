@@ -990,6 +990,7 @@ fn implementing_with(ticket: &str) -> Project {
     let record = folder.to_string_lossy().into_owned();
     let script = format!(
         "#!/bin/sh\n\
+         if [ \"$1\" = mcp ]; then [ \"$2\" = get ] && exit 1; exit 0; fi\n\
          printf '%s\\n' \"$2\" >> '{record}/prompts'\n\
          workspace=${{2##*Workspace: }}\n\
          workspace=${{workspace%.}}\n\

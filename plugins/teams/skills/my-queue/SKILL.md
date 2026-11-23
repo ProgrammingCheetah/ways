@@ -17,13 +17,13 @@ No teams file: say so in one line and build from the forge alone. The Engineer's
 ## 1. Gather (cheap; verify, don't trust)
 
 Skip anything absent:
-1. **The board is the queue** in a zaf project (a `.zaf.toml` or `.zaf/config.toml`): `zaf status --json` (the board, running instances, slots, guard and open questions). Each open question is the Engineer's (Questions; a `door` is marked); a running instance is Waiting; a signed epic waiting on nothing is Incoming. Without a zaf manifest, `<docs>/queue.md` when it exists: struck-through items (`~~…~~`) or items marked done are done; skip them. If it already uses the headings Ready, Incoming, Questions, Waiting, Optional, start from them, still checked against live state.
+1. **The board is the queue** in a zaf project (a `.zaf.toml` or `.zaf/config.toml`): the `status` tool with `json` set (the board, running instances, slots, guard and open questions). Each open question is the Engineer's (Questions; a `door` is marked); a running instance is Waiting; a signed epic waiting on nothing is Incoming. Without a zaf manifest, `<docs>/queue.md` when it exists: struck-through items (`~~…~~`) or items marked done are done; skip them. If it already uses the headings Ready, Incoming, Questions, Waiting, Optional, start from them, still checked against live state.
 2. **Open questions:** use the Grep tool for `Claude's answer (` in the current release folder, `<docs>/releases/<version>/`. Current = the release the queue's latest status note names, else the most recently modified folder. A question already answered in a `rulings-*.md` there, or whose **Engineer:** line is filled, is not open.
 3. **Live PRs, which win over every file.** GitHub: `gh pr list --state open --json number,title,baseRefName,headRefName,isDraft,mergeable,statusCheckRollup,reviewDecision,latestReviews,reviewRequests,url`, plus `-R OWNER/REPO` for any PR in another repo the queue names. `gh` absent or failing: say in one line what wasn't checked; never invent PR or CI state. Another forge: its CLI's equivalent.
    - A PR into an engineer-reviews branch is the Engineer's to review once its checks are green. While they run, it is Incoming. Draft, marked "hold merge", failing checks or a merge conflict: Waiting.
    - For PRs into engineer-reviews branches, also run `gh pr view <n> --json comments`. A comment starting `<prefix> hold merge` with no later `<prefix> hold lifted` means "hold merge".
    - With `Reviews › bot` set, expect its review only when `reviewRequests` or `latestReviews` names it. Requested and not yet in `latestReviews`: say so in the row. Neither names it: the bot wasn't requested (a PR body line `Review bot: not requested (<reason>)` is the waiver), so no wait and no flag.
-   - A PR into any other branch is never the Engineer's (`zaf slice merge` merges task PRs): leave it out unless the queue names it.
+   - A PR into any other branch is never the Engineer's (the `do` tool with `args` `["slice-merge","<task>"]` merges task PRs): leave it out unless the queue names it.
 4. **Agents in flight:** whatever this session knows is running. Never predict a running agent's result.
 
 Reconcile:

@@ -1,0 +1,307 @@
+#!/bin/sh
+# zaf description: file a bug report about zaf on the issue tracker the machine's [actions.bug-report] settings name; it takes --title <t> --body <b> [--tags a,b] [--verb <verb or tool>] [--exit <n>] and refuses, filing nothing, when a parameter or a setting is missing
+# zaf 1: refused: a parameter is missing or malformed, or a setting (kind, url, repo, token_env) is missing or kind is not github-issues or forgejo-issues
+# zaf 2: a backend failed (the place is unreachable or refused the report, or a tool it needs is missing)
+# zaf mode: 755
+# changed: new; a machine-tier action (design addendum D20), installed in ~/.zaf/actions/ and never in a project's
+
+usage() {
+    cat >&2 <<'EOF'
+Please use the following parameters:
+  --title <text>          the report's title (required)
+  --body <text>           what happened (required)
+  --tags <a,b>           labels to put on the report, comma-separated (optional)
+  --verb <verb or tool>   the zaf verb or the tool that failed (optional)
+  --exit <n>              the exit code it gave (optional)
+EOF
+    exit 1
+}
+
+title=
+body=
+tags=
+verb=
+code=
+while [ "$#" -gt 0 ]; do
+    # Every parameter takes one value; a flag with none, or an unknown one, is malformed.
+    [ "$#" -ge 2 ] || usage
+    case $1 in
+        --title) title=$2 ;;
+        --body) body=$2 ;;
+        --tags) tags=$2 ;;
+        --verb) verb=$2 ;;
+        --exit) code=$2 ;;
+        *) usage ;;
+    esac
+    shift 2
+done
+[ -n "$title" ] && [ -n "$body" ] || usage
+case $code in
+    *[!0-9]*) usage ;;
+esac
+
+# The settings zaf passes from [actions.bug-report] as ZAF_SETTING_<KEY>.
+missing=
+[ -n "${ZAF_SETTING_KIND:-}" ] || missing="$missing kind"
+[ -n "${ZAF_SETTING_URL:-}" ] || missing="$missing url"
+[ -n "${ZAF_SETTING_REPO:-}" ] || missing="$missing repo"
+[ -n "${ZAF_SETTING_TOKEN_ENV:-}" ] || missing="$missing token_env"
+wrong=
+if [ -n "${ZAF_SETTING_KIND:-}" ]; then
+    case $ZAF_SETTING_KIND in
+        github-issues | forgejo-issues) ;;
+        *) wrong=kind ;;
+    esac
+fi
+if [ -n "$missing" ] || [ -n "$wrong" ]; then
+    if [ -n "$missing" ]; then
+        echo "bug-report: these settings are missing:$missing" >&2
+    fi
+    if [ -n "$wrong" ]; then
+        echo "bug-report: kind is wrong: \"$ZAF_SETTING_KIND\"; it is github-issues or forgejo-issues" >&2
+    fi
+    cat >&2 <<'EOF'
+Add this table to ~/.zaf/config.toml:
+
+[actions.bug-report]
+kind = "forgejo-issues"            # or "github-issues"
+url = "https://forge.example.com"  # the instance's address
+repo = "owner/name"                # the repository that takes the reports
+token_env = "BUG_REPORT_TOKEN"     # the environment variable that holds its token
+EOF
+    exit 1
+fi
+
+# The token lives in the variable token_env names. It is read from the environment and written
+# only to curl's stdin, as a header: never on a command line, never in the log.
+case $ZAF_SETTING_TOKEN_ENV in
+    *[!A-Za-z0-9_]* | [0-9]*)
+        echo "bug-report: token_env is not a variable name: \"$ZAF_SETTING_TOKEN_ENV\"" >&2
+        exit 1
+        ;;
+esac
+eval "token=\${$ZAF_SETTING_TOKEN_ENV:-}"
+if [ -z "$token" ]; then
+    echo "bug-report: $ZAF_SETTING_TOKEN_ENV is not set or is empty; it holds the token for $ZAF_SETTING_URL" >&2
+    exit 1
+fi
+
+# Awk helpers. Text goes in through stdin or the environment, never through -v, which would
+# read the backslashes in it as escapes.
+AWK_REP='function rep(s, f, t,   out, i) {
+    out = ""
+    while ((i = index(s, f)) > 0) { out = out substr(s, 1, i - 1) t; s = substr(s, i + length(f)) }
+    return out s
+}'
+
+# $HOME written as ~, so the name of a home folder does not leave the machine.
+scrub() {
+    if [ -z "${HOME:-}" ] || [ "$HOME" = / ]; then
+        cat
+        return
+    fi
+    SCRUB_HOME=$HOME awk "$AWK_REP"'
+        BEGIN { h = ENVIRON["SCRUB_HOME"]; n = 0 }
+        { printf "%s%s", (n++ ? "\n" : ""), rep($0, h, "~") }'
+}
+
+# The text as the inside of a JSON string.
+json() {
+    tr -d '\000-\010\013\014\016-\037' | awk "$AWK_REP"'
+        { s = rep($0, "\\", "\\\\"); s = rep(s, "\"", "\\\""); s = rep(s, "\t", "\\t")
+          s = rep(s, "\r", "\\r"); printf "%s%s", (n++ ? "\\n" : ""), s }'
+}
+
+# The text as the inside of a quoted string in a curl config.
+quoted() {
+    awk "$AWK_REP"'{ printf "%s", rep(rep($0, "\\", "\\\\"), "\"", "\\\"") }'
+}
+
+# The tags as `a, b`: split on commas, trimmed, the empty ones dropped.
+tag_list=
+tag_names=
+if [ -n "$tags" ]; then
+    set -f
+    old_ifs=$IFS
+    IFS=,
+    for tag in $tags; do
+        tag=${tag#"${tag%%[![:space:]]*}"}
+        tag=${tag%"${tag##*[![:space:]]}"}
+        [ -n "$tag" ] || continue
+        tag_list="${tag_list:+$tag_list, }$tag"
+        tag_names="${tag_names:+$tag_names
+}$tag"
+    done
+    IFS=$old_ifs
+    set +f
+fi
+
+version=$(zaf --version 2>/dev/null | head -n 1)
+[ -n "$version" ] || version=unknown
+system="$(uname -s) $(uname -m)"
+role=${ZAF_INSTANCE:-}
+if [ -n "$role" ]; then
+    role=${role%% *}
+else
+    role="outside zaf"
+fi
+
+report="Tags:${tag_list:+ $tag_list}
+
+zaf: $version
+System: $system"
+[ -z "$verb" ] || report="$report
+Verb: $verb"
+[ -z "$code" ] || report="$report
+Exit: $code"
+report="$report
+Reported by: $role
+
+$body"
+
+report=$(printf '%s' "$report" | scrub)
+title=$(printf '%s' "$title" | scrub)
+# Cut to 8,000 characters. The bytes are counted, which is never more; a cut inside a multi-byte
+# character drops that character.
+report=$(printf '%s' "$report" | head -c 8000 | { iconv -c -f UTF-8 -t UTF-8 2>/dev/null || cat; })
+
+work=$(mktemp -d) || {
+    echo "bug-report: cannot make a temp folder" >&2
+    exit 2
+}
+trap 'rm -rf "$work"' EXIT
+trap 'exit 2' HUP INT TERM
+
+# A GitHub place: `gh` files it under the configured token and never the machine's own login.
+# The token reaches gh through its environment, never a command line. gh reads GH_TOKEN on
+# github.com and GH_ENTERPRISE_TOKEN (with GH_HOST) on any other host, so every token it could
+# inherit is cleared first and only the one for this host is set.
+if [ "$ZAF_SETTING_KIND" = github-issues ]; then
+    if ! command -v gh >/dev/null 2>&1; then
+        echo "bug-report: gh is not installed; it files on a GitHub place" >&2
+        exit 2
+    fi
+    host=${ZAF_SETTING_URL#*://}
+    host=${host%%/*}
+    host=${host##*@}
+    host=$(printf '%s' "$host" | tr 'A-Z' 'a-z')
+    case $host in
+        '')
+            echo "bug-report: url has no host: \"$ZAF_SETTING_URL\"" >&2
+            exit 1
+            ;;
+        github.com | www.github.com) enterprise= ;;
+        *) enterprise=$host ;;
+    esac
+
+    # gh with its environment cleaned and the token set for this host. It runs in a subshell, so
+    # none of it reaches the rest of the script.
+    ghx() {
+        (
+            unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN GH_HOST GH_REPO
+            if [ -n "$enterprise" ]; then
+                export GH_HOST="$enterprise" GH_ENTERPRISE_TOKEN="$token"
+            else
+                export GH_TOKEN="$token"
+            fi
+            exec gh "$@"
+        )
+    }
+
+    # The labels the tags name: a tag that names no label is dropped, and so is any under type/ or
+    # state/, which zaf's own tracker keeps for itself.
+    set --
+    if [ -n "$tag_names" ]; then
+        if ghx label list -R "$ZAF_SETTING_REPO" --limit 1000 --json name --jq '.[].name' \
+            </dev/null >"$work/labels" 2>"$work/err"; then
+            printf '%s\n' "$tag_names" | awk '
+                NR == FNR { have[$0] = 1; next }
+                $0 != "" && $0 !~ /^(type|state)\// && ($0 in have) && !seen[$0]++ { print }' \
+                "$work/labels" - >"$work/wanted"
+            while IFS= read -r label; do
+                [ -n "$label" ] && set -- "$@" --label "$label"
+            done <"$work/wanted"
+        else
+            echo "bug-report: the labels could not be read; filing without any" >&2
+        fi
+    fi
+
+    if ! printf '%s' "$report" | ghx issue create -R "$ZAF_SETTING_REPO" "$@" \
+        --title "$title" --body-file - >"$work/out" 2>"$work/err"; then
+        echo "bug-report: gh failed: $(cat "$work/err")" >&2
+        exit 2
+    fi
+    link=$(grep -o 'https\{0,1\}://[^[:space:]]*' "$work/out" | tail -n 1)
+    if [ -z "$link" ]; then
+        echo "bug-report: gh gave no link: $(cat "$work/out")" >&2
+        exit 2
+    fi
+    echo "$link"
+    exit 0
+fi
+
+auth=$(printf 'Authorization: token %s' "$token" | quoted)
+unset token
+
+# One call to the place: the HTTP status goes to `status`, its body to `reply`, curl's own
+# complaint to $work/err. It fails when curl does. The token is never printed.
+forge() {
+    method=$1
+    path=$2
+    payload=${3:-}
+    {
+        printf 'header = "%s"\n' "$auth"
+        if [ -n "$payload" ]; then
+            printf 'data-raw = "%s"\n' "$(printf '%s' "$payload" | quoted)"
+        fi
+    } | curl --disable --silent --show-error --globoff --config - \
+        --request "$method" --header 'Accept: application/json' \
+        --header 'Content-Type: application/json' \
+        --connect-timeout 10 --max-time 30 \
+        --write-out '\n%{http_code}' \
+        "${ZAF_SETTING_URL%/}/api/v1/repos/$ZAF_SETTING_REPO$path" \
+        >"$work/out" 2>"$work/err"
+    curl_exit=$?
+    status=$(tail -n 1 "$work/out")
+    # Everything but the last line, which is the status.
+    reply=$(awk 'NR > 1 { print prev } { prev = $0 }' "$work/out")
+    [ "$curl_exit" -eq 0 ]
+}
+
+# The ids of the labels the tags name: a tag that names no label is dropped, and so is any under
+# type/ or state/, which zaf's own tracker keeps for itself.
+label_ids=
+if [ -n "$tag_names" ]; then
+    if forge GET '/labels?limit=50' && [ "${status#2}" != "$status" ]; then
+        label_ids=$(printf '%s' "$reply" | WANT_TAGS=$tag_names awk '
+            BEGIN {
+                RS = "{"
+                n = split(ENVIRON["WANT_TAGS"], w, "\n")
+                for (i = 1; i <= n; i++) if (w[i] != "" && w[i] !~ /^(type|state)\//) want[w[i]] = 1
+            }
+            match($0, /"id":[0-9]+/) {
+                id = substr($0, RSTART + 5, RLENGTH - 5)
+                if (match($0, /"name":"[^"]*"/) && !seen[id]) {
+                    name = substr($0, RSTART + 8, RLENGTH - 9)
+                    if (name in want) { seen[id] = 1; ids = ids (ids == "" ? "" : ",") id }
+                }
+            }
+            END { print ids }')
+    else
+        echo "bug-report: the labels could not be read; filing without any" >&2
+    fi
+fi
+
+issue="{\"title\":\"$(printf '%s' "$title" | json)\",\"body\":\"$(printf '%s' "$report" | json)\",\"labels\":[$label_ids]}"
+if ! forge POST /issues "$issue"; then
+    echo "bug-report: curl failed (exit $curl_exit): $(cat "$work/err")" >&2
+    exit 2
+fi
+link=$(printf '%s' "$reply" | grep -o '"html_url":"[^"]*"' | head -n 1)
+link=${link#\"html_url\":\"}
+link=${link%\"}
+if [ "${status#2}" = "$status" ] || [ -z "$link" ]; then
+    echo "bug-report: the place gave no link (status ${status:-none}): $reply" >&2
+    exit 2
+fi
+echo "$link"

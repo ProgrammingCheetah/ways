@@ -6,6 +6,7 @@
 
 mod answer;
 mod ask;
+mod binary_path;
 mod budget;
 mod changed_files;
 mod ci;
@@ -15,6 +16,7 @@ mod finding;
 mod ids;
 mod instance;
 mod labels;
+mod mcp;
 mod memory;
 mod profile;
 mod quote;
@@ -33,6 +35,7 @@ pub use ask::{
     Ask, AskError, AskKind, Asker, MAX_CONTEXT_LINES, MAX_QUESTIONS, QUESTION_WORD_LIMIT, Question,
     QuestionId,
 };
+pub use binary_path::without_deleted;
 pub use budget::{Budget, DEFAULT_RESERVE, Fit, SizeTable};
 pub use changed_files::ChangedFiles;
 pub use ci::{PullRequestFilter, WorkflowFilter, checks_expected};
@@ -45,6 +48,10 @@ pub use finding::{Finding, FindingSource, Location, Severity};
 pub use ids::{CommitId, IdError, PageId, RepoPath, TicketId, TreeId};
 pub use instance::{Instance, InstanceNumber, RoleName};
 pub use labels::{PageStatus, TicketState};
+pub use mcp::{
+    Cancel, CommandPath, ForbiddenSection, META_EXIT_KEY, McpCaller, Policy, Tick, ToolCall,
+    ToolResult, ToolSpec, Verdict as McpVerdict,
+};
 pub use memory::{MEBIBYTES_PER_UNIT, Mebibytes, Units};
 pub use profile::Profile;
 pub use quote::Quote;

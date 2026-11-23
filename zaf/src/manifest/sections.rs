@@ -490,20 +490,104 @@ pub struct CheckSection {
 /// The action timeout when `[actions]` gives none, in minutes.
 pub const DEFAULT_ACTION_TIMEOUT_MINUTES: u64 = 30;
 
-/// `[actions]`: how long an action may run.
+/// `[actions]`: how long an action may run, and beside it one `[actions.<name>]` table of string
+/// settings per action.
+///
+/// A setting value that is not a string, or a table name that is not a valid action name, fails
+/// the load naming the key, so a bad table never reaches an action's run. Layers merge key by key,
+/// the project's over the machine's.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(try_from = "RawActions")]
 pub struct ActionsSection {
     /// Minutes before an action run is killed, at least 1. Default: 30.
     pub timeout_minutes: u64,
+    settings: BTreeMap<ActionName, BTreeMap<String, String>>,
 }
 
 impl Default for ActionsSection {
     fn default() -> Self {
         Self {
             timeout_minutes: DEFAULT_ACTION_TIMEOUT_MINUTES,
+            settings: BTreeMap::new(),
         }
     }
+}
+
+/// `[actions]` as written: `timeout_minutes` and, for every other key, a value to check.
+#[derive(serde::Deserialize)]
+struct RawActions {
+    #[serde(default = "default_action_timeout_minutes")]
+    timeout_minutes: u64,
+    #[serde(flatten)]
+    tables: BTreeMap<String, toml::Value>,
+}
+
+fn default_action_timeout_minutes() -> u64 {
+    DEFAULT_ACTION_TIMEOUT_MINUTES
+}
+
+impl TryFrom<RawActions> for ActionsSection {
+    type Error = String;
+
+    fn try_from(raw: RawActions) -> Result<Self, Self::Error> {
+        let mut settings = BTreeMap::new();
+        for (name, value) in raw.tables {
+            check_action_table_name(&name)?;
+            let toml::Value::Table(table) = value else {
+                return Err(format!(
+                    "[actions] `{name}` is not a setting: an action's settings are a table, `[actions.{name}]`, and the only key of `[actions]` itself is `timeout_minutes`"
+                ));
+            };
+            let mut pairs = BTreeMap::new();
+            for (key, value) in table {
+                let toml::Value::String(text) = value else {
+                    return Err(format!(
+                        "[actions.{name}] `{key}` must be a string, got {}",
+                        value.type_str()
+                    ));
+                };
+                pairs.insert(key, text);
+            }
+            settings.insert(ActionName::from(name), pairs);
+        }
+        Ok(Self {
+            timeout_minutes: raw.timeout_minutes,
+            settings,
+        })
+    }
+}
+
+impl ActionsSection {
+    /// The settings of the action `name`, as ordered key/value pairs; none when it has no table.
+    pub fn settings(&self, name: &str) -> impl Iterator<Item = (&str, &str)> {
+        self.settings
+            .get(&ActionName::from(name))
+            .into_iter()
+            .flat_map(|pairs| {
+                pairs
+                    .iter()
+                    .map(|(key, value)| (key.as_str(), value.as_str()))
+            })
+    }
+}
+
+/// An action's name as a table name, held to the rule `zaf do` holds a name to: not empty, no
+/// whitespace or control character, no path separator, not `.` or `..`.
+fn check_action_table_name(name: &str) -> Result<(), String> {
+    let reason = if name.is_empty() {
+        "is empty"
+    } else if name.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        "has whitespace or a control character"
+    } else if name.contains(['/', '\\']) {
+        "has a path separator"
+    } else if name == "." || name == ".." {
+        "climbs out of the actions folder"
+    } else {
+        return Ok(());
+    };
+    Err(format!(
+        "[actions.{name}] is not a valid action name: it {reason}"
+    ))
 }
 
 /// `[ask]`: the ladder of models a question climbs when a quote check fails.

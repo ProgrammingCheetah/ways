@@ -1320,6 +1320,8 @@ fn run_tick_hook(
         run: None,
         phase: None,
         vcs: manifest.vcs.as_ref().map(|vcs| vcs.kind),
+        // A hook is no action: it has no settings table.
+        settings: BTreeMap::new(),
     };
     let outcome = run_hook_with_input(&request, input);
     if outcome.result == RunResult::Ok {

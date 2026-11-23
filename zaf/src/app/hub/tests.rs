@@ -38,6 +38,7 @@ fn epic() -> EpicRow {
             total: 9,
             tickets: vec![ticket(250, Phase::Check)],
         }],
+        models: vec![],
     }
 }
 
@@ -636,4 +637,118 @@ fn gathered_state_carries_whole_titles() {
     let snapshot = gathered(dir.path(), &board, &Dead::default());
     assert_eq!(snapshot.epics[0].title, "Epic");
     assert_eq!(snapshot.epics[0].tickets[0].title, "A task");
+}
+
+const EPIC_NUMBER: u64 = 103;
+const TASK_NUMBER: u64 = 143;
+
+/// The frame of the fixture's epic, with instance 7 running on its task.
+fn running_frame(dir: &std::path::Path) -> String {
+    run_folder(dir, &instance(7), 4242);
+    draw(&gathered(dir, &board(), &Dead::default()), 100)
+}
+
+fn plan(dir: &std::path::Path, ticket: u64, role: &str, phases: &[&str], at: &str) {
+    let ticket = crate::domain::TicketId::from(ticket);
+    declare(dir, ticket, role, &words(phases)).expect("declares");
+    enter(dir, ticket, role, at).expect("enters");
+}
+
+#[test]
+fn an_epic_line_draws_the_planning_instance_phase() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    plan(
+        dir.path(),
+        EPIC_NUMBER,
+        "planning",
+        &["read", "file"],
+        "read",
+    );
+    let frame = running_frame(dir.path());
+    let lines: Vec<&str> = frame.lines().collect();
+    assert!(lines[0].starts_with("epic #103"), "{frame}");
+    let planning = lines[1];
+    assert!(planning.trim_start().starts_with("planning"), "{frame}");
+    assert!(planning.trim_end().ends_with("read"), "{frame}");
+    assert_eq!(filled(planning), bar_cells(planning) / 2, "{frame}");
+}
+
+#[test]
+fn an_epic_and_its_task_both_draw_their_models() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    plan(
+        dir.path(),
+        EPIC_NUMBER,
+        "planning",
+        &["read", "file"],
+        "read",
+    );
+    plan(
+        dir.path(),
+        TASK_NUMBER,
+        "programmer",
+        &["read", "write"],
+        "write",
+    );
+    let frame = running_frame(dir.path());
+    let lines: Vec<&str> = frame.lines().collect();
+    let at = |what: &str| {
+        lines
+            .iter()
+            .position(|line| line.contains(what))
+            .unwrap_or_else(|| panic!("{what}: {frame}"))
+    };
+    assert_eq!(at("planning"), at("epic #103") + 1, "{frame}");
+    assert_eq!(at("    programmer "), at("#143") + 1, "{frame}");
+    assert!(
+        lines[at("planning")].trim_end().ends_with("read"),
+        "{frame}"
+    );
+    assert!(
+        lines[at("    programmer ")].trim_end().ends_with("write"),
+        "{frame}"
+    );
+    assert!(at("#143") > at("planning"), "{frame}");
+}
+
+#[test]
+fn a_new_report_on_the_epic_redraws_its_model_row() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    plan(
+        dir.path(),
+        EPIC_NUMBER,
+        "planning",
+        &["read", "file"],
+        "read",
+    );
+    let before = running_frame(dir.path());
+    assert!(
+        before
+            .lines()
+            .any(|line| line.contains("planning") && line.trim_end().ends_with("read")),
+        "{before}"
+    );
+    let epic = crate::domain::TicketId::from(EPIC_NUMBER);
+    enter(dir.path(), epic, "planning", "file").expect("enters");
+    let mut report = report_at(100, "filing");
+    report.task = Some(epic);
+    append(dir.path(), &report).expect("appends");
+    let after = running_frame(dir.path());
+    let line = after
+        .lines()
+        .find(|line| line.contains("planning"))
+        .expect("the model row");
+    assert!(line.trim_end().ends_with("file"), "{after}");
+    assert_eq!(filled(line), bar_cells(line), "{after}");
+}
+
+#[test]
+fn an_epic_with_no_plan_draws_as_before() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let frame = running_frame(dir.path());
+    let lines: Vec<&str> = frame.lines().collect();
+    assert!(lines[0].starts_with("epic #103"), "{frame}");
+    assert!(lines[1].starts_with("  challenged · "), "{frame}");
+    assert!(lines[2].contains("#143"), "{frame}");
+    assert_eq!(lines.len(), 3, "{frame}");
 }

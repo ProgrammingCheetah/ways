@@ -31,6 +31,9 @@ pub struct ToolCall {
     pub command: Option<String>,
     /// `cwd`: where the session was.
     pub cwd: Option<PathBuf>,
+    /// `tool_input.args`, for an MCP call: the strings of the list, none when it is missing or not
+    /// a list, and a member that is not a string left out.
+    pub args: Vec<String>,
 }
 
 impl ToolCall {
@@ -49,6 +52,16 @@ impl ToolCall {
             cwd: text(value.get("cwd"))
                 .filter(|cwd| !cwd.is_empty())
                 .map(PathBuf::from),
+            args: value
+                .pointer("/tool_input/args")
+                .and_then(serde_json::Value::as_array)
+                .map(|list| {
+                    list.iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default(),
         }
     }
 
@@ -58,15 +71,32 @@ impl ToolCall {
             "Read" | "Grep" | "Glob" => READING,
             "Edit" | "Write" => WRITING,
             "Bash" => self.command.as_deref().map_or(WORKING, bash_word),
-            _ => WORKING,
+            tool => match tool.strip_prefix(ZAF_MCP_PREFIX) {
+                Some(verb) if !verb.is_empty() => {
+                    let words: Vec<&str> = ["zaf", verb]
+                        .into_iter()
+                        .chain(self.args.iter().map(String::as_str))
+                        .collect();
+                    word_of(&words)
+                }
+                _ => WORKING,
+            },
         }
     }
 }
 
+/// The prefix of the tool name of a verb of zaf's own MCP server.
+const ZAF_MCP_PREFIX: &str = "mcp__zaf__";
+
 /// The word for a Bash command: a pull request check waits on review; a test, a gate or a task
 /// check is testing; anything else is working.
 fn bash_word(command: &str) -> &'static str {
-    let words = words_of(command);
+    word_of(&words_of(command))
+}
+
+/// The word for a command already in words: the rules of `bash_word`, which an MCP call's `zaf`,
+/// verb and args go through with each arg kept whole.
+fn word_of(words: &[&str]) -> &'static str {
     let checks: Vec<&str> = words
         .windows(3)
         .filter(|window| window[0] == "zaf" && window[1] == "check")
@@ -214,3 +244,6 @@ fn walk(pieces: &[Piece], text: &str, task: Option<u64>) -> Option<u64> {
             .find_map(|count| walk(rest, &text[count..], task)),
     }
 }
+
+#[cfg(test)]
+mod tests;

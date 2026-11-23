@@ -90,6 +90,7 @@ impl Place {
             run: None,
             phase: None,
             vcs: None,
+            settings: std::collections::BTreeMap::new(),
         }
     }
 

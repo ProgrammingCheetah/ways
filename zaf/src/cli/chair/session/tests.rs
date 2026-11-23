@@ -123,6 +123,7 @@ fn ports(home: PathBuf, bin: &Path) -> PhasePorts {
                 run: None,
                 phase: None,
                 vcs: None,
+                settings: std::collections::BTreeMap::new(),
             };
             run_action(&request.with_phase(env))
         },

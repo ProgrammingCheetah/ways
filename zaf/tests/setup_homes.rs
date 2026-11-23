@@ -332,6 +332,8 @@ case "$*" in
     mkdir -p "$CLAUDE_CONFIG_DIR/plugins"
     printf '{"plugins":{"teams@ways":[{"version":"9.9.9"}]}}' \
       > "$CLAUDE_CONFIG_DIR/plugins/installed_plugins.json" ;;
+  "mcp get zaf") echo "No MCP server found with name: zaf" >&2; exit 1 ;;
+  "mcp add-json --scope user zaf "*) ;;
   *) echo "fake claude: $*" >&2; exit 1 ;;
 esac
 "#;

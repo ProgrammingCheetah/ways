@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs;
 use std::sync::Mutex;
 
@@ -15,9 +16,20 @@ struct RecordingShell {
     marketplaces: String,
     records: Option<String>,
     lines: Mutex<Vec<String>>,
+    /// What `claude mcp get zaf` shows per config dir; a dir not in it has no `zaf` server.
+    mcp: Mutex<HashMap<String, String>>,
+    /// The `claude mcp` subcommand that fails (`add-json`, `remove`), when one does.
+    mcp_failing: Option<&'static str>,
 }
 
+/// What `claude mcp get zaf` shows for an entry other than zaf's.
+const OTHER_MCP: &str = "zaf:\n  Scope: User config (available in all your projects)\n  Status: \u{2713} Connected\n  Type: stdio\n  Command: /elsewhere/zaf\n  Args: mcp\n  Environment:\n";
+/// What `claude mcp get zaf` shows for zaf's own entry.
+const OUR_MCP: &str = GET_SHOWS_OURS;
+
 impl RecordingShell {
+    /// Answers every plugin line with `verdict`. The `claude mcp` lines keep a state of their own
+    /// (`get` shows what `add-json` wrote) and pass, so what a test asks of the pack stays apart.
     fn answering(verdict: GateVerdict) -> Self {
         Self {
             verdict,
@@ -25,7 +37,63 @@ impl RecordingShell {
             marketplaces: NO_MARKETPLACES.to_owned(),
             records: None,
             lines: Mutex::new(Vec::new()),
+            mcp: Mutex::new(HashMap::new()),
+            mcp_failing: None,
         }
+    }
+
+    /// A shell whose `claude mcp <subcommand>` fails.
+    fn failing_mcp(self, subcommand: &'static str) -> Self {
+        Self {
+            mcp_failing: Some(subcommand),
+            ..self
+        }
+    }
+
+    /// A shell whose profile `profile` already shows `output` for `claude mcp get zaf`.
+    fn with_mcp(self, state: &Path, profile: &str, output: &str) -> Self {
+        let home = state.join("profiles").join(profile);
+        self.mcp
+            .lock()
+            .expect("lock")
+            .insert(home.display().to_string(), output.to_owned());
+        self
+    }
+
+    /// A shell whose `lean` and `build` profiles of `state` already hold zaf's MCP entry, for the
+    /// tests that are about something else and rerun init on fresh shells.
+    fn registered(self, state: &Path) -> Self {
+        self.with_mcp(state, "lean", OUR_MCP)
+            .with_mcp(state, "build", OUR_MCP)
+    }
+
+    /// Answers a `CLAUDE_CONFIG_DIR='<home>' claude mcp <subcommand> …` line.
+    fn mcp_run(&self, line: &str) -> GateRun {
+        let home = line.split('\'').nth(1).unwrap_or_default().to_owned();
+        let (verdict, output) = if line.contains(" claude mcp get ") {
+            match self.mcp.lock().expect("lock").get(&home) {
+                Some(shown) => (GateVerdict::Passed, shown.clone()),
+                None => (
+                    GateVerdict::Failed,
+                    "No MCP server found with name: zaf\n".to_owned(),
+                ),
+            }
+        } else if self
+            .mcp_failing
+            .is_some_and(|sub| line.contains(&format!(" claude mcp {sub} ")))
+        {
+            (GateVerdict::Failed, "mcp said no".to_owned())
+        } else if line.contains(" claude mcp add-json ") {
+            self.mcp
+                .lock()
+                .expect("lock")
+                .insert(home, OUR_MCP.to_owned());
+            (GateVerdict::Passed, String::new())
+        } else {
+            self.mcp.lock().expect("lock").remove(&home);
+            (GateVerdict::Passed, String::new())
+        };
+        GateRun { verdict, output }
     }
 
     /// A shell whose installs record the plugin at `version`.
@@ -54,7 +122,22 @@ impl RecordingShell {
         }
     }
 
+    /// The lines run that are not `claude mcp` lines.
     fn lines(&self) -> Vec<String> {
+        let mut lines = self.all_lines();
+        lines.retain(|line| !line.contains(" claude mcp "));
+        lines
+    }
+
+    /// The `claude mcp` lines run.
+    fn mcp_lines(&self) -> Vec<String> {
+        let mut lines = self.all_lines();
+        lines.retain(|line| line.contains(" claude mcp "));
+        lines
+    }
+
+    /// Every line run, in order.
+    fn all_lines(&self) -> Vec<String> {
         self.lines.lock().expect("lock").clone()
     }
 }
@@ -62,6 +145,9 @@ impl RecordingShell {
 impl Shell for RecordingShell {
     fn run(&self, line: &CommandLine) -> Result<GateRun, PortError> {
         self.lines.lock().expect("lock").push(line.to_string());
+        if line.as_ref().contains(" claude mcp ") {
+            return Ok(self.mcp_run(line.as_ref()));
+        }
         if let Some(version) = &self.records
             && self.verdict == GateVerdict::Passed
             && line.as_ref().contains(" claude plugin install ")
@@ -135,7 +221,7 @@ fn the_current_pack_tag_is_read_from_a_scratch_profile() {
 
 /// `init` for a project rooted at the state folder's parent, with a shell that must stay unused.
 fn init_here(state: &Path, manifest: &Manifest) -> Result<Report, ProfileError> {
-    let shell = RecordingShell::answering(GateVerdict::Failed);
+    let shell = RecordingShell::answering(GateVerdict::Failed).registered(state);
     let root = state.parent().expect("a parent");
     let report = init_with(root, state, manifest, &shell, None);
     assert!(shell.lines().is_empty(), "no pack, no shell");
@@ -191,6 +277,82 @@ fn each_named_profile_gets_its_files_and_folders() {
             .iter()
             .all(|file| file.change == Change::Created)
     );
+}
+
+/// `init_here` over a project whose root holds the given `.mcp.json`.
+fn init_with_mcpjson(text: &str) -> (tempfile::TempDir, Result<Report, ProfileError>) {
+    let dir = tempfile::tempdir().expect("temp dir");
+    fs::write(dir.path().join(".mcp.json"), text).expect("writes .mcp.json");
+    let state = dir.path().join(".zaf");
+    let report = init_here(&state, &manifest(""));
+    (dir, report)
+}
+
+#[test]
+fn settings_disable_claude_ai_connectors() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    init_here(&state, &manifest("")).expect("generates");
+    for profile in ["lean", "build"] {
+        assert_eq!(
+            settings(&state, profile)["disableClaudeAiConnectors"],
+            Value::Bool(true),
+            "{profile}"
+        );
+    }
+}
+
+#[test]
+fn settings_disable_each_project_mcpjson_server() {
+    let (dir, report) = init_with_mcpjson(
+        r#"{"mcpServers": {"other": {"command": "x"}, "basic-memory": {"command": "y"}}}"#,
+    );
+    report.expect("generates");
+    let state = dir.path().join(".zaf");
+    for profile in ["lean", "build"] {
+        let settings = settings(&state, profile);
+        assert_eq!(
+            strings(&settings["disabledMcpjsonServers"]),
+            ["basic-memory", "other"],
+            "{profile}"
+        );
+    }
+}
+
+#[test]
+fn a_project_server_named_zaf_is_disabled_like_any_other() {
+    let (dir, report) = init_with_mcpjson(r#"{"mcpServers": {"zaf": {}, "a": {}}}"#);
+    report.expect("generates");
+    let settings = settings(&dir.path().join(".zaf"), "lean");
+    assert_eq!(strings(&settings["disabledMcpjsonServers"]), ["a", "zaf"]);
+}
+
+#[test]
+fn settings_without_mcpjson_disable_none() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    init_here(&state, &manifest("")).expect("generates");
+    for profile in ["lean", "build"] {
+        assert_eq!(
+            settings(&state, profile)["disabledMcpjsonServers"],
+            serde_json::json!([]),
+            "{profile}"
+        );
+    }
+}
+
+#[test]
+fn malformed_mcpjson_fails_init() {
+    for text in ["{not json", "[]", r#"{"mcpServers": []}"#] {
+        let (dir, report) = init_with_mcpjson(text);
+        let error = report.expect_err("a malformed .mcp.json fails init");
+        let path = dir.path().join(".mcp.json");
+        assert!(
+            error.to_string().starts_with(&path.display().to_string()),
+            "{text}: {error}"
+        );
+        assert!(!dir.path().join(".zaf/profiles/lean/settings.json").exists());
+    }
 }
 
 #[test]
@@ -259,7 +421,7 @@ fn settings_carry_the_forbidden_commands_as_denies_and_the_gate_as_allows() {
         }
         let allow = strings(&permissions["allow"]);
         for wanted in [
-            "Bash(zaf *)",
+            "mcp__zaf__*",
             "Bash(jj *)",
             "Bash(gh *)",
             "Bash(cargo *)",
@@ -403,7 +565,7 @@ fn the_allow_list_comes_from_requires_not_from_the_pack() {
         let settings = settings(&state, profile);
         assert_eq!(
             strings(&settings["permissions"]["allow"]),
-            with_read_only(&["Bash(zaf *)", "Bash(jj *)", "Bash(make *)"], true),
+            with_read_only(&["mcp__zaf__*", "Bash(jj *)", "Bash(make *)"], true),
             "{profile}: zaf once, each required tool, then the read-only rules"
         );
     }
@@ -645,7 +807,7 @@ fn a_project_requiring_nothing_allows_only_zaf_and_its_gate() {
     let settings = settings(&state, "lean");
     assert_eq!(
         strings(&settings["permissions"]["allow"]),
-        with_read_only(&["Bash(zaf *)", "Bash(make check)", "Bash(make *)"], false)
+        with_read_only(&["mcp__zaf__*", "Bash(make check)", "Bash(make *)"], false)
     );
 }
 
@@ -659,7 +821,7 @@ fn a_chained_gate_adds_exactly_one_rule_for_its_one_tool() {
     for profile in ["lean", "build"] {
         assert_eq!(
             strings(&settings(&state, profile)["permissions"]["allow"]),
-            with_read_only(&["Bash(zaf *)", verbatim.as_str(), "Bash(cargo *)"], false),
+            with_read_only(&["mcp__zaf__*", verbatim.as_str(), "Bash(cargo *)"], false),
             "{profile}"
         );
     }
@@ -679,7 +841,7 @@ fn a_gate_and_its_tests_allow_each_tool_once() {
             strings(&settings(&state, profile)["permissions"]["allow"]),
             with_read_only(
                 &[
-                    "Bash(zaf *)",
+                    "mcp__zaf__*",
                     "Bash(just gate)",
                     "Bash(just *)",
                     "Bash(cargo test -p * *)",
@@ -897,7 +1059,7 @@ fn a_rerun_with_the_same_pack_version_issues_no_plugin_command() {
     write_marketplace(dir.path(), "./vendor/kit");
     write_plugin(dir.path(), "1.2.3");
     installed(&state, "kit@shelf", Some("1.2.3"));
-    let shell = RecordingShell::listing(NO_PLUGINS, SHELF_ADDED);
+    let shell = RecordingShell::listing(NO_PLUGINS, SHELF_ADDED).registered(&state);
     let report = init_through(&state, &manifest(PATH_PACK), &shell).expect("generates");
     assert!(
         shell.lines().is_empty(),
@@ -1010,7 +1172,7 @@ fn settings_enable_the_pack_and_never_wait_on_a_prompt() {
     let build = settings(&state, "build");
     assert_eq!(build["enabledPlugins"], json!({ "kit@shelf": true }));
     assert_eq!(build["permissions"]["defaultMode"], "acceptEdits");
-    assert!(strings(&build["permissions"]["allow"]).contains(&"Bash(zaf *)"));
+    assert!(strings(&build["permissions"]["allow"]).contains(&"mcp__zaf__*"));
     assert!(strings(&build["permissions"]["deny"]).contains(&"Bash(git push)"));
     let lean = settings(&state, "lean");
     assert_eq!(lean["permissions"]["defaultMode"], "acceptEdits");
@@ -1169,6 +1331,137 @@ fn a_failed_pack_install_leaves_the_settings_written() {
     assert!(state.join("profiles/build/CLAUDE.md").is_file());
 }
 
+/// The `claude mcp` lines a profile at `state/profiles/<name>` is registered with, when fresh.
+fn fresh_mcp_lines(state: &Path, name: &str) -> [String; 2] {
+    let env = format!(
+        "CLAUDE_CONFIG_DIR='{}'",
+        state.join("profiles").join(name).display()
+    );
+    [
+        format!("{env} claude mcp get zaf"),
+        format!(
+            "{env} claude mcp add-json --scope user zaf '{{\"type\":\"stdio\",\"command\":\"zaf\",\"args\":[\"mcp\"]}}'"
+        ),
+    ]
+}
+
+#[test]
+fn registers_zaf_mcp_on_a_fresh_profile() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    let shell = RecordingShell::answering(GateVerdict::Passed);
+    let report = init_through(&state, &manifest(""), &shell).expect("generates");
+    let [lean_get, lean_add] = fresh_mcp_lines(&state, "lean");
+    let [build_get, build_add] = fresh_mcp_lines(&state, "build");
+    assert_eq!(
+        shell.mcp_lines(),
+        [lean_get, lean_add, build_get, build_add],
+        "each generated profile, the one with no pack too"
+    );
+    assert!(shell.lines().is_empty(), "no pack, no plugin command");
+    assert!(
+        report
+            .lines()
+            .contains(&"registered zaf's MCP in profiles/lean".to_owned()),
+        "{:?}",
+        report.lines()
+    );
+    assert!(state.join("profiles/lean").join(STAMP_FILE).is_file());
+}
+
+#[test]
+fn rerun_issues_no_mcp_command_when_registered() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    let shell = RecordingShell::answering(GateVerdict::Passed);
+    let manifest = manifest("");
+    init_through(&state, &manifest, &shell).expect("first");
+    let first = shell.mcp_lines().len();
+    let second = init_through(&state, &manifest, &shell).expect("again");
+    let again = shell.mcp_lines();
+    assert_eq!(
+        again[first..],
+        [
+            fresh_mcp_lines(&state, "lean")[0].clone(),
+            fresh_mcp_lines(&state, "build")[0].clone()
+        ],
+        "a `get` per profile and nothing else"
+    );
+    assert!(second.unchanged(), "{:?}", second.lines());
+}
+
+#[test]
+fn replaces_a_different_zaf_entry_in_a_profile() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    let shell = RecordingShell::answering(GateVerdict::Passed)
+        .with_mcp(&state, "lean", OTHER_MCP)
+        .with_mcp(&state, "build", OUR_MCP);
+    init_through(&state, &manifest(""), &shell).expect("generates");
+    let env = format!(
+        "CLAUDE_CONFIG_DIR='{}'",
+        state.join("profiles/lean").display()
+    );
+    let lines = shell.mcp_lines();
+    assert_eq!(lines[0], format!("{env} claude mcp get zaf"));
+    assert_eq!(
+        lines[1],
+        format!("{env} claude mcp remove --scope user zaf")
+    );
+    assert_eq!(lines[2], fresh_mcp_lines(&state, "lean")[1]);
+    assert_eq!(
+        lines[3..],
+        [fresh_mcp_lines(&state, "build")[0].clone()],
+        "the profile that already holds our entry is only read"
+    );
+}
+
+#[test]
+fn failed_mcp_add_leaves_no_stamp() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    let shell = RecordingShell::answering(GateVerdict::Passed).failing_mcp("add-json");
+    let result = init_through(&state, &manifest(""), &shell);
+    let Err(ProfileError::Install { line, output }) = result else {
+        panic!("an install error naming the failed command");
+    };
+    assert!(
+        line.contains(" claude mcp add-json --scope user zaf "),
+        "{line}"
+    );
+    assert_eq!(output, "mcp said no");
+    let lean = state.join("profiles/lean");
+    assert!(!lean.join(STAMP_FILE).exists(), "no fresh stamp");
+    assert!(
+        lean.join("settings.json").is_file(),
+        "the settings stay written"
+    );
+}
+
+#[test]
+fn a_failed_mcp_remove_is_an_error_naming_the_command() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    let shell = RecordingShell::answering(GateVerdict::Passed)
+        .with_mcp(&state, "lean", OTHER_MCP)
+        .failing_mcp("remove");
+    let result = init_through(&state, &manifest(""), &shell);
+    let Err(ProfileError::Install { line, .. }) = result else {
+        panic!("an install error naming the failed command");
+    };
+    assert!(
+        line.ends_with("claude mcp remove --scope user zaf"),
+        "{line}"
+    );
+    assert!(
+        shell
+            .mcp_lines()
+            .iter()
+            .all(|line| !line.contains("add-json")),
+        "no add after a failed remove"
+    );
+}
+
 #[test]
 fn init_and_doctor_read_one_installed_version() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -1241,7 +1534,7 @@ fn a_claude_home(dir: &Path, login: Option<&str>) -> PathBuf {
 
 /// `init` with no pack, against `claude_home`.
 fn init_against(state: &Path, claude_home: &Path) -> Report {
-    let shell = RecordingShell::answering(GateVerdict::Failed);
+    let shell = RecordingShell::answering(GateVerdict::Failed).registered(state);
     let root = state.parent().expect("a parent");
     init_with(root, state, &manifest(""), &shell, Some(claude_home)).expect("generates")
 }
@@ -1379,7 +1672,8 @@ fn forbidden_denies_match_flags_before_the_name() {
                     .strip_prefix("Bash(")
                     .and_then(|rest| rest.strip_suffix(')'))
                     .expect("a Bash rule");
-                pattern_matches(pattern, line)
+                // The rules that deny every `zaf` are not what this test is about.
+                pattern != "zaf" && pattern != "zaf *" && pattern_matches(pattern, line)
             })
         };
         for line in [
@@ -1480,7 +1774,7 @@ fn forbidden_entries_get_flag_forms() {
     // A tool alone is denied by its bare and with-arguments forms; it gets no flag form.
     let whole = manifest("[forbidden]\ncommands = [\"rm\"]\n");
     for (_, patterns) in denies_of(&whole) {
-        assert_eq!(patterns, ["rm *", "rm"]);
+        assert_eq!(patterns, ["rm *", "rm", "zaf *", "zaf"]);
     }
 }
 
@@ -1491,7 +1785,9 @@ fn between_words_skips_zaf_entries() {
     );
     for (profile, patterns) in denies_of(&forbidding) {
         assert!(
-            !patterns.iter().any(|p| p.starts_with("zaf *")),
+            !patterns
+                .iter()
+                .any(|p| p.starts_with("zaf *") && p != "zaf *"),
             "{profile}: {patterns:?}"
         );
         for wanted in ["jj *git *push", "jj *git *push *"] {
@@ -1515,6 +1811,7 @@ fn between_words_skips_zaf_entries() {
             assert!(
                 !patterns
                     .iter()
+                    .filter(|pattern| *pattern != "zaf" && *pattern != "zaf *")
                     .any(|pattern| pattern_matches(pattern, line)),
                 "{profile} denies `{line}`"
             );
@@ -1885,7 +2182,7 @@ fn a_tool_not_allowed_adds_no_hatch() {
     }
     let bare = manifest("");
     for (profile, patterns) in denies_of(&bare) {
-        assert!(patterns.is_empty(), "{profile} denies {patterns:?}");
+        assert_eq!(patterns, ["zaf *", "zaf"], "{profile}");
     }
     // Forbidding a command does not allow its tool, so it brings no hatch either.
     let forbidding = manifest("[forbidden]\ncommands = [\"yarn publish\"]\n");
@@ -2114,6 +2411,69 @@ fn a_newer_generation_is_not_called_older() {
     assert_eq!(line.matches('(').count(), 1, "{line}");
 }
 
+/// A profile's written settings carry zaf's MCP tools in `allow` and `Bash(zaf)` and
+/// `Bash(zaf *)` in `deny`, never `Bash(zaf *)` in `allow`.
+fn assert_zaf_mcp_rules(state: &Path, profile: &str) {
+    let settings = settings(state, profile);
+    let allow = strings(&settings["permissions"]["allow"]);
+    let deny = strings(&settings["permissions"]["deny"]);
+    assert!(allow.contains(&"mcp__zaf__*"), "{profile}: {allow:?}");
+    assert!(!allow.contains(&"Bash(zaf *)"), "{profile}: {allow:?}");
+    assert!(!allow.contains(&"Bash(zaf)"), "{profile}: {allow:?}");
+    for wanted in ["Bash(zaf)", "Bash(zaf *)"] {
+        assert!(
+            deny.contains(&wanted),
+            "{profile} denies {wanted}: {deny:?}"
+        );
+    }
+}
+
+#[test]
+fn lean_settings_allow_zaf_mcp_and_deny_bash_zaf() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    init_here(&state, &manifest("")).expect("generates");
+    assert_zaf_mcp_rules(&state, "lean");
+}
+
+#[test]
+fn build_settings_allow_zaf_mcp_and_deny_bash_zaf() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    init_here(&state, &manifest("")).expect("generates");
+    assert_zaf_mcp_rules(&state, "build");
+}
+
+#[test]
+fn bash_zaf_allow_never_survives_the_deny() {
+    // `zaf` required, and a gate line that runs `zaf`: each would allow `Bash(zaf *)`.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    init_here(
+        &state,
+        &manifest("[requires]\nzaf = \"*\"\n[gate]\nfull = \"zaf check && cargo test\"\n"),
+    )
+    .expect("generates");
+    for profile in ["lean", "build"] {
+        assert_zaf_mcp_rules(&state, profile);
+    }
+}
+
+#[test]
+fn previous_generation_stamp_is_stale() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state = dir.path().join(".zaf");
+    let manifest = manifest(FORBIDDEN_PUSH);
+    init_here(&state, &manifest).expect("init");
+    assert!(stale(&state, &manifest).is_empty());
+    edit_build_stamp(&state, |stamp| {
+        stamp["generation"] = Value::from(GENERATION - 1);
+    });
+    let named = stale(&state, &manifest);
+    assert_eq!(named.len(), 1);
+    assert!(matches!(named[0].reasons[..], [Reason::Generation(_)]));
+}
+
 #[test]
 fn stamp_without_generation_is_stale_once() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -2239,13 +2599,13 @@ fn stale_line_of_one_profile_matches_its_line() {
 
 /// The generation and the hash of what `init` writes for [`GUARD_FIXTURE`], fixed together: the
 /// pair that was current when `GENERATION` was last raised. Raising `GENERATION` means updating both.
-const GUARDED_GENERATION: u32 = 5;
-const GUARDED_HASH: &str = "12cb6b80f88415962b0f5dd3e928dc8eb52776355412d9f95a641adfcb944e10";
+const GUARDED_GENERATION: u32 = 7;
+const GUARDED_HASH: &str = "8c2790a69046cb53375081e4cf54799a78d86364a97dcfb5cfc27ec5e317ac4a";
 
 /// The generation and the hash of what `init` does for [`PACK_GUARD_FIXTURE`], fixed together as
 /// the first case's pair is: the commands the pack step ran, in order, and every file written.
-const GUARDED_PACK_GENERATION: u32 = 5;
-const GUARDED_PACK_HASH: &str = "faf71db2dd03ff10818749853046f565a08a97e79ad5d7d6c0a08a6785474be8";
+const GUARDED_PACK_GENERATION: u32 = 7;
+const GUARDED_PACK_HASH: &str = "1a2880182e8f0cc218111032f2f110a244e02feab66747141d5ccd6b4ed45557";
 
 /// A fixture manifest with a `[pack]` section, reaching the plugin commands, the pack's tag record
 /// and the settings written after the install.

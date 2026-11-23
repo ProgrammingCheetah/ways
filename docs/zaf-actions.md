@@ -31,11 +31,22 @@ Draft v38, 2026-11-16, with the Engineer's rulings and the answers to the planni
 .zaf/scheduler.lock .zaf/tick.request   the running scheduler's lock, naming it, and the requests for a tick (ignored; §5.1)
 ```
 
+**A role override names zaf's tools.** A file in `.zaf/roles/` is pasted into the brief of the role it is named for, and a model that reads it calls zaf through its MCP tools, not by typing `zaf` in Bash, which is denied to it. An override therefore says which tool to call and what to put in `args`, the words after the verb. For example, `.zaf/roles/programmer.md`:
+
+```md
+When you finish a task, write your status with the `board` tool, with `args`
+set to `["report", "<issue>", "<body>"]`, and then stop. Do not type `zaf` in Bash.
+```
+
+An override written the old way, as the verb typed after `zaf`, still works: the rule in the interface page every brief carries (D15) tells the model to read any such line as the tool `<verb>` with `args` set to the words that follow, so no project has to rewrite its overrides at once.
+
 **The machine's `~/.zaf/`, the global home.** Laid out like a project's `.zaf/`: `config.toml` (machine-wide defaults every project here inherits, below the project's own manifest) `actions/` (the machine's actions, seen by every instance on it) and `ledger.db` (zaf's record of what every run cost, §10). Its place is configurable (`ZAF_HOME`); the default is `~/.zaf/`. `zaf setup` creates it, with a commented `config.toml` and an empty `actions/`, and creates the project's `.zaf/` with its `.gitignore`; any verb that finds either missing runs that setup first, non-destructively, so the Engineer may call `zaf setup` from the beginning or let the first verb do it. A `ZAF.toml` still at the root is read as before, with a warning on stderr; only an explicit `zaf setup`, run by the Engineer, moves it to `.zaf.toml`, once, and says so.
 
 **Precedence.** Manifest: `.zaf.toml` > `.zaf/config.toml` > `~/.zaf/config.toml` > the pack's defaults, property by property. Actions: project > machine; a project file shadowing a machine file can never widen its run bits (§3), and `zaf doctor` names every shadowing.
 
 **No built-ins.** zaf itself ships no actions. The teams pack carries the standard set in its `actions/` folder, and `zaf setup` installs it once into the machine tier, `~/.zaf/actions/`, from the pack installed in the generated profiles: each file the machine tier lacks, with its mode. An installed action whose bytes or mode differ from the pack's is offered for replacement: `zaf setup` shows the difference and asks `replace <name>? [y/N]`; only `y` replaces, and the old copy is first kept under `~/.zaf/actions-replaced/`, so nothing is lost. `zaf update` installs the pack's actions into the machine tier the same way, from the teams plugin installed in the Claude home (the Engineer's own, not a profile's): it shows the plan first, asks `Continue? [Y/n]` once, and for each action that differs shows the why, the difference and `Replace it? [Y/n]` (Enter replaces; `n` keeps the machine's copy), the old copy going to `~/.zaf/actions-replaced/` as above. The why is the pack copy's `# changed:` comment, a line that stands right after the action's `# zaf` block and says in one line what changed; it is shown only when the installed copy lacks it, and a `# changed:` line anywhere else in the file is not read as the why. An action with no such line is shown with its difference alone. With no terminal, or with `ZAF_INSTANCE` set, `zaf update` prints the plan and changes nothing, and `zaf setup` asks nothing: every action is kept and the differing ones are named (`differs from the pack, kept: <names>; run zaf setup in a terminal to review`). An action equal to the pack's is kept silently, a machine-tier name that is not a regular file (a link, a folder) is never offered, a project's own `.zaf/actions/` is never touched, and nothing is deleted. Every project on the machine inherits them, and a project keeps its own copy in `.zaf/actions/` only of what differs (the project's file wins, §1.3). `zaf doctor` lists the names the project's verbs and steps need (`gate` lines aside) and which tier provides each, and `zaf do --tier machine <name>` runs the machine's when the project's shadows it. The ways repo keeps its own set in its `.zaf/actions/` (§7), isolated from any other project's.
+
+**`zaf update --yes`.** The update for a run with no terminal (a script, a pipe, a model's shell): it asks nothing and ends on its own, standard input closed or not, so nothing waits for an answer. It works out the same plan, takes `Continue?` and `Raise it?` as yes, and answers each `Replace it?` by whether the Engineer has touched the action: an action equal to the old pack's copy is replaced (the old copy going to `~/.zaf/actions-replaced/` as above), one the Engineer edited, or one with no old copy to compare, is kept as it is, so an edit is never lost. It ends on one last line, `zaf 0.5.4 → 0.5.5; replaced: plugin teams 2.3.0 → 2.4.0, actions ci, merge; kept: action fix (yours); pack line raised`, which names every kept action; a step that failed is named on it (`failed: plugin (<why>)`). The exits are `0` done, `2` any step failed (a later `zaf update --yes` runs it again) or `--yes` was given with `--json`, and, with `ZAF_INSTANCE` set, `0` after the line `Nothing is changed here: zaf update --yes does not run inside an instance.`: inside an instance it refuses and changes nothing. A run one release behind with no terminal ends this way and leaves `zaf doctor` green (the test `update_yes_no_terminal_one_release_behind`, O3).
 
 The zip test (framework §7.6) gains one named exception: `~/.zaf/` is the machine's zaf home, like its credentials. A project whose steps resolve to a machine action depends on that machine; `zaf doctor` reports each one, so the dependency is visible.
 
@@ -167,7 +178,7 @@ An epic and a group count their tasks done. A ticket's bar is its Team Phase, on
 
 It redraws when a report arrives, not on a timer. zaf verbs report that state changed and a hook in the profiles reports each tool call, so no model spends a turn reporting its tool calls. Between reports only the clocks move and nothing reads the network. Outside a terminal it draws one frame and exits, so a model cannot hang on it.
 
-**Model phases.** Each model declares its own phases when it starts, `zaf progress plan <task> <phase>…`, and reports each change, `zaf progress at <task> <phase>`. Phases may repeat: a model that goes back from `test` to `write` reports `write` again, and its row shows the iteration, `write ×2`. The ticket row keeps its Team Phase bar, and each model reporting on the ticket gets a row under it with a bar over its declared phases. Each phase report is a hub report, so the frame redraws. It costs the model one turn per phase change, which ruling 44 accepts.
+**Model phases.** Every role zaf runs (the programmer, planning, the challenger, release and the review Designer) declares its own phases when it starts, `zaf progress plan <task> <phase>…`, and reports each change, `zaf progress at <task> <phase>`, both through the MCP tool `progress` (`mcp__zaf__progress`). The task is optional: when it is not given, it comes from `ZAF_INSTANCE` (I12). Phases may repeat: a model that goes back from `test` to `write` reports `write` again, and its row shows the iteration, `write ×2`. The ticket row keeps its Team Phase bar, and each model reporting on a task gets a row under that task's square with a bar over its declared phases; a model on an epic is drawn under the epic's line (D17). Each phase report is a hub report, so the frame redraws. It costs the model one turn per phase change, which ruling 44 accepts.
 
 **Dashboard mode.** `zaf hub --port <n>` serves the same frame as an HTML page on every interface at that port, for anyone on the LAN. Reading is `GET`, asks for no login and changes nothing; a control is a keyed `POST` (the JSON interface, below). It prints the page's LAN URL when it starts, and, started from a terminal, the link that carries the key under it; the URL is printed before the hub fills the ledger from the transcripts, so the first frame shows the costs the ledger already holds, and one more frame follows when the fill wrote rows. `--read-only` serves the page with every control refused. The page holds a server-sent events stream and redraws when a report arrives, so it is never staler than the terminal. It runs until it is stopped. The terminal frame is unchanged by any of this.
 
@@ -333,6 +344,75 @@ The scheduler rebuild ruled on 2026-11-12 (rulings R12 to R22 of the scheduler n
 
 **Weight and the waits that ask.** A lane entry's weight is its age since `since` plus its priority's worth (`lane.rs`: level `n` is worth `4 - n` times `PRIORITY_AGE`), computed each tick and never stored. `merge.rs` holds the order of merges (R29, R30): which tickets stand at their merge, which is fresh from a fix, and who merges first, worked out once across the tickets and written into each one's facts, so everything that places a ticket reads one answer. `wait.rs` finds, as facts, the waits that must not last without the Engineer hearing of them: a check wait past its deadline, `NO_CHECK_DEADLINE` (10 min) for a head with no check and `CHECK_DEADLINE` for the rest, and what it still awaits (no check, the pending ones, or what the phase awaits from outside), a merge held by the integration branch for as long, counted from when the ticket stood at its merge or the branch reached its current head, the later, as the forge gives the head commit's time, and from the ticket's alone when that is unknown (the wait on another ticket's merge has no clock: every end of it is the scheduler's own), a dependency that can never complete, and an epic planned and not challenged past `CHALLENGE_DEADLINE`; a ticket that also waits on a question or on its epic has no clock. Raising the question is the tick's (§5.1, **The questions**).
 
+### 5.3 The orchestrator's build
+
+The orchestrator is the Engineer's own Claude session in the project, with zaf's MCP registered at user scope (`zaf setup` offers it). It is outside zaf, and it builds a signed epic in this order (O2, D19):
+
+1. **The Engineer signs** the epic in zaf's chair. No model signs, by the MCP or by Bash: the MCP refuses `epic sign` to every caller (D10). Objectives and design are the Engineer's interviews in the chair too; the orchestrator never begins them (`begin` is refused to it, D11).
+2. **`spawn start --version <v>`** starts the project's scheduler detached and prints its pid; one already running is handed back. This is the one call that starts the build. zaf's scheduler starts every phase after it.
+3. **`epic wait <epic>`**, in a loop. It returns when a question on the epic or its tasks waits on the Engineer, a problem shows, or the epic is done, and prints `epic show` and the open questions; with nothing in `--minutes` (60 by default) it prints `nothing yet` and exits 0. A call that long is moved to the background by an interactive session, so the wait costs no turns.
+4. **`status`** shows the board, the running instances and the open questions on one screen, between waits.
+5. **`board ruling`** records a ruling on a question. The orchestrator brings each question to the Engineer and records the answer in the Engineer's words as typed, never its own summary. It never rules a question itself.
+6. **`do release`**, and **`do ship`**, only on the Engineer's word (Q5). The MCP adds no refusal to either, because Bash stays open to the orchestrator; the actions' modes and `[forbidden]` still bind, and "on the Engineer's word" is a rule written into the `do` tool's description, not a guard.
+
+**What the orchestrator never calls** (D24): `spawn phase`, `spawn stop`, `board claim`, `board done`, `slice`, and any phase action under `do` (`implement`, `ci`, `review`, `merge`, `fix` and the `slice-` actions). They are the lane, and zaf moves tickets; nobody moves themselves.
+
+Tool calls here are written as the page writes them elsewhere: the tool is the verb, and the words after it are its `args`. Written as `zaf <verb> <words>`, a line means the tool `<verb>` (`mcp__zaf__<verb>`) with `args` set to those words (D15); `zaf` is never typed in Bash by an instance, and the orchestrator's Bash is no way round the lane either, because the check below reads both.
+
+**The check** (O2 and O5, D24). After a build, run from the project root:
+
+```
+tools/mcp-only-check <since> <orchestrator transcript>
+```
+
+`<since>` is an RFC 3339 time (`2026-11-22T10:00:00Z`) or a span back from now (`2h`, `30m`, `1d`), the start of the build. The orchestrator's transcript is the session's `.jsonl` under the Engineer's own Claude home, `~/.claude/projects/<the project's path with each / as ->/<session id>.jsonl`; it is read whole, whatever its dates. The instances' transcripts are read from each profile's `projects/` under `.zaf/profiles/`, from `<since>` on. It prints only failures, one line each:
+
+```
+<file>:<line>: Bash runs zaf: <the command, first 120 characters>
+<file>:<line>: lane tool: <tool> <args>
+```
+
+The first is any Bash call that runs `zaf`, in any transcript (O5, and O2's). The second is a lane tool call, in the orchestrator's transcript alone (O2). **Exit 0 with no output is the pass** for both. Exit 1 prints the failures; exit 2 is a bad `<since>`, a missing file or no `jq`, and is no pass.
+
+### 5.4 The MCP
+
+`zaf mcp` is a hidden verb: it serves zaf's verbs as MCP tools over its own stdin and stdout, for a client that starts it (Claude Code registers it as the stdio server `zaf`, whose command is `zaf` and whose args are `mcp`). It runs until the client closes the stream, and exits 0; 2 means it could not start or broke. It keeps nothing between calls.
+
+**The tool contract.** It is external: orchestrators and profiles build on it, so it changes only when a verb does.
+
+- **Names.** One tool for each visible top-level verb but `help`, named `mcp__zaf__<verb>` by Claude Code (the server's key, `zaf`, is part of every name). The list comes from clap at run time, so a new verb needs no change and a hidden one, `mcp` included, is no tool; a call to an unknown name is a protocol error and runs nothing. A tool's description is the verb's long help, then a usage line for each of its subcommands.
+- **Input.** `{args?: string[], stdin?: string, json?: bool, more?: bool}`, none required, no other key accepted (a misspelt one is a protocol error). `args` is the words after the verb, one element each; `stdin` is what the verb reads; `json` runs `--json` and `more` runs `--more`. The call runs `zaf [--json] [--more] <verb> <args…>`, and a line clap would refuse is not run: its usage message comes back with exit 2.
+- **Result.** One text block: stdout, then stderr, each starting on a new line. When the exit is not 0, a last line `exit <n>` follows and `isError` is true. `_meta["zaf/exit"]` carries the exit code on every result, 0 included. There is no `structuredContent`: on Claude Code 2.1.330 a result with it showed the model only that JSON and dropped the text. The exit codes keep the meanings of the interface page (0, 1, 2, 64; for `do`, 125 and the action's own).
+- **A killed or unstartable verb.** A call that was cancelled, or whose binary could not run, ends with exit 2 and its reason on stderr (`cancelled`, for a cancel).
+
+**How waits work.** A wait stays inside the call. While the verb runs, the server sends `notifications/progress` every 60 seconds with the call's `progressToken`, the `progress` value rising by one each time; a call that carries no token sends none. The notification's `message` is the verb's last stderr line, else `<verb> waiting, <m> min`. Claude Code counts each notification as activity against its 30-minute idle limit for a stdio server, so a two-hour `check` is not aborted. No per-server `timeout` is set, since the client's docs call it a hard wall-clock limit that progress does not extend. When the client cancels the call (`notifications/cancelled`), the server kills the verb's whole process group (SIGKILL). Each call runs on its own blocking task, so a long call blocks no other.
+
+**Where a call runs.** The verb's working directory is `ZAF_ROOT` when it is set and not empty (instances have it), else `CLAUDE_PROJECT_DIR` (Claude Code sets it for a stdio server), else the server's own. A programmer's session sits in its slice workspace, which holds a checkout with its own `.zaf.toml`: discovery from there would find the workspace, not the project. The verb runs as a child of the zaf binary on disk, with the environment of the server less `ZAF_DEPTH` and `ZAF_ACTION_CHAIN`, so a call is a new top-level run and never counts as nested in an action.
+
+**When zaf is updated under a running server.** The server runs the binary at its resolved path for every call, so after `zaf update` calls run the new zaf at once. When the binary's `--version` differs from the server's own (read again only when the binary's stamp changes), each result gets one more line before `exit <n>`: `zaf was updated to <v>; restart zaf's MCP (/mcp) for the new tool list`.
+
+**Handshake.** The server's instructions, shown to the model at the start, say that wherever a page writes `zaf <verb> <words>`, the model calls the tool `<verb>` with `args` set to those words, and never types `zaf` in Bash.
+
+**The policy table (D9).** Before it starts a child, the server judges the call by the parsed command's path (`Verb::path()`, plus the action's name for `do`), never by its text. A refusal is exit 1 with one line: what was refused and the way on. The rows are in `domain/mcp.rs` and are judged in this order; the way on is the line the caller reads.
+
+| Command | Instance | Outside caller | The way on |
+|---|---|---|---|
+| `epic sign` | refused | refused | `Sign in zaf's chair.` |
+| `begin` (not `begin ready`) | refused | refused | `` Objectives and design are the Engineer's interviews: open zaf's chair in a terminal (`zaf`). `` |
+| `hub` serving, `hub report`, `spawn --watch` | refused | refused | `` they never end, or are the hook's own; `spawn start --version <v>` starts the scheduler `` |
+| each `zaf …` line of `[forbidden]` | refused | runs | `` Forbidden by the manifest; only `slice-merge` and `release` merge. `` |
+| `board ruling` | refused | runs | `Rulings are the Engineer's: raise a question.` |
+| `update`, `setup`, `profile`, `hub link`, `hub service` | refused | runs | `It changes the machine; the Engineer runs it.` |
+| `spawn` but `trace`, `board claim`, `board done`, `slice` | refused | runs | `zaf moves tickets; nobody moves themselves.` |
+
+`begin ready` stays open to every caller: the phase session inside the chair calls it, and it only writes the file `ZAF_READY` names. `do release` and `do ship` have no row (Q5); they stay under the action modes and `[forbidden]`. The action modes need no row: the child reads the inherited `ZAF_INSTANCE`. A `[forbidden]` line is matched by its words with flags dropped, for every verb, so `zaf forge merge` matches as `zaf do land` does.
+
+**Never nested (D8).** The child's environment is the server's less `ZAF_DEPTH` and `ZAF_ACTION_CHAIN`. Every model runs inside an action body, which sets `ZAF_DEPTH`, and zaf skips its own `[forbidden]` refusal for a nested call; with the markers dropped, `zaf do pr-merge` from a model is refused by zaf itself. Action bodies still nest as before, because they call the binary, not the MCP.
+
+**Signing is closed (D10).** The MCP refuses `epic sign` to every caller. The verb `zaf epic sign` also refuses when `CLAUDECODE` is set or stdin is not a terminal, on top of the process-tree check, since Claude Code sets `CLAUDECODE=1` in every process it starts. The chair signs through `epic::sign` directly, so it is unchanged, and `zaf epic sign` still works from a terminal of the Engineer's own.
+
+**The policy is not a permission boundary (D21).** It is code over the parsed command, which is stronger than a text deny, but a model with Bash can run the zaf binary by its path, and the Bash deny on `zaf` is a text match. The `CLAUDECODE` and terminal checks of `epic sign` guard against a mistake, not against a process that clears its own variables. A real boundary, a hook or a sandbox, stays on 0.6.0's deferred list.
+
 ## 6. The manifest
 
 ```toml
@@ -342,6 +422,54 @@ The scheduler rebuild ruled on 2026-11-12 (rulings R12 to R22 of the scheduler n
 ```
 
 The actions folder is not configurable: `.zaf/actions/` in a project, `actions/` in the global home. The scheduler of §5.1 adds a `[phases]` table, one list of action names for each task type, and `[spawn] tick_minutes`, the minutes the scheduler (`zaf spawn --watch`) lets pass after a tick before its timer asks for the next (five by default); the machine budget and the reserve are `[spawn]` settings in the zaf home, as #419 rules. `[spawn] budget` is read only from the zaf home's `config.toml`: set in `.zaf.toml` or `.zaf/config.toml` it fails the load, naming the file. `[spawn.sizes]` may sit in any layer, the zaf home's below the project's, and takes only the keys XS, S, M, L and XL; any other key, `E` among them, fails the load, naming it.
+
+### 6.1 Action settings
+
+An action has settings of its own: one table, `[actions.<name>]`, of string values (a value that is not a string, or a name that is no valid action name, fails the load and names the key). The only key `[actions]` itself takes is `timeout_minutes`; any other key that is not a table fails the load.
+
+- **Layers.** The tables merge key by key: the machine's `~/.zaf/config.toml` is read first and the project's `.zaf.toml` and `.zaf/config.toml` win on each key they set, so a project may override `repo` and keep the machine's `token_env`.
+- **How an action sees them.** `zaf do <name>` hands the action's run each key of its own table, and no other, as `ZAF_SETTING_<KEY>`: the key in upper case with `-` written as `_` (`token_env` is `ZAF_SETTING_TOKEN_ENV`). A run nested inside another starts from none and gets its own table's. A key with a character no variable can carry (anything but letters, digits, `-` and `_`) reaches no run.
+- **Secrets.** A setting is written in a file, so it holds the name of an environment variable (`token_env`), never a token.
+- **Update first.** A zaf older than the table refuses an unknown key and fails every verb on the file, so the machine is updated (`zaf update`) before `[actions.<name>]` is added to its config. `zaf setup` writes the table into the machine's `config.toml` only as a comment, as an example.
+
+### 6.2 The bug-report actions
+
+Two actions of the teams pack, installed in the machine tier alone (D20): `zaf setup` and `zaf update` put them in `~/.zaf/actions/` and never in a project's `.zaf/actions/`. Each takes four settings, from its own table: `kind` (`github-issues` or `forgejo-issues`), `url` (the instance's address), `repo` (`owner/name`) and `token_env` (the variable that holds the token). The machine's `config.toml` carries them:
+
+```toml
+[actions.bug-report]
+kind = "forgejo-issues"
+url = "https://forge.example.com"
+repo = "owner/name"
+token_env = "BUG_REPORT_TOKEN"
+
+[actions.bug-report-query]      # the same four keys, for the query
+kind = "forgejo-issues"
+url = "https://forge.example.com"
+repo = "owner/name"
+token_env = "BUG_REPORT_TOKEN"
+```
+
+**`bug-report`** files a report about zaf on that repository's tracker.
+
+```
+zaf do bug-report --title <text> --body <text> [--tags a,b] [--verb <verb or tool>] [--exit <n>]
+```
+
+On success it prints the new report's link and exits `0`. Exit `1` means it filed nothing: `--title` or `--body` is missing, a flag is unknown or `--exit` is not a number, a setting is missing or `kind` is neither value, `token_env` is no variable name, or the variable is empty (the message prints the table to add). Exit `2` means a backend failed: the tracker is unreachable or refused the report, or `gh` (for `github-issues`) is not installed.
+
+- **The body zaf adds.** The report opens with a `Tags:` line, then `zaf: <version>`, `System: <os> <arch>`, `Verb:` and `Exit:` when given, and `Reported by: <role>` (the role of `ZAF_INSTANCE`, else `outside zaf`), a blank line and the body as given.
+- **The scrub and the cap.** `$HOME` is written `~` in the title and the report, so a home folder's name leaves no machine. The report is cut to 8,000 bytes, a multi-byte character the cut splits being dropped.
+- **The token.** It is read from the variable `token_env` names. For `github-issues`, `gh` files under that token alone, as `GH_TOKEN` (on `github.com`) or `GH_ENTERPRISE_TOKEN` with `GH_HOST` (any other host), every other token `gh` could inherit cleared first, so the report is never filed under the machine's own login. For `forgejo-issues`, `curl` sends it as a header read from its stdin. It is never on a command line or in the log.
+- **Labels.** The tags name the labels: a tag that names no label on the repository is dropped, and so is every tag under `type/` or `state/`, which zaf's own tracker keeps for itself. A label list that cannot be read files the report with no label, and says so.
+
+**`bug-report-query`** lists the reports that carry a tag.
+
+```
+zaf do bug-report-query --tag <word> [--all]
+```
+
+It prints one line, `#<n> <title> <link>`, for each match, and nothing when none matches (exit `0`). A report matches when the tag is one of its labels, or one of the comma-separated words of the `Tags:` line that opens its body, exactly. Only open reports are listed, the closed ones too with `--all`. It reads `[actions.bug-report-query]`, the same four keys as `bug-report`'s table, and takes the token as `bug-report` does. Exit `1` means `--tag` is missing or empty, the parameters are malformed or a setting is missing or wrong; exit `2`, a backend failed or its reply is no list of issues.
 
 ## 7. Dogfood: the ways set
 

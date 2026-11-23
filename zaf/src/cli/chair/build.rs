@@ -19,7 +19,6 @@
 pub mod machine;
 
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 use ratatui::text::Span;
 
@@ -28,6 +27,8 @@ use super::panes::{Hint, hint};
 use super::theme::Theme;
 use crate::app::chair::{ChairState, ReleaseVersion, SquareState, WatchView};
 use crate::app::hub::controls::{Failure, valid_version};
+#[cfg(test)]
+use crate::app::spawn::scheduler::{log_name, watch_args};
 use crate::domain::screen::Meaning;
 use crate::domain::{EpicStage, TicketId};
 
@@ -397,27 +398,6 @@ pub fn carry_out(controls: &dyn Controls, control: &Control) -> Result<String, S
     done.map_err(|(Failure::Refused(why) | Failure::Failed(why))| {
         format!("{}: {why}", control.failed_words())
     })
-}
-
-/// The scheduler's arguments: `spawn --watch --version <version>`.
-pub fn watch_args(version: &ReleaseVersion) -> Vec<String> {
-    vec![
-        "spawn".to_owned(),
-        "--watch".to_owned(),
-        "--version".to_owned(),
-        version.to_string(),
-    ]
-}
-
-/// The scheduler's log under `.zaf/logs/`, stamped as a step's log is: the time in UTC to the
-/// second, then `spawn-watch-<version>`.
-pub fn log_name(at: SystemTime, version: &ReleaseVersion) -> String {
-    let stamp: String = humantime::format_rfc3339_seconds(at)
-        .to_string()
-        .chars()
-        .filter(|c| !matches!(c, '-' | ':'))
-        .collect();
-    format!("{stamp}_spawn-watch-{version}.log")
 }
 
 #[cfg(test)]

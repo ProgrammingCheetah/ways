@@ -6,7 +6,7 @@ argument-hint: "[time range, default: last 2 weeks]"
 
 # /teams:retrospective: reflect on the work, from evidence
 
-Ground every point in a commit, PR or file, not in impressions. Honest, constructive, specific: concrete examples over generalities. A release's retrospective is not this skill's: the release instance writes it from board statistics (`zaf report`, `zaf asklog`).
+Ground every point in a commit, PR or file, not in impressions. Honest, constructive, specific: concrete examples over generalities. A release's retrospective is not this skill's: the release instance writes it from board statistics (the `report` tool with `args` `["--epics"]`, the `asklog` tool).
 
 **Config:** read `Repository › docs`, `vcs` and `main` from the teams file when one exists (`.claude/TEAMS.md`, else `.claude/TEAMS.yaml`, else `.claude/TEAMS.toml`, at the root of this checkout; if absent and this is a secondary workspace, at the root of the main checkout: git, the first path `git worktree list` prints; jj, `jj workspace root --name default`). Without one, detect: a `.jj/` folder means jj, else git; the default branch from `gh repo view --json defaultBranchRef` or `git symbolic-ref refs/remotes/origin/HEAD`. `<docs>` is `Repository › docs` from the main checkout's root.
 

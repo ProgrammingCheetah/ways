@@ -9,10 +9,11 @@ use super::exit::{self, BACKEND, OK};
 use super::screen::Screen;
 use crate::adapters::process;
 use crate::app::profile;
-use crate::app::release;
+use crate::app::release::{self, DueRelease};
 use crate::app::schedule::gather::{gather_for, read_lists};
 use crate::app::status::{self, Status, StatusError};
 use crate::composition::Composition;
+use crate::domain::Epic;
 use crate::ports::Board;
 
 /// Prints the screen.
@@ -27,6 +28,16 @@ pub fn run(cli: &Cli) -> u8 {
         Err(error) => return exit::fail_composition(&path, &error),
     };
     print_status(cli, &composition, board.as_ref())
+}
+
+/// The releases of the project whose objectives or design are due, from its release folders, the
+/// board's open `epics` and the released check: what `zaf status` and `zaf epic list` both read.
+pub(super) fn due_releases(composition: &Composition, epics: &[Epic]) -> Vec<DueRelease> {
+    let (root, manifest) = (composition.root(), composition.manifest());
+    let vcs = composition.vcs().ok();
+    release::due_releases(root, manifest, epics, &|version| {
+        release::is_released(root, manifest, vcs.as_deref(), version)
+    })
 }
 
 /// The screen for a project over the given board, with the machine's live instances and, with
@@ -50,12 +61,7 @@ fn screen(composition: &Composition, board: &dyn Board) -> Result<Status, Status
         composition.manifest().project.name.as_ref(),
         composition.root(),
     );
-    let (root, manifest) = (composition.root(), composition.manifest());
-    let vcs = composition.vcs().ok();
-    let due = release::due_releases(root, manifest, &epics, &|version| {
-        release::is_released(root, manifest, vcs.as_deref(), version)
-    });
-    let screen = screen.with_releases(&due);
+    let screen = screen.with_releases(&due_releases(composition, &epics));
     Ok(
         match gather_for(composition, board, None, &epics, &questions) {
             Ok(Some(gathered)) => screen.with_placement(&gathered, std::time::SystemTime::now()),

@@ -112,7 +112,8 @@ struct Place {
     /// The project, for the board and branch patterns a `target: task` run names its slice from.
     project: Option<Composition>,
     home: PathBuf,
-    timeout_minutes: u64,
+    /// `[actions]`: the bound and the settings of every action. Outside a project, the home's.
+    actions: ActionsSection,
 }
 
 impl Place {
@@ -143,14 +144,14 @@ impl Place {
         match discovered {
             Ok(composition) => Ok(Self {
                 root: Some(composition.root().to_owned()),
-                timeout_minutes: composition.manifest().actions.timeout_minutes,
+                actions: composition.manifest().actions.clone(),
                 project: Some(composition),
                 home,
             }),
             Err(CompositionError::NoProject { .. }) => Ok(Self {
                 root: None,
                 project: None,
-                timeout_minutes: machine_timeout(&home)?,
+                actions: machine_actions(&home)?,
                 home,
             }),
             Err(error) => Err(error.to_string()),
@@ -158,8 +159,9 @@ impl Place {
     }
 }
 
-/// `[actions] timeout_minutes` of the home's `config.toml`, the default when it has none.
-fn machine_timeout(home: &Path) -> Result<u64, String> {
+/// `[actions]` of the home's `config.toml`, the default when it has none: outside a project, the
+/// bound and the settings a run gets.
+fn machine_actions(home: &Path) -> Result<ActionsSection, String> {
     let file = home.join(HOME_FILE);
     let text = match std::fs::read_to_string(&file) {
         Ok(text) => text,
@@ -178,7 +180,7 @@ fn machine_timeout(home: &Path) -> Result<u64, String> {
     if section.timeout_minutes == 0 {
         return Err(invalid(&"[actions] timeout_minutes must be at least 1"));
     }
-    Ok(section.timeout_minutes)
+    Ok(section)
 }
 
 /// Whether this process has a terminal: its stdin and its stdout both are one. A model's shell, a
@@ -356,7 +358,7 @@ fn run_named_at(
         cwd: &cwd,
         project_root: place.root.as_deref(),
         home: &place.home,
-        timeout_minutes: place.timeout_minutes,
+        timeout_minutes: place.actions.timeout_minutes,
         minute: MINUTE,
         nesting,
         caller,
@@ -371,6 +373,11 @@ fn run_named_at(
             .as_ref()
             .and_then(|project| project.manifest().vcs.as_ref())
             .map(|vcs| vcs.kind),
+        settings: place
+            .actions
+            .settings(name)
+            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            .collect(),
     };
     run_action(&match phase {
         Some(phase) => request.with_phase(phase),

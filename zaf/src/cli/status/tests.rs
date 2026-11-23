@@ -248,6 +248,7 @@ fn busy_status() -> Status {
         version: "0.5.3".to_owned(),
         phase: "design".to_owned(),
         command: "zaf begin --version 0.5.3".to_owned(),
+        way_on: crate::app::release::WAY_ON.to_owned(),
     });
     status
 }

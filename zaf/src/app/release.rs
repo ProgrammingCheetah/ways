@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use semver::Version;
 
 use super::epic::EpicLine;
+use crate::domain::screen::{Line, Meaning, Text};
 use crate::domain::{DocumentSignature, Epic, EpicStage, SignatureState, of_version};
 use crate::manifest::Manifest;
 use crate::ports::{Board, PortError, Vcs};
@@ -355,11 +356,38 @@ pub struct DueRelease {
     pub phase: Phase,
 }
 
+/// The way on from a due objectives or design phase (D9): those phases are the Engineer's
+/// interviews, run in zaf's chair, so a terminal opens it with `zaf`. One text, read by `zaf
+/// status`, `zaf epic list` and the MCP's refusal of `begin`.
+pub const WAY_ON: &str =
+    "Objectives and design are the Engineer's interviews: open zaf's chair in a terminal (`zaf`).";
+
 impl DueRelease {
     /// The command that runs the phase.
     pub fn command(&self) -> String {
         format!("zaf begin --version {}", self.version)
     }
+
+    /// The way on to the phase: [`WAY_ON`].
+    pub fn way_on(&self) -> &'static str {
+        WAY_ON
+    }
+}
+
+/// `due_lines(version, phase)`: a due release as `zaf status` and `zaf epic list` print it, its
+/// `release <v>: <phase> due` line and then the way-on line.
+pub fn due_lines(version: &str, phase: &str) -> Vec<Line> {
+    let piece = |meaning, text: &str| -> (Meaning, Text) { (meaning, Text::from(text)) };
+    vec![
+        vec![
+            piece(Meaning::Waiting, "release "),
+            piece(Meaning::Noun, version),
+            piece(Meaning::Waiting, ": "),
+            piece(Meaning::Waiting, phase),
+            piece(Meaning::Waiting, " due"),
+        ],
+        vec![piece(Meaning::Verb, WAY_ON)],
+    ]
 }
 
 /// `due_releases(root, manifest, epics, released)`: each release folder whose phase due is

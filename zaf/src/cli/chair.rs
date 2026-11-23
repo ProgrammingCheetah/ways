@@ -18,7 +18,7 @@
 //!
 //! The read model and what writes are in `app::chair`.
 
-mod build;
+pub(crate) mod build;
 mod draw;
 mod keys;
 mod layout;

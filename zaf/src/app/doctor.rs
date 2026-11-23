@@ -21,7 +21,12 @@
 //! `gh` is GitHub's tool: when neither the board nor the forge is on GitHub, a `gh` the manifest
 //! requires but the machine lacks is reported as not needed, and does not fail the report.
 //! The hub service is reported too, installed or not, running or not, and on which port (see
-//! [`HubCheck`]); it is informational and never fails the report.
+//! [`HubCheck`]); it is informational and never fails the report. So is the MCP line: whether the
+//! Engineer's own Claude holds zaf's MCP server at user scope, asked as `claude mcp get zaf` (see
+//! [`McpCheck`]). Each generated profile is asked the same of its own Claude and its `settings.json`
+//! is read for the MCP rules and keys; a part missing or wrong fails the report (see
+//! [`ProfileMcpCheck`]). A project's own `.zaf/roles/*.md` that tells a model to type `zaf` in Bash
+//! gets a note, informational too (see [`RoleOverrideNote`]).
 
 use std::fmt;
 use std::fs;
@@ -44,15 +49,21 @@ use paint::{bold, piece, with_commands};
 mod actions;
 pub mod fake;
 pub mod hub;
+mod mcp;
 mod needed;
+mod overrides;
 mod paint;
 mod phases;
+mod profile_mcp;
 mod repository;
 
 pub use actions::ActionCheck;
 pub use hub::HubCheck;
+pub use mcp::McpCheck;
 pub use needed::NeededCheck;
+pub use overrides::{RoleOverrideNote, bash_zaf_lines};
 pub use phases::PhaseCheck;
+pub use profile_mcp::ProfileMcpCheck;
 pub use repository::{GIT_FLOOR, GitVersionCheck, RepositoryCheck};
 
 /// Where a credentials file holds its access token's expiry, in milliseconds since the epoch.
@@ -415,6 +426,15 @@ pub struct Report {
     pub actions_dir: PathCheck,
     /// One entry per generated profile; informational, it never fails the report.
     pub logins: Vec<LoginCheck>,
+    /// Whether the Engineer's own Claude holds zaf's MCP server at user scope; informational,
+    /// it never fails the report.
+    pub mcp: McpCheck,
+    /// One entry per generated profile whose home exists: zaf's MCP server and the settings that
+    /// go with it; a missing or wrong part fails the report.
+    pub profile_mcp: Vec<ProfileMcpCheck>,
+    /// One entry per project role override that tells a model to type `zaf` in Bash;
+    /// informational, it never fails the report.
+    pub role_overrides: Vec<RoleOverrideNote>,
     /// One entry per generated profile that carries the pack, when the manifest has a `[pack]`;
     /// a stale or a missing pack fails the report.
     pub packs: Vec<PackCheck>,
@@ -465,6 +485,7 @@ impl Report {
     pub fn passed(&self) -> bool {
         self.tools.iter().all(|check| check.status.is_ok())
             && self.packs.iter().all(|check| check.ok)
+            && self.profile_mcp.iter().all(|check| check.ok)
             && self.stale.is_empty()
             && self.actions.iter().all(|check| check.ok)
             && self.actions_error.is_none()
@@ -529,7 +550,14 @@ impl Report {
         groups.extend(each([&self.actions_dir], |c| !c.ok, PathCheck::painted));
         // Informational: a missing login never fails the report, so it keeps its place.
         groups.extend(each(&self.logins, |_| false, LoginCheck::painted));
+        groups.push(Group::passing(self.mcp.painted()));
         groups.extend(each(&self.packs, |c| !c.ok, PackCheck::painted));
+        groups.extend(each(&self.profile_mcp, |c| !c.ok, ProfileMcpCheck::painted));
+        groups.extend(each(
+            &self.role_overrides,
+            |_| false,
+            RoleOverrideNote::painted,
+        ));
         groups.extend(each(
             profile::stale_line(&self.stale),
             |_| true,
@@ -912,6 +940,9 @@ pub fn doctor_with(
         workspaces,
         actions_dir,
         logins: logins(root, manifest, commands, claude_home, now),
+        mcp: mcp::check(commands),
+        profile_mcp: profile_mcp::check(root, manifest, commands),
+        role_overrides: overrides::check(root),
         packs: packs(root, manifest),
         stale: profile::stale_homes(&root.join(STATE_DIR), manifest),
         actions,

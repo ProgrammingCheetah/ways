@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use crate::app::projects::Projects;
 use crate::app::setup::ensure_homes;
 use crate::composition::Composition;
-use crate::domain::{DEFAULT_TASK_TYPE, TicketId};
+use crate::domain::{CommandPath, DEFAULT_TASK_TYPE, TicketId};
 use crate::manifest::ProjectFiles;
 use crate::ports::PrNumber;
 
@@ -29,6 +29,7 @@ pub mod exit;
 pub mod forge;
 pub mod guard;
 pub mod hub;
+pub mod mcp;
 pub mod profile;
 pub mod progress;
 pub mod report;
@@ -38,6 +39,7 @@ pub mod setup;
 pub mod slice;
 pub mod spawn;
 pub mod spawn_phase;
+pub mod spawn_start;
 pub mod spawn_stop;
 pub mod spawn_trace;
 pub mod status;
@@ -192,8 +194,14 @@ pub enum Verb {
     /// Replace this zaf with the newest release; up to date prints nothing.
     Update {
         /// Only say whether a newer release is out (exit 1 when one is); change nothing.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "yes")]
         check: bool,
+        /// Run the whole plan with assumed answers, no terminal needed: yes to going on and to the
+        /// pack line, each action replaced unless you edited it, and one last line naming what was
+        /// replaced and what was kept. Exit 2 when a step failed; inside an instance it changes
+        /// nothing.
+        #[arg(long)]
+        yes: bool,
     },
     /// The open epics and where each stands; the Engineer's signature on one.
     Epic {
@@ -222,6 +230,16 @@ pub enum Verb {
         #[command(subcommand)]
         action: ForgeAction,
     },
+    /// Serve zaf's verbs as MCP tools over stdin and stdout, for a client that starts it.
+    ///
+    /// Each visible verb is a tool, `mcp__zaf__<verb>`, taking `args`, `stdin`, `json` and
+    /// `more`; the result is one text block, `isError` and `_meta["zaf/exit"]`. Verbs run in
+    /// `ZAF_ROOT`, else `CLAUDE_PROJECT_DIR`, else this server's own directory.
+    ///
+    /// The contract, the waits and the working directory are written in the MCP section of
+    /// docs/zaf-actions.md (§5.4).
+    #[command(hide = true)]
+    Mcp,
 }
 
 /// `zaf forge …`.
@@ -303,7 +321,9 @@ pub enum EpicAction {
         /// The epic.
         epic: TicketId,
     },
-    /// Sign an epic as its body reads now; an edit voids it. Refused inside an instance.
+    /// Sign an epic as its body reads now; an edit voids it. Signs only from a terminal of the
+    /// Engineer's own, outside Claude Code (refused with `Sign in zaf's chair.` otherwise), and
+    /// refused inside an instance; the chair signs too.
     Sign {
         /// The epic.
         epic: TicketId,
@@ -318,29 +338,38 @@ pub enum EpicAction {
         #[arg(long, allow_hyphen_values = true)]
         title: String,
     },
+    /// Wait until the epic needs the Engineer (a question on it or its tasks waits), a problem
+    /// shows or the epic is done, then print `epic show` and the open questions; with nothing by
+    /// `--minutes`, print `nothing yet` and exit 0.
+    Wait {
+        /// The epic.
+        epic: TicketId,
+        /// How long to wait, in minutes.
+        #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u32).range(1..))]
+        minutes: u32,
+    },
 }
 
 /// `zaf progress …`.
 #[derive(Debug, clap::Subcommand, strum::IntoStaticStr)]
 #[strum(serialize_all = "kebab-case")]
 pub enum ProgressAction {
-    /// Declare the phases this model goes through on a task, in order.
+    /// Declare the phases this model goes through, in order: `plan [<task>] <phase>…`. A first
+    /// word that is a ticket number is the task; with none, the ticket `ZAF_INSTANCE` names.
     Plan {
-        /// The task.
-        task: TicketId,
-        /// The phases, one word each.
+        /// The task (optional), then the phases, one word each.
         #[arg(required = true, num_args = 1..)]
-        phases: Vec<String>,
+        words: Vec<String>,
         /// The role the phases are for; the role `ZAF_INSTANCE` names when not given.
         #[arg(long)]
         role: Option<String>,
     },
-    /// Report that this model is now in one of its declared phases.
+    /// Report that this model is now in one of its declared phases: `at [<task>] <phase>`. One
+    /// word is the phase, two are the task and the phase.
     At {
-        /// The task.
-        task: TicketId,
-        /// The phase, as declared.
-        phase: String,
+        /// The task (optional), then the phase, as declared.
+        #[arg(required = true, num_args = 1..=2)]
+        words: Vec<String>,
         /// The role the phase is for; the role `ZAF_INSTANCE` names when not given.
         #[arg(long)]
         role: Option<String>,
@@ -357,6 +386,13 @@ pub enum SpawnAction {
         task: TicketId,
         /// The phase action: the task's current one.
         action: String,
+    },
+    /// Start the project's scheduler detached and print its pid and log; a scheduler that already
+    /// holds the lock is handed back (its pid) and nothing is started.
+    Start {
+        /// The milestone's version the scheduler's instances build (`ZAF_VERSION`).
+        #[arg(long)]
+        version: String,
     },
     /// End the instance running a task, with every process of its group, and release the task's
     /// claim, so a later tick can start it again.
@@ -569,6 +605,21 @@ impl Verb {
         };
         action.map_or_else(|| verb.to_owned(), |action| format!("{verb} {action}"))
     }
+
+    /// The parsed command as policy reads it: the words of [`Self::path`], then the action's
+    /// name for `do`, with the two flags that matter (`spawn --watch`, `hub --port`).
+    pub fn command_path(&self) -> CommandPath {
+        let mut words: Vec<String> = self.path().split(' ').map(str::to_owned).collect();
+        if let Self::Do(args) = self
+            && let Some(name) = args.words.first()
+        {
+            words.push(name.to_string_lossy().into_owned());
+        }
+        let mut path = CommandPath::new(words);
+        path.watch = matches!(self, Self::Spawn { watch: true, .. });
+        path.serves = matches!(self, Self::Hub { port: Some(_), .. });
+        path
+    }
 }
 
 /// Parses the arguments and runs the verb; returns the process exit code.
@@ -603,7 +654,8 @@ where
                 }
             );
             // Updating the binary touches no project and makes no home.
-            let homeless = matches!(cli.verb, Verb::Setup | Verb::Update { .. });
+            // The MCP server makes nothing either: the verbs it runs make their own.
+            let homeless = matches!(cli.verb, Verb::Setup | Verb::Update { .. } | Verb::Mcp);
             if !cfg!(test) && !hook && !homeless {
                 first_run();
             }
@@ -719,6 +771,10 @@ fn run_verb(cli: &Cli) -> u8 {
             ..
         } => spawn_phase::run(cli, *task, action),
         Verb::Spawn {
+            action: Some(SpawnAction::Start { version }),
+            ..
+        } => spawn_start::run(cli, version),
+        Verb::Spawn {
             action: Some(SpawnAction::Stop { task }),
             ..
         } => spawn_stop::run(cli, *task),
@@ -752,7 +808,7 @@ fn run_verb(cli: &Cli) -> u8 {
             read_only,
         } => hub::run(cli, action.as_ref(), *port, *read_only),
         Verb::Progress { action } => progress::run(cli, action),
-        Verb::Update { check } => update::run(cli, *check),
+        Verb::Update { check, yes } => update::run(cli, *check, *yes),
         Verb::Epic { action } => epic::run(cli, action),
         Verb::Begin {
             action: Some(BeginAction::Ready),
@@ -764,6 +820,7 @@ fn run_verb(cli: &Cli) -> u8 {
             phase,
         } => begin::run(cli, version.as_deref().unwrap_or_default(), *phase),
         Verb::Forge { action } => forge::run(cli, action),
+        Verb::Mcp => mcp::run(cli),
     }
 }
 

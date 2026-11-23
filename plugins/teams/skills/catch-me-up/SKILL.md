@@ -18,13 +18,13 @@ No teams file: say so in one line and brief from the project's CLAUDE.md, its de
 
 Skip anything already loaded this session. Never read whole source files or whole documents, only the parts that explain the current work.
 
-1. **The board:** in a zaf project (a `.zaf.toml` or `.zaf/config.toml`), `zaf status` (epics and tasks, running instances, open questions) and the newest instance status comments on the epics in flight are "what we were just doing"; its open questions and ready epics are "what's next". Without one, `<docs>/queue.md`: its latest status note (the newest entry under its `## Status` heading) and its top items.
+1. **The board:** in a zaf project (a `.zaf.toml` or `.zaf/config.toml`), the `status` tool (epics and tasks, running instances, open questions) and the newest instance status comments on the epics in flight are "what we were just doing"; its open questions and ready epics are "what's next". Without one, `<docs>/queue.md`: its latest status note (the newest entry under its `## Status` heading) and its top items.
 2. **The current release folder,** `<docs>/releases/<version>/`. Current = the release the latest status note names, else the most recently modified folder. Read `objectives.md` (a small release, or one begun before objectives, has `scope.md`), then name the phase by the last of these that holds:
    - `objectives.md` not yet in `signoff.md`: objectives (interview, QA or signature);
    - `scope.md`, or `objectives.md` in `signoff.md`, and no release documents: design next;
    - release documents not yet in `signoff.md`: design review;
    - release documents in `signoff.md`: signed;
-   - epics on the board: planning, challenge or build, by the epics' states in `zaf status`;
+   - epics on the board: planning, challenge or build, by the epics' states in the `status` tool's output;
    - the milestone's release instance has reported: release.
 
    Then the newest `rulings-*.md` there.
@@ -57,6 +57,6 @@ Short prose and short lists, no padding, no headers beyond these five:
 2. **What we've been doing:** the last few units of work (PRs or commits), newest first, one line each.
 3. **Context:** the why behind the current work: the ruling or decision that shaped it, one or two sentences. Cite the ruling file or decision record by path and title, not ids alone. Don't re-explain settled history.
 4. **Missing:** the findings from step 2, open questions without a ruling, claims or plan items not yet resolved, anything the status note flags as open.
-5. **Next steps:** concrete actions in order. The first is what to do the moment the briefing ends. Name a fitting skill or verb where one applies: `/teams:my-queue` for the full queue, `/teams:objectives` to resume or change a release's objectives, `zaf status` for the board, `zaf spawn --once` to launch what is ready.
+5. **Next steps:** concrete actions in order. The first is what to do the moment the briefing ends. Name a fitting skill or verb where one applies: `/teams:my-queue` for the full queue, `/teams:objectives` to resume or change a release's objectives, the `status` tool for the board, the `spawn` tool with `args` `["--once"]` to launch what is ready.
 
 Then stop. **Do not start the work.** The Engineer decides what happens next.

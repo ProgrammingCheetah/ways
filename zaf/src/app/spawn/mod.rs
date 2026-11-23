@@ -62,6 +62,7 @@ pub mod phase;
 pub mod post_tick;
 pub mod record;
 pub mod runs;
+pub mod scheduler;
 pub mod start;
 mod state;
 pub mod stop;

@@ -18,7 +18,7 @@ A session started by a zaf phase (the `objectives` action) has `ZAF_PHASE` in it
 - **Write no `signoff.md`:** skip step 7's `git hash-object` table and its row. zaf takes the signature itself.
 - **Tell the Engineer to end the session to sign:** at step 7, once the questions are answered, fill `## Signed` as usual, then say in one line that ending this session signs the document.
 - **A document zaf signed is a signed document:** one whose first lines are zaf's signature block (a `---` line, `signed:`, `hash:`, a `---` line) is signed, with or without a `signoff.md` row; in a phase there is no row. Opening it again is a change to a signed document: open a round as step 1 says, change only the text below the block, never write or edit the block itself, and run steps 5 to 7. zaf signs again when the session ends. Never resume it as unfinished.
-- **Epics:** this skill files none. A session that also files epics does it with `zaf epic file --version <v> --title <t>`, the body on stdin.
+- **Epics:** this skill files none. A session that also files epics does it with the `epic` tool: `args` `["file","--version","<v>","--title","<t>"]`, the body in `stdin`.
 
 ## 0. Config
 
@@ -39,7 +39,7 @@ On either change path, if release documents are signed too, list which parts of 
 
 ## 2. Read before asking (cheap; skip what's absent)
 
-So your probes are specific, not generic: the project's CLAUDE.md and README (what it is), the previous release's `objectives.md` (its Out of scope and Later column) and its design document's `## Parked (later releases)`, the newest `rulings-*.md` and `Repository › decisions` entries, and, in a zaf project (a `.zaf.toml` or `.zaf/config.toml`), the board's open questions (`zaf status`). Never whole source files.
+So your probes are specific, not generic: the project's CLAUDE.md and README (what it is), the previous release's `objectives.md` (its Out of scope and Later column) and its design document's `## Parked (later releases)`, the newest `rulings-*.md` and `Repository › decisions` entries, and, in a zaf project (a `.zaf.toml` or `.zaf/config.toml`), the board's open questions (the `status` tool). Never whole source files.
 
 ## 3. The interview
 

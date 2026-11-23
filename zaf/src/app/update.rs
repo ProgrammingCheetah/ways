@@ -16,7 +16,7 @@ use semver::Version;
 use crate::app::actions::ACTIONS_DIR;
 use crate::app::doctor::Commands;
 use crate::app::profile;
-use crate::app::setup::{PackActions, changed_actions};
+use crate::app::setup::{PackActions, changed_actions, machine_edits};
 use crate::composition::{STATE_DIR, zaf_home};
 use crate::domain::screen::{PlanRow, Text, Verb};
 use crate::manifest::{FOLDER_FILE, LEGACY_FILE, Manifest, ROOT_FILE};
@@ -355,6 +355,12 @@ pub struct ActionsRow {
     pub changed: Vec<String>,
     /// How many actions the installed plugin carries.
     pub total: usize,
+    /// The machine's actions equal to the old pack's copy, read before the plugin step replaces
+    /// the pack: an `Assumed` run replaces each of these the new pack differs on.
+    pub replaced: Vec<String>,
+    /// The machine's actions that differ from the old pack's copy or have none to read: an
+    /// `Assumed` run keeps each of these, by name, whatever the new pack holds.
+    pub kept: Vec<String>,
 }
 
 /// What one release says is new.
@@ -544,13 +550,22 @@ pub fn plan(
         })
     });
     let actions = places.zaf_home.and_then(|home| {
-        let (changed, total) = places
-            .claude_home
-            .and_then(pack_actions_dir)
-            .map(|folder| changed_actions(home, &folder))
+        // The old pack copy, read here: the plugin step replaces it.
+        let old_pack = places.claude_home.and_then(pack_actions_dir);
+        let (changed, total) = old_pack
+            .as_deref()
+            .map(|folder| changed_actions(home, folder))
             .unwrap_or_default();
-        (!changed.is_empty() || plugin.is_some())
-            .then(|| (ActionsRow { changed, total }, home.to_owned()))
+        let edits = machine_edits(home, old_pack.as_deref());
+        (!changed.is_empty() || plugin.is_some()).then(|| {
+            let row = ActionsRow {
+                changed,
+                total,
+                replaced: edits.unedited,
+                kept: edits.edited,
+            };
+            (row, home.to_owned())
+        })
     });
     let pack = match (&declared, places.project) {
         (Some(to), Some((root, manifest))) => stale_pack(root, manifest, to),
@@ -655,6 +670,89 @@ pub struct PackChange {
     pub old: String,
     /// The line as it would be.
     pub new: String,
+}
+
+/// One machine action the plugin's copy would replace: what the Engineer is shown to decide on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionDiff {
+    /// The action's name.
+    pub name: String,
+    /// Why the plugin's copy differs: the pack's `# changed:` line, when it says.
+    pub why: Option<Text>,
+    /// The two copies' difference as `git diff` prints it.
+    pub difference: String,
+}
+
+/// Who gives the update plan its yes-or-no answers: `proceed` once, `replace` for each machine
+/// action that differs and `raise_pack` for the project's pack line. A `true` goes ahead.
+pub trait UpdateAnswers {
+    /// Whether the plan as shown is carried out.
+    fn proceed(&mut self) -> bool;
+    /// Whether the plugin's copy of an action replaces the machine's.
+    fn replace(&mut self, diff: &ActionDiff) -> bool;
+    /// Whether the project's pack line is raised.
+    fn raise_pack(&mut self, change: &PackChange) -> bool;
+    /// Hands over the plan, once it is worked out and before the first answer. Answers that decide
+    /// from what the plan read take it; the others leave it.
+    fn planned(&mut self, _plan: &Plan) {}
+}
+
+/// The answers of a run no one is asked in: yes to `proceed` and `raise_pack`, and for `replace`
+/// the edited-actions rule: once the plan is handed over, an action is replaced when the machine's
+/// copy equals the old pack's, and kept when it differs or there is no old copy to read. Before a
+/// plan, or with a hook, `replace` is the hook's answer, yes for every diff when there is none. It
+/// reads nothing from standard input and writes nothing.
+#[derive(Default)]
+pub struct Assumed {
+    replace: Option<ReplaceHook>,
+    /// The names the plan lets replace; `None` before a plan is handed over.
+    unedited: Option<Vec<String>>,
+    /// The names answered no, in the order asked.
+    kept: Vec<String>,
+}
+
+/// Answers whether one differing action is replaced.
+type ReplaceHook = Box<dyn Fn(&ActionDiff) -> bool>;
+
+impl Assumed {
+    /// Answers `replace` with `hook`, the edited-actions rule.
+    pub fn with_replace(hook: impl Fn(&ActionDiff) -> bool + 'static) -> Self {
+        Self {
+            replace: Some(Box::new(hook)),
+            ..Self::default()
+        }
+    }
+
+    /// The names of the actions it answered no on, in the order asked: what the last line names.
+    pub fn kept(&self) -> &[String] {
+        &self.kept
+    }
+}
+
+impl UpdateAnswers for Assumed {
+    fn proceed(&mut self) -> bool {
+        true
+    }
+
+    fn replace(&mut self, diff: &ActionDiff) -> bool {
+        let yes = match (&self.replace, &self.unedited) {
+            (Some(hook), _) => hook(diff),
+            (None, Some(unedited)) => unedited.contains(&diff.name),
+            (None, None) => true,
+        };
+        if !yes {
+            self.kept.push(diff.name.clone());
+        }
+        yes
+    }
+
+    fn raise_pack(&mut self, _change: &PackChange) -> bool {
+        true
+    }
+
+    fn planned(&mut self, plan: &Plan) {
+        self.unedited = plan.actions.as_ref().map(|(row, _)| row.replaced.clone());
+    }
 }
 
 /// The reason a project's pack is left as it is: `[pack] path` names a folder.

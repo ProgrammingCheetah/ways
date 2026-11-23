@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 use zaf::app::profile;
 use zaf::manifest::{CommandLine, Manifest};
-use zaf::ports::{GateRun, PortError, Shell};
+use zaf::ports::{GateRun, GateVerdict, PortError, Shell};
 
 /// The merge paths no instance may take.
 const MERGE_PATHS: [&str; 8] = [
@@ -38,11 +38,18 @@ fn ways_manifest() -> Manifest {
     Manifest::load_layers(&ways_root(), None).expect("the ways manifest loads")
 }
 
-/// A shell that must stay unused: with no `[pack]`, profile generation runs no command.
+/// A shell for nothing but zaf's MCP: with no `[pack]`, profile generation runs no other command.
+/// Every profile already shows zaf's entry, so `get` is the one line it sees.
 struct NoShell;
 
 impl Shell for NoShell {
     fn run(&self, line: &CommandLine) -> Result<GateRun, PortError> {
+        if line.as_ref().contains(" claude mcp get ") {
+            return Ok(GateRun {
+                verdict: GateVerdict::Passed,
+                output: "zaf:\n  Scope: User config (available in all your projects)\n  Type: stdio\n  Command: zaf\n  Args: mcp\n".to_owned(),
+            });
+        }
         panic!("profile generation ran a command: {line}");
     }
 }
@@ -135,9 +142,13 @@ fn forbidden_leaves_slice_merge_and_release() {
         }
     }
 
-    // No generated deny may cover either action, whether named or by a wider pattern.
+    // No generated deny may cover either action, whether named or by a wider pattern. The two
+    // rules that deny Bash `zaf` whole are the exception: the actions run through zaf's MCP tools.
     for (profile, rules) in generated_denies() {
-        for rule in rules {
+        for rule in rules
+            .into_iter()
+            .filter(|rule| rule != "Bash(zaf)" && rule != "Bash(zaf *)")
+        {
             let pattern = rule
                 .strip_prefix("Bash(")
                 .and_then(|rest| rest.strip_suffix(')'))

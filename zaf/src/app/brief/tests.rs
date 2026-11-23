@@ -148,7 +148,7 @@ fn the_pack_holds_every_section_in_order() {
     assert!(!owned.contains(NO_NODE_TREE_NOTE));
 
     assert!(section(&text, "Style").contains("Name things by what they mean."));
-    assert!(section(&text, "Interface").contains("zaf ask -t <task>"));
+    assert!(section(&text, "Interface").contains("`ask` `[\"-t\", \"<task>\""));
     assert_eq!(
         fs::read_to_string(state.path().join("runs/.gitignore")).expect("ignore"),
         "*\n"

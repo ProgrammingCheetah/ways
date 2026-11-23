@@ -26,7 +26,7 @@ use super::guard::{self, GuardError, GuardState};
 use super::hub::next::{Inbox, InboxEpic, InboxTask, NextItem, NextKind, items};
 use super::hub::state::{Problem, QuestionState, ReleaseDueState, WaitState, WatchState};
 use super::profile::{StaleProfile, stale_line};
-use super::release::DueRelease;
+use super::release::{self, DueRelease};
 use super::schedule::gather::Gathered;
 use super::schedule::shadow;
 use super::schedule::trace::ShortPlace;
@@ -188,6 +188,8 @@ pub struct ReleaseLine {
     pub phase: String,
     /// The command that runs it.
     pub command: String,
+    /// The way on to the phase: open zaf's chair in a terminal.
+    pub way_on: String,
 }
 
 impl From<&DueRelease> for ReleaseLine {
@@ -196,6 +198,7 @@ impl From<&DueRelease> for ReleaseLine {
             version: due.version.clone(),
             phase: due.phase.name().to_owned(),
             command: due.command(),
+            way_on: due.way_on().to_owned(),
         }
     }
 }
@@ -824,7 +827,7 @@ impl Status {
                     });
                     if let Some((index, release)) = release {
                         releases.insert(index);
-                        out.push(Self::release_line(release));
+                        out.extend(Self::release_lines(release));
                     }
                 }
                 NextKind::Unticked | NextKind::Broken => {}
@@ -837,7 +840,7 @@ impl Status {
         }
         for (index, release) in self.releases.iter().enumerate() {
             if releases.insert(index) {
-                out.push(Self::release_line(release));
+                out.extend(Self::release_lines(release));
             }
         }
         epics
@@ -870,16 +873,9 @@ impl Status {
         line
     }
 
-    /// A due release's line.
-    fn release_line(release: &ReleaseLine) -> Line {
-        vec![
-            piece(Meaning::Waiting, "release "),
-            piece(Meaning::Noun, release.version.clone()),
-            piece(Meaning::Waiting, ": "),
-            piece(Meaning::Waiting, release.phase.clone()),
-            piece(Meaning::Waiting, " due, run "),
-            piece(Meaning::Verb, release.command.clone()),
-        ]
+    /// A due release's lines: `release <v>: <phase> due`, then the way on.
+    fn release_lines(release: &ReleaseLine) -> Vec<Line> {
+        release::due_lines(&release.version, &release.phase)
     }
 
     /// The ready tasks, and with `more` what each does next.

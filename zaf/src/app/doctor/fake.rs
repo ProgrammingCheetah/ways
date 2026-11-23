@@ -6,11 +6,16 @@ use std::sync::{Mutex, PoisonError};
 
 use super::{CommandOutput, Commands};
 
+/// What `claude mcp get zaf` prints once zaf's entry is registered.
+const SHOWS_OURS: &str = "zaf:\n  Scope: User config (available in all your projects)\n  Status: \u{2713} Connected\n  Type: stdio\n  Command: zaf\n  Args: mcp\n  Environment:\n\nTo remove this server, run: claude mcp remove \"zaf\" -s user\n";
+
 /// Programs that answer with fixed text; any other program is not installed.
 #[derive(Debug, Default)]
 pub struct FakeCommands {
     answers: BTreeMap<String, CommandOutput>,
     calls: Mutex<Vec<Vec<String>>>,
+    /// Whether a profile's `claude mcp get zaf` shows zaf's entry.
+    profile_mcp: bool,
 }
 
 impl FakeCommands {
@@ -43,6 +48,13 @@ impl FakeCommands {
         self
     }
 
+    /// Makes `env CLAUDE_CONFIG_DIR=<home> claude mcp get zaf`, which asks a profile for its MCP
+    /// server, show zaf's entry; every other call answers as before.
+    pub fn with_profile_mcp(mut self) -> Self {
+        self.profile_mcp = true;
+        self
+    }
+
     /// Every call so far, program first.
     pub fn calls(&self) -> Vec<Vec<String>> {
         self.calls
@@ -60,6 +72,13 @@ impl Commands for FakeCommands {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(call);
+        if self.profile_mcp && program == "env" && args.ends_with(&["claude", "mcp", "get", "zaf"])
+        {
+            return Ok(CommandOutput {
+                text: SHOWS_OURS.to_owned(),
+                success: true,
+            });
+        }
         self.answers.get(program).cloned().ok_or_else(|| {
             io::Error::new(io::ErrorKind::NotFound, format!("{program}: not installed"))
         })

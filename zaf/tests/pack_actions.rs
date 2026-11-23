@@ -56,6 +56,10 @@ const GIT_NAMES: [&str; 9] = [
     "workspace-open.git",
 ];
 
+/// The actions the pack carries for the machine tier alone (design addendum D20): they install in
+/// `~/.zaf/actions/`, so the ways repository's `.zaf/actions/` holds no copy to compare with.
+const MACHINE_NAMES: [&str; 2] = ["bug-report", "bug-report-query"];
+
 #[test]
 fn pack_actions_parse() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
@@ -68,11 +72,16 @@ fn pack_actions_parse() {
         .map(|entry| entry.expect("entry").file_name().to_string_lossy().into())
         .collect();
     found.sort();
-    let mut expected: Vec<&str> = NAMES.iter().chain(GIT_NAMES.iter()).copied().collect();
+    let mut expected: Vec<&str> = NAMES
+        .iter()
+        .chain(GIT_NAMES.iter())
+        .chain(MACHINE_NAMES.iter())
+        .copied()
+        .collect();
     expected.sort_unstable();
     assert_eq!(
         found, expected,
-        "the pack holds exactly the 25 actions and their git versions"
+        "the pack holds exactly the 25 actions, their git versions and the machine-tier ones"
     );
 
     for name in expected {
@@ -81,6 +90,13 @@ fn pack_actions_parse() {
         assert_ne!(mode & 0o111, 0, "{name} is not executable");
         let text = fs::read_to_string(&file).unwrap_or_else(|error| panic!("{name}: {error}"));
         let parsed = parse(&file, &text).unwrap_or_else(|error| panic!("{error}"));
+        if MACHINE_NAMES.contains(&name) {
+            assert_eq!(
+                parsed.metadata.mode,
+                ActionMode::parse("755").expect("a mode")
+            );
+            continue;
+        }
 
         let ways_name = name.strip_suffix(".git").unwrap_or(name);
         let ways_file = root.join(".zaf/actions").join(ways_name);

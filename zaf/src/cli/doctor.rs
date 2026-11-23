@@ -149,7 +149,7 @@ mod tests {
 
     use super::*;
     use crate::adapters::shell::SystemShell;
-    use crate::app::doctor::{ActionCheck, PathCheck, ToolCheck, ToolStatus};
+    use crate::app::doctor::{ActionCheck, McpCheck, PathCheck, ToolCheck, ToolStatus};
     use crate::cli::screen::{Environment, code, strip_escapes};
     use crate::domain::screen::Meaning;
 
@@ -188,6 +188,9 @@ mod tests {
             workspaces: path("workspaces dir", true),
             actions_dir: path("project actions dir", true),
             logins: Vec::new(),
+            mcp: McpCheck::Ok,
+            profile_mcp: Vec::new(),
+            role_overrides: Vec::new(),
             packs: Vec::new(),
             stale: Vec::new(),
             actions: vec![ActionCheck {

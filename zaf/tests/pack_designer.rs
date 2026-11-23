@@ -329,9 +329,9 @@ fn review_epic_runs_the_designer_once_in_the_build_profile() {
     for words in [
         "challenger of a document the Engineer signs",
         "epic #12",
-        "`zaf epic show 12 --more`",
-        "`zaf board question 12 \"",
-        "`--door`",
+        "`epic` tool, `args` [\"show\", \"12\"] and `more` true",
+        "`board` tool, `args` [\"question\", \"12\", \"<the question",
+        "`\"--door\"`",
         "Never edit the epic, never sign it",
         "one-screen summary",
     ] {

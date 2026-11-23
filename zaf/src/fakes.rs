@@ -13,6 +13,7 @@ mod gate;
 mod releases;
 mod runner;
 mod vcs;
+mod verb_runner;
 
 pub use board::{FakeBoard, link as board_link};
 pub use ci_filter::FakeCiFilter;
@@ -22,3 +23,4 @@ pub use gate::FakeGate;
 pub use releases::FakeReleases;
 pub use runner::FakeRunner;
 pub use vcs::FakeVcs;
+pub use verb_runner::FakeVerbRunner;

@@ -1,0 +1,350 @@
+#!/bin/sh
+# zaf description: list the bug reports on the issue tracker the machine's settings name that carry a tag, one `#<n> <title> <link>` line each; it takes --tag <t> [--all] (closed reports too) and prints nothing when none matches
+# zaf 1: refused: --tag is missing or the parameters are malformed, or a setting (kind, url, repo, token_env) is missing or kind is not github-issues or forgejo-issues
+# zaf 2: a backend failed (the place is unreachable or refused the list, or a tool it needs is missing)
+# zaf mode: 755
+# changed: new; a machine-tier action (design addendum D20), installed in ~/.zaf/actions/ and never in a project's; it reads the settings of bug-report's table
+
+usage() {
+    cat >&2 <<'EOF'
+Please use the following parameters:
+  --tag <word>   the tag the reports carry, as a label or in the `Tags:` line of the body (required)
+  --all          list the closed reports too (optional; the open ones alone without it)
+EOF
+    exit 1
+}
+
+tag=
+all=
+tagged=
+while [ "$#" -gt 0 ]; do
+    case $1 in
+        --tag)
+            [ "$#" -ge 2 ] || usage
+            tag=$2
+            tagged=1
+            shift 2
+            ;;
+        --all)
+            all=1
+            shift
+            ;;
+        *) usage ;;
+    esac
+done
+# A tag is one word: its edges trimmed, and nothing left of it is no tag.
+tag=${tag#"${tag%%[![:space:]]*}"}
+tag=${tag%"${tag##*[![:space:]]}"}
+[ -n "$tagged" ] && [ -n "$tag" ] || usage
+
+# The settings zaf passes from [actions.bug-report-query] as ZAF_SETTING_<KEY>: the keys of
+# bug-report's table.
+missing=
+[ -n "${ZAF_SETTING_KIND:-}" ] || missing="$missing kind"
+[ -n "${ZAF_SETTING_URL:-}" ] || missing="$missing url"
+[ -n "${ZAF_SETTING_REPO:-}" ] || missing="$missing repo"
+[ -n "${ZAF_SETTING_TOKEN_ENV:-}" ] || missing="$missing token_env"
+wrong=
+if [ -n "${ZAF_SETTING_KIND:-}" ]; then
+    case $ZAF_SETTING_KIND in
+        github-issues | forgejo-issues) ;;
+        *) wrong=kind ;;
+    esac
+fi
+if [ -n "$missing" ] || [ -n "$wrong" ]; then
+    if [ -n "$missing" ]; then
+        echo "bug-report-query: these settings are missing:$missing" >&2
+    fi
+    if [ -n "$wrong" ]; then
+        echo "bug-report-query: kind is wrong: \"$ZAF_SETTING_KIND\"; it is github-issues or forgejo-issues" >&2
+    fi
+    cat >&2 <<'EOF'
+Add this table to ~/.zaf/config.toml (the same keys as [actions.bug-report]):
+
+[actions.bug-report-query]
+kind = "forgejo-issues"            # or "github-issues"
+url = "https://forge.example.com"  # the instance's address
+repo = "owner/name"                # the repository that holds the reports
+token_env = "BUG_REPORT_TOKEN"     # the environment variable that holds its token
+EOF
+    exit 1
+fi
+
+# The token lives in the variable token_env names. It is read from the environment and written
+# only to curl's stdin, as a header, or to gh's environment: never on a command line, never in
+# the log.
+case $ZAF_SETTING_TOKEN_ENV in
+    *[!A-Za-z0-9_]* | [0-9]*)
+        echo "bug-report-query: token_env is not a variable name: \"$ZAF_SETTING_TOKEN_ENV\"" >&2
+        exit 1
+        ;;
+esac
+eval "token=\${$ZAF_SETTING_TOKEN_ENV:-}"
+if [ -z "$token" ]; then
+    echo "bug-report-query: $ZAF_SETTING_TOKEN_ENV is not set or is empty; it holds the token for $ZAF_SETTING_URL" >&2
+    exit 1
+fi
+
+work=$(mktemp -d) || {
+    echo "bug-report-query: cannot make a temp folder" >&2
+    exit 2
+}
+trap 'rm -rf "$work"' EXIT
+trap 'exit 2' HUP INT TERM
+
+# Reads a JSON list of issues on stdin, as Forgejo's API and `gh issue list --json` give it, and
+# prints a line for each that carries the tag. Both name the fields number, title, body, state and
+# labels[].name; the link is html_url (Forgejo) or url (gh). Issues whose number is in the file
+# QUERY_SEEN are passed over and the ones read are added to it, so a place that answers a page
+# twice lists nothing twice. The page's count and its count of new issues go to QUERY_PAGE.
+# Exits 3 when the input is no list. Bytes are read as bytes (LC_ALL=C), and \u escapes are
+# written out as UTF-8.
+AWK_QUERY='
+function hexval(h,   v, k, d) {
+    v = 0
+    h = tolower(h)
+    for (k = 1; k <= length(h); k++) {
+        d = index("0123456789abcdef", substr(h, k, 1))
+        if (d == 0) return 63
+        v = v * 16 + d - 1
+    }
+    return v
+}
+function utf8(cp) {
+    if (cp >= 55296 && cp < 57344) return "?"
+    if (cp == 0) return ""
+    if (cp < 128) return sprintf("%c", cp)
+    if (cp < 2048) return sprintf("%c%c", 192 + int(cp / 64), 128 + cp % 64)
+    if (cp < 65536) return sprintf("%c%c%c", 224 + int(cp / 4096), 128 + int(cp / 64) % 64, 128 + cp % 64)
+    return sprintf("%c%c%c%c", 240 + int(cp / 262144), 128 + int(cp / 4096) % 64, 128 + int(cp / 64) % 64, 128 + cp % 64)
+}
+# A JSON string without its quotes, its escapes read.
+function decode(raw,   out, i, n, c, e, cp, lo) {
+    out = ""
+    n = length(raw)
+    i = 1
+    while (i <= n) {
+        c = substr(raw, i, 1)
+        if (c != "\\") { out = out c; i++; continue }
+        e = substr(raw, i + 1, 1)
+        i += 2
+        if (e == "n") out = out "\n"
+        else if (e == "t") out = out "\t"
+        else if (e == "r") out = out "\r"
+        else if (e == "b" || e == "f") out = out " "
+        else if (e == "u") {
+            cp = hexval(substr(raw, i, 4))
+            i += 4
+            if (cp >= 55296 && cp < 56320 && substr(raw, i, 2) == "\\u") {
+                lo = hexval(substr(raw, i + 2, 4))
+                if (lo >= 56320 && lo < 57344) { cp = 65536 + (cp - 55296) * 1024 + (lo - 56320); i += 6 }
+            }
+            out = out utf8(cp)
+        } else out = out e
+    }
+    return out
+}
+# Where the walk is: the path of the value being read, as keys and list positions joined by dots.
+function path(   d, p) {
+    p = ""
+    for (d = 1; d <= depth; d++) p = p (d > 1 ? "." : "") (kind[d] == "a" ? idx[d] : key[d])
+    return p
+}
+function value_start() {
+    if (depth > 0) {
+        if (kind[depth] == "a") idx[depth]++
+        else havekey[depth] = 0
+    }
+}
+# The text as paths: strings in S (escapes unread), the other scalars in V.
+function flatten(s,   n, i, j, c, tok) {
+    n = length(s)
+    i = 1
+    depth = 0
+    while (i <= n) {
+        c = substr(s, i, 1)
+        if (c == " " || c == "\t" || c == "\n" || c == "\r" || c == "," || c == ":") { i++; continue }
+        if (c == "}" || c == "]") { depth--; i++; continue }
+        if (c == "{" || c == "[") {
+            value_start()
+            depth++
+            kind[depth] = (c == "{") ? "o" : "a"
+            idx[depth] = 0
+            havekey[depth] = 0
+            i++
+            continue
+        }
+        if (c == "\"") {
+            j = i + 1
+            while (j <= n && (c = substr(s, j, 1)) != "\"") { if (c == "\\") j++; j++ }
+            tok = substr(s, i + 1, j - i - 1)
+            i = j + 1
+            if (depth > 0 && kind[depth] == "o" && !havekey[depth]) { key[depth] = tok; havekey[depth] = 1 }
+            else { value_start(); S[path()] = tok }
+            continue
+        }
+        j = i
+        while (j <= n && index(",]} \t\r\n", substr(s, j, 1)) == 0) j++
+        tok = substr(s, i, j - i)
+        i = j
+        value_start()
+        V[path()] = tok
+    }
+}
+BEGIN {
+    tag = ENVIRON["QUERY_TAG"]
+    all = ENVIRON["QUERY_ALL"]
+    seenfile = ENVIRON["QUERY_SEEN"]
+    pagefile = ENVIRON["QUERY_PAGE"]
+    while ((getline line < seenfile) > 0) seen[line] = 1
+    close(seenfile)
+    RS = "\001"
+}
+{ text = text $0 }
+END {
+    sub(/^[ \t\r\n]+/, "", text)
+    if (substr(text, 1, 1) != "[") exit 3
+    flatten(text)
+    total = idx[1] + 0
+    fresh = 0
+    for (k = 1; k <= total; k++) {
+        num = V[k ".number"]
+        if (num == "" || (num in seen)) continue
+        seen[num] = 1
+        fresh++
+        print num >> seenfile
+        if (!all && tolower(S[k ".state"]) == "closed") continue
+        hit = 0
+        for (m = 1; (k ".labels." m ".name") in S; m++) {
+            if (decode(S[k ".labels." m ".name"]) == tag) { hit = 1; break }
+        }
+        if (!hit && (k ".body") in S) {
+            b = decode(S[k ".body"])
+            i = index(b, "\n")
+            if (i > 0) b = substr(b, 1, i - 1)
+            sub(/\r$/, "", b)
+            if (substr(b, 1, 5) == "Tags:") {
+                words = split(substr(b, 6), w, ",")
+                for (q = 1; q <= words; q++) {
+                    x = w[q]
+                    gsub(/^[ \t]+|[ \t]+$/, "", x)
+                    if (x == tag) { hit = 1; break }
+                }
+            }
+        }
+        if (!hit) continue
+        title = decode(S[k ".title"])
+        gsub(/[\t\r\n]+/, " ", title)
+        link = ((k ".html_url") in S) ? decode(S[k ".html_url"]) : decode(S[k ".url"])
+        print "#" num " " title " " link
+    }
+    print total, fresh > pagefile
+    close(pagefile)
+}'
+
+# Reads the list in $1 and appends its matches to $work/matches; $page_count and $page_fresh are
+# what the page held and what of it was new. Exit 2 when the reply is no list.
+: >"$work/seen"
+: >"$work/matches"
+read_list() {
+    QUERY_TAG=$tag QUERY_ALL=$all QUERY_SEEN="$work/seen" QUERY_PAGE="$work/page" \
+        LC_ALL=C awk "$AWK_QUERY" <"$1" >>"$work/matches"
+    parsed=$?
+    if [ "$parsed" -ne 0 ]; then
+        echo "bug-report-query: the place's reply is not a list of issues" >&2
+        exit 2
+    fi
+    read -r page_count page_fresh <"$work/page"
+}
+
+state=open
+[ -z "$all" ] || state=all
+
+if [ "$ZAF_SETTING_KIND" = github-issues ]; then
+    # A GitHub place: `gh` lists under the configured token and never the machine's own login.
+    # gh reads GH_TOKEN on github.com and GH_ENTERPRISE_TOKEN (with GH_HOST) on any other host,
+    # so every token it could inherit is cleared first and only the one for this host is set.
+    if ! command -v gh >/dev/null 2>&1; then
+        echo "bug-report-query: gh is not installed; it lists a GitHub place" >&2
+        exit 2
+    fi
+    host=${ZAF_SETTING_URL#*://}
+    host=${host%%/*}
+    host=${host##*@}
+    host=$(printf '%s' "$host" | tr 'A-Z' 'a-z')
+    case $host in
+        '')
+            echo "bug-report-query: url has no host: \"$ZAF_SETTING_URL\"" >&2
+            exit 1
+            ;;
+        github.com | www.github.com) enterprise= ;;
+        *) enterprise=$host ;;
+    esac
+
+    ghx() {
+        (
+            unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN GH_HOST GH_REPO
+            if [ -n "$enterprise" ]; then
+                export GH_HOST="$enterprise" GH_ENTERPRISE_TOKEN="$token"
+            else
+                export GH_TOKEN="$token"
+            fi
+            exec gh "$@"
+        )
+    }
+
+    if ! ghx issue list -R "$ZAF_SETTING_REPO" --state "$state" --limit 1000 \
+        --json number,title,url,body,labels,state \
+        </dev/null >"$work/out" 2>"$work/err"; then
+        echo "bug-report-query: gh failed: $(cat "$work/err")" >&2
+        exit 2
+    fi
+    read_list "$work/out"
+    cat "$work/matches"
+    exit 0
+fi
+
+# The header as the inside of a quoted string in a curl config. The text goes in through stdin,
+# never through -v, which would read the backslashes in it as escapes.
+auth=$(printf 'Authorization: token %s' "$token" | awk '
+    function rep(s, f, t,   out, i) {
+        out = ""
+        while ((i = index(s, f)) > 0) { out = out substr(s, 1, i - 1) t; s = substr(s, i + length(f)) }
+        return out s
+    }
+    { printf "%s", rep(rep($0, "\\", "\\\\"), "\"", "\\\"") }')
+unset token
+
+# One call to the place: the HTTP status goes to `status`, its body to $work/body, curl's own
+# complaint to $work/err. It fails when curl does. The token is never printed.
+forge() {
+    printf 'header = "%s"\n' "$auth" | curl --disable --silent --show-error --globoff --config - \
+        --request GET --header 'Accept: application/json' \
+        --connect-timeout 10 --max-time 30 \
+        --write-out '\n%{http_code}' \
+        "${ZAF_SETTING_URL%/}/api/v1/repos/$ZAF_SETTING_REPO$1" \
+        >"$work/out" 2>"$work/err"
+    curl_exit=$?
+    status=$(tail -n 1 "$work/out")
+    # Everything but the last line, which is the status.
+    awk 'NR > 1 { print prev } { prev = $0 }' "$work/out" >"$work/body"
+    [ "$curl_exit" -eq 0 ]
+}
+
+# The place answers in pages of 50 at most; reading goes on until a page holds nothing, or
+# nothing new.
+page=1
+while [ "$page" -le 40 ]; do
+    if ! forge "/issues?state=$state&type=issues&limit=50&page=$page"; then
+        echo "bug-report-query: curl failed (exit $curl_exit): $(cat "$work/err")" >&2
+        exit 2
+    fi
+    if [ "${status#2}" = "$status" ]; then
+        echo "bug-report-query: the place refused the list (status ${status:-none}): $(cat "$work/body")" >&2
+        exit 2
+    fi
+    read_list "$work/body"
+    [ "$page_count" -gt 0 ] && [ "$page_fresh" -gt 0 ] || break
+    page=$((page + 1))
+done
+cat "$work/matches"

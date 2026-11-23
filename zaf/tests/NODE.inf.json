@@ -92,7 +92,7 @@
     },
     {
       "name": "fixtures/",
-      "role": "gh: fake gh shell script; forgejo/curl: fake curl for the Forgejo adapter; claude: a stand-in claude CLI that says it is logged in and does nothing else",
+      "role": "gh: fake gh shell script; forgejo/curl: fake curl for the Forgejo adapter; claude: a stand-in claude CLI that says it is logged in and does nothing else; hook/mcp-post-tool-use.json: a real PostToolUse payload of an MCP tool call from a claude -p run, its note (.md) naming the version and the command line",
       "node": false
     },
     {
@@ -136,6 +136,16 @@
       "node": false
     },
     {
+      "name": "mcp_live.rs",
+      "role": "an #[ignore]d test: the real Claude Code (`claude -p`) is given the built zaf mcp and must reach the status tool; fails naming `claude` when it is not on PATH; run with `cargo test --test mcp_live -- --ignored live_claude`",
+      "node": false
+    },
+    {
+      "name": "mcp_server.rs",
+      "role": "zaf mcp: MCP spoken over the built binary's stdio: tools/list is the catalog, status through the server prints what the verb prints, a failing verb is an error result with its exit, the server verb is no tool, and `mcp` is hidden from --help",
+      "node": false
+    },
+    {
       "name": "local_manifest.rs",
       "role": ".zaf/local.toml as the manifest's top layer: its slots win, any other manifest setting fails a verb",
       "node": false
@@ -148,6 +158,11 @@
     {
       "name": "pack_briefs.rs",
       "role": "the pack's six role briefs open with the exact bytes of zaf's interface page",
+      "node": false
+    },
+    {
+      "name": "pack_prompts.rs",
+      "role": "no markdown page of the pack or zaf/assets, and no action prompt, tells a model to type `zaf <verb>` in Bash (the Engineer's README excepted)",
       "node": false
     },
     {
