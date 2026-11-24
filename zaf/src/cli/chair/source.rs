@@ -141,7 +141,7 @@ pub fn look(gatherer: &Gatherer, index: usize, root: PathBuf, look: Look, update
         let _ = updates.send(Update::Looked(index, looked));
     };
     match look {
-        Look::Epic(_) => gatherer.run(Box::new(job)),
+        Look::Epic(_) | Look::Graph(_) => gatherer.run(Box::new(job)),
         Look::Ticket(_) => {
             let _ = std::thread::Builder::new()
                 .name("zaf chair look".to_owned())

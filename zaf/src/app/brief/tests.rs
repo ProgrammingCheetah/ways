@@ -744,3 +744,84 @@ fn brief_without_a_place_prints_no_map() {
         ]
     );
 }
+
+/// A planned body of two behaviours, each naming its own page, path and acceptance line.
+fn merged_body() -> String {
+    let section = |key: &str, page: &str, path: &str, acceptance: &str| {
+        let fields = BODY
+            .replace("Blocked by: —\n", "")
+            .replace("Design pages: 1001 (decided), §2 of 1002, 1001 again", page)
+            .replace("Owned paths: src/export/**, src/cli/export.rs (new)", path)
+            .replace("an empty list exports the header row only", acceptance);
+        format!("Behaviour: {key}\n{fields}")
+    };
+    format!(
+        "Node: A+B\n{}{}",
+        section(
+            "a",
+            "Design pages: 1001",
+            "Owned paths: src/export/**",
+            "the first behaviour holds"
+        ),
+        section(
+            "b",
+            "Design pages: 1002, 1001",
+            "Owned paths: src/lists/**",
+            "the second behaviour holds"
+        ),
+    )
+}
+
+fn pack_of(body: &str) -> String {
+    let state = tempfile::tempdir().expect("temp dir");
+    let board = board_with(body);
+    let design = design();
+    let chain = |path: &str| Ok(format!("root\n  {path}"));
+    let ports = BriefPorts {
+        board: &board,
+        design: Some(&design),
+        nodes: Some(&chain),
+    };
+    let brief = brief(&query(state.path(), None), &ports).expect("brief");
+    fs::read_to_string(brief.path).expect("pack")
+}
+
+#[test]
+fn brief_of_merged_ticket_lists_both_acceptances() {
+    let text = pack_of(&merged_body());
+
+    let ticket = section(&text, "Ticket");
+    assert!(ticket.contains("  - the first behaviour holds"));
+    assert!(ticket.contains("  - the second behaviour holds"));
+    assert!(
+        !ticket.contains("does not follow the task template"),
+        "a planned ticket is read, not noted off the template"
+    );
+}
+
+#[test]
+fn brief_of_merged_ticket_names_both_sections_pages() {
+    let text = pack_of(&merged_body());
+
+    let pages = section(&text, "Design pages");
+    assert!(pages.contains("### 1001 Export (decided)"));
+    assert!(pages.contains("### 1002 Lists (decided)"));
+    assert!(!pages.contains("1003"));
+    assert_eq!(pages.matches("### 1001").count(), 1, "a shared page once");
+
+    let owned = section(&text, "Owned paths");
+    assert!(owned.contains("### src/export\n"));
+    assert!(owned.contains("### src/lists\n"));
+}
+
+#[test]
+fn brief_of_older_ticket_unchanged() {
+    let text = pack_of(BODY);
+
+    let pages = section(&text, "Design pages");
+    assert!(pages.starts_with("## Design pages\n\n### 1001 Export (decided)\n"));
+    assert!(pages.find("### 1001").unwrap() < pages.find("### 1002").unwrap());
+    let owned = section(&text, "Owned paths");
+    assert!(owned.find("### src/export\n").unwrap() < owned.find("### src/cli/export.rs").unwrap());
+    assert!(!text.contains("does not follow the task template"));
+}

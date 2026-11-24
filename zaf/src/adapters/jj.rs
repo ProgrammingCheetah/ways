@@ -151,6 +151,38 @@ impl Vcs for JjVcs {
         Ok(names)
     }
 
+    fn path_at(&self, root: &Path, revision: &str, path: &str) -> Result<bool, PortError> {
+        let jj = Self::root_command(root)?;
+        let missing = || PortError::NotFound(format!("revision {revision}"));
+        // The revision goes into a revset argument: one that starts with `-` would be an option.
+        if revision.is_empty() || revision.starts_with('-') {
+            return Err(missing());
+        }
+        // A branch is read where the remote has it, as the git adapter reads it: the integration
+        // branch is opened on the remote, and a local bookmark of its name may be absent or stale.
+        // Anything the remote has no one bookmark by (a commit id, `@-`, a local bookmark) is read
+        // as given.
+        let on_remote = format!(
+            "remote_bookmarks(exact:{}, exact:\"origin\")",
+            quoted(revision)
+        );
+        let commit = match jj.commit_ids(&on_remote)?.as_slice() {
+            [commit] => commit.clone(),
+            // A revision jj cannot resolve to one commit is a revision this repository does not
+            // hold.
+            _ => match jj.commit_id(revision) {
+                Ok(commit) => commit,
+                Err(PortError::Backend(_)) => return Err(missing()),
+                Err(other) => return Err(other),
+            },
+        };
+        // `root:` takes the path literally from the repository root, a file or a folder.
+        let fileset = format!("root:{}", quoted(path));
+        let at = commit_id_revset(commit.as_str());
+        let listed = jj.run(&["file", "list", "-r", &at, &fileset])?;
+        Ok(!listed.trim().is_empty())
+    }
+
     fn diff_hunks(
         &self,
         workspace: &Path,

@@ -393,6 +393,20 @@ fn manifest_rows(
             ));
         }
     }
+    if let Some(pages) = pack_root(root, &state_dir, manifest).map(|pack| pack.join(PAGES_DIR)) {
+        let new = pages::new_pages(root, &manifest.design, &pages);
+        if !new.is_empty() {
+            let count = match new.len() {
+                1 => "1 standard page".to_owned(),
+                n => format!("{n} standard pages"),
+            };
+            rows.push(row(
+                "Add",
+                &format!("{count}: {}", new.join(", ")),
+                "the pack has design pages this project lacks",
+            ));
+        }
+    }
     rows
 }
 
@@ -455,6 +469,8 @@ pub struct SetupReport {
     pub profiles: Option<profile::Report>,
     /// The pack's actions put into the zaf home, and the names already there.
     pub actions: PackActions,
+    /// The pack's standard design pages put into the project's design folder.
+    pub pages: PackPages,
     /// What was done about zaf's MCP in the Engineer's own Claude.
     pub mcp: EngineerMcp,
     /// Doctor, run after the folders and the clone.
@@ -801,6 +817,11 @@ fn install_into(
 /// The `actions/` folder of the pack installed in the first generated profile that carries it;
 /// none without a pack, a profile that carries it or an installed pack.
 fn pack_actions_dir(root: &Path, state_dir: &Path, manifest: &Manifest) -> Option<PathBuf> {
+    pack_root(root, state_dir, manifest).map(|installed| installed.join(ACTIONS_DIR))
+}
+
+/// The folder of the pack installed in the first generated profile that carries it.
+fn pack_root(root: &Path, state_dir: &Path, manifest: &Manifest) -> Option<PathBuf> {
     let pack = manifest
         .pack
         .as_ref()
@@ -809,8 +830,7 @@ fn pack_actions_dir(root: &Path, state_dir: &Path, manifest: &Manifest) -> Optio
         .into_iter()
         .find(|profile| profile::carries_pack(*profile))?;
     let profile_home = profile::home(state_dir, profile);
-    let installed = profile::installed_path(&profile_home, &pack.to_string())?;
-    Some(installed.join(ACTIONS_DIR))
+    profile::installed_path(&profile_home, &pack.to_string())
 }
 
 /// The names in `pack_actions` that the zaf `home`'s `actions/` holds nothing under (not even a
@@ -1247,6 +1267,19 @@ fn setup_with(
     } else {
         PackActions::default()
     };
+    let pack_pages = pack_root(root, &state_dir, manifest).map(|pack| pack.join(PAGES_DIR));
+    let pages = match pack_pages {
+        Some(pack_pages) if profiles.is_some() => pages::install_pack_pages(
+            root,
+            &manifest.design,
+            &pack_pages,
+            commands,
+            asker
+                .as_mut()
+                .map(|asker| &mut **asker as &mut dyn ReplaceAction),
+        )?,
+        _ => PackPages::default(),
+    };
     let mcp = register_engineers_mcp(shell, asker);
     let report = doctor_with(
         root,
@@ -1262,6 +1295,7 @@ fn setup_with(
         clone,
         profiles,
         actions,
+        pages,
         mcp,
         doctor: report,
         board: board_backend(manifest),
@@ -1272,6 +1306,9 @@ fn setup_with(
 
 mod why;
 pub use why::why;
+
+pub mod pages;
+pub use pages::{PAGES_DIR, PackPages};
 
 #[cfg(test)]
 mod tests;

@@ -15,7 +15,6 @@ mod common;
 use std::fs::{self, File, OpenOptions};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
 use common::{Project, Running, outcome, scheduler_up};
@@ -73,59 +72,26 @@ fn hold_lock(project: &Project) -> File {
     file
 }
 
-/// Starts `zaf spawn --watch --version 0.3.0` without waiting for it.
-fn start_watch(project: &Project) -> Child {
-    project
-        .command_in(&project.root, &["spawn", "--watch", "--version", "0.3.0"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("start zaf")
-}
-
-/// Waits up to `within` for `done` to hold.
-fn wait_until(within: Duration, done: impl Fn() -> bool) -> bool {
-    let deadline = Instant::now() + within;
-    while Instant::now() < deadline {
-        if done() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    done()
-}
-
-/// Whether `child` is still running; stops it and gives its output when `stop`.
-fn running(child: &mut Child) -> bool {
-    child.try_wait().expect("try_wait").is_none()
-}
-
-/// Kills the watch, which only a signal ends, and gives its stdout and stderr.
-fn stop(mut child: Child) -> (String, String) {
-    child.kill().expect("kill the watch");
-    let output = child.wait_with_output().expect("output");
-    (
-        String::from_utf8_lossy(&output.stdout).into_owned(),
-        String::from_utf8_lossy(&output.stderr).into_owned(),
-    )
+/// Starts `zaf spawn --watch --version 0.3.0` without waiting for it. Its output is gathered as
+/// it comes, so a test waits for the line it checks and never for a fixed time.
+fn start_watch(project: &Project) -> Running {
+    Running::start(project.command_in(&project.root, &["spawn", "--watch", "--version", "0.3.0"]))
 }
 
 #[test]
 fn the_first_tick_runs_at_once_and_the_watch_goes_on() {
     let project = project(MANIFEST, 0);
 
-    let mut child = start_watch(&project);
+    let mut watch = start_watch(&project);
     let ticked = project.root.join("ticked");
-    assert!(
-        wait_until(Duration::from_secs(20), || ticked.exists()),
-        "no tick ran before the first interval"
-    );
+    // The tick has ended once its `next tick` line is out: a slow machine only waits longer.
+    watch.wait_for_lines("next tick ", 1);
+    assert!(ticked.exists(), "no tick ran before the first interval");
     // The next tick is a minute away: the loop sleeps, it does not end.
     std::thread::sleep(Duration::from_millis(500));
-    assert!(running(&mut child), "the watch ended after one tick");
+    assert!(watch.runs(), "the watch ended after one tick");
 
-    let (stdout, stderr) = stop(child);
+    let (stdout, stderr) = (watch.stdout(), watch.stderr());
     assert!(stdout.contains("a tick every 1 minutes"), "{stdout}");
     assert!(
         stdout.contains("nothing to do"),
@@ -145,13 +111,16 @@ fn a_failed_tick_does_not_end_the_watch() {
     // The pre-tick hook exits 1, which fails the tick with exit 2.
     let project = project(MANIFEST, 1);
 
-    let mut child = start_watch(&project);
-    let ticked = project.root.join("ticked");
-    assert!(wait_until(Duration::from_secs(20), || ticked.exists()));
+    let mut watch = start_watch(&project);
+    // The failed tick says so on stderr: a slow machine only waits longer.
+    watch.wait_for("the failed tick's line", |_, err| {
+        err.contains("tick 1 failed with exit 2")
+    });
+    assert!(project.root.join("ticked").exists());
     std::thread::sleep(Duration::from_millis(500));
-    assert!(running(&mut child), "a failed tick ended the watch");
+    assert!(watch.runs(), "a failed tick ended the watch");
 
-    let (_, stderr) = stop(child);
+    let stderr = watch.stderr();
     assert!(
         stderr.contains("tick 1 failed with exit 2; the watch goes on"),
         "{stderr}"
@@ -928,11 +897,17 @@ fn built_board(project: &mut Project) {
         "body": body,
         "labels": [{"name": "epic"}],
         "comments": [
-            {"body": format!(
-                "<!-- zaf:signature sha256={} at=2026-11-01T00:00:00Z -->\nSigned.",
-                hash.as_str()
-            )},
-            {"body": "<!-- zaf:report challenger instance 9 on #1 -->\nEvery task is exact."},
+            {
+                "body": format!(
+                    "<!-- zaf:signature sha256={} at=2026-11-01T00:00:00Z -->\nSigned.",
+                    hash.as_str()
+                ),
+                "author": {"login": common::OWN_LOGIN},
+            },
+            {
+                "body": "<!-- zaf:report challenger instance 9 on #1 -->\nEvery task is exact.",
+                "author": {"login": common::OWN_LOGIN},
+            },
         ],
     }]);
     let tasks = serde_json::json!([{

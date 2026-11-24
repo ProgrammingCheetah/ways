@@ -14,7 +14,7 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 
 use serde::de::DeserializeOwned;
 
-use super::rows::{ApiSettingsRow, VersionRow};
+use super::rows::{ApiSettingsRow, UserRow, VersionRow};
 use crate::manifest::{EnvVarName, ForgeUrl, RepoName};
 use crate::ports::PortError;
 
@@ -408,6 +408,23 @@ impl ForgejoApi {
         body: Option<&serde_json::Value>,
     ) -> Result<Reply, PortError> {
         self.call(method, &self.repo_path(endpoint), body, true)
+    }
+
+    /// The login the token posts as: `GET /api/v1/user`, which needs the token.
+    pub fn own_login(&self) -> Result<String, PortError> {
+        let path = format!("{API_ROOT}/user");
+        let reply = self.call(Method::Get, &path, None, true)?;
+        let user: UserRow = decode(
+            Method::Get,
+            &path,
+            &self.checked(Method::Get, &path, reply)?,
+        )?;
+        if user.login.trim().is_empty() {
+            return Err(PortError::Backend(
+                "the instance reports no login for the token".to_owned(),
+            ));
+        }
+        Ok(user.login)
     }
 
     /// The most items the instance puts on one page (its `max_response_items`), read once.

@@ -38,6 +38,7 @@ pub fn run_folder(state_dir: &Path, instance: &Instance, pid: u32) {
         tasks: Vec::new(),
         reserved_at: "2026-11-12T10:00:00Z".to_owned(),
         started_at: Some("2026-11-12T10:00:01Z".to_owned()),
+        graph: None,
     };
     std::fs::write(
         dir.join(runs::LAUNCH_FILE),

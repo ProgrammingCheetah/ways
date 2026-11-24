@@ -59,6 +59,26 @@ pub fn fail_composition(path: &str, error: &CompositionError) -> u8 {
     code_for_composition(error)
 }
 
+/// The refusal of a filing verb (`plan file`, `board file`, `epic file`) for a caller whose
+/// `ZAF_INSTANCE` names the challenger: one line naming the refusal and the way on, and `REFUSED`.
+/// `None` for every other caller, a hand run and a value that does not parse included. Called
+/// before the board is composed, so nothing reaches it; the MCP is no boundary (0.5.5 D21), so the
+/// verb checks for itself.
+pub fn refuse_challenger_filing(path: &str) -> Option<u8> {
+    use crate::app::actions::Caller;
+    use crate::domain::CHALLENGER_ROLE;
+
+    match Caller::from_env() {
+        Ok(Caller::Role(role)) if role.as_str() == CHALLENGER_ROLE => {
+            crate::eprintln_zaf!(
+                "zaf {path}: refused: the challenger checks the graph and files nothing; raise a question with `board question`"
+            );
+            Some(REFUSED)
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -16,8 +16,8 @@ use super::api::{ForgejoApi, Method};
 use super::labels::{self, LabelSpec, RepoLabels};
 use super::rows::{CommentRow, IssueRow, LabelRow};
 use crate::adapters::issues::{
-    DOOR_LABEL, EPIC_LABEL, QUESTION_LABEL, TASK_LABEL, can_wait, group, keeps_state_on_release,
-    waits_on_ruling,
+    DOOR_LABEL, EPIC_LABEL, QUESTION_LABEL, TASK_LABEL, TrustedLogins, can_wait, group,
+    keeps_state_on_release, waits_on_ruling,
 };
 use crate::adapters::notes::{
     EpicNotes, LeaseNote, RULING_MARKER, SIGNATURE_TEXT, held_by, live_claim, marked,
@@ -29,7 +29,7 @@ use crate::domain::{
     Ticket, TicketId, TicketState,
 };
 use crate::ports::{
-    AccessCheck, Board, ClaimOutcome, ClaimRecord, IssueTypes, NewQuestion, PortError,
+    AccessCheck, Board, ClaimOutcome, ClaimRecord, IssueTypes, Login, NewQuestion, PortError,
 };
 
 /// A board kept as the issues of one Forgejo repository.
@@ -40,21 +40,32 @@ use crate::ports::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForgejoBoard {
     api: ForgejoApi,
+    trusted: TrustedLogins,
 }
 
 impl From<ForgejoApi> for ForgejoBoard {
     fn from(api: ForgejoApi) -> Self {
-        Self { api }
+        Self {
+            api,
+            trusted: TrustedLogins::default(),
+        }
     }
 }
 
 impl ForgejoBoard {
+    /// The board trusting the zaf comments of `logins` (the manifest's list); with none, only
+    /// the login the token posts as.
+    pub fn trusting(mut self, logins: Vec<Login>) -> Self {
+        self.trusted = TrustedLogins::listed(logins);
+        self
+    }
+
     fn issue(&self, number: TicketId) -> Result<IssueRow, PortError> {
         self.api.get(&format!("issues/{}", number.get()))
     }
 
     /// An issue's comments, oldest first.
-    fn comments(&self, number: TicketId) -> Result<Vec<CommentRow>, PortError> {
+    pub(super) fn comments(&self, number: TicketId) -> Result<Vec<CommentRow>, PortError> {
         let mut comments: Vec<CommentRow> =
             self.api.get(&format!("issues/{}/comments", number.get()))?;
         comments.sort_by_key(|comment| comment.id);
@@ -217,30 +228,35 @@ impl ForgejoBoard {
             (comments, dependencies)
         });
         let (comments, dependencies) = (comments?, dependencies?);
-        Ok(rows
-            .iter()
+        rows.iter()
             .zip(comments)
             .zip(dependencies)
             .map(|((row, comments), mut tasks)| {
                 let notes = EpicNotes::read(
-                    comments
-                        .iter()
-                        .map(|comment| (comment.body.as_str(), comment.posted())),
-                );
+                    comments.iter().map(|comment| {
+                        (
+                            comment.body.as_str(),
+                            comment.posted(),
+                            comment.author.as_ref(),
+                        )
+                    }),
+                    || self.trusted_logins(),
+                )?;
                 tasks.retain(|task| !task.is_pull() && task.has_label(TASK_LABEL));
                 tasks.sort_by_key(|task| task.number);
                 tasks.dedup_by_key(|task| task.number);
-                Epic {
+                Ok(Epic {
                     id: TicketId::from(row.number),
                     title: row.title.clone().into(),
                     body: row.body.clone().into(),
                     tasks: tasks.iter().map(epic_task).collect(),
                     signature: notes.signature,
                     planned_at: notes.planned_at,
-                    challenged: notes.challenged,
-                }
+                    challengers: notes.challengers,
+                    records: notes.records,
+                })
             })
-            .collect())
+            .collect()
     }
 }
 
@@ -421,6 +437,17 @@ impl Board for ForgejoBoard {
         })
     }
 
+    /// One issue read: its `created_at`, whether it is open or closed; none for an issue that is
+    /// not there, a pull request, or a row with no readable time.
+    fn opened_at(&self, number: TicketId) -> Result<Option<SystemTime>, PortError> {
+        match self.issue(number) {
+            Ok(row) if row.is_pull() => Ok(None),
+            Ok(row) => Ok(row.opened()),
+            Err(PortError::NotFound(_)) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     fn ready(&self) -> Result<Vec<Ticket>, PortError> {
         self.open_tasks_in(TicketState::Ready)
     }
@@ -541,6 +568,38 @@ impl Board for ForgejoBoard {
             )?;
         }
         Ok(())
+    }
+
+    /// Labels the open issue `not planned`, the mark Forgejo's close reason is kept as, then
+    /// closes it. The label goes on first: a call that fails between the two leaves an open
+    /// issue, which a second call finishes. A closed issue is left as it is.
+    fn drop_task(&self, task: TicketId) -> Result<(), PortError> {
+        let row = self.issue(task)?;
+        if !row.is_open() {
+            return Ok(());
+        }
+        if !row.has_label(labels::NOT_PLANNED_LABEL) {
+            let mut repo = RepoLabels::read(&self.api)?;
+            let id = repo.ensure(&self.api, &LabelSpec::not_planned())?;
+            let endpoint = format!("issues/{}/labels", task.get());
+            self.api.send::<serde_json::Value>(
+                Method::Post,
+                &endpoint,
+                Some(&json!({ "labels": [id] })),
+            )?;
+        }
+        let endpoint = format!("issues/{}", task.get());
+        self.api
+            .send::<serde_json::Value>(
+                Method::Patch,
+                &endpoint,
+                Some(&json!({ "state": "closed" })),
+            )
+            .map(drop)
+    }
+
+    fn trusted_logins(&self) -> Result<Vec<Login>, PortError> {
+        self.trusted.get(|| self.api.own_login().map(Login::from))
     }
 
     fn comment(&self, issue: TicketId, body: &str) -> Result<(), PortError> {

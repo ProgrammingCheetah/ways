@@ -1,0 +1,43 @@
+{
+ "name": "09-refuse-two-providers",
+ "why": "Two nodes provide the same name: refused.",
+ "options": {
+  "lift": "all",
+  "interfaces": "each"
+ },
+ "plan": {
+  "nodes": [
+   {
+    "id": "A",
+    "behaviours": [
+     {
+      "text": "a",
+      "size": 1,
+      "writes": [],
+      "provides": [
+       "x"
+      ],
+      "needs": []
+     }
+    ]
+   },
+   {
+    "id": "B",
+    "behaviours": [
+     {
+      "text": "b",
+      "size": 1,
+      "writes": [],
+      "provides": [
+       "x"
+      ],
+      "needs": []
+     }
+    ]
+   }
+  ]
+ },
+ "expect": {
+  "refused": "two-providers"
+ }
+}

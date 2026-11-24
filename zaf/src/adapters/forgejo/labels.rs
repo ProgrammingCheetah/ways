@@ -121,6 +121,11 @@ impl LabelSpec {
         }
     }
 
+    /// `not planned`, the label an issue closed as not planned carries.
+    pub fn not_planned() -> Self {
+        Self::kind(NOT_PLANNED_LABEL, "cccccc", "Closed as not planned")
+    }
+
     /// `state/<state>`, exclusive.
     pub fn state(state: TicketState) -> Self {
         let (color, description) = match state {

@@ -26,6 +26,7 @@ fn run_folder(state_dir: &Path, number: u32, pid: u32) {
         tasks: Vec::new(),
         reserved_at: "2026-11-13T10:00:00Z".to_owned(),
         started_at: None,
+        graph: None,
     };
     std::fs::write(
         dir.join(runs::LAUNCH_FILE),

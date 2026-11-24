@@ -26,7 +26,8 @@ fn epic() -> Epic {
         tasks: Vec::new(),
         signature: None,
         planned_at: None,
-        challenged: false,
+        records: Vec::new(),
+        challengers: Vec::new(),
     }
 }
 
@@ -73,7 +74,7 @@ fn an_epic_walks_its_stages_in_order() {
         task(3, TicketState::Blocked, Standing::Open),
     ];
     assert_eq!(epic.stage(), EpicStage::Planned);
-    epic.challenged = true;
+    epic.challengers = vec![None];
     assert_eq!(epic.stage(), EpicStage::Challenged);
     epic.tasks = vec![
         task(2, TicketState::Done, Standing::Done),
@@ -86,7 +87,7 @@ fn an_epic_walks_its_stages_in_order() {
 fn challenged_with(tasks: Vec<EpicTask>) -> Epic {
     Epic {
         tasks,
-        challenged: true,
+        challengers: vec![None],
         ..signed(epic())
     }
 }
@@ -179,4 +180,181 @@ fn a_stage_prints_as_its_word() {
         serde_json::to_value(EpicStage::Unsigned).expect("serializes"),
         "unsigned"
     );
+}
+
+fn record_of(k: u64, marked: bool) -> EpicRecord {
+    use crate::domain::plan::record::{FilingMark, GraphHash, PlanRecord};
+    EpicRecord {
+        record: PlanRecord {
+            k,
+            design: BodyHash::of(&BODY.into()),
+            dropped: Vec::new(),
+            plan: format!("plan {k}\n"),
+        },
+        posted_at: None,
+        mark: marked.then(|| FilingMark {
+            k,
+            graph: "ab".repeat(32).parse::<GraphHash>().expect("a digest"),
+        }),
+    }
+}
+
+fn with_records(records: Vec<EpicRecord>) -> Epic {
+    Epic {
+        tasks: vec![task(2, TicketState::Ready, Standing::Open)],
+        records,
+        ..signed(epic())
+    }
+}
+
+#[test]
+fn epic_last_record_without_mark_not_planned() {
+    let epic = with_records(vec![record_of(1, true), record_of(2, false)]);
+    assert_eq!(epic.stage(), EpicStage::Signed);
+    assert!(epic.half_filed());
+}
+
+/// A graph ticket: node `node`, one section with `goal`.
+fn graph_task(number: u64, node: &str, goal: &str) -> EpicTask {
+    use crate::domain::plan::body::{PlannedTicket, Section};
+    use crate::domain::plan::{NodeId, NodeKind};
+    use crate::domain::{SecurityTrigger, TaskModel, TaskSize, TaskTemplate};
+    use std::collections::BTreeSet;
+    let body = PlannedTicket {
+        node: NodeId::from(node),
+        kind: NodeKind::Body,
+        signatures: Vec::new(),
+        turns: Vec::new(),
+        waits: Vec::new(),
+        sections: vec![Section {
+            key: None,
+            template: TaskTemplate {
+                goal: goal.to_owned(),
+                owned_paths: "a path".to_owned(),
+                scoped: false,
+                out_of_scope: None,
+                interfaces: "none".to_owned(),
+                design_pages: "D1".to_owned(),
+                architecture: String::new(),
+                acceptance: vec!["a line".to_owned()],
+                tests: "a test".to_owned(),
+                security_trigger: SecurityTrigger::No,
+                model: TaskModel::Sonnet,
+                size: TaskSize::S,
+                blocked_by: Vec::new(),
+                style: None,
+            },
+            writes: BTreeSet::new(),
+            provides: BTreeSet::new(),
+            implements: BTreeSet::new(),
+            needs: BTreeSet::new(),
+        }],
+    }
+    .to_string();
+    EpicTask {
+        body: body.into(),
+        ..task(number, TicketState::Ready, Standing::Open)
+    }
+}
+
+/// A graph epic: two graph tickets and a filed plan record, with no challenger yet.
+fn graph_epic() -> Epic {
+    Epic {
+        tasks: vec![
+            graph_task(2, "a", "the first goal"),
+            graph_task(3, "b", "the second goal"),
+        ],
+        records: vec![record_of(1, true)],
+        ..signed(epic())
+    }
+}
+
+/// `epic` with a challenger report ending in the hash its graph has now.
+fn challenged_now(epic: Epic) -> Epic {
+    let hash = PlanGraph::read(&epic, &[]).hash();
+    Epic {
+        challengers: vec![Some(hash)],
+        ..epic
+    }
+}
+
+#[test]
+fn graph_epic_challenged_while_hash_matches() {
+    assert!(!graph_epic().challenged());
+    let epic = challenged_now(graph_epic());
+    assert!(epic.challenged());
+    assert_eq!(epic.stage(), EpicStage::Challenged);
+}
+
+#[test]
+fn graph_epic_unchallenged_after_body_edit() {
+    let mut epic = challenged_now(graph_epic());
+    epic.tasks[0] = graph_task(2, "a", "an edited goal");
+    assert!(!epic.challenged());
+    assert_eq!(epic.stage(), EpicStage::Planned);
+}
+
+#[test]
+fn graph_epic_still_challenged_after_ticket_closes() {
+    let mut epic = challenged_now(graph_epic());
+    epic.tasks[0].state = Some(TicketState::Done);
+    epic.tasks[0].standing = Standing::Done;
+    epic.tasks[0].closed_at = Some(UNIX_EPOCH);
+    assert!(epic.challenged());
+}
+
+#[test]
+fn graph_epic_challenged_by_any_one_of_its_reports() {
+    let current = PlanGraph::read(&graph_epic(), &[]).hash();
+    let stale = "cd".repeat(32).parse::<GraphHash>().expect("a digest");
+    let epic = Epic {
+        challengers: vec![Some(stale), None, Some(current)],
+        ..graph_epic()
+    };
+    assert!(epic.challenged());
+    let stale_only = Epic {
+        challengers: vec![Some("cd".repeat(32).parse().expect("a digest")), None],
+        ..graph_epic()
+    };
+    assert!(
+        !stale_only.challenged(),
+        "a report with no hash line does not hold a graph epic"
+    );
+}
+
+#[test]
+fn older_epic_challenged_by_any_report() {
+    let epic = Epic {
+        tasks: vec![task(2, TicketState::Ready, Standing::Open)],
+        challengers: vec![None],
+        ..signed(epic())
+    };
+    assert!(epic.records.is_empty());
+    assert!(epic.challenged());
+    assert_eq!(epic.stage(), EpicStage::Challenged);
+    let unread = Epic {
+        challengers: Vec::new(),
+        ..epic
+    };
+    assert!(!unread.challenged());
+}
+
+#[test]
+fn a_report_holds_the_hash_on_its_last_line() {
+    let hash = "ab".repeat(32);
+    let report = format!("All exact.\ngraph sha256:{hash}\n");
+    assert_eq!(report_graph(&report), hash.parse().ok());
+    assert_eq!(report_graph("All exact."), None);
+    assert_eq!(
+        report_graph(&format!("graph sha256:{hash}\nand more")),
+        None
+    );
+    assert_eq!(report_graph("graph sha256:nothex"), None);
+}
+
+#[test]
+fn epic_last_record_with_mark_planned() {
+    let epic = with_records(vec![record_of(1, false), record_of(2, true)]);
+    assert_eq!(epic.stage(), EpicStage::Planned);
+    assert!(!epic.half_filed());
 }

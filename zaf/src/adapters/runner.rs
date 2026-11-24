@@ -94,6 +94,14 @@ impl ProcessRunner {
         }
     }
 
+    /// Appends `suffix` to the runner's own command template.
+    #[must_use]
+    pub fn with_command_suffix(mut self, suffix: &str) -> Self {
+        let command: &str = self.command.as_ref();
+        self.command = CommandLine::from(format!("{command}{suffix}"));
+        self
+    }
+
     /// Adds an environment variable for the process, on top of the caller's own
     /// (the spawner sets `CLAUDE_CONFIG_DIR` this way).
     #[must_use]

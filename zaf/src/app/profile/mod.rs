@@ -71,7 +71,7 @@ use crate::ports::{GateVerdict, Shell};
 /// The generation of what `zaf profile init` writes: raised by hand, and only when that changes
 /// (the settings, the denies, the pack step). Each stamp records it, and a stamp of another
 /// generation, or of none, is stale; a new zaf with the same number leaves profiles current.
-pub const GENERATION: u32 = 7;
+pub const GENERATION: u32 = 8;
 
 /// The folder under the state folder that holds the profiles.
 pub const PROFILES_DIR: &str = "profiles";

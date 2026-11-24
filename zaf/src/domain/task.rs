@@ -7,6 +7,7 @@ use std::str::FromStr;
 use strum::VariantArray;
 
 use super::TicketId;
+use super::plan::PlannedTicket;
 
 /// A field of the task template, by the label it carries in the ticket.
 #[derive(
@@ -211,6 +212,48 @@ pub enum TaskTemplateError {
         /// The value as written.
         value: String,
     },
+    /// A line of a planned body (`Node`, `Kind`, `Behaviour`, a list, a turn, a wait) whose value
+    /// is outside what it accepts, or that stands where it may not.
+    #[error("line {line}: `{label}` has an invalid value `{value}`: accepts {accepts}")]
+    BadPlannedLine {
+        /// The 1-based line number.
+        line: usize,
+        /// The label as written.
+        label: String,
+        /// The value as written.
+        value: String,
+        /// The forms it accepts.
+        accepts: String,
+    },
+    /// A `Blocked by` line in a planned body: the graph holds the waits, so the body gives none.
+    #[error("line {line}: `Blocked by` is not a field of a planned body")]
+    BlockedByInPlannedBody {
+        /// The 1-based line number.
+        line: usize,
+    },
+    /// A planned body of two sections where one is not opened by a `Behaviour:` line.
+    #[error(
+        "line {line}: a section has no `Behaviour:` line, and a ticket of several has one each"
+    )]
+    NoBehaviourLine {
+        /// The 1-based line number.
+        line: usize,
+    },
+    /// A body with no `Node:` line read as a planned body: the older template reads it.
+    #[error("no `Node:` line: not a planned body")]
+    NotPlanned,
+    /// A planned body with no section: it holds ticket lines and no field.
+    #[error("a planned body holds no section")]
+    NoSection,
+    /// A planned ticket whose sections weigh more than a ticket may (D10): zaf files none, so it
+    /// has no size to report.
+    #[error("the sections weigh {weight}, more than the limit of {limit}: too large to size")]
+    TooLarge {
+        /// What the sections weigh: XS and S 1, M 2, anything larger counts past the limit.
+        weight: u32,
+        /// The most a ticket may weigh.
+        limit: u32,
+    },
     /// A typed field whose value is not one of the allowed values.
     #[error("`{field}` has an invalid value `{value}`: allowed values are {allowed}")]
     NotAllowed {
@@ -261,6 +304,25 @@ pub enum TaskProblem {
         /// The line as written.
         text: String,
     },
+    /// A line of a planned body (`Node`, `Kind`, `Behaviour`, a list, a turn, a wait) whose value
+    /// is outside what its label accepts, or that stands where it may not.
+    BadLine {
+        /// The 1-based line number.
+        line: usize,
+        /// The label as written.
+        label: String,
+        /// The value as written; empty when the line has none to show.
+        value: String,
+        /// The forms the line accepts.
+        accepts: String,
+    },
+    /// A problem in one section of a planned body of several, named by its `Behaviour` key.
+    InSection {
+        /// The section's `Behaviour` key.
+        key: String,
+        /// What is wrong in it.
+        problem: Box<TaskProblem>,
+    },
 }
 
 impl TaskProblem {
@@ -269,7 +331,10 @@ impl TaskProblem {
         match self {
             Self::Bad { field, .. } | Self::Missing(field) => field.to_string(),
             Self::MissingScope => format!("{} or {}", TaskField::Scope, TaskField::OwnedPaths),
-            Self::Unknown { line, .. } | Self::Misplaced { line, .. } => format!("line {line}"),
+            Self::Unknown { line, .. }
+            | Self::Misplaced { line, .. }
+            | Self::BadLine { line, .. } => format!("line {line}"),
+            Self::InSection { problem, .. } => problem.name(),
         }
     }
 
@@ -279,6 +344,8 @@ impl TaskProblem {
             Self::Bad { value, .. } => Some(value),
             Self::Unknown { label, .. } => Some(label),
             Self::Misplaced { text, .. } => Some(text),
+            Self::BadLine { value, .. } => Some(value.as_str()).filter(|value| !value.is_empty()),
+            Self::InSection { problem, .. } => problem.value(),
             Self::Missing(_) | Self::MissingScope => None,
         }
     }
@@ -286,7 +353,8 @@ impl TaskProblem {
     /// What would have been accepted, when that is a short list of forms.
     pub fn accepts(&self) -> Option<String> {
         match self {
-            Self::Bad { accepts, .. } => Some(accepts.clone()),
+            Self::Bad { accepts, .. } | Self::BadLine { accepts, .. } => Some(accepts.clone()),
+            Self::InSection { problem, .. } => problem.accepts(),
             Self::Misplaced { .. } => Some(LINE_ACCEPTS.to_owned()),
             Self::Unknown { .. } => Some(forms::<TaskField>()),
             Self::Missing(_) | Self::MissingScope => None,
@@ -303,12 +371,32 @@ impl fmt::Display for TaskProblem {
                 accepts,
             } => {
                 let written: Vec<&str> = value.lines().collect();
-                write!(
-                    formatter,
-                    "{field}: {} (accepts: {accepts})",
-                    written.join(" ")
-                )
+                if written.is_empty() {
+                    write!(formatter, "{field} (accepts: {accepts})")
+                } else {
+                    write!(
+                        formatter,
+                        "{field}: {} (accepts: {accepts})",
+                        written.join(" ")
+                    )
+                }
             }
+            Self::BadLine {
+                line,
+                label,
+                value,
+                accepts,
+            } if value.is_empty() => write!(formatter, "line {line}: {label} (accepts: {accepts})"),
+            Self::BadLine {
+                line,
+                label,
+                value,
+                accepts,
+            } => write!(
+                formatter,
+                "line {line}: {label}: {value} (accepts: {accepts})"
+            ),
+            Self::InSection { key, problem } => write!(formatter, "{problem} [Behaviour: {key}]"),
             Self::Missing(_) | Self::MissingScope => write!(formatter, "{}: missing", self.name()),
             Self::Unknown { line, label } => {
                 write!(formatter, "line {line}: unknown field {label}")
@@ -422,6 +510,19 @@ impl TaskTemplate {
             }
         }
 
+        problems.extend(Self::field_problems(&values, items, true));
+        problems
+    }
+
+    /// The problems the fields a scan read have, in template order: what is left out or left
+    /// bad, `items` being the acceptance items counted. `blocked_by` says whether the fields
+    /// carry `Blocked by`, as an older body does and a section of a planned one does not.
+    pub(super) fn field_problems(
+        values: &BTreeMap<TaskField, String>,
+        items: usize,
+        blocked_by: bool,
+    ) -> Vec<TaskProblem> {
+        let mut problems = Vec::new();
         match values.get(&TaskField::Goal) {
             Some(goal) if !goal.is_empty() => {}
             _ => problems.push(TaskProblem::Missing(TaskField::Goal)),
@@ -457,32 +558,34 @@ impl TaskTemplate {
         }
         check_form(
             &mut problems,
-            &values,
+            values,
             TaskField::SecurityTrigger,
             "no | yes <which>",
             |value| value.parse::<SecurityTrigger>().is_ok(),
         );
         check_form(
             &mut problems,
-            &values,
+            values,
             TaskField::Model,
             &forms::<TaskModel>(),
             |value| value.parse::<TaskModel>().is_ok(),
         );
         check_form(
             &mut problems,
-            &values,
+            values,
             TaskField::Size,
             &forms::<TaskSize>(),
             |value| value.parse::<TaskSize>().is_ok(),
         );
-        check_form(
-            &mut problems,
-            &values,
-            TaskField::BlockedBy,
-            BLOCKERS_ACCEPTS,
-            |value| parse_blockers(value).is_ok(),
-        );
+        if blocked_by {
+            check_form(
+                &mut problems,
+                values,
+                TaskField::BlockedBy,
+                BLOCKERS_ACCEPTS,
+                |value| parse_blockers(value).is_ok(),
+            );
+        }
         problems
     }
 }
@@ -522,6 +625,119 @@ pub struct TaskTemplate {
     pub blocked_by: Vec<TicketId>,
     /// The style rules to follow, when the ticket names them.
     pub style: Option<String>,
+}
+
+/// The body of any task ticket: a planned one (I7) or one of the older template.
+///
+/// A body with a `Node:` line is planned and one without is the older template. The accessors
+/// give the same answer for either shape, so a caller never asks which it holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TaskBody {
+    /// A body filed from a plan: one section for each behaviour.
+    Planned(PlannedTicket),
+    /// A body of the older template: one behaviour.
+    Template(TaskTemplate),
+}
+
+impl TaskBody {
+    /// Reads a task ticket's body as the shape it claims: planned when it has a `Node:` line,
+    /// else the older template.
+    ///
+    /// # Errors
+    ///
+    /// The error of the shape the body claimed: a malformed body with a `Node:` line is refused
+    /// as a planned body, and one without as the older template.
+    pub fn parse(text: &str) -> Result<Self, TaskTemplateError> {
+        if PlannedTicket::is_planned(text) {
+            text.parse().map(Self::Planned)
+        } else {
+            text.parse().map(Self::Template)
+        }
+    }
+
+    /// Every problem a task body has, read as the shape it claims: a planned body against I2 and
+    /// an older one against the template; none when [`Self::parse`] accepts it.
+    pub fn problems(text: &str) -> Vec<TaskProblem> {
+        if PlannedTicket::is_planned(text) {
+            PlannedTicket::problems(text)
+        } else {
+            TaskTemplate::problems(text)
+        }
+    }
+
+    /// The ticket's size: a planned body's is derived from its sections, an older body's is its
+    /// `Size`.
+    ///
+    /// # Errors
+    ///
+    /// [`TaskTemplateError::TooLarge`] for a planned body whose sections weigh too much.
+    pub fn size(&self) -> Result<TaskSize, TaskTemplateError> {
+        match self {
+            Self::Planned(planned) => planned.size(),
+            Self::Template(template) => Ok(template.size),
+        }
+    }
+
+    /// The ticket's model: a planned body's is derived from its sections, an older body's is its
+    /// `Model`.
+    pub fn model(&self) -> TaskModel {
+        match self {
+            Self::Planned(planned) => planned.model(),
+            Self::Template(template) => template.model,
+        }
+    }
+
+    /// The behaviours, in section order; one for an older body.
+    pub fn behaviours(&self) -> Vec<&TaskTemplate> {
+        match self {
+            Self::Planned(planned) => planned
+                .sections
+                .iter()
+                .map(|section| &section.template)
+                .collect(),
+            Self::Template(template) => vec![template],
+        }
+    }
+
+    /// Every behaviour's acceptance lines, in section order.
+    pub fn acceptance(&self) -> Vec<&str> {
+        self.behaviours()
+            .into_iter()
+            .flat_map(|behaviour| behaviour.acceptance.iter().map(String::as_str))
+            .collect()
+    }
+
+    /// Every behaviour's `Tests` field, in section order: the test names, as written.
+    pub fn tests(&self) -> Vec<&str> {
+        self.behaviours()
+            .into_iter()
+            .map(|behaviour| behaviour.tests.as_str())
+            .collect()
+    }
+
+    /// Every behaviour's `Design pages` field, in section order, as written.
+    pub fn design_pages(&self) -> Vec<&str> {
+        self.behaviours()
+            .into_iter()
+            .map(|behaviour| behaviour.design_pages.as_str())
+            .collect()
+    }
+
+    /// Every behaviour's owned paths (its `Scope` or `Owned paths`), in section order, as written.
+    pub fn owned_paths(&self) -> Vec<&str> {
+        self.behaviours()
+            .into_iter()
+            .map(|behaviour| behaviour.owned_paths.as_str())
+            .collect()
+    }
+
+    /// Every behaviour's `Interfaces` field, in section order, as written.
+    pub fn interfaces(&self) -> Vec<&str> {
+        self.behaviours()
+            .into_iter()
+            .map(|behaviour| behaviour.interfaces.as_str())
+            .collect()
+    }
 }
 
 /// What renders for an empty `Blocked by`; `-` and `none` also read as empty.
@@ -583,6 +799,41 @@ impl FromStr for TaskTemplate {
             current_field = Some(field);
         }
 
+        Self::from_fields(values, acceptance, Blockers::Required)
+    }
+}
+
+/// Whether the fields of a template give `Blocked by`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Blockers {
+    /// A task of the older template: `Blocked by` is required.
+    Required,
+    /// A section of a planned body: the graph holds the waits, and `Blocked by` is not read.
+    Refused,
+}
+
+impl TaskTemplate {
+    /// The template of one section a plan wrote: its prose fields as the plan parser kept them
+    /// (so with no `Acceptance` or `Blocked by` among them) and its acceptance items. `Blocked by`
+    /// is never read, since the graph holds the waits.
+    ///
+    /// # Errors
+    ///
+    /// The [`TaskTemplateError`] of the field that is missing, empty or not allowed.
+    pub fn from_plan_fields(
+        mut values: BTreeMap<TaskField, String>,
+        acceptance: Vec<String>,
+    ) -> Result<Self, TaskTemplateError> {
+        values.insert(TaskField::Acceptance, String::new());
+        Self::from_fields(values, acceptance, Blockers::Refused)
+    }
+
+    /// The template from the fields a scan read: each field's text, and the acceptance items.
+    pub(super) fn from_fields(
+        mut values: BTreeMap<TaskField, String>,
+        acceptance: Vec<String>,
+        blockers: Blockers,
+    ) -> Result<Self, TaskTemplateError> {
         let acceptance_inline = take_required(&mut values, TaskField::Acceptance)?;
         if !acceptance_inline.is_empty() {
             let inline_acceptance_error = TaskTemplateError::InvalidValue {
@@ -621,10 +872,15 @@ impl FromStr for TaskTemplate {
             take_required(&mut values, TaskField::SecurityTrigger)?.parse::<SecurityTrigger>()?;
         let model = parse_vocabulary::<TaskModel>(&mut values, TaskField::Model)?;
         let size = parse_vocabulary::<TaskSize>(&mut values, TaskField::Size)?;
-        let blocked_by = parse_blockers(&take_required(&mut values, TaskField::BlockedBy)?)?;
+        let blocked_by = match blockers {
+            Blockers::Required => {
+                parse_blockers(&take_required(&mut values, TaskField::BlockedBy)?)?
+            }
+            Blockers::Refused => Vec::new(),
+        };
         let style = values.remove(&TaskField::Style);
 
-        let template = Self {
+        Ok(Self {
             goal,
             owned_paths,
             scoped,
@@ -639,13 +895,23 @@ impl FromStr for TaskTemplate {
             size,
             blocked_by,
             style,
-        };
-        Ok(template)
+        })
     }
 }
 
 impl fmt::Display for TaskTemplate {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.write_fields(formatter, true)
+    }
+}
+
+impl TaskTemplate {
+    /// The template's fields, one `Field: value` a line; `Blocked by` only when `blockers`.
+    pub(super) fn write_fields(
+        &self,
+        formatter: &mut fmt::Formatter<'_>,
+        blockers: bool,
+    ) -> fmt::Result {
         write_field(formatter, TaskField::Goal, &self.goal)?;
         let paths_field = if self.scoped {
             TaskField::Scope
@@ -673,13 +939,16 @@ impl fmt::Display for TaskTemplate {
         )?;
         write_field(formatter, TaskField::Model, &self.model.to_string())?;
         write_field(formatter, TaskField::Size, &self.size.to_string())?;
-        let blockers = if self.blocked_by.is_empty() {
-            NO_BLOCKERS.to_owned()
-        } else {
-            let numbers: Vec<String> = self.blocked_by.iter().map(ToString::to_string).collect();
-            numbers.join(", ")
-        };
-        write_field(formatter, TaskField::BlockedBy, &blockers)?;
+        if blockers {
+            let written = if self.blocked_by.is_empty() {
+                NO_BLOCKERS.to_owned()
+            } else {
+                let numbers: Vec<String> =
+                    self.blocked_by.iter().map(ToString::to_string).collect();
+                numbers.join(", ")
+            };
+            write_field(formatter, TaskField::BlockedBy, &written)?;
+        }
         if let Some(style) = &self.style {
             write_field(formatter, TaskField::Style, style)?;
         }
@@ -687,7 +956,11 @@ impl fmt::Display for TaskTemplate {
     }
 }
 
-fn write_field(formatter: &mut fmt::Formatter<'_>, field: TaskField, value: &str) -> fmt::Result {
+pub(super) fn write_field(
+    formatter: &mut fmt::Formatter<'_>,
+    field: TaskField,
+    value: &str,
+) -> fmt::Result {
     let mut lines = value.lines();
     match lines.next() {
         Some(first) if !first.is_empty() => writeln!(formatter, "{field}: {first}")?,

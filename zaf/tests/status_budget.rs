@@ -6,13 +6,14 @@
 //! reads (its comments for the claim, its blocks for its epic), so a pull request is 7 here
 //! (the board is self-hosted, so the extra reads cost only time). Every web call the
 //! Forgejo adapter makes counts but the instance's page-size read, which the harness of
-//! `adapters/forgejo/tests.rs` leaves out too and which is made once for the whole process: a
-//! test asserts that it is.
+//! `adapters/forgejo/tests.rs` leaves out too, and the read of the login the token posts as
+//! (whose signatures and reports the board trusts). Each asks the instance, not the project, and
+//! is made once for the whole process: a test asserts that it is.
 
 mod budget_scene;
 mod common;
 
-use budget_scene::{EPICS, page_size_reads, scene, unanswered, web_calls};
+use budget_scene::{EPICS, own_login_reads, page_size_reads, scene, unanswered, web_calls};
 use common::outcome;
 
 /// The most web calls `zaf status` may make with `epics` open epics and `pulls` open pull
@@ -35,6 +36,7 @@ fn status_calls(pulls: u64) -> Vec<String> {
     );
     assert_eq!(unanswered(&curl.dir), Vec::<String>::new(), "{stderr}");
     assert_eq!(page_size_reads(&curl), 1, "the page size is read once");
+    assert_eq!(own_login_reads(&curl), 1, "the own login is read once");
     let calls = web_calls(&curl);
     let pull_reads = calls
         .iter()

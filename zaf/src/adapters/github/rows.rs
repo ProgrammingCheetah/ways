@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
-use crate::ports::CheckBucket;
+use crate::ports::{CheckBucket, Login};
 
 /// The fields every issue read asks `gh issue view` and `gh issue list` for.
 pub(super) const ISSUE_FIELDS: &str = "number,title,body,labels,parent,state,comments,issueType";
@@ -73,6 +73,20 @@ pub(super) struct StandingRow {
     pub closed_at: Option<String>,
 }
 
+/// The fields the time an issue was opened is read from.
+pub(super) const OPENED_FIELDS: &str = "number,url,createdAt";
+
+/// An issue read only for when it was opened.
+#[derive(Debug, Clone, Deserialize)]
+pub(super) struct OpenedRow {
+    /// Holds `/pull/` for a pull request.
+    #[serde(default)]
+    pub url: String,
+    /// When it was opened, RFC 3339.
+    #[serde(default, rename = "createdAt")]
+    pub created_at: Option<String>,
+}
+
 /// A label, or anything else read only by name.
 #[derive(Debug, Clone, Deserialize)]
 pub struct NameRow {
@@ -95,6 +109,9 @@ pub struct IssueCommentRow {
     /// When it was posted, RFC 3339; absent from a read that did not ask for it.
     #[serde(default, rename = "createdAt")]
     pub created_at: Option<String>,
+    /// The login that posted it; none for a deleted account or a read that did not ask.
+    #[serde(default, deserialize_with = "crate::adapters::issues::author_login")]
+    pub author: Option<Login>,
 }
 
 /// A conversation comment as `repos/{repo}/issues/{n}/comments` prints it.

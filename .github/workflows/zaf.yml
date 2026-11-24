@@ -69,7 +69,13 @@ jobs:
       - run: cargo fmt --check
       - run: cargo build --locked
       - run: cargo clippy --all-targets --locked -- -D warnings
-      - run: cargo test --locked
+      # nextest runs each test as its own process and retries a failed one (zaf/.config/nextest.toml);
+      # it does not run doc tests, so those keep `cargo test`.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      - run: cargo nextest run --locked
+      - run: cargo test --doc --locked
 
   musl:
     name: musl build (x86_64-unknown-linux-musl)

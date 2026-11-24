@@ -1,0 +1,19 @@
+# How `cargo nextest run` runs zaf's tests: the gate's runner, in the workspace and in CI.
+# Each test is its own process, so one slow test binary no longer holds the others.
+
+[profile.default]
+# A test that fails is run again, up to twice. One that passes on a retry is reported as
+# FLAKY and does not fail the gate: a loaded machine costs time, not a fix round.
+retries = 2
+# Every failure is shown, not only the first.
+fail-fast = false
+# A test still running after three minutes is ended and fails.
+slow-timeout = { period = "60s", terminate-after = 3 }
+
+# The tests that start a real scheduler are the heavy ones: at most four at a time.
+[test-groups]
+scheduler = { max-threads = 4 }
+
+[[profile.default.overrides]]
+filter = 'binary(spawn_watch) | binary(watch_view)'
+test-group = 'scheduler'

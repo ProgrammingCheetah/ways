@@ -98,7 +98,7 @@
     },
     {
       "name": "epic/",
-      "role": "tests.rs",
+      "role": "check.rs (the Done when check of `zaf epic check`: each backticked test of a Done when line of an epic's body runs through the `[gate] tests` template, a line with none is not checkable, a body with no such line is refused), wait.rs and tests.rs",
       "node": false
     },
     {
@@ -193,7 +193,7 @@
     },
     {
       "name": "setup/",
-      "role": "tests.rs",
+      "role": "pages.rs (the pack's standard design pages into a repo-dir design folder and its index), tests.rs",
       "node": false
     },
     {

@@ -659,12 +659,14 @@ fn epic_one(signed: bool, challenged: bool) -> String {
                 hash.as_str()
             ),
             "createdAt": "2026-11-01T00:00:00Z",
+            "author": {"login": common::OWN_LOGIN},
         }));
     }
     if challenged {
         comments.push(serde_json::json!({
             "body": "<!-- zaf:report challenger instance 3 on #1 -->\nEvery task is exact.",
             "createdAt": "2026-11-02T00:00:00Z",
+            "author": {"login": common::OWN_LOGIN},
         }));
     }
     serde_json::json!([{

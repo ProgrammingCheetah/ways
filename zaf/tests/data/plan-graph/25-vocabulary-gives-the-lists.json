@@ -1,0 +1,270 @@
+{
+ "name": "25-vocabulary-gives-the-lists",
+ "why": "The vocabulary gives which names have no signature and which the code already provides; the plan adds one name of its own, docs.mcp, with no signature. The prompt and the added name keep their waits; the catalog is lifted (D5, D6).",
+ "options": {
+  "lift": "all",
+  "interfaces": "each"
+ },
+ "plan": {
+  "vocabulary": {
+   "areas": [
+    "prompts",
+    "docs",
+    "adapters/mcp"
+   ],
+   "signature": [
+    "mcp.catalog"
+   ],
+   "no_signature": [
+    "prompt.fix"
+   ],
+   "existing": [
+    "cli"
+   ]
+  },
+  "new_names": {
+   "no_signature": [
+    "docs.mcp"
+   ]
+  },
+  "nodes": [
+   {
+    "id": "A",
+    "behaviours": [
+     {
+      "text": "the prompt names the tools",
+      "size": 1,
+      "writes": [
+       "prompts"
+      ],
+      "provides": [
+       "prompt.fix"
+      ],
+      "needs": []
+     }
+    ]
+   },
+   {
+    "id": "B",
+    "behaviours": [
+     {
+      "text": "the docs quote the prompt",
+      "size": 1,
+      "writes": [
+       "docs"
+      ],
+      "provides": [
+       "docs.mcp"
+      ],
+      "needs": [
+       "prompt.fix"
+      ]
+     }
+    ]
+   },
+   {
+    "id": "C",
+    "behaviours": [
+     {
+      "text": "the MCP server lists the verbs as tools",
+      "size": 1,
+      "writes": [
+       "adapters/mcp"
+      ],
+      "provides": [
+       "mcp.catalog"
+      ],
+      "needs": [
+       "cli"
+      ]
+     }
+    ]
+   },
+   {
+    "id": "D",
+    "behaviours": [
+     {
+      "text": "the docs list the tools",
+      "size": 1,
+      "writes": [
+       "docs"
+      ],
+      "provides": [],
+      "needs": [
+       "docs.mcp",
+       "mcp.catalog"
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ "expect": {
+  "before": {
+   "nodes": 4,
+   "interfaces": 0,
+   "chain": 3,
+   "width": [
+    2,
+    1,
+    1
+   ],
+   "narrow_layers": [
+    0,
+    1,
+    2
+   ],
+   "work": 4,
+   "critical": 3,
+   "critical_path": [
+    "A",
+    "B",
+    "D"
+   ]
+  },
+  "after": {
+   "nodes": 5,
+   "interfaces": 1,
+   "chain": 3,
+   "width": [
+    2,
+    2,
+    1
+   ],
+   "narrow_layers": [
+    0,
+    1,
+    2
+   ],
+   "work": 5,
+   "critical": 3,
+   "critical_path": [
+    "A",
+    "B",
+    "D"
+   ]
+  },
+  "plan": {
+   "nodes": [
+    {
+     "id": "A",
+     "behaviours": [
+      {
+       "text": "the prompt names the tools",
+       "size": 1,
+       "writes": [
+        "prompts"
+       ],
+       "provides": [
+        "prompt.fix"
+       ],
+       "needs": []
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "B",
+     "behaviours": [
+      {
+       "text": "the docs quote the prompt",
+       "size": 1,
+       "writes": [
+        "docs"
+       ],
+       "provides": [
+        "docs.mcp"
+       ],
+       "needs": [
+        "prompt.fix"
+       ]
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "C",
+     "behaviours": [
+      {
+       "text": "the MCP server lists the verbs as tools",
+       "size": 1,
+       "writes": [
+        "adapters/mcp"
+       ],
+       "provides": [],
+       "needs": [
+        "cli",
+        "mcp.catalog"
+       ]
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "D",
+     "behaviours": [
+      {
+       "text": "the docs list the tools",
+       "size": 1,
+       "writes": [
+        "docs"
+       ],
+       "provides": [],
+       "needs": [
+        "docs.mcp",
+        "mcp.catalog"
+       ]
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "I:mcp.catalog",
+     "kind": "interface",
+     "behaviours": [
+      {
+       "text": "the signature of mcp.catalog",
+       "size": 1,
+       "writes": [
+        "sig:mcp.catalog"
+       ],
+       "provides": [
+        "mcp.catalog"
+       ],
+       "needs": []
+      }
+     ]
+    }
+   ],
+   "orders": [
+    {
+     "from": "A",
+     "to": "B",
+     "needs": "prompt.fix"
+    },
+    {
+     "from": "B",
+     "to": "D",
+     "needs": "docs.mcp"
+    },
+    {
+     "from": "I:mcp.catalog",
+     "to": "C",
+     "needs": "mcp.catalog"
+    },
+    {
+     "from": "I:mcp.catalog",
+     "to": "D",
+     "needs": "mcp.catalog"
+    }
+   ],
+   "no_signature": [
+    "docs.mcp",
+    "prompt.fix"
+   ],
+   "existing": [
+    "cli"
+   ]
+  }
+ }
+}

@@ -4,6 +4,8 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Deserializer};
 
+use crate::ports::Login;
+
 /// The state Forgejo gives an open issue.
 pub(super) const OPEN: &str = "open";
 
@@ -89,6 +91,14 @@ pub(super) struct CommentRow {
     /// When it was posted, RFC 3339 with the instance's offset.
     #[serde(default)]
     pub created_at: Option<String>,
+    /// The login that posted it (Forgejo's `user`); none for a deleted account. A plan record
+    /// or filing mark counts only from a trusted login.
+    #[serde(
+        default,
+        rename = "user",
+        deserialize_with = "crate::adapters::issues::author_login"
+    )]
+    pub author: Option<Login>,
 }
 
 impl CommentRow {

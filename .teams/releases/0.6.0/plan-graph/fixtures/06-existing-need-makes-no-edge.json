@@ -1,0 +1,87 @@
+{
+ "name": "06-existing-need-makes-no-edge",
+ "why": "A need the code already meets creates no node and no wait.",
+ "options": {
+  "lift": "all",
+  "interfaces": "each"
+ },
+ "plan": {
+  "existing": [
+   "cli"
+  ],
+  "nodes": [
+   {
+    "id": "A",
+    "behaviours": [
+     {
+      "text": "update takes --yes",
+      "size": 1,
+      "writes": [
+       "app/update"
+      ],
+      "provides": [],
+      "needs": [
+       "cli"
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ "expect": {
+  "before": {
+   "nodes": 1,
+   "interfaces": 0,
+   "chain": 1,
+   "width": [
+    1
+   ],
+   "narrow_layers": [
+    0
+   ],
+   "work": 1,
+   "critical": 1,
+   "critical_path": [
+    "A"
+   ]
+  },
+  "after": {
+   "nodes": 1,
+   "interfaces": 0,
+   "chain": 1,
+   "width": [
+    1
+   ],
+   "narrow_layers": [
+    0
+   ],
+   "work": 1,
+   "critical": 1,
+   "critical_path": [
+    "A"
+   ]
+  },
+  "plan": {
+   "nodes": [
+    {
+     "id": "A",
+     "behaviours": [
+      {
+       "text": "update takes --yes",
+       "size": 1,
+       "writes": [
+        "app/update"
+       ],
+       "provides": [],
+       "needs": [
+        "cli"
+       ]
+      }
+     ],
+     "kind": "body"
+    }
+   ],
+   "orders": []
+  }
+ }
+}

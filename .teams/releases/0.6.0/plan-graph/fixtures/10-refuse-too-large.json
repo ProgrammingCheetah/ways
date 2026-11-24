@@ -1,0 +1,27 @@
+{
+ "name": "10-refuse-too-large",
+ "why": "A single behaviour larger than the limit cannot be split by the optimiser: refused, the planner must cut it.",
+ "options": {
+  "lift": "all",
+  "interfaces": "each"
+ },
+ "plan": {
+  "nodes": [
+   {
+    "id": "A",
+    "behaviours": [
+     {
+      "text": "everything",
+      "size": 3,
+      "writes": [],
+      "provides": [],
+      "needs": []
+     }
+    ]
+   }
+  ]
+ },
+ "expect": {
+  "refused": "too-large"
+ }
+}

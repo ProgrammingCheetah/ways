@@ -506,3 +506,106 @@ fn header_paths_take_the_new_side() {
     assert_eq!(header_path("a/x y.rs b/x y.rs"), "x y.rs");
     assert_eq!(header_path("a/old.rs b/new.rs"), "new.rs");
 }
+
+/// A repository with `notes.txt` and `src/lib.rs` committed, then `gone.txt` committed and
+/// deleted; the second value is the commit before the deletion.
+fn fixture_with_a_deleted_file() -> (Fixture, String) {
+    let fixture = Fixture::new(true);
+    write(&fixture.root, "src/lib.rs", "x\n");
+    write(&fixture.root, "gone.txt", "x\n");
+    jj(&fixture.root, &["commit", "-m", "Add files"]);
+    let before = jj(
+        &fixture.root,
+        &["log", "--no-graph", "-r", "@-", "-T", "commit_id"],
+    );
+    std::fs::remove_file(fixture.root.join("gone.txt")).expect("remove");
+    jj(&fixture.root, &["commit", "-m", "Delete gone.txt"]);
+    (fixture, before.trim().to_owned())
+}
+
+#[test]
+fn vcs_path_at_true_for_a_committed_file() {
+    let (fixture, before) = fixture_with_a_deleted_file();
+    let vcs = JjVcs;
+    assert_eq!(vcs.path_at(&fixture.root, "@-", "notes.txt"), Ok(true));
+    assert_eq!(vcs.path_at(&fixture.root, "@-", "src/lib.rs"), Ok(true));
+    assert_eq!(vcs.path_at(&fixture.root, "@-", "src"), Ok(true));
+    assert_eq!(vcs.path_at(&fixture.root, &before, "gone.txt"), Ok(true));
+}
+
+#[test]
+fn vcs_path_at_false_for_a_deleted_file() {
+    let (fixture, before) = fixture_with_a_deleted_file();
+    let vcs = JjVcs;
+    assert_eq!(vcs.path_at(&fixture.root, "@-", "gone.txt"), Ok(false));
+    assert_eq!(vcs.path_at(&fixture.root, "@-", "never.txt"), Ok(false));
+    assert_eq!(vcs.path_at(&fixture.root, &before, "gone"), Ok(false));
+    assert_eq!(vcs.path_at(&fixture.root, &before, "lib.rs"), Ok(false));
+}
+
+#[test]
+fn vcs_path_at_reads_a_bookmark_where_origin_has_it() {
+    let (fixture, before) = fixture_with_a_deleted_file();
+    let remote = fixture.root.parent().expect("temp").join("remote.git");
+    let remote_text = remote.to_string_lossy();
+    run(
+        &fixture.root,
+        "git",
+        &["init", "--quiet", "--bare", &remote_text],
+    );
+    jj(
+        &fixture.root,
+        &["git", "remote", "add", "origin", &remote_text],
+    );
+    // The remote's `feature/x` is at the commit that still has `gone.txt`.
+    jj(
+        &fixture.root,
+        &["bookmark", "create", "feature/x", "-r", &before],
+    );
+    jj(
+        &fixture.root,
+        &[
+            "git",
+            "push",
+            "--remote",
+            "origin",
+            "--bookmark",
+            "feature/x",
+        ],
+    );
+    let vcs = JjVcs;
+    assert_eq!(
+        vcs.path_at(&fixture.root, "feature/x", "gone.txt"),
+        Ok(true)
+    );
+    // A local bookmark that has moved off the remote's is not the one read.
+    jj(&fixture.root, &["bookmark", "set", "feature/x", "-r", "@-"]);
+    assert_eq!(
+        vcs.path_at(&fixture.root, "feature/x", "gone.txt"),
+        Ok(true)
+    );
+    // Nor is one needed: the bookmark on the remote alone is read.
+    jj(&fixture.root, &["bookmark", "delete", "feature/x"]);
+    assert_eq!(
+        vcs.path_at(&fixture.root, "feature/x", "gone.txt"),
+        Ok(true)
+    );
+    assert_eq!(
+        vcs.path_at(&fixture.root, "feature/x", "never.txt"),
+        Ok(false)
+    );
+}
+
+#[test]
+fn vcs_path_at_unknown_revision_is_an_error() {
+    let (fixture, _before) = fixture_with_a_deleted_file();
+    let vcs = JjVcs;
+    let unseen = "0123456789abcdef0123456789abcdef01234567";
+    for revision in ["no-such-bookmark", unseen, "--all", ""] {
+        let Err(error) = vcs.path_at(&fixture.root, revision, "notes.txt") else {
+            panic!("{revision:?} should be an error");
+        };
+        assert!(matches!(error, PortError::NotFound(_)), "{error:?}");
+        assert!(error.to_string().contains(revision), "{error}");
+    }
+}

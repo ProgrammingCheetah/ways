@@ -27,6 +27,7 @@ fn parsed(args: &[&str]) -> (Cli, ReportArgs) {
         matching: report_args.matching.clone(),
         top: report_args.top,
         epics: report_args.epics,
+        times: report_args.times,
     };
     (cli, report_args)
 }
@@ -149,7 +150,13 @@ fn epics_board_failure_exits_2() {
     let (cli, _) = parsed(&["report", "--epics"]);
     let rows = [ledger_row(vec![96])];
     assert_eq!(
-        print_epics(&cli, &rows, &Down, &PriceTable::default()),
+        print_epics(
+            &cli,
+            &rows,
+            &Down,
+            &PriceTable::default(),
+            Path::new("/gone")
+        ),
         BACKEND
     );
 }
@@ -159,7 +166,11 @@ fn epics_prints_and_exits_ok_when_the_board_answers() {
     let board = FakeBoard::default();
     let (cli, _) = parsed(&["report", "--epics"]);
     let rows = [ledger_row(vec![])];
-    assert_eq!(print_epics(&cli, &rows, &board, &PriceTable::default()), OK);
+    let phases = Path::new("/gone");
+    assert_eq!(
+        print_epics(&cli, &rows, &board, &PriceTable::default(), phases),
+        OK
+    );
 }
 
 #[test]
@@ -226,6 +237,11 @@ fn two_epics() -> epics::EpicView {
         median_usd: epics::SizeMedians::default(),
         done_by_size: epics::SizeCounts::default(),
         versus_last: epics::SizeVerdicts::default(),
+        planned: None,
+        minutes_work: None,
+        minutes_questions: None,
+        minutes_per_planned: None,
+        left_out: None,
     };
     epics::EpicView {
         rows: vec![row(96, 3), row(103, 0)],
@@ -281,4 +297,32 @@ fn a_heading_is_bold() {
         2,
         "two headings"
     );
+}
+
+#[test]
+fn report_times_takes_no_other_flag() {
+    let parse = |args: &[&str]| {
+        Cli::try_parse_from(["zaf", "report"].into_iter().chain(args.iter().copied()))
+    };
+    assert!(parse(&["--times"]).is_ok());
+    for other in [
+        &["--epics"][..],
+        &["--all"],
+        &["--hours", "2"],
+        &["--match", "text"],
+        &["--top", "3"],
+        &["--epics", "--hours", "2"],
+    ] {
+        let mut args = vec!["--times"];
+        args.extend(other);
+        let error = parse(&args).expect_err("--times beside another flag is refused");
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::ArgumentConflict,
+            "{other:?}"
+        );
+    }
+    // The other flags still go together without it.
+    assert!(parse(&["--epics", "--all"]).is_ok());
+    assert!(parse(&["--hours", "2", "--top", "3", "--match", "text"]).is_ok());
 }

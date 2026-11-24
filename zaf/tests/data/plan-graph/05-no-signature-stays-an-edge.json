@@ -1,0 +1,132 @@
+{
+ "name": "05-no-signature-stays-an-edge",
+ "why": "A prompt has no signature: the edge on it is left as a wait.",
+ "options": {
+  "lift": "all",
+  "interfaces": "each"
+ },
+ "plan": {
+  "no_signature": [
+   "prompt.fix"
+  ],
+  "nodes": [
+   {
+    "id": "A",
+    "behaviours": [
+     {
+      "text": "the prompt names the tools",
+      "size": 1,
+      "writes": [
+       "prompts"
+      ],
+      "provides": [
+       "prompt.fix"
+      ],
+      "needs": []
+     }
+    ]
+   },
+   {
+    "id": "B",
+    "behaviours": [
+     {
+      "text": "the docs quote the prompt",
+      "size": 1,
+      "writes": [
+       "docs"
+      ],
+      "provides": [],
+      "needs": [
+       "prompt.fix"
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ "expect": {
+  "before": {
+   "nodes": 2,
+   "interfaces": 0,
+   "chain": 2,
+   "width": [
+    1,
+    1
+   ],
+   "narrow_layers": [
+    0,
+    1
+   ],
+   "work": 2,
+   "critical": 2,
+   "critical_path": [
+    "A",
+    "B"
+   ]
+  },
+  "after": {
+   "nodes": 2,
+   "interfaces": 0,
+   "chain": 2,
+   "width": [
+    1,
+    1
+   ],
+   "narrow_layers": [
+    0,
+    1
+   ],
+   "work": 2,
+   "critical": 2,
+   "critical_path": [
+    "A",
+    "B"
+   ]
+  },
+  "plan": {
+   "nodes": [
+    {
+     "id": "A",
+     "behaviours": [
+      {
+       "text": "the prompt names the tools",
+       "size": 1,
+       "writes": [
+        "prompts"
+       ],
+       "provides": [
+        "prompt.fix"
+       ],
+       "needs": []
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "B",
+     "behaviours": [
+      {
+       "text": "the docs quote the prompt",
+       "size": 1,
+       "writes": [
+        "docs"
+       ],
+       "provides": [],
+       "needs": [
+        "prompt.fix"
+       ]
+      }
+     ],
+     "kind": "body"
+    }
+   ],
+   "orders": [
+    {
+     "from": "A",
+     "to": "B",
+     "needs": "prompt.fix"
+    }
+   ]
+  }
+ }
+}

@@ -1,0 +1,190 @@
+{
+ "name": "21-blocked-by-reads-as-needs",
+ "why": "A plan filed before 0.6.0: each Blocked by line is a need of that task's name, and a line naming the epic E3 a need of each of its tasks. 20 is R31's skeleton: it provides what 21 and 22 need. The wait 22 on 20 is implied and dropped; the waits on E3's tasks are kept, never optimised; no name has a signature, so nothing is lifted (D4).",
+ "options": {
+  "lift": "all",
+  "interfaces": "each"
+ },
+ "plan": {
+  "filed_with": "blocked_by",
+  "epics": {
+   "E3": [
+    "10",
+    "11"
+   ]
+  },
+  "nodes": [
+   {
+    "id": "20",
+    "blocked_by": [],
+    "behaviours": [
+     {
+      "text": "the skeleton adds the module lines",
+      "size": 1,
+      "writes": [],
+      "provides": [],
+      "needs": []
+     }
+    ]
+   },
+   {
+    "id": "21",
+    "blocked_by": [
+     "20"
+    ],
+    "behaviours": [
+     {
+      "text": "the first module works",
+      "size": 2,
+      "writes": [],
+      "provides": [],
+      "needs": []
+     }
+    ]
+   },
+   {
+    "id": "22",
+    "blocked_by": [
+     "20",
+     "21",
+     "E3"
+    ],
+    "behaviours": [
+     {
+      "text": "the second module uses the first",
+      "size": 1,
+      "writes": [],
+      "provides": [],
+      "needs": []
+     }
+    ]
+   }
+  ]
+ },
+ "expect": {
+  "before": {
+   "nodes": 3,
+   "interfaces": 0,
+   "chain": 3,
+   "width": [
+    1,
+    1,
+    1
+   ],
+   "narrow_layers": [
+    0,
+    1,
+    2
+   ],
+   "work": 4,
+   "critical": 4,
+   "critical_path": [
+    "20",
+    "21",
+    "22"
+   ]
+  },
+  "after": {
+   "nodes": 3,
+   "interfaces": 0,
+   "chain": 3,
+   "width": [
+    1,
+    1,
+    1
+   ],
+   "narrow_layers": [
+    0,
+    1,
+    2
+   ],
+   "work": 4,
+   "critical": 4,
+   "critical_path": [
+    "20",
+    "21",
+    "22"
+   ]
+  },
+  "plan": {
+   "nodes": [
+    {
+     "id": "20",
+     "behaviours": [
+      {
+       "text": "the skeleton adds the module lines",
+       "size": 1,
+       "writes": [],
+       "provides": [
+        "#20"
+       ],
+       "needs": []
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "21",
+     "behaviours": [
+      {
+       "text": "the first module works",
+       "size": 2,
+       "writes": [],
+       "provides": [
+        "#21"
+       ],
+       "needs": [
+        "#20"
+       ]
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "22",
+     "behaviours": [
+      {
+       "text": "the second module uses the first",
+       "size": 1,
+       "writes": [],
+       "provides": [
+        "#22"
+       ],
+       "needs": [
+        "#10",
+        "#11",
+        "#20",
+        "#21"
+       ]
+      }
+     ],
+     "kind": "body"
+    }
+   ],
+   "orders": [
+    {
+     "from": "20",
+     "to": "21",
+     "needs": "#20"
+    },
+    {
+     "from": "21",
+     "to": "22",
+     "needs": "#21"
+    }
+   ],
+   "kept": [
+    {
+     "from": "#10",
+     "to": "22",
+     "needs": "#10"
+    },
+    {
+     "from": "#11",
+     "to": "22",
+     "needs": "#11"
+    }
+   ]
+  }
+ }
+}

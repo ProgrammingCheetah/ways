@@ -119,7 +119,7 @@ fn row(view: &View<'_>, epic: &EpicView, at: usize, columns: Columns) -> Line<'s
         format!("{:>COUNT$}", format!("{}/{}", epic.done, epic.total)),
     ));
     if columns.stage {
-        spans.push(view.paint(Meaning::Dim, format!("  {}", epic.stage)));
+        spans.push(view.paint(Meaning::Dim, format!("  {}", epic.stage_text())));
     }
     Line::from(spans)
 }
@@ -223,7 +223,7 @@ impl Pane for Epics {
             }
             cursor.epic = next;
             cursor.scroll = 0;
-            if cursor.detail != DetailView::Tree {
+            if cursor.detail != DetailView::Graph {
                 cursor.detail = DetailView::Epic;
             }
             return Effect::Done;
@@ -282,7 +282,7 @@ impl Pane for Epics {
             hint("←→", "ticket"),
             hint("Enter", "read"),
             hint("s", "sign"),
-            hint("d", "tree"),
+            hint("d", "graph"),
             hint("l", "live"),
             hint("w", "why"),
             hint("q", "quit"),

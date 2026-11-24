@@ -12,6 +12,45 @@ use crate::domain::{
     TicketId, TicketState, TicketType,
 };
 
+/// A user's login on the board's forge: who posted a comment, or whose zaf comments are
+/// trusted (see [`Board::trusted_logins`]).
+///
+/// Two logins that differ only in the case of their ASCII letters are the same login, as both
+/// GitHub and Forgejo hold: `Zaf-Bot` equals `zaf-bot`. The text keeps the case it was given.
+#[derive(
+    Debug,
+    Clone,
+    derive_more::Display,
+    derive_more::From,
+    derive_more::AsRef,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(transparent)]
+#[as_ref(str)]
+pub struct Login(String);
+
+impl From<&str> for Login {
+    fn from(text: &str) -> Self {
+        Self(text.to_owned())
+    }
+}
+
+impl Login {
+    /// The text, in the case it was given.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl PartialEq for Login {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.eq_ignore_ascii_case(&other.0)
+    }
+}
+
+impl Eq for Login {}
+
 /// What a claim did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClaimOutcome {
@@ -169,6 +208,17 @@ pub trait Board {
         })
     }
 
+    /// When one issue was opened, open or closed: the time a question's interval starts from.
+    ///
+    /// Interface: `Board::opened_at(number: TicketId) -> Result<Option<SystemTime>, PortError>`.
+    ///
+    /// `None` is "the board does not say": a board that does not override this, an issue the
+    /// backend gave no created time, an issue that is not there, or a pull request.
+    fn opened_at(&self, number: TicketId) -> Result<Option<SystemTime>, PortError> {
+        let _ = number;
+        Ok(None)
+    }
+
     /// Every open epic, in id order, with its tasks (open and closed, in id order), its body,
     /// its latest signature and whether the challenger's report is on it: everything its
     /// [`stage`](Epic::stage) is derived from.
@@ -299,6 +349,37 @@ pub trait Board {
     /// completed, when it is open: a done task then reads as done whichever is read, its label or
     /// how its issue closed, and an open issue labelled `done` still reads as done.
     fn set_state(&self, task: TicketId, label: TicketState) -> Result<(), PortError>;
+
+    /// Closes a task with the board's "not planned" reason, so zaf never counts it as done: a
+    /// blocker reading it finds it [`Standing::ClosedNotPlanned`]. A task already closed, however
+    /// it was closed, is left as it is and the call succeeds.
+    ///
+    /// Interface: `Board::drop_task(task: TicketId) -> Result<(), PortError>`.
+    ///
+    /// A board that cannot close one answers [`PortError::Rejected`] unless it overrides this.
+    fn drop_task(&self, task: TicketId) -> Result<(), PortError> {
+        Err(PortError::Rejected(format!(
+            "this board cannot drop {task}"
+        )))
+    }
+
+    /// The logins whose zaf comments (signatures, challenger reports, plan records, filing
+    /// marks) are trusted: the board's own login, the one its token posts as, and beside it the
+    /// ones the manifest lists for the board (`[board] trusted_logins`). A comment of those
+    /// kinds by any other login, or by none the board knows, is not read.
+    ///
+    /// The own login is asked of the forge once per board, however often this is called. With
+    /// none listed, a forge that cannot tell it is an error, never an empty set. With some
+    /// listed, the listed ones alone are then trusted: the set the manifest states.
+    ///
+    /// Interface: `Board::trusted_logins() -> Result<Vec<Login>, PortError>`.
+    ///
+    /// A board that cannot tell answers [`PortError::Rejected`] unless it overrides this.
+    fn trusted_logins(&self) -> Result<Vec<Login>, PortError> {
+        Err(PortError::Rejected(
+            "this board cannot tell whose comments are trusted".to_owned(),
+        ))
+    }
 
     /// Adds a comment to an issue.
     fn comment(&self, issue: TicketId, body: &str) -> Result<(), PortError>;

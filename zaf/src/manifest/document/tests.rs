@@ -1074,6 +1074,15 @@ fn a_forgejo_board_needs_its_url_and_repo_and_reads_its_token_variable() {
 }
 
 #[test]
+fn a_board_lists_its_trusted_logins() {
+    let none = load(&with("")).expect("loads");
+    assert!(none.board.trusted_logins.is_empty());
+    let listed = "[project]\nname = \"b\"\n[board]\nkind = \"github-issues\"\nrepo = \"example/b\"\ntrusted_logins = [\"alice\", \"bob\"]\n";
+    let manifest = load(listed).expect("loads");
+    assert_eq!(manifest.board.trusted_logins, ["alice", "bob"]);
+}
+
+#[test]
 fn a_forgejo_forge_parses_with_the_same_keys() {
     let forge = with(
         "[forge]\nkind = \"forgejo\"\nrepo = \"example/b\"\nurl = \"https://forgejo.test\"\ntoken_env = \"FJ\"\n",

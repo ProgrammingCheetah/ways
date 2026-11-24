@@ -570,6 +570,79 @@ fn the_snapshot_reads_a_cycle_through_open_tasks_that_are_not_ready() {
     assert!(text.contains("blocker cycle: #4 → #5 → #4\n"));
 }
 
+/// A graph ticket's body: node `node`, one section, a kept wait on `waits_on`.
+fn graph_body(node: &str, waits_on: u64) -> String {
+    use crate::domain::plan::body::{PlannedTicket, Section, Wait, WaitOn};
+    use crate::domain::plan::{Name, NodeId, NodeKind};
+    use crate::domain::{SecurityTrigger, TaskModel, TaskSize, TaskTemplate};
+    use std::collections::BTreeSet;
+    PlannedTicket {
+        node: NodeId::from(node),
+        kind: NodeKind::Body,
+        signatures: Vec::new(),
+        turns: Vec::new(),
+        waits: vec![Wait {
+            on: WaitOn::Task(TicketId::from(waits_on)),
+            name: Name::from("other"),
+        }],
+        sections: vec![Section {
+            key: None,
+            template: TaskTemplate {
+                goal: "a goal".to_owned(),
+                owned_paths: "a path".to_owned(),
+                scoped: false,
+                out_of_scope: None,
+                interfaces: "none".to_owned(),
+                design_pages: "D1".to_owned(),
+                architecture: String::new(),
+                acceptance: vec!["a line".to_owned()],
+                tests: "a test".to_owned(),
+                security_trigger: SecurityTrigger::No,
+                model: TaskModel::Sonnet,
+                size: TaskSize::S,
+                blocked_by: Vec::new(),
+                style: None,
+            },
+            writes: BTreeSet::new(),
+            provides: BTreeSet::new(),
+            implements: BTreeSet::new(),
+            needs: BTreeSet::new(),
+        }],
+    }
+    .to_string()
+}
+
+#[test]
+fn tick_cycle_across_epics() {
+    let board = FakeBoard::default();
+    board.add_challenged_epic(TicketId::from(2), "Issue 2");
+    board.add_challenged_epic(TicketId::from(12), "Issue 12");
+    board.add_ticket(ticket(3, Some(2), &graph_body("A", 13), TicketState::Ready));
+    board.add_ticket(ticket(
+        13,
+        Some(12),
+        &graph_body("B", 3),
+        TicketState::Ready,
+    ));
+
+    let read = snapshot(&board, &[]).expect("snapshot");
+    let plan = tick::plan(
+        &read,
+        &SpawnState::default(),
+        Level::Green,
+        Settings::from(&manifest()),
+    );
+
+    assert_eq!(
+        plan.cycles,
+        vec![vec![TicketId::from(3), TicketId::from(13)]]
+    );
+    assert!(
+        plan.render_text()
+            .contains("blocker cycle: #3 → #13 → #3\n")
+    );
+}
+
 #[test]
 fn a_tick_that_fails_to_reserve_takes_back_what_it_reserved() {
     let dir = tempfile::tempdir().expect("temp dir");
@@ -1252,7 +1325,7 @@ fn each_role_has_its_pack_brief() {
         assert!(brief.contains(r#"`["report", "<epic>","#), "{brief}");
         assert!(!brief.contains("`zaf "), "{brief}");
     }
-    assert!(PLANNING_BRIEF.contains(r#"`["file", "<epic>", "<title>"]`"#));
+    assert!(PLANNING_BRIEF.contains(r#"`["file", "<epic>"]`"#));
 }
 
 /// A task claimed by instance 1, which dies with the first tick (pid 100): the claim is left to
@@ -1444,4 +1517,97 @@ fn the_slots_line_counts_the_running_phases_and_the_decision_does_not() {
         "{}",
         prepared.plan.render_text()
     );
+}
+
+/// The launch record of the one run folder under `state_dir`.
+fn only_record(state_dir: &Path) -> runs::LaunchRecord {
+    let found = runs::read_all(state_dir).expect("reads");
+    assert_eq!(found.len(), 1, "one launch");
+    found[0].record.clone().expect("a record")
+}
+
+#[test]
+fn challenger_launch_records_graph_hash() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    // A signed epic with a task and no challenger's report: the stage the challenger launches on.
+    let board = FakeBoard::default();
+    board.add_signed_epic(TicketId::from(2), "Issue 2");
+    board.add_ticket(ticket(3, Some(2), "Blocked by: —", TicketState::Ready));
+
+    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
+    assert_eq!(prepared.plan.launches.len(), 1);
+    assert_eq!(
+        prepared.plan.launches[0].instance.role.as_str(),
+        CHALLENGER_ROLE
+    );
+
+    let epics = board.epics().expect("epics");
+    let epic = epics.iter().find(|epic| epic.id == TicketId::from(2));
+    let hash = PlanGraph::read(epic.expect("the epic"), &epics).hash();
+    assert_eq!(
+        only_record(&state_dir).graph,
+        Some(format!("sha256:{hash}"))
+    );
+    assert_eq!(only_record(&state_dir).graph_hash(), Some(hash));
+}
+
+/// A challenger that ended without a report is not launched again while the graph reads as it
+/// did: the hash its launch wrote into `launch.json` reads back from that file.
+#[test]
+fn challenger_that_ended_without_a_report_is_not_relaunched() {
+    use crate::domain::plan::record::{FilingMark, PlanRecord};
+    use crate::domain::{BodyHash, TicketBody};
+
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let board = FakeBoard::default();
+    let epic = TicketId::from(2);
+    board.add_signed_epic(epic, "Issue 2");
+    board.add_ticket(ticket(3, Some(2), "Blocked by: —", TicketState::Ready));
+    // A plan record: the epic has a graph, so only a launch on that graph answers it.
+    let record = PlanRecord {
+        k: 1,
+        design: BodyHash::of(&TicketBody::from("a design")),
+        dropped: Vec::new(),
+        plan: "plan 1\n".to_owned(),
+    };
+    Board::comment(&board, epic, &record.to_string()).expect("the record");
+    let epics = board.epics().expect("epics");
+    let graph = PlanGraph::read(&epics[0], &epics).hash();
+    Board::comment(&board, epic, &FilingMark { k: 1, graph }.to_string()).expect("the mark");
+
+    let first = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
+    assert_eq!(
+        first.plan.launches[0].instance.role.as_str(),
+        CHALLENGER_ROLE
+    );
+
+    // Its process is gone and it left no report: the next tick records it as lost.
+    let second = prepare(&board, &state_dir, &manifest(), &|_| false, &tick()).expect("prepares");
+    assert_eq!(second.lost, ["challenger instance 1 on #2"]);
+    assert!(
+        second.plan.launches.is_empty(),
+        "launched again: {:?}",
+        second.plan.launches
+    );
+    assert_eq!(runs::read_all(&state_dir).expect("reads").len(), 1);
+}
+
+#[test]
+fn planning_launch_records_no_graph() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let state_dir = dir.path().join(".zaf");
+    let board = FakeBoard::default();
+    board.add_signed_epic(TicketId::from(2), "Issue 2");
+
+    let prepared = prepare(&board, &state_dir, &manifest(), &|_| true, &tick()).expect("prepares");
+    assert_eq!(
+        prepared.plan.launches[0].instance.role.as_str(),
+        PLANNING_ROLE
+    );
+    assert_eq!(only_record(&state_dir).graph, None);
+    let launch = state_dir.join("runs/planning-instance-1-on-2");
+    let text = std::fs::read_to_string(launch.join(runs::LAUNCH_FILE)).expect("reads");
+    assert!(!text.contains("graph"), "{text}");
 }

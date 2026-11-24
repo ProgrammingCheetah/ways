@@ -1,8 +1,9 @@
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::domain::plan::{Area, Name, Vocabulary};
 use crate::domain::{Signature, Ticket, TicketId, TicketState, all_signed, with_release};
-use crate::fakes::FakeBoard;
+use crate::fakes::{FakeBoard, FakeVcs};
 use crate::ports::Board;
 
 use super::*;
@@ -98,7 +99,8 @@ fn epic_of(version: &str) -> Epic {
         body: body.as_str().into(),
         tasks: Vec::new(),
         planned_at: None,
-        challenged: false,
+        records: Vec::new(),
+        challengers: Vec::new(),
     }
 }
 
@@ -377,4 +379,166 @@ fn next_version_skips_names_that_are_not_versions() {
     vcs.tag("zaf-vnext");
     vcs.tag("zaf-v2");
     assert_eq!(next(temp.path(), TAGGED, &vcs), "0.6.0");
+}
+
+/// `git hash-object` run on the file: the value the signoff row must hold.
+fn git_hash_object(path: &Path) -> String {
+    let output = std::process::Command::new("git")
+        .arg("hash-object")
+        .arg(path)
+        .output()
+        .expect("git runs");
+    assert!(output.status.success(), "git hash-object failed");
+    String::from_utf8(output.stdout)
+        .expect("utf-8")
+        .trim()
+        .to_owned()
+}
+
+const DESIGN_BODY: &str = "# Design\n\nThe design, line by line.\n";
+
+#[test]
+fn design_signed_through_signoff_row() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let folder = folder_in(temp.path(), "");
+    write(&folder, "design.md", DESIGN_BODY);
+    let hash = git_hash_object(&folder.design_document());
+    let other = "0".repeat(40);
+    write(
+        &folder,
+        "signoff.md",
+        &format!(
+            "| file | hash |\n|---|---|\n| `objectives.md` | `{other}` |\n| `design.md` | `{hash}` | note |\n"
+        ),
+    );
+    assert!(document_signed(&folder, &folder.design_document()));
+}
+
+#[test]
+fn design_with_stale_signoff_hash_is_unsigned() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let folder = folder_in(temp.path(), "");
+    write(&folder, "design.md", DESIGN_BODY);
+    let stale = git_hash_object(&folder.design_document());
+    write(
+        &folder,
+        "signoff.md",
+        &format!("| `design.md` | `{stale}` |\n"),
+    );
+    assert!(document_signed(&folder, &folder.design_document()));
+    write(&folder, "design.md", &format!("{DESIGN_BODY}An edit.\n"));
+    assert!(!document_signed(&folder, &folder.design_document()));
+}
+
+#[test]
+fn a_signoff_row_for_another_file_or_a_sha256_does_not_sign() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let folder = folder_in(temp.path(), "");
+    write(&folder, "design.md", DESIGN_BODY);
+    let hash = git_hash_object(&folder.design_document());
+    let sha256 = "a".repeat(64);
+    write(
+        &folder,
+        "signoff.md",
+        &format!("| `scope.md` | `{hash}` |\n| `design.md` | `{sha256}` |\n"),
+    );
+    assert!(!document_signed(&folder, &folder.design_document()));
+}
+
+#[test]
+fn design_signed_through_zaf_block() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let folder = folder_in(temp.path(), "");
+    write_signed(&folder, "design.md", DESIGN_BODY);
+    assert!(document_signed(&folder, &folder.design_document()));
+}
+
+#[test]
+fn design_signed_neither_way_is_unsigned() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let folder = folder_in(temp.path(), "");
+    assert!(
+        !document_signed(&folder, &folder.design_document()),
+        "missing"
+    );
+    write(&folder, "design.md", DESIGN_BODY);
+    assert!(!document_signed(&folder, &folder.design_document()));
+}
+
+const VOCABULARY_DESIGN: &str = "# Design
+
+```toml vocabulary
+[areas]
+\"prompts\" = \"the standing briefs\"
+
+[names.\"mcp.catalog\"]
+signature = \"fn catalog() -> Vec<Tool>\"
+epic = 1157
+
+[names.\"cli\"]
+no_signature = true
+existing = \"zaf/src/cli.rs\"
+```
+";
+
+fn vocabulary_of(root: &Path, vcs: &FakeVcs) -> Result<Vocabulary, VocabularyLoadError> {
+    release_vocabulary(root, &manifest(""), vcs, &epic_of("0.6.0"))
+}
+
+fn vcs_holding(paths: &[&str]) -> FakeVcs {
+    let vcs = FakeVcs::default();
+    vcs.set_paths("feature/0.6.0", paths);
+    vcs
+}
+
+#[test]
+fn release_vocabulary_loads_from_signed_design() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    write_signed(&folder_in(temp.path(), ""), "design.md", VOCABULARY_DESIGN);
+    let vcs = vcs_holding(&["zaf/src/cli.rs"]);
+    let loaded = vocabulary_of(temp.path(), &vcs).expect("loads");
+    assert!(loaded.areas.contains(&Area::from("prompts")));
+    assert!(loaded.signature.contains(&Name::from("mcp.catalog")));
+    assert!(loaded.existing.contains(&Name::from("cli")));
+}
+
+#[test]
+fn release_vocabulary_refuses_unsigned_design() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    write(&folder_in(temp.path(), ""), "design.md", VOCABULARY_DESIGN);
+    let vcs = vcs_holding(&["zaf/src/cli.rs"]);
+    let error = vocabulary_of(temp.path(), &vcs).expect_err("refused");
+    assert!(matches!(error, VocabularyLoadError::Unsigned { .. }));
+    assert!(error.to_string().contains("sign it"), "{error}");
+}
+
+#[test]
+fn release_vocabulary_refuses_missing_existing_path() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    write_signed(&folder_in(temp.path(), ""), "design.md", VOCABULARY_DESIGN);
+    let vcs = vcs_holding(&["README.md"]);
+    let error = vocabulary_of(temp.path(), &vcs).expect_err("refused");
+    assert!(error.to_string().contains("zaf/src/cli.rs"), "{error}");
+    assert!(error.to_string().contains("\"cli\""), "{error}");
+}
+
+#[test]
+fn release_vocabulary_empty_without_block() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    write_signed(&folder_in(temp.path(), ""), "design.md", DESIGN_BODY);
+    let loaded = vocabulary_of(temp.path(), &FakeVcs::default()).expect("loads");
+    assert_eq!(loaded, Vocabulary::default());
+}
+
+#[test]
+fn release_vocabulary_passes_a_parse_refusal_on() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    write_signed(
+        &folder_in(temp.path(), ""),
+        "design.md",
+        "```toml vocabulary\n[names.\"a\"]\n```\n",
+    );
+    let error = vocabulary_of(temp.path(), &FakeVcs::default()).expect_err("refused");
+    assert!(matches!(error, VocabularyLoadError::Block { .. }));
+    assert!(error.to_string().contains("neither signature"), "{error}");
 }

@@ -27,7 +27,7 @@ use crate::app::schedule::shadow;
 use crate::app::spawn::runs::{self, Run};
 use crate::composition::{Composition, zaf_home};
 use crate::domain::schedule::WaitingOn;
-use crate::domain::{Epic, EpicStage, EpicTask, Instance, TaskTemplate, TicketId, TicketState};
+use crate::domain::{Epic, EpicStage, EpicTask, Instance, TaskBody, TicketId, TicketState};
 use crate::ports::{Board, ClaimRecord, Forge, Holder, NewQuestion, PortError, Vcs};
 
 mod line;
@@ -139,6 +139,8 @@ pub struct EpicState {
     pub title: String,
     /// Where it stands: unsigned, signed, planned or challenged.
     pub stage: EpicStage,
+    /// Whether its plan was posted and not filed: its last plan record has no filing mark.
+    pub half_filed: bool,
     /// The version its body's `Release:` line names; `null` when the body has none.
     pub release: Option<String>,
     /// Where a person opens its issue; read for an unsigned epic only, the one the Engineer signs.
@@ -902,7 +904,7 @@ fn read_board(inputs: &StateInputs, board: &dyn Board) -> Result<BoardRead, Port
     let unparsed = ready
         .iter()
         .filter_map(|ticket| {
-            let problems = TaskTemplate::problems(ticket.body.as_str());
+            let problems = TaskBody::problems(ticket.body.as_str());
             (!problems.is_empty()).then(|| UnparsedTask {
                 number: ticket.id.get(),
                 title: ticket.title.to_string(),
@@ -1010,6 +1012,7 @@ fn epic_state(tree: &Epic, dollars: f64) -> EpicState {
         number: tree.id.get(),
         title: tree.title.to_string(),
         stage: tree.stage(),
+        half_filed: tree.half_filed(),
         release: tree.release().map(str::to_owned),
         url: None,
         done,

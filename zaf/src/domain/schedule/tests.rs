@@ -662,10 +662,9 @@ fn exit_zero_runs_at_an_unmoved_head_count_toward_getting_nowhere() {
 #[test]
 fn failure_1_a_done_dependency_leaves_no_ticket_waiting_whatever_its_label() {
     let mut facts = facts(pack());
-    facts.dependencies.push(Dependency {
-        ticket: id(25),
-        standing: Standing::Done,
-    });
+    facts
+        .dependencies
+        .push(Dependency::blocked_by(id(25), Standing::Done));
     let placed = place(&facts, now());
     assert_eq!(placed, in_lane("implement", 1));
     for claimed in [false, true] {
@@ -859,6 +858,7 @@ fn failure_8_a_ticket_waits_on_an_unsigned_unchallenged_or_questioned_epic_start
                 id: epic,
                 signed,
                 challenged,
+                voided: false,
             });
             assert_eq!(
                 place(&facts, now()),
@@ -871,6 +871,7 @@ fn failure_8_a_ticket_waits_on_an_unsigned_unchallenged_or_questioned_epic_start
             id: epic,
             signed: true,
             challenged: true,
+            voided: false,
         });
         questioned.open_questions.insert(id(30));
         assert_eq!(

@@ -5,7 +5,8 @@
 //!
 //! 1. **Running:** a phase run of it is live.
 //! 2. **Done:** its pull request is merged, or every phase's end fact holds.
-//! 3. **Waiting:** its epic is unsigned or unchallenged, a question is open on it or its epic, a
+//! 3. **Waiting:** its epic is unsigned or unchallenged (an epic whose challenge was voided holds
+//!    back only a ticket with no phase started), a question is open on it or its epic, a
 //!    dependency is not done, or the checks at its head have not ended (none registered counts as
 //!    not ended), or its current phase awaits something outside. It waits on every one of these
 //!    that holds, as a set. With none of them, a ticket at its merge ([`super::at_merge`]) waits
@@ -19,7 +20,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::SystemTime;
 
-use super::facts::TicketFacts;
+use super::facts::{EpicFacts, TicketFacts};
 use super::lane::{Lane, LaneEntry, weight};
 use super::phase::{ActionName, CurrentPhase, PhaseEnd, PhaseStatus, current_phase};
 use crate::domain::{CommitId, Standing, TicketId};
@@ -101,7 +102,8 @@ pub fn place(facts: &TicketFacts, now: SystemTime) -> Place {
         return Place::Done;
     };
     let mut waits = BTreeSet::new();
-    if let Some(epic) = facts.epic.filter(|epic| !epic.signed || !epic.challenged) {
+    let started = phase_started(facts, &current);
+    if let Some(epic) = facts.epic.filter(|epic| epic_holds(epic, started)) {
         waits.insert(WaitingOn::Epic(epic.id));
     }
     waits.extend(
@@ -142,6 +144,27 @@ pub fn place(facts: &TicketFacts, now: SystemTime) -> Place {
         next: current.next().clone(),
         since: ready_since(&current, facts).unwrap_or(now),
     }
+}
+
+/// Whether `epic` holds back a ticket, `started` saying whether the ticket has a phase started. An
+/// unsigned epic holds every ticket. A voided challenge holds only a ticket with no phase started
+/// (D22, Q13): one in its phases goes on, between phases too. An epic never challenged holds every
+/// ticket.
+fn epic_holds(epic: &EpicFacts, started: bool) -> bool {
+    if !epic.signed {
+        return true;
+    }
+    if epic.voided {
+        return !started;
+    }
+    !epic.challenged
+}
+
+/// Whether the ticket has a phase started: a run of it is on record (it is not live here, or the
+/// ticket would be running), or a phase before the current one has ended, as a pull request opened
+/// by hand ends `pr-open`.
+fn phase_started(facts: &TicketFacts, current: &CurrentPhase<'_>) -> bool {
+    !facts.runs.is_empty() || current.previous.is_some()
 }
 
 /// Since when a ticket whose current phase is `current` is ready for its next run, as far as a

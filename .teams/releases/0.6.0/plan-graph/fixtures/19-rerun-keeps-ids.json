@@ -1,0 +1,225 @@
+{
+ "name": "19-rerun-keeps-ids",
+ "why": "Fixture 12's output run again: nothing changes, ids included. A+B splits back into A and B and merges again as A+B, never A+B.a+A+B.b (D9).",
+ "options": {
+  "lift": "all",
+  "interfaces": "each"
+ },
+ "plan": {
+  "limit": 2,
+  "lanes": 4,
+  "no_signature": [],
+  "existing": [
+   "cli"
+  ],
+  "outside": {},
+  "nodes": [
+   {
+    "id": "A+B",
+    "kind": "body",
+    "behaviours": [
+     {
+      "text": "update takes --yes",
+      "size": 1,
+      "writes": [
+       "app/update"
+      ],
+      "provides": [],
+      "needs": []
+     },
+     {
+      "text": "update prints one summary line",
+      "size": 1,
+      "writes": [
+       "app/update"
+      ],
+      "provides": [],
+      "needs": []
+     }
+    ]
+   },
+   {
+    "id": "C",
+    "behaviours": [
+     {
+      "text": "the MCP server lists the verbs as tools",
+      "size": 1,
+      "writes": [
+       "adapters/mcp"
+      ],
+      "provides": [],
+      "needs": [
+       "cli",
+       "mcp.catalog"
+      ]
+     }
+    ],
+    "kind": "body"
+   },
+   {
+    "id": "D",
+    "behaviours": [
+     {
+      "text": "profiles register the MCP server",
+      "size": 1,
+      "writes": [
+       "app/profile"
+      ],
+      "provides": [],
+      "needs": [
+       "mcp.catalog"
+      ]
+     }
+    ],
+    "kind": "body"
+   },
+   {
+    "id": "I:mcp.catalog",
+    "kind": "interface",
+    "behaviours": [
+     {
+      "text": "the signature of mcp.catalog",
+      "size": 1,
+      "writes": [
+       "sig:mcp.catalog"
+      ],
+      "provides": [
+       "mcp.catalog"
+      ],
+      "needs": []
+     }
+    ]
+   }
+  ]
+ },
+ "expect": {
+  "before": {
+   "nodes": 4,
+   "interfaces": 1,
+   "chain": 2,
+   "width": [
+    2,
+    2
+   ],
+   "narrow_layers": [
+    0,
+    1
+   ],
+   "work": 5,
+   "critical": 2,
+   "critical_path": [
+    "A+B"
+   ]
+  },
+  "after": {
+   "nodes": 4,
+   "interfaces": 1,
+   "chain": 2,
+   "width": [
+    2,
+    2
+   ],
+   "narrow_layers": [
+    0,
+    1
+   ],
+   "work": 5,
+   "critical": 2,
+   "critical_path": [
+    "A+B"
+   ]
+  },
+  "plan": {
+   "nodes": [
+    {
+     "id": "A+B",
+     "kind": "body",
+     "behaviours": [
+      {
+       "text": "update takes --yes",
+       "size": 1,
+       "writes": [
+        "app/update"
+       ],
+       "provides": [],
+       "needs": []
+      },
+      {
+       "text": "update prints one summary line",
+       "size": 1,
+       "writes": [
+        "app/update"
+       ],
+       "provides": [],
+       "needs": []
+      }
+     ]
+    },
+    {
+     "id": "C",
+     "behaviours": [
+      {
+       "text": "the MCP server lists the verbs as tools",
+       "size": 1,
+       "writes": [
+        "adapters/mcp"
+       ],
+       "provides": [],
+       "needs": [
+        "cli",
+        "mcp.catalog"
+       ]
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "D",
+     "behaviours": [
+      {
+       "text": "profiles register the MCP server",
+       "size": 1,
+       "writes": [
+        "app/profile"
+       ],
+       "provides": [],
+       "needs": [
+        "mcp.catalog"
+       ]
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "I:mcp.catalog",
+     "kind": "interface",
+     "behaviours": [
+      {
+       "text": "the signature of mcp.catalog",
+       "size": 1,
+       "writes": [
+        "sig:mcp.catalog"
+       ],
+       "provides": [
+        "mcp.catalog"
+       ],
+       "needs": []
+      }
+     ]
+    }
+   ],
+   "orders": [
+    {
+     "from": "I:mcp.catalog",
+     "to": "C",
+     "needs": "mcp.catalog"
+    },
+    {
+     "from": "I:mcp.catalog",
+     "to": "D",
+     "needs": "mcp.catalog"
+    }
+   ]
+  }
+ }
+}

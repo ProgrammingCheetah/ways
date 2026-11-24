@@ -1,0 +1,166 @@
+{
+ "name": "14-more-waiters-goes-first",
+ "why": "Two medium nodes conflict and cannot merge. B has a node waiting on it and A has none, so B goes first despite its id.",
+ "options": {
+  "lift": "all",
+  "interfaces": "each"
+ },
+ "plan": {
+  "no_signature": [
+   "b.out"
+  ],
+  "nodes": [
+   {
+    "id": "A",
+    "behaviours": [
+     {
+      "text": "a",
+      "size": 2,
+      "writes": [
+       "shared"
+      ],
+      "provides": [],
+      "needs": []
+     }
+    ]
+   },
+   {
+    "id": "B",
+    "behaviours": [
+     {
+      "text": "b",
+      "size": 2,
+      "writes": [
+       "shared"
+      ],
+      "provides": [
+       "b.out"
+      ],
+      "needs": []
+     }
+    ]
+   },
+   {
+    "id": "C",
+    "behaviours": [
+     {
+      "text": "c",
+      "size": 1,
+      "writes": [
+       "c"
+      ],
+      "provides": [],
+      "needs": [
+       "b.out"
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ "expect": {
+  "before": {
+   "nodes": 3,
+   "interfaces": 0,
+   "chain": 2,
+   "width": [
+    2,
+    1
+   ],
+   "narrow_layers": [
+    0,
+    1
+   ],
+   "work": 5,
+   "critical": 3,
+   "critical_path": [
+    "B",
+    "C"
+   ]
+  },
+  "after": {
+   "nodes": 3,
+   "interfaces": 0,
+   "chain": 2,
+   "width": [
+    1,
+    2
+   ],
+   "narrow_layers": [
+    0,
+    1
+   ],
+   "work": 5,
+   "critical": 4,
+   "critical_path": [
+    "B",
+    "A"
+   ]
+  },
+  "plan": {
+   "nodes": [
+    {
+     "id": "A",
+     "behaviours": [
+      {
+       "text": "a",
+       "size": 2,
+       "writes": [
+        "shared"
+       ],
+       "provides": [],
+       "needs": []
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "B",
+     "behaviours": [
+      {
+       "text": "b",
+       "size": 2,
+       "writes": [
+        "shared"
+       ],
+       "provides": [
+        "b.out"
+       ],
+       "needs": []
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "C",
+     "behaviours": [
+      {
+       "text": "c",
+       "size": 1,
+       "writes": [
+        "c"
+       ],
+       "provides": [],
+       "needs": [
+        "b.out"
+       ]
+      }
+     ],
+     "kind": "body"
+    }
+   ],
+   "orders": [
+    {
+     "from": "B",
+     "to": "A",
+     "needs": "turn:shared"
+    },
+    {
+     "from": "B",
+     "to": "C",
+     "needs": "b.out"
+    }
+   ]
+  }
+ }
+}

@@ -146,6 +146,19 @@ impl GhCommand {
         Ok(reply.data)
     }
 
+    /// The login gh's token posts as: `gh api user`, outside any repository.
+    pub fn own_login(&self) -> Result<String, PortError> {
+        #[derive(serde::Deserialize)]
+        struct User {
+            login: String,
+        }
+        let user: User = parse_json(&self.output(&["api", "user"])?)?;
+        if user.login.trim().is_empty() {
+            return Err(PortError::Backend(format!("{PROGRAM} api user: no login")));
+        }
+        Ok(user.login)
+    }
+
     /// Reads every page of a list endpoint, oldest page first, as one list.
     pub fn api_list<T: DeserializeOwned>(&self, endpoint: &str) -> Result<Vec<T>, PortError> {
         let text = self.api_text(endpoint, &["--paginate", "--slurp"])?;

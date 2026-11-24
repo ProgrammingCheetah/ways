@@ -3,7 +3,7 @@
 //! (F6) and the why view (F7) in `detail/`, each its own file.
 
 pub mod epic;
-pub mod tree;
+pub mod graph;
 pub mod why;
 
 use ratatui::text::{Line, Span};
@@ -88,7 +88,7 @@ fn origin(detail: DetailView) -> PaneId {
     match detail {
         DetailView::Item | DetailView::Answer => PaneId::Inbox,
         DetailView::Problem => PaneId::Problems,
-        DetailView::Epic | DetailView::Read | DetailView::Tree | DetailView::Why(_) => {
+        DetailView::Epic | DetailView::Read | DetailView::Graph | DetailView::Why(_) => {
             PaneId::Epics
         }
     }
@@ -365,7 +365,7 @@ impl Pane for Detail {
                 .map_or_else(|| "No problems".to_owned(), problem_title),
             DetailView::Epic => epic::title(state, cursor),
             DetailView::Read => epic::read_title(state, cursor),
-            DetailView::Tree => tree::title(state, cursor),
+            DetailView::Graph => graph::title(state, cursor),
             DetailView::Why(ticket) => why::title(ticket),
             DetailView::Answer => view.answer.map_or_else(
                 || "Answer".to_owned(),
@@ -395,7 +395,7 @@ impl Pane for Detail {
             },
             DetailView::Epic => epic::page(&mut page, state, cursor),
             DetailView::Read => epic::read_page(&mut page, state, cursor),
-            DetailView::Tree => tree::page(&mut page, state, cursor),
+            DetailView::Graph => graph::page(&mut page, state, cursor),
             DetailView::Why(ticket) => why::page(&mut page, state, ticket),
             DetailView::Answer => answer_page(&mut page, state, width, rows),
         }
@@ -475,14 +475,14 @@ impl Pane for Detail {
                 hint("j/k", "scroll"),
                 hint("Space", "page"),
                 hint("s", "sign"),
-                hint("d", "tree"),
+                hint("d", "graph"),
                 hint("w", "why"),
                 hint("Esc", "back"),
                 hint("q", "quit"),
             ],
-            DetailView::Tree | DetailView::Why(_) => vec![
+            DetailView::Graph | DetailView::Why(_) => vec![
                 hint("j/k", "scroll"),
-                hint("d", "tree"),
+                hint("d", "graph"),
                 hint("w", "why"),
                 hint("l", "live"),
                 hint("Esc", "back"),

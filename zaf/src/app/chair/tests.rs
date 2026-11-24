@@ -98,6 +98,7 @@ fn ways() -> ProjectState {
             number: 224,
             title: "the screens\u{1b}[2J and setup".to_owned(),
             stage: EpicStage::Challenged,
+            half_filed: false,
             release: Some("0.5.2".to_owned()),
             url: None,
             done: 1,
@@ -163,6 +164,50 @@ fn ways() -> ProjectState {
 fn chair() -> ChairState {
     let project = ways();
     build(&project, &next_for_project(&project))
+}
+
+/// The chair over one epic as the hub reads it with the filing `marked` or not: the stage and
+/// the half-filed flag are what `Epic::stage()` and `Epic::half_filed()` give for it.
+fn filed(marked: bool) -> ChairState {
+    let mut project = ways();
+    let epic = &mut project.epics[0];
+    epic.stage = if marked {
+        EpicStage::Planned
+    } else {
+        EpicStage::Signed
+    };
+    epic.half_filed = !marked;
+    build(&project, &next_for_project(&project))
+}
+
+#[test]
+fn chair_half_filed_epic() {
+    let state = filed(false);
+    let epic = state.epic(TicketId::from(224)).expect("the epic is open");
+    assert!(epic.half_filed);
+    assert_eq!(epic.stage_text(), "half filed");
+    assert_eq!(
+        epic.way_on().as_deref(),
+        Some("the tick finishes it, or `zaf plan file 224` with empty stdin")
+    );
+}
+
+#[test]
+fn chair_half_filed_finished() {
+    let state = filed(true);
+    let epic = state.epic(TicketId::from(224)).expect("the epic is open");
+    assert!(!epic.half_filed);
+    assert_eq!(epic.stage_text(), "planned");
+    assert_eq!(epic.way_on(), None);
+}
+
+#[test]
+fn chair_half_filed_unsigned_stays_unsigned() {
+    let mut project = ways();
+    project.epics[0].stage = EpicStage::Unsigned;
+    project.epics[0].half_filed = true;
+    let state = build(&project, &next_for_project(&project));
+    assert_eq!(state.epics[0].stage_text(), "unsigned");
 }
 
 #[test]
@@ -665,4 +710,65 @@ fn a_refused_ruling_says_why_without_control_characters() {
             "{line:?}"
         );
     }
+}
+
+#[test]
+fn chair_squares_graph_waits() {
+    // Fixture 12's epic on the fake board: C and D wait on the interface ticket #104 until it is
+    // done, though no body has a `Blocked by:` line.
+    use crate::app::actions::SliceRecords;
+    use crate::app::hub::state::{StateInputs, gather_state};
+    use crate::app::report::PriceTable;
+    use crate::fakes::{FakeBoard, FakeForge, FakeVcs, add_fixture_12};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let board = FakeBoard::default();
+    board.add_challenged_epic(TicketId::from(100), "The graph");
+    add_fixture_12(&board, TicketId::from(100), 101);
+    let (forge, vcs) = (FakeForge::default(), FakeVcs::default());
+    let records = SliceRecords::in_state_dir(dir.path());
+    let prices = PriceTable::default();
+    let squares_now = || {
+        let project = gather_state(&StateInputs {
+            lists: None,
+            project: "example",
+            root: dir.path(),
+            state_dir: dir.path(),
+            board: Ok(&board),
+            forge: Some(&forge),
+            vcs: Some(&vcs),
+            records: &records,
+            ledger: &[],
+            prices: &prices,
+            pull_base: None,
+            alive: &|_| true,
+            now: std::time::SystemTime::UNIX_EPOCH,
+            places: None,
+            gathered: None,
+            releases: None,
+        });
+        let state = build(&project, &next_for_project(&project));
+        let epic = state.epic(TicketId::from(100)).expect("open");
+        epic.squares
+            .iter()
+            .map(|square| (square.ticket.get(), square.state, square.blocked_by.clone()))
+            .collect::<Vec<_>>()
+    };
+
+    let squares = squares_now();
+
+    let interface = vec![TicketId::from(104)];
+    assert_eq!(
+        squares[1..3],
+        [
+            (102, SquareState::Waiting, interface.clone()),
+            (103, SquareState::Waiting, interface),
+        ]
+    );
+    assert_eq!(squares[0].1, SquareState::Ready);
+
+    board.close(TicketId::from(104));
+    let squares = squares_now();
+    assert_eq!(squares[1].1, SquareState::Ready, "the interface is done");
+    assert_eq!(squares[2].1, SquareState::Ready, "the interface is done");
 }

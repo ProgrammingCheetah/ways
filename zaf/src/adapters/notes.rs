@@ -11,8 +11,12 @@ use std::fmt;
 use std::str::FromStr;
 use std::time::SystemTime;
 
-use crate::domain::{CHALLENGER_ROLE, Instance, PLANNING_ROLE, Signature, TicketId};
-use crate::ports::{ClaimRecord, PortError};
+use crate::domain::plan::record::GraphHash;
+use crate::domain::{
+    CHALLENGER_ROLE, EpicRecord, Instance, PLANNING_ROLE, RecordComment, Signature, TicketId,
+    report_graph,
+};
+use crate::ports::{ClaimRecord, Login, PortError};
 
 /// A comment that is not a claim or a heartbeat.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -229,37 +233,86 @@ pub(super) fn held_by(
 /// What an epic's comments say about it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct EpicNotes {
-    /// The latest signature comment's signature.
+    /// The signature of the latest signature comment a trusted login posted.
     pub signature: Option<Signature>,
     /// When the latest planning instance's exit marker was posted.
     pub planned_at: Option<SystemTime>,
-    /// Whether a challenger instance's status report is on it.
-    pub challenged: bool,
+    /// Each challenger instance's status report on it that a trusted login posted, oldest
+    /// first, as its last line's hash:
+    /// none for a report with no `graph sha256:<hex>` last line.
+    pub challengers: Vec<Option<GraphHash>>,
+    /// The plan records a trusted login posted, in posting order, each with its filing mark.
+    pub records: Vec<EpicRecord>,
+}
+
+/// A comment on an epic as the notes read it: its text, when it was posted and who posted it,
+/// each when the board tells.
+pub(super) type EpicComment<'a> = (&'a str, Option<SystemTime>, Option<&'a Login>);
+
+/// The trusted logins of one read: asked at most once, and only when a comment that has an
+/// author needs them.
+struct Trust<F> {
+    ask: Option<F>,
+    logins: Vec<Login>,
+}
+
+impl<F: FnOnce() -> Result<Vec<Login>, PortError>> Trust<F> {
+    /// Whether `author` is a trusted login; a comment with no author the board knows is by none.
+    fn holds(&mut self, author: Option<&Login>) -> Result<bool, PortError> {
+        let Some(author) = author else {
+            return Ok(false);
+        };
+        if let Some(ask) = self.ask.take() {
+            self.logins = ask()?;
+        }
+        Ok(self.logins.contains(author))
+    }
 }
 
 impl EpicNotes {
-    /// Reads an epic's comments, oldest first, each with when it was posted when the board
-    /// tells.
+    /// Reads an epic's comments, oldest first, each with when it was posted and by whom, when
+    /// the board tells.
+    ///
+    /// A signature, a challenger's report, a plan record or a filing mark counts only when its
+    /// author is one of `trusted`'s logins: a comment that reads as one but has another author,
+    /// or none the board knows, is ignored (M9, I8). `trusted` is asked at most once, and only
+    /// when a comment with an author reads as one of those.
     pub(super) fn read<'a>(
-        comments: impl IntoIterator<Item = (&'a str, Option<SystemTime>)>,
-    ) -> Self {
+        comments: impl IntoIterator<Item = EpicComment<'a>>,
+        trusted: impl FnOnce() -> Result<Vec<Login>, PortError>,
+    ) -> Result<Self, PortError> {
         let mut notes = Self {
             signature: None,
             planned_at: None,
-            challenged: false,
+            challengers: Vec::new(),
+            records: Vec::new(),
         };
-        for (body, posted) in comments {
-            if let Some(signature) = read_signature(body) {
+        let mut trust = Trust {
+            ask: Some(trusted),
+            logins: Vec::new(),
+        };
+        for (body, posted, author) in comments {
+            if let Some(signature) = read_signature(body)
+                && trust.holds(author)?
+            {
                 notes.signature = Some(signature);
+            }
+            if let Some(comment) = RecordComment::read(body)
+                && trust.holds(author)?
+            {
+                comment.file_into(&mut notes.records, posted);
             }
             let planned =
                 exit_author(body).is_some_and(|author| author.role.as_str() == PLANNING_ROLE);
             if planned && let Some(posted) = posted {
                 notes.planned_at = Some(posted);
             }
-            notes.challenged |=
+            let challenged =
                 report_author(body).is_some_and(|author| author.role.as_str() == CHALLENGER_ROLE);
+            if challenged && trust.holds(author)? {
+                notes.challengers.push(report_graph(body));
+            }
         }
-        notes
+        Ok(notes)
     }
 }

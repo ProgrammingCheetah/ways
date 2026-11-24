@@ -492,6 +492,35 @@ fn a_closed_issue_says_when_it_closed() {
 }
 
 #[test]
+fn board_opened_at_github() {
+    let fake = FakeGh::new();
+    let created = |number: u64, kind: &str, state: &str| {
+        serde_json::json!({
+            "number": number,
+            "state": state,
+            "url": format!("https://github.com/{REPO}/{kind}/{number}"),
+            "createdAt": "2026-11-12T08:00:00Z",
+        })
+        .to_string()
+    };
+    fake.on("issue view 8 *", &created(8, "issues", "CLOSED"))
+        .on("issue view 4 *", &created(4, "pull", "OPEN"))
+        .on("issue view 3 *", &standing(3, &["task"], "OPEN", "issues"));
+    let board = fake.board();
+    assert_eq!(
+        board.opened_at(TicketId::from(8)),
+        Ok(humantime::parse_rfc3339("2026-11-12T08:00:00Z").ok()),
+        "a closed issue says when it opened"
+    );
+    assert_eq!(board.opened_at(TicketId::from(3)), Ok(None), "no createdAt");
+    assert_eq!(
+        board.opened_at(TicketId::from(4)),
+        Ok(None),
+        "a pull request"
+    );
+}
+
+#[test]
 fn issue_state_tells_open_done_closed_and_missing_apart() {
     use crate::domain::Standing;
 
@@ -825,6 +854,31 @@ fn label_replaces_the_state_label_and_an_existing_one_is_quiet() {
         fake.calls(),
         [view("2"), expected_edit, close("2"), view("4"), close("4")]
     );
+}
+
+#[test]
+fn github_drop_task_request() {
+    let fake = FakeGh::new();
+    fake.on("issue view 2 *", &issue(2, &["task", "ready"], &[], "OPEN"))
+        .on(
+            "issue view 4 *",
+            &issue(4, &["task", "done"], &[], "CLOSED"),
+        )
+        .on("issue close *", "");
+    let board = fake.board();
+    board.drop_task(TicketId::from(2)).expect("drop");
+    board.drop_task(TicketId::from(4)).expect("already closed");
+    let close = argv(&[
+        "issue",
+        "close",
+        "2",
+        "--reason",
+        "not planned",
+        "--repo",
+        REPO,
+    ]);
+    // The closed task is read and nothing is sent for it.
+    assert_eq!(fake.calls(), [view("2"), close, view("4")]);
 }
 
 #[test]
@@ -2117,7 +2171,10 @@ fn epics_read_the_latest_signature_and_a_challengers_report() {
         "title": "tickets",
         "body": body,
         "labels": [{"name": "epic"}],
-        "comments": comments.iter().map(|text| serde_json::json!({"body": text})).collect::<Vec<_>>(),
+        "comments": comments
+            .iter()
+            .map(|text| serde_json::json!({"body": text, "author": {"login": "zaf-bot"}}))
+            .collect::<Vec<_>>(),
     }]);
     let tasks = serde_json::json!([
         {"number": 2, "title": "t", "labels": [{"name": "task"}, {"name": "ready"}],
@@ -2129,7 +2186,8 @@ fn epics_read_the_latest_signature_and_a_challengers_report() {
     ]);
     let fake = FakeGh::new();
     fake.on("issue list --label epic *", &epics.to_string())
-        .on("issue list --label task *", &tasks.to_string());
+        .on("issue list --label task *", &tasks.to_string())
+        .on("api user", r#"{"login":"zaf-bot","id":5}"#);
 
     let read = fake.board().epics().expect("epics read");
     assert_eq!(read.len(), 1);
@@ -2138,7 +2196,7 @@ fn epics_read_the_latest_signature_and_a_challengers_report() {
         epic.signature.as_ref().map(|signature| &signature.hash),
         Some(&BodyHash::of(&body.into()))
     );
-    assert!(epic.challenged);
+    assert!(epic.challenged());
     let standings: Vec<Standing> = epic.tasks.iter().map(|task| task.standing).collect();
     assert_eq!(
         standings,
@@ -2665,4 +2723,5 @@ fn ci_filter_unreadable_unsure_github() {
 }
 
 mod forge_writes;
+mod logins;
 mod projects;

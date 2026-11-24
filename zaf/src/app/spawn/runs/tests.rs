@@ -37,6 +37,7 @@ fn a_reserved_launch_runs_while_its_holder_lives() {
             tasks: Vec::new(),
             reserved_at: AT.to_owned(),
             started_at: None,
+            graph: None,
         })
     );
     assert_eq!(run.holder, Some(holder(100)));
@@ -71,6 +72,24 @@ fn a_started_launch_records_when() {
     let record = runs[0].record.as_ref().expect("a record");
     assert_eq!(record.started_at.as_deref(), Some("2026-11-09T08:00:05Z"));
     assert_eq!(record.reserved_at, AT);
+}
+
+#[test]
+fn launch_record_without_graph_still_reads() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let run = dir.path().join("runs/challenger-instance-1-on-2");
+    std::fs::create_dir_all(&run).expect("creates");
+    std::fs::write(
+        run.join(LAUNCH_FILE),
+        "{\"instance\":\"challenger instance 1 on #2\",\"tasks\":[],\
+         \"reserved_at\":\"2026-11-09T08:00:00Z\",\"started_at\":null}",
+    )
+    .expect("writes");
+    let record = read_all(dir.path()).expect("reads")[0]
+        .record
+        .clone()
+        .expect("a record");
+    assert_eq!(record.graph, None);
 }
 
 #[test]

@@ -98,6 +98,7 @@ fn fallback_list_cleans_epic_titles() {
                 hash.as_str()
             ),
             "createdAt": "2026-11-01T00:00:00Z",
+            "author": {"login": common::OWN_LOGIN},
         }],
     }]);
     project

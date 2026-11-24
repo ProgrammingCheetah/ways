@@ -259,9 +259,35 @@ impl From<AccessCheck> for BackendCheck {
 }
 
 /// Asks the board whether its backend answers and its credential reads and writes the
-/// repository; a board reached through a required tool answers nothing.
+/// repository (a board reached through a required tool answers nothing there), then whose zaf
+/// comments it trusts ([`trust_check`]).
 pub fn board_checks(board: &dyn Board) -> Vec<BackendCheck> {
-    board.access().into_iter().map(BackendCheck::from).collect()
+    let access = board.access().into_iter().map(BackendCheck::from);
+    access.chain([trust_check(board)]).collect()
+}
+
+/// Asks the board whose zaf comments it trusts (see [`Board::trusted_logins`]): the `trusted
+/// logins` check. It fails when the board lists none and cannot read the login its token posts
+/// as, which would otherwise fail every read of an epic that carries a signature or a plan
+/// record; the board's error names the fix.
+fn trust_check(board: &dyn Board) -> BackendCheck {
+    let what = "trusted logins".to_owned();
+    match board.trusted_logins() {
+        Ok(logins) => BackendCheck {
+            what,
+            ok: true,
+            detail: logins
+                .iter()
+                .map(|login| login.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+        },
+        Err(error) => BackendCheck {
+            what,
+            ok: false,
+            detail: error.to_string(),
+        },
+    }
 }
 
 /// Asks the forge whether its backend answers and its credential reads the repository and

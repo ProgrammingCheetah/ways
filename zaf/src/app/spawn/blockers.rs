@@ -4,9 +4,12 @@
 //! no label has to follow the close by hand. Three kinds never close: a cycle
 //! among open tasks (each waits for the next), a number that is not an issue,
 //! and an issue closed as not planned or as a duplicate (dropped, or folded into
-//! a unit). [`read`] walks the `Blocked by:` lines from the ready tasks, asking the
-//! board for each blocker's [`Standing`]; [`cycles`] and [`dead`] name what the
-//! walk found. Both are pure, so the tick, the dry run and `zaf status` agree.
+//! a unit). [`read`] walks the waits from the ready tasks, asking the board for each
+//! blocker's [`Standing`]; [`cycles`] and [`dead`] name what the walk found. Both are pure,
+//! so the tick, the dry run and `zaf status` agree.
+//!
+//! The waits come from the wait source ([`waits::Waits`], D19), so a cycle across epics is
+//! seen; a ticket the source does not hold reads from its `Blocked by:` line ([`blockers`]).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -107,10 +110,12 @@ pub fn finished_epic_standing(number: TicketId, at: StandingAt, epics: &[Epic]) 
 /// turn, each other one is classed as done or dead. An open epic among them that is finished
 /// (see [`finished_epic_standing`], read from `epics`) is done.
 pub fn read(board: &dyn Board, ready: &[Ticket], epics: &[Epic]) -> Result<Blockers, PortError> {
+    let epic_ids: Vec<TicketId> = epics.iter().map(|epic| epic.id).collect();
+    let held = waits::Waits::from_epics(epics, &epic_ids).graph();
     let mut found = Blockers::default();
     let mut pending: Vec<TicketId> = Vec::new();
     for ticket in ready {
-        let named = blockers(ticket.body.as_str());
+        let named = named_by(&held, ticket);
         pending.extend(named.iter().copied());
         found.graph.insert(ticket.id, named);
     }
@@ -134,7 +139,7 @@ pub fn read(board: &dyn Board, ready: &[Ticket], epics: &[Epic]) -> Result<Block
             }
             Standing::Open => match board.task(number) {
                 Ok(ticket) => {
-                    let named = blockers(ticket.body.as_str());
+                    let named = named_by(&held, &ticket);
                     pending.extend(named.iter().copied());
                     found.graph.insert(number, named);
                 }
@@ -146,6 +151,14 @@ pub fn read(board: &dyn Board, ready: &[Ticket], epics: &[Epic]) -> Result<Block
         }
     }
     Ok(found)
+}
+
+/// What `ticket` waits on: the wait source's entry (`held`, from [`waits::Waits::graph`]) when it
+/// holds the ticket, else the ticket's own `Blocked by:` line.
+pub fn named_by(held: &Graph, ticket: &Ticket) -> Vec<TicketId> {
+    held.get(&ticket.id)
+        .cloned()
+        .unwrap_or_else(|| blockers(ticket.body.as_str()))
 }
 
 /// The blocker cycles among `graph`'s tasks, each as the tasks in order, starting at its lowest
@@ -259,6 +272,8 @@ pub fn dead(graph: &Graph, dead: &BTreeMap<TicketId, DeadReason>) -> Vec<DeadBlo
     }
     found
 }
+
+pub mod waits;
 
 #[cfg(test)]
 mod tests;

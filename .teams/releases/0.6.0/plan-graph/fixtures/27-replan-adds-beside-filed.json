@@ -1,0 +1,365 @@
+{
+ "name": "27-replan-adds-beside-filed",
+ "why": "A re-plan of epic #1004, its second plan. A, X and I@1004.1 are filed and open, so they stay as they are; B is done, so d is code by now and makes no wait. The ticket that gave y was dropped, and Y2 gives it again. New signatures (t, y) go into a new interface ticket, I@1004.2, never into I@1004.1. C and A both write cli: A is filed, so they take turns with A first and are never merged; X and Y2 likewise on hub (D29).",
+ "options": {
+  "lift": "all",
+  "interfaces": "one"
+ },
+ "plan": {
+  "record": 2,
+  "nodes": [
+   {
+    "id": "I@1004.1",
+    "kind": "interface",
+    "filed": "open",
+    "epic": "1004",
+    "behaviours": [
+     {
+      "text": "the signature of s",
+      "size": 1,
+      "writes": [
+       "sig:s"
+      ],
+      "provides": [
+       "s"
+      ],
+      "needs": []
+     }
+    ]
+   },
+   {
+    "id": "A",
+    "filed": "open",
+    "epic": "1004",
+    "behaviours": [
+     {
+      "text": "a builds s",
+      "size": 1,
+      "writes": [
+       "cli"
+      ],
+      "provides": [],
+      "needs": [
+       "s"
+      ]
+     }
+    ]
+   },
+   {
+    "id": "B",
+    "filed": "done",
+    "epic": "1004",
+    "behaviours": [
+     {
+      "text": "b builds d",
+      "size": 1,
+      "writes": [
+       "store"
+      ],
+      "provides": [
+       "d"
+      ],
+      "needs": []
+     }
+    ]
+   },
+   {
+    "id": "X",
+    "filed": "open",
+    "epic": "1004",
+    "behaviours": [
+     {
+      "text": "x uses y",
+      "size": 1,
+      "writes": [
+       "hub"
+      ],
+      "provides": [],
+      "needs": [
+       "y"
+      ]
+     }
+    ]
+   },
+   {
+    "id": "C",
+    "epic": "1004",
+    "behaviours": [
+     {
+      "text": "c uses s and d, and gives t",
+      "size": 1,
+      "writes": [
+       "cli"
+      ],
+      "provides": [
+       "t"
+      ],
+      "needs": [
+       "d",
+       "s"
+      ]
+     }
+    ]
+   },
+   {
+    "id": "E",
+    "epic": "1004",
+    "behaviours": [
+     {
+      "text": "e uses t",
+      "size": 1,
+      "writes": [
+       "docs"
+      ],
+      "provides": [],
+      "needs": [
+       "t"
+      ]
+     }
+    ]
+   },
+   {
+    "id": "Y2",
+    "epic": "1004",
+    "behaviours": [
+     {
+      "text": "y2 gives y again",
+      "size": 1,
+      "writes": [
+       "hub"
+      ],
+      "provides": [
+       "y"
+      ],
+      "needs": []
+     }
+    ]
+   }
+  ]
+ },
+ "expect": {
+  "before": {
+   "nodes": 6,
+   "interfaces": 1,
+   "chain": 3,
+   "width": [
+    2,
+    3,
+    1
+   ],
+   "narrow_layers": [
+    0,
+    1,
+    2
+   ],
+   "work": 6,
+   "critical": 3,
+   "critical_path": [
+    "I@1004.1",
+    "C",
+    "E"
+   ]
+  },
+  "after": {
+   "nodes": 7,
+   "interfaces": 2,
+   "chain": 3,
+   "width": [
+    2,
+    3,
+    2
+   ],
+   "narrow_layers": [
+    0,
+    1,
+    2
+   ],
+   "work": 8,
+   "critical": 4,
+   "critical_path": [
+    "I@1004.2",
+    "X",
+    "Y2"
+   ]
+  },
+  "plan": {
+   "nodes": [
+    {
+     "id": "A",
+     "filed": "open",
+     "epic": "1004",
+     "behaviours": [
+      {
+       "text": "a builds s",
+       "size": 1,
+       "writes": [
+        "cli"
+       ],
+       "provides": [],
+       "needs": [
+        "s"
+       ]
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "C",
+     "epic": "1004",
+     "behaviours": [
+      {
+       "text": "c uses s and d, and gives t",
+       "size": 1,
+       "writes": [
+        "cli"
+       ],
+       "provides": [],
+       "needs": [
+        "d",
+        "s",
+        "t"
+       ]
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "E",
+     "epic": "1004",
+     "behaviours": [
+      {
+       "text": "e uses t",
+       "size": 1,
+       "writes": [
+        "docs"
+       ],
+       "provides": [],
+       "needs": [
+        "t"
+       ]
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "I@1004.1",
+     "kind": "interface",
+     "filed": "open",
+     "epic": "1004",
+     "behaviours": [
+      {
+       "text": "the signature of s",
+       "size": 1,
+       "writes": [
+        "sig:s"
+       ],
+       "provides": [
+        "s"
+       ],
+       "needs": []
+      }
+     ]
+    },
+    {
+     "id": "I@1004.2",
+     "kind": "interface",
+     "behaviours": [
+      {
+       "text": "the signature of t",
+       "size": 1,
+       "writes": [
+        "sig:t"
+       ],
+       "provides": [
+        "t"
+       ],
+       "needs": []
+      },
+      {
+       "text": "the signature of y",
+       "size": 1,
+       "writes": [
+        "sig:y"
+       ],
+       "provides": [
+        "y"
+       ],
+       "needs": []
+      }
+     ],
+     "epic": "1004"
+    },
+    {
+     "id": "X",
+     "filed": "open",
+     "epic": "1004",
+     "behaviours": [
+      {
+       "text": "x uses y",
+       "size": 1,
+       "writes": [
+        "hub"
+       ],
+       "provides": [],
+       "needs": [
+        "y"
+       ]
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "Y2",
+     "epic": "1004",
+     "behaviours": [
+      {
+       "text": "y2 gives y again",
+       "size": 1,
+       "writes": [
+        "hub"
+       ],
+       "provides": [],
+       "needs": [
+        "y"
+       ]
+      }
+     ],
+     "kind": "body"
+    }
+   ],
+   "orders": [
+    {
+     "from": "A",
+     "to": "C",
+     "needs": "turn:cli"
+    },
+    {
+     "from": "I@1004.1",
+     "to": "A",
+     "needs": "s"
+    },
+    {
+     "from": "I@1004.2",
+     "to": "C",
+     "needs": "t"
+    },
+    {
+     "from": "I@1004.2",
+     "to": "E",
+     "needs": "t"
+    },
+    {
+     "from": "I@1004.2",
+     "to": "X",
+     "needs": "y"
+    },
+    {
+     "from": "X",
+     "to": "Y2",
+     "needs": "turn:hub"
+    }
+   ],
+   "kept": []
+  }
+ }
+}

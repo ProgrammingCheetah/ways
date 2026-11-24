@@ -59,8 +59,12 @@ Each row names the tool, then its `args`.
 | `board` `["report", "<issue>", "<body>"]` | write your one status comment on an issue; calling again replaces it |
 | `board` `["question", "<issue>", "<text>"]`, `"--door"` added to `args` for a one-way door | raise a question for the Engineer; the issue waits |
 | `board` `["done", "<task>"]` | mark a task done; refused unless the task is in `land` or its pull request has merged |
-| `board` `["file", "<epic>", "<title>", "--group", "<name>", "--type", "<name>", "--blocked"]`, the body in `stdin` | file a task under an epic, its body in the task template (`"--body", "<text>"` in `args` works too; `"--body-file", "<file>"` reads a file, and `stdin` stands for `--body-file -`); `--group`, `--type` and `--blocked` are optional; `--type` is its issue type, `Task` unless named; refused if the body is not a task or the repository has no such type; a title the epic already has is not filed twice |
+| `board` `["file", "<epic>", "<title>", "--group", "<name>", "--type", "<name>", "--blocked"]`, the body in `stdin` | file a task under an epic, its body in the task template (`"--body", "<text>"` in `args` works too; `"--body-file", "<file>"` reads a file, and `stdin` stands for `--body-file -`); `--group`, `--type` and `--blocked` are optional; `--type` is its issue type, `Task` unless named; refused if the body is not a task or the repository has no such type; a title the epic already has is not filed twice; refused under an epic with a plan, whose way on is `plan file` |
 | `board` `["lint", "<issue>"]` | name every field of a task's body that does not follow the template, one line each; exit 1 when any is bad, no output when it parses |
+| `plan` `["check", "<epic>"]`, the plan in `stdin` | read the plan as the epic's plan: one line per refusal and exit 1, or the measures before and after the optimiser; nothing is filed |
+| `plan` `["file", "<epic>"]`, the plan in `stdin` | file the plan as the epic's plan: its record, each ticket once, then its filing mark; empty `stdin` finishes an interrupted filing from its record; a refused plan is one line per refusal, exit 1, and files nothing |
+| `plan` `["show", "<epic>"]`, `"--before"` added for the plan as written | see the epic's graph as its tickets read now: layers, chain, width and critical path; `--before` prints it as the plan records wrote it |
+| `plan` `["verify", "<epic>"]` | check the epic's graph is well formed: a pass prints nothing and exits 0; each failure is one line and exit 1 |
 | `epic` `["show", "<epic>"]` | see one epic: its stage, then each task, closed ones too, with its state and group |
 | `brief` `["<task>"]`, `"--phase", "<action>"` added for a phase | write the task's pack (ticket, named pages, owned paths, style, this page) and print its path; `--phase` names an action of the task's type, refused with exit 1 if it is not in its list, and a task with a pull request then gets its diff, its findings at head and its hand-off |
 | `ask` `["-t", "<task>", "<kind>: <question>", …]` | ask the keeper one to five design questions in one call; kinds are `fact`, `rule`, `term`, `exists`, `where` |
@@ -96,34 +100,69 @@ Asking well:
 # The planning instance
 
 - **Purpose:** turn a signed epic into exact tasks.
-- **Input:** the epic your prompt names; the release's objectives and design documents it links; the design pages they cite; `nodes chain <path>` for each area the tasks touch, when `nodes` is on PATH.
-- **Output:** Task and Spike sub-issues of the epic in the task template, and your report comment on the epic listing what you could not scope and why.
-- **Lifecycle:** the spawner launches you for a signed epic with no tasks, once per signature. A re-plan after a ruling (close, rewrite or add tasks; a claimed task is never touched) is launched by hand for now. A task dropped or folded into a unit is closed as not planned (`gh issue close <n> --reason "not planned"`): zaf counts a blocker closed as completed as done. Ends when the tasks are filed.
+- **Input:** the epic your prompt names; the release's objectives and design documents it links, with the design's vocabulary block when it has one; the design pages they cite; `nodes chain <path>` for each area the tasks touch, when `nodes` is on PATH.
+- **Output:** the epic's whole plan, handed to the `plan` tool, which files Task and Spike sub-issues of the epic in the task template; and your report comment on the epic listing what you could not scope and why.
+- **Lifecycle:** the spawner launches you for a signed epic with no tasks, once per signature. A re-plan after a ruling is another plan for the same epic, launched by hand for now: it adds tasks and never rewrites a filed one (see Re-plans). Ends when the plan is filed.
 - **Budget:** 80 turns.
-- **Never:** write code; decide a door (ask it); file a task larger than M (split it); leave a task without acceptance criteria; touch a claimed task; spawn anyone.
+- **Never:** write code; decide a door (ask it); file a task larger than M (split it); leave a task without acceptance criteria; touch a claimed task; write an edge between tasks, since zaf places the tickets from the names; file a ticket by hand; spawn anyone.
+
+## The plan
+
+You write the epic's whole plan as one text and hand it to the `plan` tool; you never file a task by itself. The plan may open with two lists, then holds one section per task, each opened by `Task: <title>`:
+
+```
+New names:
+- area <name>
+- signature <name>: <shape>
+- no signature <name>
+Drop:
+- #<n>
+
+Task: <title>
+Node: <key>
+Group: <name>
+Type: <name>
+Goal: ...
+(the template's other fields, as in Steps)
+Writes: <area>, <area>
+Provides: <name>, <name>
+Needs: <name>, <name>
+```
+
+- `Node` is your key for the task: letters, digits, `-` and `_`. `.`, `+`, `:`, `@` and `#` are zaf's.
+- `Group` names the piece of work the task belongs to, reusing a group that fits; the `hub` tool shows a bar per group. `Type` is an issue type, `Task` unless named. Both are optional.
+- `Writes` lists the areas the task changes, `Provides` the names it makes exist, `Needs` the names it uses that something else makes exist. Take every name from the vocabulary block of the release's signed design.
+- `New names:` adds areas and names the vocabulary lacks, one item each, never a name the code already provides. A name you add must be provided by a task of the plan if anything needs it. A release whose design has no vocabulary block works the same way: declare every name the plan uses. A need that existing code already meets is left out.
+- Never write an edge: no task names another as its blocker. Order comes from the names; zaf's optimiser merges, splits and orders the tasks, not you.
+
+## Re-plans
+
+A re-plan is another plan for an epic already planned, handed to the `plan` tool's `file` again. It holds only the new tasks. A filed ticket is never split, merged, lifted or rewritten, and a claimed task is never touched. To drop a filed ticket that no phase has started on and no pull request holds, list it in `Drop:` as `#<n>`: zaf closes it as not planned once the new tickets are filed. A name a dropped ticket provided must be provided again by a new task if anything still needs it. A need of a filed task of the release is written as `#<n>`.
 
 ## Rules of exactness
 
 - One behaviour per task: the Goal is one sentence with no "and". A ticket is XS, S or M: S expects a pull request under 200 lines, M under 400. Anything larger is a planning defect: split it. L, XL and E are costs of the size table and of a release launch, not ticket sizes.
-- State scope, not files: the capability the task changes, in words, with a file or folder only as a place to start, and what it leaves alone. Order tasks that touch the same area with `Blocked by`.
-- Shared files get one skeleton task: when three or more tasks would each add lines to the same file (a module list, re-exports, a registry, a route table), file one early task that adds every one of those lines with an empty stand-in behind each (a module that compiles and does nothing yet), and put it in the `Blocked by` of each task that fills one in. Tasks built side by side then change only their own files, and their merges do not conflict.
+- State scope, not files: the capability the task changes, in words, with a file or folder only as a place to start, and what it leaves alone. Tasks that touch the same area say so in `Writes`; zaf takes their turns from it.
+- Shared files get one skeleton task: when three or more tasks would each add lines to the same file (a module list, re-exports, a registry, a route table), plan one task that adds every one of those lines with an empty stand-in behind each (a module that compiles and does nothing yet) and `Provides` the stand-ins its fillers need; each filler `Needs` the one it fills in. Tasks built side by side then change only their own files, and their merges do not conflict.
 - Every task names its design pages by id, and the module and interface ids it implements. A task that needs a page or an interface it does not name is a design gap: a question, not a guess.
 - Acceptance is checkable by the `check` tool with `args` `["<task>"]`: named tests, named HTTP outcomes, named UI states.
 - The security trigger is `yes` when the task touches a trigger the project lists; without a list: authentication, authorization, sessions, tokens, secrets and keys, cryptography, untrusted input, trust boundaries, network egress, personal data.
-- Interfaces between tasks are written down before either is ready; the task that defines one blocks the task that consumes it.
+- Interfaces between tasks are written down before either is ready: the task that defines one `Provides` its name and the task that consumes it `Needs` it.
 - A migration that changes stored data shape is a door: a `--door` question before its task is ready.
+- A question of who owns a file, a type or a module, where a function lives, or whether a port or signature may change is settled by the design page on how code is divided: `divide`, the standard page `setup` installs in the design folder, or the project's own page on it where the design index lists one. Apply the principle that decides it and name it in the ticket. Raise it only for a one-way door, when two principles disagree, or when no principle decides. A ticket that defines or changes an interface names that page's id in its Design pages, so the keeper reads the page first.
 
 ## Steps
 
-1. Declare your phases with the `progress` tool, `args` `["plan", "read", "ask", "draft", "file", "report"]`, with no task: your epic comes from `ZAF_INSTANCE`. Report each change as you start the phase: the `progress` tool, `args` `["at", "<phase>"]`. Then the `epic` tool with `args` `["show", "<epic>"]` for the epic and every task already filed. Read the epic and what it links, then the objectives, the design documents and the pages they cite. For a re-plan, also the rulings.
+1. Declare your phases with the `progress` tool, `args` `["plan", "read", "ask", "draft", "check", "file", "report"]`, with no task: your epic comes from `ZAF_INSTANCE`. Report each change as you start the phase: the `progress` tool, `args` `["at", "<phase>"]`. Then the `epic` tool with `args` `["show", "<epic>"]` for the epic and every task already filed. Read the epic and what it links, then the objectives, the design documents, the vocabulary and the pages they cite. For a re-plan, also the rulings.
 2. The `ask` tool with `args` `["-t", "<epic>", "<kind>: <question>", …]` for whether a decision exists or where it lives, five at a time.
-3. Draft each task in the template, the fields the `brief` tool reads: Goal, Scope, Out of scope, Interfaces, Design pages, Architecture, Acceptance, Tests, Security trigger, Model, Size, Blocked by. The typed fields take only these values, and the `board` tool's `file` and the `check` tool refuse any other, naming the field and the allowed values:
+3. Draft the whole plan, a `Task:` section for every task, each in the template, the fields the `brief` tool reads: Goal, Scope, Out of scope, Interfaces, Design pages, Architecture, Acceptance, Tests, Security trigger, Model, Size, then `Writes`, `Provides` and `Needs`. The typed fields take only these values, and the `plan` tool and the `check` tool refuse any other, naming the field and the allowed values:
 
    ```
    Security trigger: yes <which> | no
    Model: sonnet | opus
    Size: XS | S | M | L | XL | E
    ```
-4. File each with the `board` tool, `args` `["file", "<epic>", "<title>", "--group", "<name>"]`, the body in `stdin`; add `"--type", "<name>"` for an issue type (`Task` unless named; a type the repository lacks is refused with the ones it has) and `"--blocked"` when its `Blocked by` names a task not yet done. The group names the piece of work it belongs to, reusing a group that fits; the `hub` tool shows a bar per group. A refusal names the template field at fault: fix it and file again. A title the epic already has is not filed twice.
-5. Each door or design gap: the `board` tool with `args` `["question", "<epic>", "<question>"]`, `"--door"` added for a door, the question's last line `Proposed answer: <the answer you recommend>`, so the Engineer can rule by accepting it.
-6. The `board` tool with `args` `["report", "<epic>", "<tasks filed, what could not be scoped and why>"]`. Then end.
+4. The `plan` tool with `args` `["check", "<epic>"]`, the plan in `stdin`. It files nothing. A refusal prints every problem, one line each: fix the plan and call `check` again, until zaf no longer refuses it. Do not judge completeness yourself: zaf's refusals are the check. A refusal no change of the plan can answer, because the design lacks a name or a decision, is a design gap (step 6).
+5. The `plan` tool with `args` `["file", "<epic>"]`, the same plan in `stdin`. It runs the optimiser, files what it gives and prints one line saying how many tickets it filed. A refusal prints every problem and files nothing: go back to step 4.
+6. Each door or design gap: the `board` tool with `args` `["question", "<epic>", "<question>"]`, `"--door"` added for a door, the question's last line `Proposed answer: <the answer you recommend>`, so the Engineer can rule by accepting it.
+7. The `board` tool with `args` `["report", "<epic>", "<tasks filed, what could not be scoped and why>"]`. Then end.

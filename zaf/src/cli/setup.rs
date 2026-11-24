@@ -393,6 +393,9 @@ pub fn run(cli: &Cli) -> u8 {
     let check = (!ready).then(|| StepEnd::Failed(fixes_text(fixes.len()).as_str().into()));
     end_row(&mut steps, &rows, "Check", check);
     drop(steps);
+    for line in report.pages.lines() {
+        println!("{line}");
+    }
     // What is left of the Engineer's own Claude comes last when setup is ready, so the command to
     // run later is the last thing on the screen; a run with fixes ends with the fixes alone.
     let mcp = report.mcp.lines();
@@ -425,7 +428,12 @@ fn print_report(report: &SetupReport) {
             println!("{line}");
         }
     }
-    for line in report.actions.lines() {
+    for line in report
+        .actions
+        .lines()
+        .into_iter()
+        .chain(report.pages.lines())
+    {
         println!("{line}");
     }
     for line in report.mcp.lines() {

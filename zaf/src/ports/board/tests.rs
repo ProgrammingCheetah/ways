@@ -2,6 +2,9 @@ use super::*;
 use crate::domain::{InstanceNumber, RoleName};
 use crate::fakes::FakeBoard;
 
+mod logins;
+mod records;
+
 fn ticket(number: u64, label: TicketState) -> Ticket {
     Ticket {
         id: TicketId::from(number),
@@ -408,6 +411,14 @@ fn the_default_issue_state_reads_the_task_and_never_calls_a_missing_one_closed()
         Err(PortError::Backend("gh: 502".to_owned())),
         "a backend failure is not a dead blocker"
     );
+}
+
+#[test]
+fn board_opened_at_defaults_to_none() {
+    let board = TaskOnly(vec![ticket(3, TicketState::Ready)]);
+
+    assert_eq!(board.opened_at(TicketId::from(3)), Ok(None));
+    assert_eq!(board.opened_at(TicketId::from(9)), Ok(None));
 }
 
 #[test]

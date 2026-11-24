@@ -83,7 +83,13 @@ fn head(page: &mut Page<'_, '_>, state: &ChairState, epic: &EpicView) {
             view.paint(Meaning::Dim, format!("{release} · u takes it back")),
         ]));
     } else {
-        page.text(Some(Meaning::Dim), &format!("{}{release}", epic.stage));
+        page.text(
+            Some(Meaning::Dim),
+            &format!("{}{release}", epic.stage_text()),
+        );
+        if let Some(way) = epic.way_on() {
+            page.text(Some(Meaning::Waiting), &way);
+        }
     }
 }
 
@@ -146,7 +152,7 @@ pub fn page(page: &mut Page<'_, '_>, state: &ChairState, cursor: &Cursor) {
     );
     page.blank();
     sign_foot(page, state, epic);
-    page.text(Some(Meaning::Dim), "d tree · w why · l live · Esc back");
+    page.text(Some(Meaning::Dim), "d graph · w why · l live · Esc back");
 }
 
 /// A release document under its heading.
@@ -239,6 +245,6 @@ pub fn read_page(page: &mut Page<'_, '_>, state: &ChairState, cursor: &Cursor) {
     }
     page.text(
         Some(Meaning::Dim),
-        "j/k Space scroll · d tree · w why · Esc back",
+        "j/k Space scroll · d graph · w why · Esc back",
     );
 }

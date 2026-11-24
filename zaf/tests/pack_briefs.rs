@@ -112,3 +112,86 @@ fn every_role_zaf_runs_names_progress() {
         }
     }
 }
+
+/// A planner and a challenger settle a question of ownership, placement or an interface's shape
+/// by the design page on how code is divided, and raise it only in the three cases the page lists
+/// (D28). The page is named as every project has it: the pack's standard page by the id `setup`
+/// installs it under, or the project's own page on it from the design index; never by a path or
+/// an id only zaf's own repository holds.
+const OWN_REPOSITORY_ONLY: [&str; 2] = ["docs/solid-how-zafs-code-is-divided.md", "`solid`"];
+const SOLID_CASES: [&str; 3] = [
+    "one-way door",
+    "two principles disagree",
+    "no principle decides",
+];
+
+fn assert_names_the_solid_page(path: &Path) {
+    let text = std::fs::read_to_string(path).expect("the file reads");
+    let name = path.display();
+    let standard = standard_page_id();
+    assert!(
+        text.contains(&format!("`{standard}`")),
+        "{name} does not name the standard design page `{standard}`"
+    );
+    assert!(
+        text.contains("the project's own page") && text.contains("design index"),
+        "{name} does not allow for the project's own page in the design index"
+    );
+    for only_here in OWN_REPOSITORY_ONLY {
+        assert!(
+            !text.contains(only_here),
+            "{name} names {only_here}, which only zaf's own repository holds"
+        );
+    }
+    for case in SOLID_CASES {
+        assert!(text.contains(case), "{name} lacks the case: {case}");
+    }
+}
+
+/// The id of the pack's standard page on how code is divided, read from its file name where the
+/// pack sits beside the crate (`setup` installs a page under the id its file name starts with).
+fn standard_page_id() -> String {
+    let pages = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/teams/design");
+    let Ok(entries) = std::fs::read_dir(pages) else {
+        return "divide".to_owned();
+    };
+    let ids: Vec<String> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name.ends_with("-how-code-is-divided.md"))
+        .filter_map(|name| name.split_once('-').map(|(id, _)| id.to_owned()))
+        .collect();
+    assert_eq!(ids.len(), 1, "one standard page on how code is divided");
+    ids.into_iter().next().expect("one id")
+}
+
+/// The standing brief always; the role file only where the pack sits beside the crate.
+fn solid_files(role: &str) -> Vec<std::path::PathBuf> {
+    let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = vec![crate_dir.join(format!("assets/spawn/{role}-brief.md"))];
+    let agents = crate_dir.join("../plugins/teams/agents");
+    if agents.is_dir() {
+        files.push(agents.join(format!("{role}.md")));
+    }
+    files
+}
+
+#[test]
+fn pack_briefs_planning_names_the_solid_page() {
+    for path in solid_files("planning") {
+        assert_names_the_solid_page(&path);
+        let text = std::fs::read_to_string(&path).expect("the file reads");
+        assert!(
+            text.contains("defines or changes an interface") && text.contains("Design pages"),
+            "{} does not say a ticket that defines or changes an interface names the page in its Design pages",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn pack_briefs_challenger_names_the_solid_page() {
+    for path in solid_files("challenger") {
+        assert_names_the_solid_page(&path);
+    }
+}

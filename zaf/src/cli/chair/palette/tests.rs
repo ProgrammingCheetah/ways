@@ -12,7 +12,7 @@ fn every_action_of_the_chair_is_listed_once() {
         "Answer the top question",
         "Open the selected epic",
         "Sign the selected epic",
-        "Dependency tree of the epic",
+        "Dependency graph of the epic",
         "Why is the ticket waiting",
         "Follow the ticket live",
         "Start the due phase",

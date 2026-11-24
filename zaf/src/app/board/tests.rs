@@ -6,6 +6,8 @@ use crate::domain::{InstanceNumber, RoleName};
 use crate::fakes::{FakeBoard, FakeForge, FakeVcs, PrRequest};
 use crate::ports::{BaseName, PrNumber, SliceName};
 
+mod challenger;
+
 fn ticket(number: u64, label: TicketState) -> Ticket {
     Ticket {
         id: TicketId::from(number),
@@ -108,6 +110,84 @@ fn lint_names_every_bad_field() {
 fn lint_passes_a_good_body() {
     let board = board_with_body(body("yes the token path", "opus", "M"));
     assert!(lint(&board, TicketId::from(7)).expect("lints").is_empty());
+}
+
+/// A planned body of one behaviour, its `Needs` line and `Size` line given (`None` leaves one out).
+fn planned(needs: &str, size: Option<&str>) -> String {
+    let size = size
+        .map(|size| format!("Size: {size}\n"))
+        .unwrap_or_default();
+    format!(
+        "Node: A\n\nGoal: do it\nOwned paths: src/\nInterfaces: none\nDesign pages: none\n\
+         Acceptance:\n  - it works\nTests: it_works\nSecurity trigger: no\nModel: sonnet\n\
+         {size}Needs: {needs}\n"
+    )
+}
+
+fn lint_lines(text: String) -> Vec<String> {
+    let board = board_with_body(text);
+    let problems = lint(&board, TicketId::from(7)).expect("lints");
+    problems.iter().map(ToString::to_string).collect()
+}
+
+#[test]
+fn lint_planned_names_a_bad_name() {
+    let lines = lint_lines(planned("good, bad name", Some("S")));
+    assert_eq!(
+        lines,
+        ["line 13: Needs: bad name (accepts: a name with no spaces and no comma)"]
+    );
+}
+
+#[test]
+fn lint_planned_names_a_missing_size() {
+    assert_eq!(lint_lines(planned("good", None)), ["Size: missing"]);
+}
+
+#[test]
+fn lint_planned_names_a_bad_node_id_and_a_missing_size_each() {
+    let text = planned("good", None).replace("Node: A", "Node: #A");
+    assert_eq!(
+        lint_lines(text),
+        [
+            "line 1: Node: #A (accepts: an id of letters, digits and - _ . + @ : (no #, no spaces))",
+            "Size: missing",
+        ]
+    );
+}
+
+#[test]
+fn lint_planned_names_the_section_of_a_ticket_of_several() {
+    let section = |key: &str, size: &str| {
+        format!(
+            "Behaviour: {key}\nGoal: do it\nOwned paths: src/\nInterfaces: none\nDesign pages: none\n\
+             Acceptance:\n  - it works\nTests: it_works\nSecurity trigger: no\nModel: sonnet\n{size}"
+        )
+    };
+    let text = format!(
+        "Node: A+B\n\n{}\n{}",
+        section("a", "Size: S\n"),
+        section("b", "")
+    );
+    assert_eq!(lint_lines(text), ["Size: missing [Behaviour: b]"]);
+}
+
+#[test]
+fn lint_planned_good_body_is_silent() {
+    assert!(lint_lines(planned("good, other", Some("S"))).is_empty());
+}
+
+#[test]
+fn lint_older_body_unchanged() {
+    let lines = lint_lines(body("maybe", "sonnet", "XXL"));
+    assert_eq!(
+        lines,
+        [
+            "Security trigger: maybe (accepts: no | yes <which>)",
+            "Size: XXL (accepts: XS | S | M | L | XL | E)",
+        ]
+    );
+    assert!(lint_lines(body("no", "sonnet", "S")).is_empty());
 }
 
 #[test]
@@ -629,6 +709,44 @@ fn a_body_outside_the_template_or_a_state_a_task_cannot_open_in_files_nothing() 
             .tasks
             .is_empty()
     );
+}
+
+#[test]
+fn board_file_refused_under_graph_epic() {
+    use crate::domain::plan::record::PlanRecord;
+    use crate::domain::{BodyHash, TicketBody};
+
+    let board = board_with_epic();
+    let record = PlanRecord {
+        k: 1,
+        design: BodyHash::of(&TicketBody::from("a design")),
+        dropped: Vec::new(),
+        plan: "plan 1\n".to_owned(),
+    };
+    board
+        .comment(TicketId::from(1), &record.to_string())
+        .expect("comment");
+    let task = new_task("export as CSV", TASK_BODY, TicketState::Ready);
+    let refused = file(&board, &task).expect_err("refused");
+    assert_eq!(refused, BoardError::PlannedAsGraph);
+    assert_eq!(
+        refused.to_string(),
+        "this epic is planned as a graph; re-plan with `plan file`"
+    );
+    assert!(
+        board
+            .epic(TicketId::from(1))
+            .expect("the epic")
+            .tasks
+            .is_empty()
+    );
+}
+
+#[test]
+fn board_file_files_under_older_epic() {
+    let board = board_with_epic();
+    let task = new_task("export as CSV", TASK_BODY, TicketState::Ready);
+    assert!(matches!(file(&board, &task), Ok(FileOutcome::Filed(_))));
 }
 
 #[test]

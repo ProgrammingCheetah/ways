@@ -13,6 +13,10 @@ use std::time::{Duration, Instant};
 /// The repository the manifest names for the board and the forge.
 pub const REPO: &str = "example/tracker";
 
+/// The login both fake forges say their token posts as (`gh api user`, Forgejo's `GET /user`):
+/// the author a scene gives the zaf comments the board is to trust.
+pub const OWN_LOGIN: &str = "zaf-bot";
+
 /// A temp dir holding a project root and a scene for the fake `gh` in `tests/fixtures/`.
 pub struct Project {
     pub temp: tempfile::TempDir,
@@ -36,7 +40,14 @@ impl Project {
         fs::create_dir_all(&home).expect("home");
         fs::create_dir_all(&root).expect("root");
         fs::create_dir_all(&scene).expect("scene");
-        fs::write(scene.join("rules"), "").expect("rules");
+        // `gh` is logged in as [`OWN_LOGIN`]; the rule takes no response number, so a scene's
+        // own responses count from 0.
+        fs::write(
+            scene.join("response-own-login"),
+            format!(r#"{{"login":"{OWN_LOGIN}"}}"#),
+        )
+        .expect("response");
+        fs::write(scene.join("rules"), "api user\t0\tresponse-own-login\n").expect("rules");
         fs::write(root.join(".zaf.toml"), manifest).expect("manifest");
         Self {
             temp,
@@ -171,6 +182,9 @@ impl Project {
             "ZAF_ACTION_CHAIN",
             "ZAF_ACTION_LOG",
             "ZAF_RUN",
+            // `zaf mcp` finds its project here when `ZAF_ROOT` is not set, so a suite run
+            // inside Claude Code would read the Engineer's own project.
+            "CLAUDE_PROJECT_DIR",
         ] {
             command.env_remove(var);
         }
@@ -408,6 +422,11 @@ impl Curl {
             "GET */api/v1/settings/api",
             200,
             r#"{"max_response_items":50}"#,
+        );
+        curl.on(
+            "GET */api/v1/user",
+            200,
+            &format!(r#"{{"id":1,"login":"{OWN_LOGIN}"}}"#),
         );
         curl
     }

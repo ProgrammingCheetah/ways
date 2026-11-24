@@ -1,0 +1,132 @@
+{
+ "name": "16-ordered-conflict-is-settled",
+ "why": "Two nodes write the same thing but one already waits on the other: nothing to settle.",
+ "options": {
+  "lift": "all",
+  "interfaces": "each"
+ },
+ "plan": {
+  "no_signature": [
+   "a.out"
+  ],
+  "nodes": [
+   {
+    "id": "A",
+    "behaviours": [
+     {
+      "text": "a",
+      "size": 2,
+      "writes": [
+       "x"
+      ],
+      "provides": [
+       "a.out"
+      ],
+      "needs": []
+     }
+    ]
+   },
+   {
+    "id": "B",
+    "behaviours": [
+     {
+      "text": "b",
+      "size": 2,
+      "writes": [
+       "x"
+      ],
+      "provides": [],
+      "needs": [
+       "a.out"
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ "expect": {
+  "before": {
+   "nodes": 2,
+   "interfaces": 0,
+   "chain": 2,
+   "width": [
+    1,
+    1
+   ],
+   "narrow_layers": [
+    0,
+    1
+   ],
+   "work": 4,
+   "critical": 4,
+   "critical_path": [
+    "A",
+    "B"
+   ]
+  },
+  "after": {
+   "nodes": 2,
+   "interfaces": 0,
+   "chain": 2,
+   "width": [
+    1,
+    1
+   ],
+   "narrow_layers": [
+    0,
+    1
+   ],
+   "work": 4,
+   "critical": 4,
+   "critical_path": [
+    "A",
+    "B"
+   ]
+  },
+  "plan": {
+   "nodes": [
+    {
+     "id": "A",
+     "behaviours": [
+      {
+       "text": "a",
+       "size": 2,
+       "writes": [
+        "x"
+       ],
+       "provides": [
+        "a.out"
+       ],
+       "needs": []
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "B",
+     "behaviours": [
+      {
+       "text": "b",
+       "size": 2,
+       "writes": [
+        "x"
+       ],
+       "provides": [],
+       "needs": [
+        "a.out"
+       ]
+      }
+     ],
+     "kind": "body"
+    }
+   ],
+   "orders": [
+    {
+     "from": "A",
+     "to": "B",
+     "needs": "a.out"
+    }
+   ]
+  }
+ }
+}

@@ -460,3 +460,49 @@ fn line_task_fields_unchanged() {
         ]
     );
 }
+
+#[test]
+fn hub_line_reads_planned_size() {
+    let world = World::new();
+    world.board.add_ticket(with_body(
+        1,
+        "Planned",
+        TicketState::Ready,
+        crate::fakes::PLANNED_M_BODY.to_owned(),
+    ));
+
+    let state = world.gather(at(1_000));
+
+    // Two behaviours sized S: the line shows the derived size, and the body is not unparsed.
+    assert_eq!(line_of(&state)[0].size, Some("M"));
+    assert!(
+        state.status.unparsed.is_empty(),
+        "{:?}",
+        state.status.unparsed
+    );
+}
+
+#[test]
+fn hub_line_graph_waits() {
+    // Fixture 12's epic: C implements `mcp.catalog` and D needs it, so each waits on the
+    // interface ticket, #104, though no body has a `Blocked by:` line.
+    let world = World::new();
+    crate::fakes::add_fixture_12(&world.board, TicketId::from(EPIC), 101);
+
+    let state = world.gather(at(1_000));
+
+    let waits_of = |number: u64| -> Vec<u64> {
+        line_of(&state)
+            .iter()
+            .find(|task| task.number == number)
+            .expect("the task is on its line")
+            .blocked_by
+            .iter()
+            .map(|blocker| blocker.number)
+            .collect()
+    };
+    assert_eq!(waits_of(102), [104], "C waits on the interface ticket");
+    assert_eq!(waits_of(103), [104], "D waits on the interface ticket");
+    assert!(waits_of(101).is_empty());
+    assert!(waits_of(104).is_empty());
+}

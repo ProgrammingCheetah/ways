@@ -22,6 +22,7 @@ fn epic_in(number: u64, signed: bool, challenged: bool, tasks: &[u64]) -> Epic {
         title: format!("Epic {number}").into(),
         signature: signed.then(|| Signature::of(&body, SystemTime::UNIX_EPOCH)),
         planned_at: None,
+        records: Vec::new(),
         body,
         tasks: tasks
             .iter()
@@ -37,7 +38,7 @@ fn epic_in(number: u64, signed: bool, challenged: bool, tasks: &[u64]) -> Epic {
                 closed_at: None,
             })
             .collect(),
-        challenged,
+        challengers: vec![None; usize::from(challenged)],
     }
 }
 
@@ -323,6 +324,7 @@ fn past(role: &str, epic: u64, number: u32, at: u64) -> PastLaunch {
             .parse()
             .expect("an instance"),
         reserved_at: SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(at),
+        graph: None,
     }
 }
 
@@ -384,6 +386,113 @@ fn a_planned_epic_gets_the_challenger_once() {
     let mut ended = board.clone();
     ended.launched = vec![past(CHALLENGER_ROLE, 2, 1, 60)];
     let plan = super::plan(&ended, &SpawnState::default(), Level::Green, settings(2));
+    assert_eq!(plan.epics, [(TicketId::from(2), EpicSkip::ChallengerEnded)]);
+}
+
+/// A planned graph epic (#2): one graph ticket holding `goal` and a filed plan record, with no
+/// challenger report on it.
+fn graph_epic(goal: &str) -> Epic {
+    use crate::domain::plan::body::{PlannedTicket, Section};
+    use crate::domain::plan::record::{FilingMark, PlanRecord};
+    use crate::domain::plan::{NodeId, NodeKind};
+    use crate::domain::{BodyHash, EpicRecord, SecurityTrigger, TaskModel, TaskSize, TaskTemplate};
+    let body = PlannedTicket {
+        node: NodeId::from("a"),
+        kind: NodeKind::Body,
+        signatures: Vec::new(),
+        turns: Vec::new(),
+        waits: Vec::new(),
+        sections: vec![Section {
+            key: None,
+            template: TaskTemplate {
+                goal: goal.to_owned(),
+                owned_paths: "a path".to_owned(),
+                scoped: false,
+                out_of_scope: None,
+                interfaces: "none".to_owned(),
+                design_pages: "D1".to_owned(),
+                architecture: String::new(),
+                acceptance: vec!["a line".to_owned()],
+                tests: "a test".to_owned(),
+                security_trigger: SecurityTrigger::No,
+                model: TaskModel::Sonnet,
+                size: TaskSize::S,
+                blocked_by: Vec::new(),
+                style: None,
+            },
+            writes: Default::default(),
+            provides: Default::default(),
+            implements: Default::default(),
+            needs: Default::default(),
+        }],
+    }
+    .to_string();
+    let mut epic = epic_in(2, true, false, &[3]);
+    epic.tasks[0].body = body.into();
+    epic.records = vec![EpicRecord {
+        record: PlanRecord {
+            k: 1,
+            design: BodyHash::of(&epic.body),
+            dropped: Vec::new(),
+            plan: "plan 1\n".to_owned(),
+        },
+        posted_at: None,
+        mark: Some(FilingMark {
+            k: 1,
+            graph: "ab".repeat(32).parse().expect("a digest"),
+        }),
+    }];
+    epic
+}
+
+fn graph_hash(epic: &Epic) -> GraphHash {
+    PlanGraph::read(epic, &[]).hash()
+}
+
+/// A challenger launch on #2 that recorded `graph`.
+fn challenger_on(graph: GraphHash) -> PastLaunch {
+    PastLaunch {
+        graph: Some(graph),
+        ..past(CHALLENGER_ROLE, 2, 1, 60)
+    }
+}
+
+#[test]
+fn challenger_relaunched_after_graph_changes() {
+    let challenged = graph_epic("the first goal");
+    let launch = challenger_on(graph_hash(&challenged));
+    let mut epic = Epic {
+        challengers: vec![Some(graph_hash(&challenged))],
+        ..challenged
+    };
+    let mut board = board_of(vec![epic.clone()]);
+    board.launched = vec![launch.clone()];
+    let first = plan(&board, &SpawnState::default(), Level::Green, settings(2));
+    assert!(first.launches.is_empty(), "challenged: its phases build it");
+
+    epic.tasks[0].body = graph_epic("an edited goal").tasks.remove(0).body;
+    let mut board = board_of(vec![epic]);
+    board.launched = vec![launch];
+    let edited = plan(&board, &SpawnState::default(), Level::Green, settings(2));
+    assert_eq!(launched(&edited), ["challenger instance 1 on #2"]);
+}
+
+#[test]
+fn challenger_not_relaunched_on_same_hash() {
+    let epic = graph_epic("the first goal");
+    let mut board = board_of(vec![epic.clone()]);
+    board.launched = vec![challenger_on(graph_hash(&epic))];
+    let plan = plan(&board, &SpawnState::default(), Level::Green, settings(2));
+    assert!(plan.launches.is_empty());
+    assert_eq!(plan.epics, [(TicketId::from(2), EpicSkip::ChallengerEnded)]);
+}
+
+#[test]
+fn older_epic_challenger_launched_once() {
+    let mut board = board_of(vec![epic_in(2, true, false, &[3])]);
+    board.launched = vec![past(CHALLENGER_ROLE, 2, 1, 60)];
+    let plan = plan(&board, &SpawnState::default(), Level::Green, settings(2));
+    assert!(plan.launches.is_empty());
     assert_eq!(plan.epics, [(TicketId::from(2), EpicSkip::ChallengerEnded)]);
 }
 
@@ -500,4 +609,127 @@ fn each_epic_takes_the_launch_its_stage_calls_for_in_one_tick() {
             (TicketId::from(8), EpicSkip::BuiltByPhases),
         ]
     );
+}
+
+mod half_filed {
+    use std::path::Path;
+    use std::time::UNIX_EPOCH;
+
+    use super::*;
+    use crate::app::plan::file::FileError;
+    use crate::domain::plan::record::PlanRecord;
+    use crate::domain::{BodyHash, DocumentSignature, TicketBody};
+    use crate::fakes::{FakeBoard, FakeVcs};
+
+    const EPIC: u64 = 7;
+
+    const DESIGN: &str = "```toml vocabulary\n[areas]\n\"a\" = \"a\"\n\"b\" = \"b\"\n\
+        [names.\"a.api\"]\nsignature = \"fn a()\"\n[names.\"b.api\"]\nsignature = \"fn b()\"\n```\n";
+
+    fn manifest() -> Manifest {
+        "[project]\nname = \"example\"\n\n[board]\nkind = \"github-issues\"\nrepo = \"example/b\"\n"
+            .parse()
+            .expect("manifest")
+    }
+
+    fn project(design: &str) -> tempfile::TempDir {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let folder = temp.path().join(".teams/releases/0.6.0");
+        std::fs::create_dir_all(&folder).expect("folder");
+        std::fs::write(
+            folder.join("design.md"),
+            DocumentSignature::sign(design, UNIX_EPOCH),
+        )
+        .expect("design");
+        temp
+    }
+
+    fn section(node: &str, writes: &str) -> String {
+        format!(
+            "Task: Build {node}\nNode: {node}\nGoal: {node} works\nScope: the part\n\
+             Out of scope: the rest\nInterfaces: none\nDesign pages: D2\nAcceptance:\n- it works\n\
+             Tests: it_works\nSecurity trigger: no\nModel: sonnet\nSize: S\n\
+             Writes: {writes}\nProvides: none\nNeeds: none\n\n"
+        )
+    }
+
+    /// An epic with its plan record posted and nothing filed, no mark.
+    fn board(root: &Path) -> FakeBoard {
+        let board = FakeBoard::default();
+        board.add_epic(EPIC.into(), "release");
+        board.set_body(EPIC.into(), "Release: 0.6.0\n\nThe epic.");
+        let record = PlanRecord {
+            k: 1,
+            design: BodyHash::of(&TicketBody::from(
+                crate::app::release::design_text(root, &manifest(), "0.6.0").expect("design"),
+            )),
+            dropped: Vec::new(),
+            plan: [section("A", "a"), section("B", "b")].concat(),
+        };
+        board
+            .comment(EPIC.into(), &record.to_string())
+            .expect("record");
+        board.reset_calls();
+        board
+    }
+
+    fn tick(root: &Path, board: &FakeBoard, state: &SpawnState) -> Vec<HalfFinished> {
+        finish_half_filed(root, &manifest(), board, &FakeVcs::default(), state).expect("read")
+    }
+
+    #[test]
+    fn tick_finishes_half_filed_plan() {
+        let temp = project(DESIGN);
+        let board = board(temp.path());
+        let done = tick(temp.path(), &board, &SpawnState::default());
+
+        assert_eq!(done.len(), 1);
+        assert!(done[0].outcome.is_ok(), "{}", done[0].line());
+        assert_eq!(board.calls("file_task"), 2);
+        let epic = board.epic(EPIC.into()).expect("epic");
+        assert!(epic.records[0].mark.is_some(), "the mark is posted");
+
+        // The next tick has nothing left to finish.
+        assert!(tick(temp.path(), &board, &SpawnState::default()).is_empty());
+        assert_eq!(board.calls("file_task"), 2);
+    }
+
+    #[test]
+    fn tick_leaves_plan_while_planner_runs() {
+        let temp = project(DESIGN);
+        let board = board(temp.path());
+        let state = SpawnState {
+            launches: vec![running(&format!("planning instance 3 on #{EPIC}"))],
+            ..SpawnState::default()
+        };
+        assert!(tick(temp.path(), &board, &state).is_empty());
+        assert_eq!(board.calls("file_task"), 0);
+        assert_eq!(board.calls("comment"), 0);
+
+        // A planner on another epic holds nothing here.
+        let other = SpawnState {
+            launches: vec![running("planning instance 3 on #99")],
+            ..SpawnState::default()
+        };
+        assert_eq!(tick(temp.path(), &board, &other).len(), 1);
+    }
+
+    #[test]
+    fn tick_does_not_repeat_design_question() {
+        let temp = project(DESIGN);
+        let board = board(temp.path());
+        let changed = project(&format!("{DESIGN}\nA later edit.\n"));
+
+        let first = tick(changed.path(), &board, &SpawnState::default());
+        assert!(matches!(
+            first[0].outcome,
+            Err(FileError::DesignChanged { .. })
+        ));
+        assert_eq!(board.questions().expect("questions").len(), 1);
+
+        let second = tick(changed.path(), &board, &SpawnState::default());
+        assert!(second.is_empty(), "not retried while its question is open");
+        assert_eq!(board.questions().expect("questions").len(), 1);
+        assert_eq!(board.calls("file_task"), 0);
+    }
 }

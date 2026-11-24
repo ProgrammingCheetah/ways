@@ -1043,3 +1043,44 @@ fn a_title_matches_ignoring_case_and_at_most_five_pages_come_back() {
         "two keywords first, then id order, five at most"
     );
 }
+
+#[test]
+fn ask_of_merged_ticket_reads_both_sections_pages() {
+    let scene = Scene::new();
+    let section = |key: &str, page: &str| {
+        let fields = BODY.replace("Blocked by: —\n", "").replace(
+            "Design pages: 1001 (decided)",
+            &format!("Design pages: {page}"),
+        );
+        format!("Behaviour: {key}\n{fields}")
+    };
+    scene.board.add_ticket(Ticket {
+        id: task(),
+        epic: Some(TicketId::from(10)),
+        title: "Export a reading list".into(),
+        body: format!(
+            "Node: A+B\n{}{}",
+            section("a", "1001"),
+            section("b", "1002")
+        )
+        .into(),
+        state: Some(TicketState::Claimed),
+        url: "".into(),
+        kind: None,
+    });
+    Scene::record(&scene.local, GOOD);
+
+    let outcome = scene.ask(ONE_QUESTION);
+
+    assert_eq!(
+        outcome.lines[0].read.note,
+        "pages named on the task: 1001, 1002"
+    );
+    assert_eq!(outcome.lines[0].read.pages, ["1001", "1002"]);
+    let prompt = &scene.local.requests()[0].prompt;
+    assert!(
+        prompt.contains("### 1001") && prompt.contains("### 1002"),
+        "{prompt}"
+    );
+    assert!(!prompt.contains("## The index"));
+}

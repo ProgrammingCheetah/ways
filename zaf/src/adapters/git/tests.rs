@@ -355,3 +355,121 @@ fn holds_false_for_an_unknown_head() {
         Err(PortError::NotFound(_))
     ));
 }
+
+/// A repository with `notes.txt` and `src/lib.rs` committed, then `gone.txt` committed and
+/// deleted; the second value is the commit before the deletion.
+fn repository_with_a_deleted_file() -> (tempfile::TempDir, PathBuf, String) {
+    let (temp, root) = repository();
+    std::fs::create_dir_all(root.join("src")).expect("mkdir");
+    std::fs::write(root.join("src/lib.rs"), "x\n").expect("write");
+    std::fs::write(root.join("gone.txt"), "x\n").expect("write");
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "--quiet", "-m", "Add files"]);
+    let before = git_out(&root, &["rev-parse", "HEAD"]).trim().to_owned();
+    git(&root, &["rm", "--quiet", "gone.txt"]);
+    git(&root, &["commit", "--quiet", "-m", "Delete gone.txt"]);
+    (temp, root, before)
+}
+
+#[test]
+fn vcs_path_at_true_for_a_committed_file() {
+    let (_temp, root, before) = repository_with_a_deleted_file();
+    let vcs = GitVcs::new();
+    assert_eq!(vcs.path_at(&root, "HEAD", "notes.txt"), Ok(true));
+    assert_eq!(vcs.path_at(&root, "HEAD", "src/lib.rs"), Ok(true));
+    assert_eq!(vcs.path_at(&root, "HEAD", "src"), Ok(true));
+    assert_eq!(vcs.path_at(&root, &before, "gone.txt"), Ok(true));
+}
+
+#[test]
+fn vcs_path_at_false_for_a_deleted_file() {
+    let (_temp, root, before) = repository_with_a_deleted_file();
+    let vcs = GitVcs::new();
+    assert_eq!(vcs.path_at(&root, "HEAD", "gone.txt"), Ok(false));
+    assert_eq!(vcs.path_at(&root, "HEAD", "never.txt"), Ok(false));
+    // A prefix of a name is no path, and a path is read from the root of the tree.
+    assert_eq!(vcs.path_at(&root, &before, "gone"), Ok(false));
+    assert_eq!(vcs.path_at(&root, &before, "lib.rs"), Ok(false));
+}
+
+#[test]
+fn vcs_path_at_unknown_revision_is_an_error() {
+    let (_temp, root, _before) = repository_with_a_deleted_file();
+    let vcs = GitVcs::new();
+    let unseen = "0123456789abcdef0123456789abcdef01234567";
+    for revision in ["no-such-branch", unseen, "--all", ""] {
+        let Err(error) = vcs.path_at(&root, revision, "notes.txt") else {
+            panic!("{revision:?} should be an error");
+        };
+        assert!(matches!(error, PortError::NotFound(_)), "{error:?}");
+        assert!(error.to_string().contains(revision), "{error}");
+    }
+}
+
+/// A clone of a repository whose `feature/x` branch holds `only-on-origin.txt`; the clone has the
+/// branch on `origin` alone, as `base-open.git` leaves it.
+fn clone_with_a_remote_branch() -> (tempfile::TempDir, PathBuf) {
+    let (temp, upstream) = repository();
+    git(&upstream, &["branch", "-M", "main"]);
+    git(&upstream, &["switch", "--quiet", "-c", "feature/x"]);
+    std::fs::write(upstream.join("only-on-origin.txt"), "x\n").expect("write");
+    git(&upstream, &["add", "."]);
+    git(&upstream, &["commit", "--quiet", "-m", "Add a file"]);
+    git(&upstream, &["switch", "--quiet", "main"]);
+    let clone = temp.path().join("clone");
+    git(
+        temp.path(),
+        &["clone", "--quiet", path_text(&upstream), path_text(&clone)],
+    );
+    (temp, clone)
+}
+
+fn path_text(path: &Path) -> &str {
+    path.to_str().expect("a UTF-8 path")
+}
+
+#[test]
+fn vcs_path_at_reads_a_branch_that_is_only_on_origin() {
+    let (_temp, clone) = clone_with_a_remote_branch();
+    let vcs = GitVcs::new();
+    assert_eq!(
+        vcs.path_at(&clone, "feature/x", "only-on-origin.txt"),
+        Ok(true)
+    );
+    assert_eq!(vcs.path_at(&clone, "feature/x", "never.txt"), Ok(false));
+    // `HEAD` is the clone's own, never the remote's default branch.
+    assert_eq!(vcs.path_at(&clone, "HEAD", "only-on-origin.txt"), Ok(false));
+}
+
+#[test]
+fn vcs_path_at_reads_origin_over_a_stale_local_branch() {
+    let (_temp, clone) = clone_with_a_remote_branch();
+    // A local branch of the same name, left behind at the start of the project.
+    git(&clone, &["branch", "--no-track", "feature/x", "main"]);
+    let vcs = GitVcs::new();
+    assert_eq!(
+        vcs.path_at(&clone, "feature/x", "only-on-origin.txt"),
+        Ok(true)
+    );
+}
+
+#[test]
+fn vcs_path_at_reads_a_local_branch_the_remote_does_not_have() {
+    let (_temp, clone) = clone_with_a_remote_branch();
+    git(&clone, &["branch", "--no-track", "local-only", "main"]);
+    let vcs = GitVcs::new();
+    assert_eq!(vcs.path_at(&clone, "local-only", "notes.txt"), Ok(true));
+    assert_eq!(
+        vcs.path_at(&clone, "local-only", "only-on-origin.txt"),
+        Ok(false)
+    );
+}
+
+#[test]
+fn vcs_path_at_no_repository_is_not_found() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    assert!(matches!(
+        GitVcs::new().path_at(temp.path(), "feature/x", "notes.txt"),
+        Err(PortError::NotFound(_))
+    ));
+}

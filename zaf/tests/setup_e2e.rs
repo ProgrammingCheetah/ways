@@ -48,6 +48,9 @@ esac
 const FAKE_TOOL: &str =
     "#!/bin/sh\nset -eu\ncase \"$*\" in\n    \"--version\") echo \"9.9.9\" ;;\n    *) ;;\nesac\n";
 
+/// The stand-in `gh`: [`FAKE_TOOL`], which also says who it is logged in as (`gh api user`).
+const FAKE_GH: &str = "#!/bin/sh\nset -eu\ncase \"$*\" in\n    \"--version\") echo \"9.9.9\" ;;\n    \"api user\") echo '{\"login\":\"zaf-bot\"}' ;;\n    *) ;;\nesac\n";
+
 /// An empty folder with an `origin` remote, an empty zaf home and the stand-in tools.
 struct Scene {
     temp: tempfile::TempDir,
@@ -150,7 +153,7 @@ impl Scene {
             fs::create_dir_all(dir).expect("dir");
         }
         executable(&bin.join("claude"), FAKE_CLAUDE);
-        executable(&bin.join("gh"), FAKE_TOOL);
+        executable(&bin.join("gh"), FAKE_GH);
         executable(&bin.join("jj"), FAKE_TOOL);
         for args in [
             &["init", "--quiet"][..],

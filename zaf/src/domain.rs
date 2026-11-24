@@ -18,6 +18,7 @@ mod instance;
 mod labels;
 mod mcp;
 mod memory;
+pub mod plan;
 mod profile;
 mod quote;
 mod ruling;
@@ -41,8 +42,9 @@ pub use changed_files::ChangedFiles;
 pub use ci::{PullRequestFilter, WorkflowFilter, checks_expected};
 pub use document_signature::{DocumentSignature, SignatureState};
 pub use epic::{
-    BodyHash, CHALLENGER_ROLE, Epic, EpicStage, EpicTask, GroupName, PLANNING_ROLE, RELEASE_PREFIX,
-    Signature, SignatureError, all_signed, of_version, release_of, with_release,
+    BodyHash, CHALLENGER_ROLE, Epic, EpicRecord, EpicStage, EpicTask, GroupName, PLANNING_ROLE,
+    RELEASE_PREFIX, RecordComment, Signature, SignatureError, all_signed, of_version, release_of,
+    report_graph, with_release,
 };
 pub use finding::{Finding, FindingSource, Location, Severity};
 pub use ids::{CommitId, IdError, PageId, RepoPath, TicketId, TreeId};
@@ -59,7 +61,8 @@ pub use ruling::{RulingGap, TypedRulingError, check_typed_ruling, first_gap};
 pub use schedule::{ActionName, CheckName, PhaseEnd};
 pub use slot::{SLOTS_DIR, SlotRecord};
 pub use task::{
-    SecurityTrigger, TaskField, TaskModel, TaskProblem, TaskSize, TaskTemplate, TaskTemplateError,
+    SecurityTrigger, TaskBody, TaskField, TaskModel, TaskProblem, TaskSize, TaskTemplate,
+    TaskTemplateError,
 };
 pub use text::printable;
 pub use ticket::{

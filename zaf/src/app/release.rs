@@ -1,11 +1,14 @@
 //! The release folder of a version: where its objectives and design documents live.
 
+use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use semver::Version;
 
 use super::epic::EpicLine;
+use crate::domain::plan::vocabulary::{self, VocabularyError};
+use crate::domain::plan::{Name, Vocabulary};
 use crate::domain::screen::{Line, Meaning, Text};
 use crate::domain::{DocumentSignature, Epic, EpicStage, SignatureState, of_version};
 use crate::manifest::Manifest;
@@ -140,6 +143,61 @@ fn standing(path: &Path) -> Standing {
             reason,
         }),
     }
+}
+
+/// `git hash-object` of `bytes`: the SHA-1 of `blob <len>\0` then the bytes, in lowercase hex.
+///
+/// Computed with the `sha1` crate (the RustCrypto one, beside `sha2`), so no `git` process runs.
+fn git_blob_hash(bytes: &[u8]) -> String {
+    use sha1::{Digest, Sha1};
+    let mut hasher = Sha1::new();
+    hasher.update(format!("blob {}\0", bytes.len()));
+    hasher.update(bytes);
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// The text of a table cell inside one pair of backticks; none for any other cell.
+fn backticked(cell: &str) -> Option<&str> {
+    cell.trim().strip_prefix('`')?.strip_suffix('`')
+}
+
+/// Whether a `signoff.md` holds a row signing `name` with `hash`: a Markdown table row whose
+/// first cell is the file name and whose second is its 40-hex hash, each in backticks. Later
+/// cells and header rows are ignored.
+fn signoff_row_signs(signoff: &str, name: &str, hash: &str) -> bool {
+    signoff.lines().any(|line| {
+        let mut cells = line.trim().strip_prefix('|').unwrap_or("").split('|');
+        let (Some(file), Some(value)) = (cells.next(), cells.next()) else {
+            return false;
+        };
+        backticked(file) == Some(name)
+            && backticked(value).is_some_and(|value| value.eq_ignore_ascii_case(hash))
+    })
+}
+
+/// `document_signed(folder, document)`: whether the release document `document` (a file of
+/// `folder`, such as its design) reads as signed.
+///
+/// It is signed when zaf's signature block holds ([`DocumentSignature`]), or when a row of the
+/// folder's `signoff.md` names the file and holds its `git hash-object` value as it reads now. A
+/// row for another file, or a stale hash, does not sign; neither does a missing or unreadable
+/// document. Read by the vocabulary load, which refuses a plan on an unsigned design.
+pub fn document_signed(folder: &ReleaseFolder, document: &Path) -> bool {
+    if matches!(standing(document), Standing::Signed) {
+        return true;
+    }
+    let (Some(name), Ok(bytes), Ok(signoff)) = (
+        document.file_name().and_then(|name| name.to_str()),
+        std::fs::read(document),
+        std::fs::read_to_string(folder.path().join(SIGNOFF_FILE)),
+    ) else {
+        return false;
+    };
+    signoff_row_signs(&signoff, name, &git_blob_hash(&bytes))
 }
 
 impl PhaseDue {
@@ -413,6 +471,222 @@ pub fn due_releases(
             (phase != Phase::Nothing).then_some(DueRelease { version, phase })
         })
         .collect()
+}
+
+/// The line that opens the vocabulary block in a design (D5, I3).
+const VOCABULARY_FENCE: &str = "```toml vocabulary";
+
+/// The line that closes a fenced block.
+const CLOSING_FENCE: &str = "```";
+
+/// Why an epic's release vocabulary is not loaded. Each message is one line and ends with the way
+/// on.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum VocabularyLoadError {
+    /// The epic's body has no `Release: <version>` first line.
+    #[error("epic #{epic} has no Release line: put `Release: <version>` first in its body")]
+    NoRelease {
+        /// The epic.
+        epic: String,
+    },
+    /// The release's design is missing, not signed, or edited since it was signed.
+    #[error(
+        "the design of release {version} ({path}) is not signed: sign it, or sign it again after an edit, in zaf's chair (`zaf`)"
+    )]
+    Unsigned {
+        /// The release.
+        version: String,
+        /// The design document.
+        path: String,
+    },
+    /// The design holds more than one block; D5 allows the one.
+    #[error(
+        "the design of release {version} holds {count} vocabulary blocks: keep the one `toml vocabulary` block and sign the design again"
+    )]
+    ManyBlocks {
+        /// The release.
+        version: String,
+        /// How many blocks.
+        count: usize,
+    },
+    /// The block does not read; the parser's refusal is passed on.
+    #[error(
+        "the vocabulary block of release {version} does not read: {error}; fix the block and sign the design again"
+    )]
+    Block {
+        /// The release.
+        version: String,
+        /// The parser's refusal.
+        error: VocabularyError,
+    },
+    /// A name that is `existing` points at a path the integration head does not hold.
+    #[error(
+        "name \"{name}\" is existing at `{path}`, which is not in the tree at {revision}: fix the path in the design and sign it again, or drop `existing` from the name"
+    )]
+    MissingPath {
+        /// The name.
+        name: String,
+        /// Its `existing` path.
+        path: String,
+        /// The integration head it was looked for at.
+        revision: String,
+    },
+    /// The integration branch pattern names a ticket, so no one branch is the integration head.
+    #[error("[branches] integration {0} names a ticket: it must name a release alone")]
+    IntegrationPattern(String),
+    /// The version control could not answer.
+    #[error("the version control could not say what the integration head holds: {0}")]
+    Vcs(String),
+}
+
+/// `release_vocabulary(root, manifest, vcs, epic)`: the vocabulary of the signed design of the
+/// release `epic`'s `Release:` line names (D5 to D7).
+///
+/// The folder is `[release] folder` for that version and the block is the one fenced
+/// ```` ```toml vocabulary ```` in its `design.md`, read by [`vocabulary::parse`]. The design must be
+/// signed ([`document_signed`]: zaf's block, or a matching `signoff.md` row). A design with no
+/// block gives an empty vocabulary, so the plan declares its own names (D6). Each name that has
+/// `existing` must have that path in the tree at the head of the integration branch
+/// (`Vcs::path_at`), or the load is refused naming the name and the path (D7). Nothing is written.
+///
+/// Read by `plan check` and the outside-names check of the epic.
+pub fn release_vocabulary(
+    root: &Path,
+    manifest: &Manifest,
+    vcs: &dyn Vcs,
+    epic: &Epic,
+) -> Result<Vocabulary, VocabularyLoadError> {
+    let version = epic
+        .release()
+        .ok_or_else(|| VocabularyLoadError::NoRelease {
+            epic: epic.id.to_string(),
+        })?;
+    let folder = ReleaseFolder::of(root, manifest, version);
+    let design = folder.design_document();
+    let unsigned = || VocabularyLoadError::Unsigned {
+        version: version.to_owned(),
+        path: design.display().to_string(),
+    };
+    if !document_signed(&folder, &design) {
+        return Err(unsigned());
+    }
+    let text = std::fs::read_to_string(&design).map_err(|_| unsigned())?;
+    let blocks = vocabulary_blocks(&text);
+    let block = match blocks.as_slice() {
+        [] => return Ok(Vocabulary::default()),
+        [block] => block,
+        many => {
+            return Err(VocabularyLoadError::ManyBlocks {
+                version: version.to_owned(),
+                count: many.len(),
+            });
+        }
+    };
+    let parsed = vocabulary::parse(block).map_err(|error| VocabularyLoadError::Block {
+        version: version.to_owned(),
+        error,
+    })?;
+    let existing = existing_paths(block, &parsed);
+    if !existing.is_empty() {
+        let revision = integration_head(manifest, version)?;
+        for (name, path) in existing {
+            match vcs.path_at(root, &revision, &path) {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Err(VocabularyLoadError::MissingPath {
+                        name,
+                        path,
+                        revision,
+                    });
+                }
+                Err(error) => return Err(VocabularyLoadError::Vcs(error.to_string())),
+            }
+        }
+    }
+    Ok(parsed)
+}
+
+/// The design document of `version` as it reads now, whole; `None` when it cannot be read.
+///
+/// `plan file` hashes it into the plan record (I8, D17).
+pub fn design_text(root: &Path, manifest: &Manifest, version: &str) -> Option<String> {
+    let folder = ReleaseFolder::of(root, manifest, version);
+    std::fs::read_to_string(folder.design_document()).ok()
+}
+
+/// The shape of each name of the design's vocabulary block that has a signature, by name: what an
+/// interface ticket writes for it (D11). A design with no block, or a block that does not read,
+/// gives none; [`release_vocabulary`] has refused those before a plan is filed.
+pub fn vocabulary_shapes(design: &str) -> BTreeMap<Name, String> {
+    let blocks = vocabulary_blocks(design);
+    let Some(table) = blocks
+        .first()
+        .and_then(|block| block.parse::<toml::Table>().ok())
+    else {
+        return BTreeMap::new();
+    };
+    let Some(names) = table.get("names").and_then(toml::Value::as_table) else {
+        return BTreeMap::new();
+    };
+    names
+        .iter()
+        .filter_map(|(name, entry)| {
+            let shape = entry.get("signature")?.as_str()?;
+            Some((Name::from(name.as_str()), shape.to_owned()))
+        })
+        .collect()
+}
+
+/// The text inside each ```` ```toml vocabulary ```` fence of `text`, in order. A fence never
+/// closed runs to the end.
+fn vocabulary_blocks(text: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut open: Option<Vec<&str>> = None;
+    for line in text.lines() {
+        match open.as_mut() {
+            Some(lines) if line.trim_end() == CLOSING_FENCE => {
+                blocks.push(lines.join("\n"));
+                open = None;
+            }
+            Some(lines) => lines.push(line),
+            None if line.trim_end() == VOCABULARY_FENCE => open = Some(Vec::new()),
+            None => {}
+        }
+    }
+    if let Some(lines) = open {
+        blocks.push(lines.join("\n"));
+    }
+    blocks
+}
+
+/// Each name of `parsed` that has an `existing` path in `block`, with that path, by name.
+///
+/// The parsed vocabulary keeps the names alone, so the paths are read from the block again; the
+/// block already parsed, so every entry is a table of known keys.
+fn existing_paths(block: &str, parsed: &Vocabulary) -> Vec<(String, String)> {
+    let Ok(table) = block.parse::<toml::Table>() else {
+        return Vec::new();
+    };
+    let Some(names) = table.get("names").and_then(toml::Value::as_table) else {
+        return Vec::new();
+    };
+    names
+        .iter()
+        .filter(|(name, _)| parsed.existing.contains(&Name::from(name.as_str())))
+        .filter_map(|(name, entry)| {
+            let path = entry.get("existing")?.as_str()?;
+            Some((name.clone(), path.to_owned()))
+        })
+        .collect()
+}
+
+/// The integration branch of `version`, which names the head the paths are looked for at.
+fn integration_head(manifest: &Manifest, version: &str) -> Result<String, VocabularyLoadError> {
+    let pattern: &str = manifest.branches.integration.as_ref();
+    if pattern.contains("{task}") || pattern.contains("{epic}") {
+        return Err(VocabularyLoadError::IntegrationPattern(pattern.to_owned()));
+    }
+    Ok(pattern.replace(VERSION_PLACEHOLDER, version))
 }
 
 #[cfg(test)]

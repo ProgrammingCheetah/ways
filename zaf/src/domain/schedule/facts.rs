@@ -12,6 +12,7 @@ use std::time::SystemTime;
 
 use super::lane::Priority;
 use super::phase::{ActionName, Phase, PhaseEnd};
+use crate::domain::plan::Name;
 use crate::domain::{ChangedFiles, CommitId, Standing, TaskSize, TicketId, TreeId};
 use crate::newtype::text_newtype;
 
@@ -423,15 +424,52 @@ pub struct EpicFacts {
     pub signed: bool,
     /// The challenger's report is on it.
     pub challenged: bool,
+    /// Its challenge was voided: it was challenged, and a change to the graph since then means no
+    /// challenger's report holds the graph as it reads now. A voided challenge holds back only the
+    /// tickets with no phase started ([`super::place()`]); it is read before `challenged`, so an
+    /// epic with both set is voided. The gather sets it from `Epic::voided`.
+    pub voided: bool,
 }
 
 /// One ticket this ticket waits on completely, and where that one stands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dependency {
-    /// The ticket depended on.
+    /// The ticket depended on; for a wait that still names an epic ([`Self::epic`]), the epic.
     pub ticket: TicketId,
     /// Where it stands, read from its issue: done means labelled `done` or closed as completed.
     pub standing: Standing,
+    /// The name the wait is for, when it is a graph ticket's wait on a name; none for a
+    /// `Blocked by:` line.
+    pub name: Option<Name>,
+    /// Where the providing epic stands, for a `Waits on: epic #<n> for <name>` that still names
+    /// the epic (D13, Q10); none for a wait on a ticket. The caller reads it: the core reads no
+    /// board.
+    pub epic: Option<EpicState>,
+}
+
+impl Dependency {
+    /// A wait on a ticket a `Blocked by:` line names: no name, no epic.
+    #[must_use]
+    pub fn blocked_by(ticket: TicketId, standing: Standing) -> Self {
+        Self {
+            ticket,
+            standing,
+            name: None,
+            epic: None,
+        }
+    }
+}
+
+/// Where the epic a graph ticket waits on for a name stands, while it has filed no ticket that
+/// holds the name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EpicState {
+    /// The epic is open and not planned yet: the name may still come.
+    NotPlanned,
+    /// The epic is planned and holds no ticket for the name.
+    Planned,
+    /// The epic is closed.
+    Closed,
 }
 
 /// A ruled question's marker: the start of the last run of `action` that the question counted,

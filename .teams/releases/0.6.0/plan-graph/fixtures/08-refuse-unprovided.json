@@ -1,0 +1,29 @@
+{
+ "name": "08-refuse-unprovided",
+ "why": "A need nobody provides and the code does not hold: refused.",
+ "options": {
+  "lift": "all",
+  "interfaces": "each"
+ },
+ "plan": {
+  "nodes": [
+   {
+    "id": "A",
+    "behaviours": [
+     {
+      "text": "a",
+      "size": 1,
+      "writes": [],
+      "provides": [],
+      "needs": [
+       "ghost"
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ "expect": {
+  "refused": "unprovided"
+ }
+}

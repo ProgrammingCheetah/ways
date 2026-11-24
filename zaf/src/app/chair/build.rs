@@ -25,7 +25,7 @@ use crate::app::hub::state::{
     WaitState,
 };
 use crate::app::schedule::ask::is_nowhere;
-use crate::domain::{TicketId, TicketState, printable};
+use crate::domain::{EpicStage, TicketId, TicketState, printable};
 use crate::manifest::ProjectName;
 
 /// The chair's state of `project`, its Next for you items being `next`.
@@ -355,6 +355,8 @@ fn epic_view(
         number: TicketId::from(epic.number),
         title: printable(&epic.title),
         stage: epic.stage,
+        // An unsigned epic is not planned yet, whatever its records say.
+        half_filed: epic.half_filed && epic.stage != EpicStage::Unsigned,
         release: epic
             .release
             .as_deref()
@@ -383,7 +385,17 @@ fn square(
     Square {
         ticket,
         title: printable(&task.title),
-        state: square_state(task.state, orphaned.contains(&ticket), !waits.is_empty()),
+        // A wait the graph names that is not done yet marks the square waiting, whether or not the
+        // core has placed the ticket (D19, D23).
+        state: square_state(
+            task.state,
+            orphaned.contains(&ticket),
+            !waits.is_empty()
+                || task
+                    .blocked_by
+                    .iter()
+                    .any(|blocker| blocker.state != LineState::Done),
+        ),
         phase: task.phase.as_deref().map(printable),
         blocked_by: task
             .blocked_by

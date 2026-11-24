@@ -14,8 +14,10 @@
 //! spend stays visible.
 
 use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
 
 use super::ledger::LedgerRow;
+use super::times::{Timed, epic_times, minutes_per_planned, planned_count};
 use super::{PriceTable, median};
 use crate::domain::screen::{self, Line, Meaning, Text, clean};
 use crate::domain::{TaskSize, TicketId, TicketState};
@@ -83,7 +85,21 @@ pub struct EpicRow {
     pub done_by_size: SizeCounts,
     /// The median per size against the last earlier epic's; none for the first epic.
     pub versus_last: SizeVerdicts,
+    /// How many tasks the epic was planned to have; none when the board does not hold the epic
+    /// open, so there is no plan to count.
+    pub planned: Option<usize>,
+    /// Minutes of work: the epic's window less the time on questions; none when left out.
+    pub minutes_work: Option<f64>,
+    /// Minutes on questions, overlapping time counted once; none when left out.
+    pub minutes_questions: Option<f64>,
+    /// Minutes of work per planned task; none when left out or with no task planned.
+    pub minutes_per_planned: Option<f64>,
+    /// Why the epic's times are left out; none when they are there.
+    pub left_out: Option<String>,
 }
+
+/// The reason for an epic the board does not hold open, whose times cannot be read.
+pub const NOT_OPEN: &str = "not an open epic on the board";
 
 /// How many done tasks of each size an epic has.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
@@ -201,7 +217,7 @@ impl<'a> Tasks<'a> {
             Ok(ticket) => ticket.epic.map(|epic| Found {
                 epic,
                 done: ticket.state == Some(TicketState::Done),
-                size: ticket.template().ok().map(|template| template.size),
+                size: ticket.task_body().and_then(|body| body.size()).ok(),
             }),
             Err(PortError::NotFound(_)) => None,
             Err(error) => return Err(error),
@@ -241,8 +257,9 @@ pub fn epic_rows(
     rows: &[LedgerRow],
     board: &dyn Board,
     prices: &PriceTable,
+    phases_dir: &Path,
 ) -> Result<Vec<EpicRow>, PortError> {
-    epic_view(rows, board, prices).map(|view| view.rows)
+    epic_view(rows, board, prices, phases_dir).map(|view| view.rows)
 }
 
 /// The rows of [`epic_rows`] and what ran outside any epic, from one pass over the board.
@@ -250,6 +267,7 @@ pub fn epic_view(
     rows: &[LedgerRow],
     board: &dyn Board,
     prices: &PriceTable,
+    phases_dir: &Path,
 ) -> Result<EpicView, PortError> {
     let mut tasks = Tasks::new(board);
     let mut by_epic: BTreeMap<u64, Vec<&LedgerRow>> = BTreeMap::new();
@@ -280,17 +298,17 @@ pub fn epic_view(
                 .push((task, found.size));
         }
     }
-    let mut rows: Vec<EpicRow> = by_epic
-        .into_iter()
-        .map(|(epic, runs)| {
-            row_of(
-                epic,
-                &runs,
-                done.get(&epic).map_or(&[], Vec::as_slice),
-                prices,
-            )
-        })
-        .collect();
+    let mut rows: Vec<EpicRow> = Vec::new();
+    for (epic, runs) in by_epic {
+        let mut row = row_of(
+            epic,
+            &runs,
+            done.get(&epic).map_or(&[], Vec::as_slice),
+            prices,
+        );
+        add_times(&mut row, board, phases_dir)?;
+        rows.push(row);
+    }
     for index in 1..rows.len() {
         let versus = compare(&rows[index], &rows[index - 1]);
         rows[index].versus_last = versus;
@@ -299,6 +317,32 @@ pub fn epic_view(
         rows,
         outside: outside_of(&loose, prices),
     })
+}
+
+/// Fills `row`'s planned count, minutes and reason from the board's epic and the phase run
+/// folders. An epic the board does not hold open, or whose times cannot be gathered, is left out
+/// with its reason; any other board failure is an error.
+fn add_times(row: &mut EpicRow, board: &dyn Board, phases_dir: &Path) -> Result<(), PortError> {
+    let epic = match board.epic(TicketId::from(row.epic)) {
+        Ok(epic) => epic,
+        Err(PortError::NotFound(_)) => {
+            row.left_out = Some(NOT_OPEN.to_owned());
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
+    let planned = planned_count(&epic, &epic.records);
+    row.planned = Some(planned);
+    match epic_times(board, phases_dir, &epic)? {
+        Timed::EpicTimes(times) => {
+            let minutes = times.minutes();
+            row.minutes_work = Some(minutes.work);
+            row.minutes_questions = Some(minutes.questions);
+            row.minutes_per_planned = minutes_per_planned(&epic, &times);
+        }
+        Timed::LeftOut(reason) => row.left_out = Some(reason),
+    }
+    Ok(())
 }
 
 fn outside_of(runs: &[&LedgerRow], prices: &PriceTable) -> Option<Outside> {
@@ -427,6 +471,11 @@ fn row_of(epic: u64, runs: &[&LedgerRow], done: &DoneTasks, prices: &PriceTable)
             m: count_of(done, TaskSize::M),
         },
         versus_last: SizeVerdicts::default(),
+        planned: None,
+        minutes_work: None,
+        minutes_questions: None,
+        minutes_per_planned: None,
+        left_out: None,
     }
 }
 
@@ -454,7 +503,7 @@ pub fn lines(rows: &[EpicRow]) -> Vec<Line> {
     lines.push(vec![(
         Meaning::Bold,
         Text::from(format!(
-            "{:<6} {:>5} {:>8} {:>7} {:>7} {:>7} {:>9} {:>9} {:>10} {:>6} {:>6} {:>8} {:>8} {:>9} {:>8}  roles",
+            "{:<6} {:>5} {:>8} {:>7} {:>7} {:>7} {:>9} {:>9} {:>10} {:>6} {:>6} {:>8} {:>8} {:>9} {:>8} {:>7} {:>8} {:>8} {:>8}  roles",
             "epic",
             "done",
             "est $",
@@ -469,7 +518,11 @@ pub fn lines(rows: &[EpicRow]) -> Vec<Line> {
             "input",
             "cache wr",
             "cache rd",
-            "output"
+            "output",
+            "planned",
+            "min work",
+            "min ask",
+            "min/plan"
         )),
     )]);
     for row in rows {
@@ -494,7 +547,7 @@ pub fn lines(rows: &[EpicRow]) -> Vec<Line> {
         line.push((
             Meaning::Plain,
             Text::from(format!(
-                " {:>8.2} {:>7} {:>7} {:>7} {:>9} {:>9} {:>10} {:>6} {:>6} {:>7.2}M {:>7.1}M {:>8.1}M {:>7.2}M  {}",
+                " {:>8.2} {:>7} {:>7} {:>7} {:>9} {:>9} {:>10} {:>6} {:>6} {:>7.2}M {:>7.1}M {:>8.1}M {:>7.2}M {:>7} {:>8} {:>8} {:>8}  {}",
                 row.est_usd,
                 row.usd_per_task.map_or_else(none, |v| format!("{v:.2}")),
                 row.median_usd.s.map_or_else(none, |v| format!("{v:.2}")),
@@ -508,6 +561,10 @@ pub fn lines(rows: &[EpicRow]) -> Vec<Line> {
                 row.tokens.cache_write as f64 / 1e6,
                 row.tokens.cache_read as f64 / 1e6,
                 row.tokens.output as f64 / 1e6,
+                row.planned.map_or_else(none, |v| v.to_string()),
+                row.minutes_work.map_or_else(none, |v| format!("{v:.0}")),
+                row.minutes_questions.map_or_else(none, |v| format!("{v:.0}")),
+                row.minutes_per_planned.map_or_else(none, |v| format!("{v:.0}")),
                 roles.join(", ")
             )),
         ));

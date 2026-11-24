@@ -21,14 +21,14 @@ use crate::adapters::runner::{ProcessRunner, single_quote};
 use crate::adapters::shell::SystemShell;
 use crate::adapters::slot::{self, Slot};
 use crate::app::profile::{self, CONFIG_DIR_VAR};
-use crate::domain::{Profile, RoleName};
+use crate::domain::{CHALLENGER_ROLE, Profile, RoleName};
 use crate::manifest::{
     BoardKind, CommandLine, DEFAULT_STATE_FIELD, DesignKind, Effort, FOLDER_FILE, ForgeKind,
     LEGACY_FILE, Manifest, ManifestError, ModelName, ProjectFiles, ROOT_FILE, RunnerName, VcsKind,
     workspaces_path_lenient,
 };
 use crate::ports::{
-    Board, CiFilter, Design, Forge, Gate, RunRequest, Runner, Shell, SliceName, Vcs,
+    Board, CiFilter, Design, Forge, Gate, Login, RunRequest, Runner, Shell, SliceName, Vcs,
 };
 
 /// The retired manifest file name at the project root; `zaf setup` still writes it.
@@ -45,6 +45,26 @@ pub const STATE_DIR: &str = ".zaf";
 
 /// The runner a role's launch goes through: `[runners.claude]`.
 pub const ROLE_RUNNER: &str = "claude";
+
+/// The tools a challenger's launch takes away (D22). zaf holds the list, not the pack: the
+/// launch has no `--agent`, so the agent file's `disallowedTools` never applies to it.
+const CHALLENGER_DISALLOWED_TOOLS: [&str; 7] = [
+    "Agent",
+    "Edit",
+    "Write",
+    "NotebookEdit",
+    "Bash",
+    "WebFetch",
+    "WebSearch",
+];
+
+/// The characters that end, wrap or redirect a shell command, or comment the rest of a line out.
+/// A challenger's tool limit is added to the end of the `[runners.claude]` command, so it lands on
+/// `claude` only when the command holds none of them. No shell is parsed: a quote is refused with
+/// the rest, since one can wrap the whole command (`sh -c '...'`).
+const ENDS_OR_WRAPS_A_COMMAND: [char; 14] = [
+    '|', '&', ';', '<', '>', '(', ')', '`', '\'', '"', '\\', '#', '\n', '\r',
+];
 
 /// How long one shell line may take before it is killed: a command step, a named test,
 /// a tool's `--version`. A gate is longer than any of them and has its own, unbounded run.
@@ -99,6 +119,15 @@ pub enum CompositionError {
     /// The manifest names no role by that name.
     #[error("no [roles.{0}] in the manifest")]
     NoRole(RoleName),
+    /// The claude runner's command is more than one plain command, so the challenger's tool limit
+    /// added to its end might not land on `claude`.
+    #[error(
+        "[runners.{ROLE_RUNNER}] command holds `{found}`, so the challenger's tool limit (--disallowedTools, added to the end of the command) might not reach claude; make the command one plain command: no pipe, redirect, quote, `;`, `&`, `#` or subshell (a wrapper script may hold them)"
+    )]
+    ToolLimitMisplaced {
+        /// The first character found that ends or wraps a command, as it prints.
+        found: String,
+    },
 }
 
 /// A project as zaf sees it: its root, its manifest, and the adapters it names.
@@ -288,6 +317,13 @@ impl Composition {
     /// The board the manifest names.
     pub fn board(&self) -> Result<Box<dyn Board>, CompositionError> {
         let section = &self.manifest.board;
+        let trusted: Vec<Login> = section
+            .trusted_logins
+            .iter()
+            .map(|login| login.trim())
+            .filter(|login| !login.is_empty())
+            .map(Login::from)
+            .collect();
         match section.kind {
             BoardKind::GithubIssues => {
                 let repo = section.repo.clone().ok_or(CompositionError::MissingKey {
@@ -295,7 +331,9 @@ impl Composition {
                     key: "repo",
                     kind: section.kind.to_string(),
                 })?;
-                Ok(Box::new(GithubBoard::from(GhCommand::from(repo))))
+                Ok(Box::new(
+                    GithubBoard::from(GhCommand::from(repo)).trusting(trusted),
+                ))
             }
             BoardKind::GithubProjects => {
                 let missing = |key: &'static str| CompositionError::MissingKey {
@@ -318,10 +356,9 @@ impl Composition {
                         .clone()
                         .unwrap_or_else(|| DEFAULT_STATE_FIELD.to_owned()),
                 };
-                Ok(Box::new(GithubBoard::on_project(
-                    GhCommand::from(repo),
-                    project,
-                )))
+                Ok(Box::new(
+                    GithubBoard::on_project(GhCommand::from(repo), project).trusting(trusted),
+                ))
             }
             BoardKind::ForgejoIssues => {
                 let missing = |key: &'static str| CompositionError::MissingKey {
@@ -332,7 +369,7 @@ impl Composition {
                 let repo = section.repo.clone().ok_or_else(|| missing("repo"))?;
                 let url = section.url.clone().ok_or_else(|| missing("url"))?;
                 let api = self.paged(ForgejoApi::from_env(url, repo, section.token_env()));
-                Ok(Box::new(ForgejoBoard::from(api)))
+                Ok(Box::new(ForgejoBoard::from(api).trusting(trusted)))
             }
         }
     }
@@ -594,11 +631,34 @@ impl Composition {
             .roles
             .get(role)
             .ok_or_else(|| CompositionError::NoRole(role.clone()))?;
-        let runner = self.process_runner(
+        let mut runner = self.process_runner(
             &RunnerName::from(ROLE_RUNNER),
             Some(&section.model),
             Some(section.effort),
         )?;
+        if role.as_str() == CHALLENGER_ROLE {
+            // The limit must hold where zaf can test it: a command it might not land on is
+            // refused before anything is launched. `process_runner` found the runner above.
+            let template = self
+                .manifest
+                .runners
+                .get(&RunnerName::from(ROLE_RUNNER))
+                .map(|section| section.command.to_string())
+                .unwrap_or_default();
+            if let Some(found) = template
+                .chars()
+                .find(|character| ENDS_OR_WRAPS_A_COMMAND.contains(character))
+            {
+                return Err(CompositionError::ToolLimitMisplaced {
+                    found: found.escape_default().to_string(),
+                });
+            }
+            // Last on the line: the flag takes every word after it.
+            runner = runner.with_command_suffix(&format!(
+                " --disallowedTools {}",
+                CHALLENGER_DISALLOWED_TOOLS.join(" ")
+            ));
+        }
         let home = self.profile_dir(section.profile);
         Ok(runner.with_profile_env(
             section.profile,

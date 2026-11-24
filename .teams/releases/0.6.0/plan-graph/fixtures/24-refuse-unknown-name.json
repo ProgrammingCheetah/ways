@@ -1,0 +1,61 @@
+{
+ "name": "24-refuse-unknown-name",
+ "why": "D needs mcp.catalgo, a name neither in the vocabulary nor added by the plan: refused before anything else is read, naming it (D7).",
+ "options": {
+  "lift": "all",
+  "interfaces": "each"
+ },
+ "plan": {
+  "vocabulary": {
+   "areas": [
+    "adapters/mcp",
+    "app/profile"
+   ],
+   "signature": [
+    "mcp.catalog"
+   ],
+   "existing": [
+    "cli"
+   ]
+  },
+  "nodes": [
+   {
+    "id": "C",
+    "behaviours": [
+     {
+      "text": "the MCP server lists the verbs as tools",
+      "size": 1,
+      "writes": [
+       "adapters/mcp"
+      ],
+      "provides": [
+       "mcp.catalog"
+      ],
+      "needs": [
+       "cli"
+      ]
+     }
+    ]
+   },
+   {
+    "id": "D",
+    "behaviours": [
+     {
+      "text": "profiles register the MCP server",
+      "size": 1,
+      "writes": [
+       "app/profile"
+      ],
+      "provides": [],
+      "needs": [
+       "mcp.catalgo"
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ "expect": {
+  "refused": "unknown-name"
+ }
+}

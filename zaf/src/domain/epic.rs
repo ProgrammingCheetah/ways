@@ -2,19 +2,30 @@
 //!
 //! An epic's stage is never stored. It is derived on every read from what the board holds
 //! (ruling 48): signed while the hash `zaf epic sign` stored still matches its body, planned
-//! once it has tasks, challenged once the challenger's report is on it, and done once every
-//! task is finished and at least one is done (an epic whose every task was dropped is not).
+//! once it has tasks, challenged while a challenger's report holds (see [`Epic::challenged`]),
+//! and done once every task is finished and at least one is done (an epic whose every task was
+//! dropped is not).
 
 use std::str::FromStr;
 use std::time::SystemTime;
 
 use sha2::{Digest, Sha256};
 
+use super::plan::read::PlanGraph;
+use super::plan::record::{FilingMark, GraphHash, PlanRecord};
 use super::{Standing, TicketBody, TicketId, TicketState, TicketTitle, TicketType, TicketUrl};
 use crate::newtype::text_newtype;
 
 /// The role whose report on an epic means the epic was challenged.
 pub const CHALLENGER_ROLE: &str = "challenger";
+
+/// The graph hash a status report ends in: its last non-blank line, `graph sha256:<hex>`.
+///
+/// Interface: `report_graph(report)`, which the epic's notes keep for each challenger report.
+pub fn report_graph(report: &str) -> Option<GraphHash> {
+    let last = report.lines().rfind(|line| !line.trim().is_empty())?;
+    last.trim().strip_prefix("graph sha256:")?.parse().ok()
+}
 
 /// The role that turns a signed epic into tasks.
 pub const PLANNING_ROLE: &str = "planning";
@@ -196,6 +207,57 @@ pub enum EpicStage {
     Done,
 }
 
+/// A plan record posted on an epic, when it was posted and the filing mark posted for it.
+///
+/// Interface: `EpicRecord { record, posted_at, mark }`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EpicRecord {
+    /// The record, as posted.
+    pub record: PlanRecord,
+    /// When it was posted; `None` when the board does not time its comments.
+    pub posted_at: Option<SystemTime>,
+    /// The latest filing mark posted after it for the same number, when there is one.
+    pub mark: Option<FilingMark>,
+}
+
+/// A comment that reads as a plan record or a filing mark. Whether to believe it is the
+/// reader's to settle from its author: a comment anyone can write reads the same.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecordComment {
+    /// It reads as a plan record.
+    Record(PlanRecord),
+    /// It reads as a filing mark.
+    Mark(FilingMark),
+}
+
+impl RecordComment {
+    /// What `body` reads as, when it is a plan record or a filing mark.
+    pub fn read(body: &str) -> Option<Self> {
+        if let Ok(record) = body.parse::<PlanRecord>() {
+            return Some(Self::Record(record));
+        }
+        body.parse::<FilingMark>().ok().map(Self::Mark)
+    }
+
+    /// Files this comment, posted at `posted`, into `records`, which hold the epic's records so
+    /// far in posting order: a record is added at the end; a mark goes on the latest record of
+    /// its number, and one for a record not posted yet is dropped.
+    pub fn file_into(self, records: &mut Vec<EpicRecord>, posted: Option<SystemTime>) {
+        match self {
+            Self::Record(record) => records.push(EpicRecord {
+                record,
+                posted_at: posted,
+                mark: None,
+            }),
+            Self::Mark(mark) => {
+                if let Some(filed) = records.iter_mut().rfind(|filed| filed.record.k == mark.k) {
+                    filed.mark = Some(mark);
+                }
+            }
+        }
+    }
+}
+
 /// An open epic on the board, with everything its stage is derived from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Epic {
@@ -213,8 +275,16 @@ pub struct Epic {
     /// ended, which no other fact records (the ruling on #459). `None` when no such marker is
     /// on it, or the board does not time its comments.
     pub planned_at: Option<SystemTime>,
-    /// Whether the challenger's report is on it.
-    pub challenged: bool,
+    /// The challenger reports on it, oldest first, each as its last line's hash: `Some` for a
+    /// report ending in `graph sha256:<hex>`, `None` for one with no such line (D22).
+    ///
+    /// Interface: `Epic::challengers: Vec<Option<GraphHash>>`; [`Epic::challenged`] reads it.
+    pub challengers: Vec<Option<GraphHash>>,
+    /// The plan records a trusted login posted on it, in the order they were posted, each with
+    /// its filing mark when one was posted (D17, D18, I8).
+    ///
+    /// Interface: `Epic::records: Vec<EpicRecord>`.
+    pub records: Vec<EpicRecord>,
 }
 
 impl Epic {
@@ -237,19 +307,67 @@ impl Epic {
         self.signature.is_some() && !self.signed()
     }
 
+    /// Whether a challenger's report holds (D22, Q13). An epic with a plan record is challenged
+    /// while one of its challenger reports ends in the hash `PlanGraph::hash` gives its graph as
+    /// it reads now, so a body edit voids the challenge and a closed ticket does not. An epic
+    /// with no plan record is challenged once any challenger report is on it.
+    ///
+    /// The graph is read from the epic alone: its hash holds no wait that another epic resolves.
+    ///
+    /// Interface: `Epic::challenged() -> bool`; consumed by the once-per-graph launch and the
+    /// voided state.
+    pub fn challenged(&self) -> bool {
+        if self.challengers.is_empty() {
+            return false;
+        }
+        if self.records.is_empty() {
+            return true;
+        }
+        let now = PlanGraph::read(self, &[]).hash();
+        self.challengers.iter().flatten().any(|hash| *hash == now)
+    }
+
+    /// Whether a change voided its challenge: it has a plan record and a challenger's report, and
+    /// none carries the hash of its graph as it reads now (D22, Q13). An epic never challenged is
+    /// not voided, and neither is one with no plan record, whose challenge no change can void.
+    ///
+    /// Interface: `Epic::voided() -> bool`; read into `EpicFacts::voided`.
+    pub fn voided(&self) -> bool {
+        !self.records.is_empty() && !self.challengers.is_empty() && !self.challenged()
+    }
+
     /// Where it stands: the first stage whose condition it does not yet meet.
     pub fn stage(&self) -> EpicStage {
         if !self.signed() {
             EpicStage::Unsigned
-        } else if self.tasks.is_empty() {
+        } else if !self.plan_filed() {
             EpicStage::Signed
-        } else if !self.challenged {
+        } else if !self.challenged() {
             EpicStage::Planned
         } else if !self.finished_done() {
             EpicStage::Challenged
         } else {
             EpicStage::Done
         }
+    }
+
+    /// Whether its plan is filed: it has tasks, and when it has plan records its last one has
+    /// its filing mark (D17, D19).
+    ///
+    /// Interface: `Epic::plan_filed() -> bool`; consumed by the stage and by the scheduler's
+    /// gather, for a wait on the epic for a name (D13, Q10).
+    pub fn plan_filed(&self) -> bool {
+        !self.tasks.is_empty() && !self.half_filed()
+    }
+
+    /// Whether its plan was posted and not filed: its last plan record has no filing mark, so
+    /// the filing stopped part way (D17, D19). An epic with no record is not half filed.
+    ///
+    /// Interface: `Epic::half_filed() -> bool`; consumed by the chair's half-filed task.
+    pub fn half_filed(&self) -> bool {
+        self.records
+            .last()
+            .is_some_and(|filed| filed.mark.is_none())
     }
 
     /// Whether its work is over and some of it was done: no task is open and at least one is

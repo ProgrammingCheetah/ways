@@ -21,6 +21,7 @@ pub mod guard;
 pub mod hub;
 pub mod init;
 pub mod mcp;
+pub mod plan;
 pub mod profile;
 pub mod projects;
 pub mod release;

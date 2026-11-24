@@ -1,12 +1,16 @@
 //! `zaf board ready|claim|report|handoff|question|ruling|done|file|lint`: reading and writing
 //! the board, and the hand-off on a task's pull request.
 
+use std::path::Path;
+
 use crate::app::actions::{
     Phase, PhaseUnreadable, RecordUnreadable, SliceRecords, derive_phase, gather_phase_facts,
 };
+use crate::app::spawn::runs;
+use crate::domain::plan::read::PlanGraph;
 use crate::domain::{
-    Instance, NewTask, TaskProblem, TaskTemplate, TaskTemplateError, Ticket, TicketId, TicketState,
-    TicketType,
+    CHALLENGER_ROLE, Instance, NewTask, TaskBody, TaskProblem, TaskTemplateError, Ticket, TicketId,
+    TicketState, TicketType,
 };
 use crate::ports::{Board, ClaimOutcome, Forge, NewQuestion, PortError, PrNumber, Vcs};
 
@@ -57,6 +61,26 @@ pub enum BoardError {
         /// The types the repository does define.
         types: Vec<TicketType>,
     },
+    /// `board file` named an epic that has a plan record: its tasks are the plan's graph, and a
+    /// hand-filed one would edit it (D20, M12); nothing was filed.
+    #[error("this epic is planned as a graph; re-plan with `plan file`")]
+    PlannedAsGraph,
+    /// A challenger's report on its epic was refused: the epic's graph is not the one it was
+    /// launched on (M12); nothing was written.
+    #[error(
+        "the graph changed since the launch ({launch}, now {now}); the report was not written; question {question} is open on the epic"
+    )]
+    GraphChanged {
+        /// The hash in the launch record, `sha256:<hex>`.
+        launch: String,
+        /// The hash of the graph now, `sha256:<hex>`.
+        now: String,
+        /// The question raised on the epic, or the one already open for this pair.
+        question: TicketId,
+    },
+    /// The challenger's launch record cannot be read, so its report was not checked or written.
+    #[error("the launch record cannot be read: {0}")]
+    LaunchUnreadable(String),
     /// The board refused or failed.
     #[error(transparent)]
     Port(#[from] PortError),
@@ -80,11 +104,12 @@ pub fn ready(board: &dyn Board) -> Result<Vec<Ticket>, BoardError> {
     Ok(board.ready()?)
 }
 
-/// `zaf board lint`: every problem the body of a task has against the template; none when it
-/// parses. A task the board cannot read is an error, not a clean body.
+/// `zaf board lint`: every problem the body of a task has, a planned body against I2 and an
+/// older one against the template; none when it parses. A task the board cannot read is an
+/// error, not a clean body.
 pub fn lint(board: &dyn Board, issue: TicketId) -> Result<Vec<TaskProblem>, BoardError> {
     let ticket = board.task(issue)?;
-    Ok(TaskTemplate::problems(ticket.body.as_str()))
+    Ok(TaskBody::problems(ticket.body.as_str()))
 }
 
 /// The command `zaf board claim` runs.
@@ -152,6 +177,62 @@ pub fn report(board: &dyn Board, command: &ReportCommand) -> Result<ReportOutcom
         Err(error) => return Err(error.into()),
     };
     Ok(ReportOutcome { heartbeat })
+}
+
+/// `zaf board report` as the instance's role asks (M12): a challenger's report on its own epic is
+/// accepted only while the epic's graph still hashes as it did at the launch.
+///
+/// The launch hash is `graph` in the challenger's own run folder under `state_dir`. When the
+/// graph's hash now is the same, the report is written with `graph sha256:<hex>` as its last line.
+/// When it differs nothing is written: one question naming both hashes is raised on the epic (the
+/// same pair twice is the question already open) and the refusal is [`BoardError::GraphChanged`].
+/// A launch record with no `graph` (an older launch), another role, and another issue are
+/// [`report`], as before.
+pub fn report_checked(
+    board: &dyn Board,
+    state_dir: &Path,
+    command: &ReportCommand,
+) -> Result<ReportOutcome, BoardError> {
+    let challenger = command.instance.role.as_str() == CHALLENGER_ROLE;
+    if !challenger || command.task != command.instance.epic {
+        return report(board, command);
+    }
+    let launch = runs::read_launch(state_dir, &command.instance)
+        .map_err(|error| BoardError::LaunchUnreadable(error.to_string()))?;
+    let Some(launch) = launch.and_then(|record| record.graph) else {
+        return report(board, command);
+    };
+    let epics = board.epics()?;
+    let epic = epics
+        .iter()
+        .find(|epic| epic.id == command.task)
+        .ok_or_else(|| PortError::NotFound(format!("{} is not an open epic", command.task)))?;
+    let now = runs::graph_text(&PlanGraph::read(epic, &epics).hash());
+    if now != launch {
+        let text = format!(
+            "The graph of {} changed while {} checked it: it hashed {launch} at the launch and \
+             {now} now. Its report was refused and nothing was written.",
+            command.task, command.instance
+        );
+        let question = question(
+            board,
+            &NewQuestion {
+                on: command.task,
+                text,
+                door: false,
+            },
+        )?;
+        return Err(BoardError::GraphChanged {
+            launch,
+            now,
+            question,
+        });
+    }
+    let stamped = ReportCommand {
+        body: format!("{}\ngraph {launch}", command.body.trim_end()),
+        ..command.clone()
+    };
+    report(board, &stamped)
 }
 
 /// `zaf board handoff`: writes the one hand-off comment on the task's recorded pull request,
@@ -279,13 +360,14 @@ impl FileOutcome {
 ///
 /// A body outside the template, or a type the repository does not define
 /// ([`BoardError::NoSuchType`], naming the types it does), is refused before anything is
-/// written. Filing a title the epic already counts (open or done) returns that task, so a
+/// written. An epic with a plan record is refused whoever asks ([`BoardError::PlannedAsGraph`]):
+/// its graph changes by a re-plan, never by a task filed by hand. Filing a title the epic already counts (open or done) returns that task, so a
 /// planning instance run again files nothing twice.
 pub fn file(board: &dyn Board, task: &NewTask) -> Result<FileOutcome, BoardError> {
     if !matches!(task.state, TicketState::Ready | TicketState::Blocked) {
         return Err(BoardError::NotAnOpeningState(task.state));
     }
-    task.body.as_str().parse::<crate::domain::TaskTemplate>()?;
+    TaskBody::parse(task.body.as_str())?;
     let types = board.issue_types()?;
     if !types.defines(&task.kind) {
         return Err(BoardError::NoSuchType {
@@ -295,6 +377,9 @@ pub fn file(board: &dyn Board, task: &NewTask) -> Result<FileOutcome, BoardError
         });
     }
     let epic = board.epic(task.epic)?;
+    if !epic.records.is_empty() {
+        return Err(BoardError::PlannedAsGraph);
+    }
     if let Some(filed) = epic
         .tasks
         .iter()

@@ -4,7 +4,7 @@
 //!
 //! A feature that adds a key adds its entry to its own section here, and nowhere else. Every
 //! entry presses a key whose handler is built: Enter in Epics reads the epic, `s` signs it after
-//! its undo, `d` draws its tree, `w` says why a ticket waits and `l` follows it in Live (F6, F7);
+//! its undo, `d` draws its graph, `w` says why a ticket waits and `l` follows it in Live (F6, F7);
 //! `o` runs the due phase in the phase pane and `Ctrl-w c` leaves it (F8, `model/phase.rs`).
 
 use super::keys::Key;
@@ -67,7 +67,8 @@ pub const SECTIONS: [Section; 6] = [
                 Run::In(PaneId::Epics, Key::Enter),
             ),
             entry("Sign the selected epic", "s", key('s')),
-            entry("Dependency tree of the epic", "d", key('d')),
+            entry("Dependency graph of the epic", "d", key('d')),
+            entry("Flip the graph: before/after", "v", key('v')),
         ],
     },
     Section {

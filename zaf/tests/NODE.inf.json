@@ -151,6 +151,16 @@
       "node": false
     },
     {
+      "name": "memory_scheduler.rs",
+      "role": "zaf's scheduler memory note takes a planned epic's waits from the graph and keeps Blocked by lines for an epic with no plan",
+      "node": false
+    },
+    {
+      "name": "memory_vocabulary.rs",
+      "role": "zaf's Vocabulary memory note holds the plan graph's terms and relationship words",
+      "node": false
+    },
+    {
       "name": "pack_actions.rs",
       "role": "the teams pack's 25 standard actions: every file executable and a valid action",
       "node": false

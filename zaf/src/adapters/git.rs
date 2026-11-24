@@ -265,6 +265,55 @@ impl Vcs for GitVcs {
         Ok(names)
     }
 
+    fn path_at(&self, root: &Path, revision: &str, path: &str) -> Result<bool, PortError> {
+        // The revision goes onto a git command line: one that starts with `-` would be an option.
+        if revision.is_empty() || revision.starts_with('-') {
+            return Err(PortError::NotFound(format!("revision {revision}")));
+        }
+        // A branch is read where the remote has it, as `work_diff` reads the base: the integration
+        // branch is opened on the remote, and a local branch of its name may be absent or stale.
+        // `show-ref --verify` takes a whole ref name and nothing else, and `HEAD` there is the
+        // remote's default branch, never the revision asked for. Anything the remote has no
+        // branch by (a commit id, `HEAD`, a tag, a local branch) is read as given.
+        let on_remote = format!("refs/remotes/origin/{revision}");
+        let named = if revision != "HEAD"
+            && Self::asks(root, &["show-ref", "--verify", "--quiet", &on_remote])?
+        {
+            on_remote.as_str()
+        } else {
+            revision
+        };
+        // `--quiet` makes a revision the repository does not have exit 1, where a failure exits
+        // higher. Nothing is fetched to find it.
+        let commit = format!("{named}^{{commit}}");
+        let args = ["rev-parse", "--verify", "--quiet", &commit];
+        let output = Self::output(root, &args, None)?;
+        let id = match output.status.code() {
+            Some(0) => String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+            Some(1) => return Err(PortError::NotFound(format!("revision {revision}"))),
+            _ => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let failure = format!("git {}: {}", args.join(" "), stderr.trim());
+                return Err(PortError::Backend(failure));
+            }
+        };
+        // `ls-tree` takes the path literally, from the root of the tree, and prints the entry
+        // when it is there and nothing when it is not.
+        let listed = Self::run(
+            root,
+            &[
+                "ls-tree",
+                "--full-tree",
+                "--name-only",
+                "-z",
+                &id,
+                "--",
+                path,
+            ],
+        )?;
+        Ok(!listed.is_empty())
+    }
+
     fn diff_hunks(
         &self,
         workspace: &Path,

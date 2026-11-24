@@ -1,84 +1,117 @@
-use super::tree::{Short, layout, short};
+use super::graph::{header, rows};
 use super::why::{cost_words, phase_words, tokens, why};
-use crate::app::chair::{EpicView, SquareState};
+use crate::app::chair::SquareState;
 use crate::app::hub::state::{TicketCost, WaitKind};
-use crate::cli::chair::support::{square, wait, ways};
+use crate::cli::chair::support::{fixture_12_after, order, square, wait, ways};
+use crate::domain::plan::shape::ShapeFailure;
+use crate::domain::plan::{NodeId, Weight};
 use crate::domain::screen::Meaning;
 use crate::domain::{EpicStage, TicketId};
 
-/// The rows of `epic`'s tree as `prefix #ticket ← waits`.
-fn drawn(epic: &EpicView) -> Vec<String> {
-    layout(epic)
-        .into_iter()
-        .map(|row| {
-            let waits: Vec<String> = row.waits.into_iter().map(|wait| wait.text).collect();
-            if waits.is_empty() {
-                format!("{}{}", row.prefix, row.ticket)
-            } else {
-                format!("{}{} ← {}", row.prefix, row.ticket, waits.join(" "))
-            }
-        })
-        .collect()
-}
-
 #[test]
-fn the_tree_hangs_each_ticket_under_its_first_blocker_in_the_epic() {
+fn chair_graph_draws_fixture_12_after() {
     let state = ways();
+    let drawn = rows(&fixture_12_after(), Some(&state.epics[0]));
 
+    let layer = |at: usize| -> Vec<(bool, Option<SquareState>, String, String, String)> {
+        drawn[at]
+            .iter()
+            .map(|row| {
+                (
+                    row.critical,
+                    row.state,
+                    row.node.to_string(),
+                    row.ticket
+                        .map(|ticket| ticket.to_string())
+                        .unwrap_or_default(),
+                    row.title.clone(),
+                )
+            })
+            .collect()
+    };
+    assert_eq!(drawn.len(), 2, "one group of rows for each layer");
     assert_eq!(
-        drawn(&state.epics[0]),
+        layer(0),
         [
-            "├─#230",
-            "│  ├─#233 ← #230",
-            "│  │  └─#240 ← #233",
-            "│  └─#234 ← ?#285",
-            "├─#235",
-            "├─#241",
-            "└─#243",
+            (
+                true,
+                Some(SquareState::Failed),
+                "A+B".to_owned(),
+                "#230".to_owned(),
+                "update: --yes and one summary line".to_owned()
+            ),
+            (
+                false,
+                Some(SquareState::Question),
+                "I:mcp.catalog".to_owned(),
+                "#234".to_owned(),
+                "the signature of mcp.catalog".to_owned()
+            ),
+        ],
+        "★ marks the critical path's node, and each square is the ticket's own"
+    );
+    assert_eq!(
+        layer(1),
+        [
+            (
+                false,
+                Some(SquareState::Waiting),
+                "C".to_owned(),
+                "#233".to_owned(),
+                "the MCP server lists the verbs".to_owned()
+            ),
+            (
+                false,
+                Some(SquareState::Waiting),
+                "D".to_owned(),
+                "#240".to_owned(),
+                "profiles register the MCP server".to_owned()
+            ),
         ]
     );
+    assert_eq!(drawn[1][0].waits, ["I:mcp.catalog"]);
+    assert_eq!(drawn[1][1].waits, ["I:mcp.catalog"]);
+    assert!(drawn[0][0].waits.is_empty());
 }
 
 #[test]
-fn a_cycle_is_drawn_once_from_its_first_ticket() {
-    let blocked = |ticket: u64, by: u64| crate::app::chair::Square {
-        blocked_by: vec![TicketId::from(by)],
-        ..square(ticket, SquareState::Waiting)
-    };
-    let epic = EpicView {
-        number: TicketId::from(9),
-        title: "a knot".to_owned(),
-        stage: EpicStage::Planned,
-        release: None,
-        done: 0,
-        total: 4,
-        question: None,
-        squares: vec![
-            blocked(1, 2),
-            blocked(2, 1),
-            square(3, SquareState::Ready),
-            blocked(4, 77),
-        ],
-    };
-
+fn chair_graph_header_shows_measures_and_shape() {
+    let mut view = fixture_12_after();
     assert_eq!(
-        drawn(&epic),
-        ["├─#3", "└─#4 ← #77", "└─#1 ← #2", "   └─#2 ← #1",],
-        "a blocker outside the epic makes a root; the board's blockers stand in for the core's"
+        header(&view, &Ok(Vec::new())),
+        "chain 2 · width 2 2 · critical 2: A+B · shape: pass"
+    );
+
+    view.measures.chain = 3;
+    view.measures.width = vec![2, 3, 1];
+    view.measures.critical = 5;
+    view.measures.critical_path = ["I@1004.1", "C", "D"].map(NodeId::from).to_vec();
+    let failure = ShapeFailure::BodyLimit {
+        node: NodeId::from("C"),
+        weight: Weight(9),
+        limit: Weight(8),
+    };
+    assert_eq!(
+        header(&view, &Ok(vec![failure.clone(), failure])),
+        "chain 3 · width 2 3 1 · critical 5: I@1004.1 → C → D · shape: fail 2"
+    );
+    assert_eq!(
+        header(&view, &Err("no vocabulary".to_owned())),
+        "chain 3 · width 2 3 1 · critical 5: I@1004.1 → C → D · shape: not checked"
     );
 }
 
 #[test]
-fn a_wait_in_short_marks_the_engineers() {
-    assert_eq!(
-        short(&wait(WaitKind::Question, 285)),
-        Short {
-            text: "?#285".to_owned(),
-            yours: true
-        }
-    );
-    assert_eq!(short(&wait(WaitKind::Ticket, 230)).text, "#230");
-    assert_eq!(short(&wait(WaitKind::Epic, 224)).text, "its epic");
+fn chair_graph_shows_every_wait() {
+    let mut view = fixture_12_after();
+    // D waits on the interface and on C.
+    view.orders.push(order("C", "D", "turn:adapters"));
+    let state = ways();
+    let drawn = rows(&view, Some(&state.epics[0]));
+
+    assert_eq!(drawn[1][1].node.as_str(), "D");
+    assert_eq!(drawn[1][1].waits, ["I:mcp.catalog", "C"]);
+    assert_eq!(drawn[1][0].waits, ["I:mcp.catalog"]);
 }
 
 /// The words of `why` for `ticket`, unpainted.

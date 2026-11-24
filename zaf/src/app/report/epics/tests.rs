@@ -1,4 +1,5 @@
 use std::fs;
+use std::path::Path;
 
 use serde_json::json;
 
@@ -8,6 +9,25 @@ use crate::domain::{Ticket, TicketState};
 use crate::fakes::FakeBoard;
 
 const OPUS: &str = "claude-opus-5-5";
+
+/// A phases folder that holds nothing: the cost tests read no times.
+const NO_PHASES: &str = "/gone/phases";
+
+fn epic_rows(
+    rows: &[LedgerRow],
+    board: &dyn Board,
+    prices: &PriceTable,
+) -> Result<Vec<EpicRow>, PortError> {
+    super::epic_rows(rows, board, prices, Path::new(NO_PHASES))
+}
+
+fn epic_view(
+    rows: &[LedgerRow],
+    board: &dyn Board,
+    prices: &PriceTable,
+) -> Result<EpicView, PortError> {
+    super::epic_view(rows, board, prices, Path::new(NO_PHASES))
+}
 
 fn number(n: u64) -> TicketId {
     TicketId::from(n)
@@ -513,4 +533,118 @@ fn outside_any_epic_prints_one_line() {
     let view = epic_view(&inside, &board(), &PriceTable::default()).expect("view");
     assert_eq!(view.outside, None);
     assert!(!view.render_text().contains("outside any epic"));
+}
+
+#[test]
+fn report_epics_reads_planned_size() {
+    let board = board();
+    board.add_ticket(Ticket {
+        body: crate::fakes::PLANNED_M_BODY.into(),
+        ..ticket(99, Some(103), Some(TicketState::Done))
+    });
+    let rows = [
+        run("a", Some("programmer"), Some(103), &[99]),
+        run("b", Some("planning"), Some(103), &[]),
+    ];
+    let rows = epic_rows(&rows, &board, &PriceTable::default()).expect("rows");
+    let epic = row_for(&rows, 103);
+    // The planned task is the epic's only done task with a size: M, derived from its sections.
+    assert!(epic.median_usd.m.is_some(), "the planned task is an M task");
+    assert_eq!(epic.median_usd.s, None);
+}
+
+mod times {
+    use std::fs::File;
+    use std::time::{Duration, SystemTime};
+
+    use super::*;
+
+    fn at(minute: u64) -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000 + minute * 60)
+    }
+
+    /// A phase run folder of `task` that started at `minute`.
+    fn run_folder(dir: &Path, name: &str, task: u64, minute: u64) {
+        let folder = dir.join(name);
+        fs::create_dir_all(&folder).expect("folder");
+        fs::write(folder.join("action"), "implement").expect("action");
+        let task_file = folder.join("task");
+        fs::write(&task_file, task.to_string()).expect("task");
+        File::options()
+            .write(true)
+            .open(&task_file)
+            .and_then(|file| file.set_modified(at(minute)))
+            .expect("time");
+    }
+
+    /// Epic 1 with three tasks (11, 12, 13) done by minute 120; each of the first two has a
+    /// question open from minute 10 to 40.
+    fn finished_epic() -> FakeBoard {
+        let board = FakeBoard::default();
+        board.add_epic(number(1), "Epic");
+        for task in [11, 12, 13] {
+            board.add_ticket(ticket(task, Some(1), Some(TicketState::Done)));
+            board.close_at(number(task), at(120));
+        }
+        for (question, on) in [(20, 11), (21, 12)] {
+            board.add_question(Ticket {
+                body: format!("Raised on {}.", number(on)).as_str().into(),
+                ..ticket(question, None, Some(TicketState::Question))
+            });
+            board.set_opened_at(number(question), at(10));
+            board.close_at(number(question), at(40));
+        }
+        board
+    }
+
+    #[test]
+    fn epic_row_has_minutes_per_planned_task() {
+        let dir = tempfile::tempdir().expect("dir");
+        run_folder(dir.path(), "run", 11, 0);
+        let rows = [run("a", Some("programmer"), Some(1), &[11])];
+
+        let rows =
+            super::super::epic_rows(&rows, &finished_epic(), &PriceTable::default(), dir.path())
+                .expect("rows");
+
+        let epic = row_for(&rows, 1);
+        assert_eq!(epic.planned, Some(3));
+        assert_eq!(epic.minutes_work, Some(90.0));
+        assert_eq!(epic.minutes_questions, Some(30.0));
+        assert_eq!(epic.minutes_per_planned, Some(30.0));
+        assert_eq!(epic.left_out, None);
+        let text = render_text(&rows);
+        let line = text.lines().last().expect("a row");
+        assert!(
+            line.contains("      3       90       30       30"),
+            "{line}"
+        );
+        let value: serde_json::Value = serde_json::from_str(&to_json(&rows)).expect("json");
+        assert_eq!(value["epics"][0]["minutes_per_planned"], 30.0);
+    }
+
+    #[test]
+    fn epic_row_left_out_prints_dash_and_reason() {
+        let dir = tempfile::tempdir().expect("dir");
+        let rows = [run("a", Some("programmer"), Some(1), &[11])];
+
+        let rows =
+            super::super::epic_rows(&rows, &finished_epic(), &PriceTable::default(), dir.path())
+                .expect("rows");
+
+        let epic = row_for(&rows, 1);
+        assert_eq!(epic.planned, Some(3));
+        assert_eq!(epic.minutes_work, None);
+        assert_eq!(epic.minutes_per_planned, None);
+        assert_eq!(epic.left_out.as_deref(), Some("no phase record"));
+        let text = render_text(&rows);
+        let line = text.lines().last().expect("a row");
+        assert!(
+            line.contains("      3        -        -        -"),
+            "{line}"
+        );
+        let value: serde_json::Value = serde_json::from_str(&to_json(&rows)).expect("json");
+        assert_eq!(value["epics"][0]["left_out"], "no phase record");
+        assert!(value["epics"][0]["minutes_work"].is_null());
+    }
 }

@@ -1,4 +1,10 @@
 #!/bin/sh
 # zaf description: the full gate, the cargo lines CI runs, in the current directory
 # zaf 1: a gate step failed, or the zaf crate folder is missing
+# sccache, when installed, keeps the compiled dependencies between workspaces, so a fresh
+# workspace does not compile them again. The crate itself is built incrementally, as before.
+if [ -z "${RUSTC_WRAPPER:-}" ] && command -v sccache >/dev/null 2>&1; then
+    RUSTC_WRAPPER=sccache
+    export RUSTC_WRAPPER
+fi
 cd zaf && cargo fmt --check && cargo build && cargo clippy --all-targets -- -D warnings && cargo test || exit 1

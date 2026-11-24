@@ -12,7 +12,7 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 
-use crate::common::{Curl, Project, fixtures};
+use crate::common::{Curl, OWN_LOGIN, Project, fixtures};
 
 pub const URL: &str = "http://forgejo.test";
 pub const REPO: &str = "example/tracker";
@@ -200,6 +200,7 @@ fn epic_comments(index: u64) -> Value {
                 "<!-- zaf:signature sha256={hash} at=2026-11-10T09:00:00Z -->\nSigned."
             ),
             "created_at": "2026-11-10T09:00:00Z",
+            "user": { "login": OWN_LOGIN },
         },
         {
             "id": 101,
@@ -210,6 +211,7 @@ fn epic_comments(index: u64) -> Value {
             "id": 102,
             "body": format!("<!-- zaf:report challenger instance 1 on #{number} -->\nChallenged."),
             "created_at": "2026-11-10T11:00:00Z",
+            "user": { "login": OWN_LOGIN },
         },
     ])
 }
@@ -423,19 +425,36 @@ fn answer_forge(curl: &mut Curl, pulls: u64) {
     );
 }
 
-/// Every web call the reads made but the instance's page-size read, as the fake-curl harness of
-/// `adapters/forgejo/tests.rs` counts them: that read asks the instance, not the project, and
-/// is made once for the process ([`page_size_reads`]).
+/// Every web call the reads made but the two that ask the instance, not the project, and are
+/// made once for the process: the instance's page-size read ([`page_size_reads`]), as the
+/// fake-curl harness of `adapters/forgejo/tests.rs` leaves it out, and the read of the login the
+/// token posts as ([`own_login_reads`]), whose signatures and reports the board trusts.
 pub fn web_calls(curl: &Curl) -> Vec<String> {
     all_calls(curl)
         .into_iter()
-        .filter(|asked| !asked.ends_with("/settings/api"))
+        .filter(|asked| !asked.ends_with(PAGE_SIZE) && !asked.ends_with(OWN_LOGIN_READ))
         .collect()
 }
 
+const PAGE_SIZE: &str = "/settings/api";
+const OWN_LOGIN_READ: &str = "/api/v1/user";
+
 /// The reads of the instance's page size: one for the whole process, board and forge alike.
 pub fn page_size_reads(curl: &Curl) -> usize {
-    all_calls(curl).len() - web_calls(curl).len()
+    let calls = all_calls(curl);
+    calls
+        .iter()
+        .filter(|asked| asked.ends_with(PAGE_SIZE))
+        .count()
+}
+
+/// The reads of the login the token posts as: one for the whole process.
+pub fn own_login_reads(curl: &Curl) -> usize {
+    let calls = all_calls(curl);
+    calls
+        .iter()
+        .filter(|asked| asked.ends_with(OWN_LOGIN_READ))
+        .count()
 }
 
 fn all_calls(curl: &Curl) -> Vec<String> {

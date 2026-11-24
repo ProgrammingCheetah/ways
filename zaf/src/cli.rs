@@ -30,6 +30,7 @@ pub mod forge;
 pub mod guard;
 pub mod hub;
 pub mod mcp;
+pub mod plan;
 pub mod profile;
 pub mod progress;
 pub mod report;
@@ -153,7 +154,7 @@ pub enum Verb {
     Asklog,
     /// Board, running instances, slots, guard and open questions, on one screen.
     Status,
-    /// The weekly table: tokens per role, findings by source, rounds per task, cycle time.
+    /// The weekly table: tokens per role, findings by source, rounds per task, cycle time; `--epics` one row per epic; `--times` minutes per planned task of the 0.5.x epics against the graph-planned ones.
     Report(report::ReportArgs),
     /// The budget state the spawner reads.
     Guard,
@@ -208,6 +209,13 @@ pub enum Verb {
         /// What to do with the epics.
         #[command(subcommand)]
         action: EpicAction,
+    },
+    /// A plan before it is filed, checked against the epic's release vocabulary; an epic's graph
+    /// as its tickets read now.
+    Plan {
+        /// What to do with the plan.
+        #[command(subcommand)]
+        action: PlanAction,
     },
     /// The Engineer's start of a release: the phase due for a version, or, with none due, its open
     /// epics to sign. Refused inside an instance and where there is no terminal.
@@ -338,6 +346,13 @@ pub enum EpicAction {
         #[arg(long, allow_hyphen_values = true)]
         title: String,
     },
+    /// Run the behaviours check and the `Done when:` check on a signed epic and print only their
+    /// failures, one line each, and nothing on a pass; with `--json`, the failures as a list. Exit
+    /// 1 for any failure, an epic with no `Done when:` line or an epic not signed.
+    Check {
+        /// The epic.
+        epic: TicketId,
+    },
     /// Wait until the epic needs the Engineer (a question on it or its tasks waits), a problem
     /// shows or the epic is done, then print `epic show` and the open questions; with nothing by
     /// `--minutes`, print `nothing yet` and exit 0.
@@ -347,6 +362,47 @@ pub enum EpicAction {
         /// How long to wait, in minutes.
         #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u32).range(1..))]
         minutes: u32,
+    },
+}
+
+/// `zaf plan …`.
+#[derive(Debug, clap::Subcommand, strum::IntoStaticStr)]
+#[strum(serialize_all = "kebab-case")]
+pub enum PlanAction {
+    /// Read the plan on stdin as a plan of the epic and print its refusals, one line each with
+    /// its kind, exit 1; or its measures before and after the optimiser, exit 0. It writes
+    /// nothing to the board or the repository.
+    Check {
+        /// The epic the plan is of: its release gives the vocabulary.
+        epic: TicketId,
+    },
+    /// File the plan on stdin as the plan of the epic: check it as `check` does, post the plan
+    /// record, file each ticket once in natural id order, close each `Drop:` ticket as not
+    /// planned, post the filing mark, and print one summary line. A refused plan posts nothing
+    /// and exits 1, as does a run while the epic's last record has no mark.
+    File {
+        /// The epic the plan is of: its release gives the vocabulary.
+        epic: TicketId,
+    },
+    /// Print an epic's graph as its tickets read now: its layers with their node ids, the chain,
+    /// the width of each layer, the work, and the critical path's nodes in order with its length.
+    /// Exit 1, with one line, for an epic with no planned tickets. It writes nothing. With
+    /// `--before` it prints the graph as its plan records wrote it; an epic filed before 0.6.0
+    /// has one view, headed "planned before 0.6.0", with or without it.
+    Show {
+        /// The epic whose graph is shown.
+        epic: TicketId,
+        /// Print the graph as planned, from the epic's plan records.
+        #[arg(long)]
+        before: bool,
+    },
+    /// Hold an epic's graph to O3's structural checks: print nothing and exit 0 when it breaks
+    /// none, otherwise one line for each failure and exit 1. It writes nothing. An epic filed
+    /// before 0.6.0 exits 1 with one line, "planned before 0.6.0: plan verify checks graph
+    /// epics".
+    Verify {
+        /// The epic whose graph is verified: its release gives the vocabulary.
+        epic: TicketId,
     },
 }
 
@@ -599,6 +655,7 @@ impl Verb {
             Self::Spawn { action, .. } => action.as_ref().map(Into::into),
             Self::Progress { action } => Some(action.into()),
             Self::Epic { action } => Some(action.into()),
+            Self::Plan { action } => Some(action.into()),
             Self::Forge { action } => Some(action.into()),
             Self::Begin { action, .. } => action.as_ref().map(Into::into),
             _ => None,
@@ -810,6 +867,7 @@ fn run_verb(cli: &Cli) -> u8 {
         Verb::Progress { action } => progress::run(cli, action),
         Verb::Update { check, yes } => update::run(cli, *check, *yes),
         Verb::Epic { action } => epic::run(cli, action),
+        Verb::Plan { action } => plan::run(cli, action),
         Verb::Begin {
             action: Some(BeginAction::Ready),
             ..

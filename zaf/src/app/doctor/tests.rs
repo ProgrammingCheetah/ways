@@ -1102,12 +1102,26 @@ fn doctor_quiet_without_role_overrides() {
     assert!(override_notes(&report).is_empty(), "an empty folder too");
 }
 
-/// A board whose backend answers the checks it was given.
-struct AnsweringBoard(Vec<crate::ports::AccessCheck>);
+/// A board whose backend answers the checks it was given, and trusts whom it was told.
+struct AnsweringBoard(
+    Vec<crate::ports::AccessCheck>,
+    Result<Vec<crate::ports::Login>, crate::ports::PortError>,
+);
+
+impl AnsweringBoard {
+    /// One that answers `checks` and trusts its own login, `zaf-bot`.
+    fn answering(checks: Vec<crate::ports::AccessCheck>) -> Self {
+        Self(checks, Ok(vec![crate::ports::Login::from("zaf-bot")]))
+    }
+}
 
 impl Board for AnsweringBoard {
     fn access(&self) -> Vec<crate::ports::AccessCheck> {
         self.0.clone()
+    }
+
+    fn trusted_logins(&self) -> Result<Vec<crate::ports::Login>, crate::ports::PortError> {
+        self.1.clone()
     }
 
     fn ready(&self) -> Result<Vec<crate::domain::Ticket>, crate::ports::PortError> {
@@ -1199,10 +1213,9 @@ fn access(what: &str, ok: bool, detail: &str) -> crate::ports::AccessCheck {
 }
 
 #[test]
-fn a_board_reached_through_a_tool_adds_no_check_and_no_json_key() {
+fn a_report_that_asked_no_board_has_no_board_line_and_no_json_key() {
     let dir = tempfile::tempdir().expect("temp dir");
-    let mut report = doctor(dir.path(), &manifest(""), &FakeCommands::new());
-    report.board = board_checks(&crate::fakes::FakeBoard::default());
+    let report = doctor(dir.path(), &manifest(""), &FakeCommands::new());
     assert!(report.board.is_empty());
     assert!(report.lines().iter().all(|line| !line.starts_with("board")));
     let json = serde_json::to_value(&report).expect("serializes");
@@ -1210,11 +1223,69 @@ fn a_board_reached_through_a_tool_adds_no_check_and_no_json_key() {
 }
 
 #[test]
+fn a_board_reached_through_a_tool_is_asked_only_whom_it_trusts() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut report = doctor(dir.path(), &manifest(""), &FakeCommands::new());
+    let board = crate::fakes::FakeBoard::default();
+    board.set_trusted_logins(&["alice"]);
+    report.board = board_checks(&board);
+    assert_eq!(
+        report.board,
+        [BackendCheck {
+            what: "trusted logins".to_owned(),
+            ok: true,
+            detail: "zaf-bot, alice".to_owned(),
+        }]
+    );
+    assert!(
+        report
+            .lines()
+            .contains(&"board trusted logins: ok (zaf-bot, alice)".to_owned()),
+        "{:?}",
+        report.lines()
+    );
+    assert!(report.passed(), "{:?}", report.lines());
+}
+
+#[test]
+fn a_board_that_cannot_read_its_own_login_fails_the_report_and_names_the_fix() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let mut report = doctor(dir.path(), &manifest(""), &FakeCommands::new());
+    assert!(report.passed(), "{:?}", report.lines());
+    let unread = crate::ports::PortError::Backend(
+        "the board cannot read the login its token posts as, whose zaf comments it trusts \
+         (Forgejo answered 403): set `[board] trusted_logins` in the manifest, or give the \
+         token the right to read its user"
+            .to_owned(),
+    );
+    report.board = board_checks(&AnsweringBoard(
+        vec![access(
+            "token",
+            true,
+            "`FORGEJO_TOKEN` reads and writes o/r",
+        )],
+        Err(unread),
+    ));
+    let lines = report.lines();
+    assert_eq!(
+        lines[0],
+        "board trusted logins failed: backend failed: the board cannot read the login its token \
+         posts as, whose zaf comments it trusts (Forgejo answered 403): set `[board] \
+         trusted_logins` in the manifest, or give the token the right to read its user",
+        "the failing check comes first: {lines:?}"
+    );
+    assert!(!report.passed());
+    let json = serde_json::to_value(&report).expect("serializes");
+    assert_eq!(json["board"][1]["what"], "trusted logins");
+    assert_eq!(json["board"][1]["ok"], false);
+}
+
+#[test]
 fn the_boards_answers_are_lines_and_a_failed_one_fails_the_report() {
     let dir = tempfile::tempdir().expect("temp dir");
     let mut report = doctor(dir.path(), &manifest(""), &FakeCommands::new());
     assert!(report.passed(), "{:?}", report.lines());
-    report.board = board_checks(&AnsweringBoard(vec![
+    report.board = board_checks(&AnsweringBoard::answering(vec![
         access("instance", true, "Forgejo 15.0.11 at http://forgejo.test"),
         access(
             "token",
@@ -1252,7 +1323,7 @@ fn the_forges_answers_are_lines_and_a_failed_one_comes_first_and_fails_the_repor
     let json = serde_json::to_value(&report).expect("serializes");
     assert!(json.get("forge").is_none(), "{json}");
 
-    report.board = board_checks(&AnsweringBoard(vec![
+    report.board = board_checks(&AnsweringBoard::answering(vec![
         access("instance", true, "Forgejo 15.0.11 at http://forgejo.test"),
         access("token", true, "`FORGEJO_TOKEN` reads and writes o/r"),
     ]));

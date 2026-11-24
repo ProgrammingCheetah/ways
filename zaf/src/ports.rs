@@ -20,7 +20,8 @@ mod verb_runner;
 
 pub use crate::domain::ChangedFiles;
 pub use board::{
-    AccessCheck, Board, ClaimOutcome, ClaimRecord, IssueTypes, NewQuestion, QUESTION_TITLE_LIMIT,
+    AccessCheck, Board, ClaimOutcome, ClaimRecord, IssueTypes, Login, NewQuestion,
+    QUESTION_TITLE_LIMIT,
 };
 pub use ci_filter::CiFilter;
 pub use design::{Design, Page};

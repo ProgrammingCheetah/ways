@@ -37,6 +37,7 @@ fn signed_epic(number: u32, version: &str) -> serde_json::Value {
                 hash.as_str()
             ),
             "createdAt": "2026-11-01T00:00:00Z",
+            "author": {"login": common::OWN_LOGIN},
         }],
     })
 }

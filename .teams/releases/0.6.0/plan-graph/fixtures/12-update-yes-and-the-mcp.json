@@ -1,0 +1,208 @@
+{
+ "name": "12-update-yes-and-the-mcp",
+ "why": "The example from the design talk: A and B merge, D waits on the catalog's interface and no longer on C.",
+ "options": {
+  "lift": "all",
+  "interfaces": "each"
+ },
+ "plan": {
+  "existing": [
+   "cli"
+  ],
+  "nodes": [
+   {
+    "id": "A",
+    "behaviours": [
+     {
+      "text": "update takes --yes",
+      "size": 1,
+      "writes": [
+       "app/update"
+      ],
+      "provides": [],
+      "needs": []
+     }
+    ]
+   },
+   {
+    "id": "B",
+    "behaviours": [
+     {
+      "text": "update prints one summary line",
+      "size": 1,
+      "writes": [
+       "app/update"
+      ],
+      "provides": [],
+      "needs": []
+     }
+    ]
+   },
+   {
+    "id": "C",
+    "behaviours": [
+     {
+      "text": "the MCP server lists the verbs as tools",
+      "size": 1,
+      "writes": [
+       "adapters/mcp"
+      ],
+      "provides": [
+       "mcp.catalog"
+      ],
+      "needs": [
+       "cli"
+      ]
+     }
+    ]
+   },
+   {
+    "id": "D",
+    "behaviours": [
+     {
+      "text": "profiles register the MCP server",
+      "size": 1,
+      "writes": [
+       "app/profile"
+      ],
+      "provides": [],
+      "needs": [
+       "mcp.catalog"
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ "expect": {
+  "before": {
+   "nodes": 4,
+   "interfaces": 0,
+   "chain": 2,
+   "width": [
+    3,
+    1
+   ],
+   "narrow_layers": [
+    0,
+    1
+   ],
+   "work": 4,
+   "critical": 2,
+   "critical_path": [
+    "C",
+    "D"
+   ]
+  },
+  "after": {
+   "nodes": 4,
+   "interfaces": 1,
+   "chain": 2,
+   "width": [
+    2,
+    2
+   ],
+   "narrow_layers": [
+    0,
+    1
+   ],
+   "work": 5,
+   "critical": 2,
+   "critical_path": [
+    "A+B"
+   ]
+  },
+  "plan": {
+   "nodes": [
+    {
+     "id": "A+B",
+     "kind": "body",
+     "behaviours": [
+      {
+       "text": "update takes --yes",
+       "size": 1,
+       "writes": [
+        "app/update"
+       ],
+       "provides": [],
+       "needs": []
+      },
+      {
+       "text": "update prints one summary line",
+       "size": 1,
+       "writes": [
+        "app/update"
+       ],
+       "provides": [],
+       "needs": []
+      }
+     ]
+    },
+    {
+     "id": "C",
+     "behaviours": [
+      {
+       "text": "the MCP server lists the verbs as tools",
+       "size": 1,
+       "writes": [
+        "adapters/mcp"
+       ],
+       "provides": [],
+       "needs": [
+        "cli",
+        "mcp.catalog"
+       ]
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "D",
+     "behaviours": [
+      {
+       "text": "profiles register the MCP server",
+       "size": 1,
+       "writes": [
+        "app/profile"
+       ],
+       "provides": [],
+       "needs": [
+        "mcp.catalog"
+       ]
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "I:mcp.catalog",
+     "kind": "interface",
+     "behaviours": [
+      {
+       "text": "the signature of mcp.catalog",
+       "size": 1,
+       "writes": [
+        "sig:mcp.catalog"
+       ],
+       "provides": [
+        "mcp.catalog"
+       ],
+       "needs": []
+      }
+     ]
+    }
+   ],
+   "orders": [
+    {
+     "from": "I:mcp.catalog",
+     "to": "C",
+     "needs": "mcp.catalog"
+    },
+    {
+     "from": "I:mcp.catalog",
+     "to": "D",
+     "needs": "mcp.catalog"
+    }
+   ]
+  }
+ }
+}

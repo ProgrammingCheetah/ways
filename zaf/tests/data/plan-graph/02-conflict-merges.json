@@ -1,0 +1,103 @@
+{
+ "name": "02-conflict-merges",
+ "why": "Two small nodes write the same thing and have no order: they become one node.",
+ "options": {
+  "lift": "all",
+  "interfaces": "each"
+ },
+ "plan": {
+  "nodes": [
+   {
+    "id": "A",
+    "behaviours": [
+     {
+      "text": "update takes --yes",
+      "size": 1,
+      "writes": [
+       "app/update"
+      ],
+      "provides": [],
+      "needs": []
+     }
+    ]
+   },
+   {
+    "id": "B",
+    "behaviours": [
+     {
+      "text": "update prints one line",
+      "size": 1,
+      "writes": [
+       "app/update"
+      ],
+      "provides": [],
+      "needs": []
+     }
+    ]
+   }
+  ]
+ },
+ "expect": {
+  "before": {
+   "nodes": 2,
+   "interfaces": 0,
+   "chain": 1,
+   "width": [
+    2
+   ],
+   "narrow_layers": [
+    0
+   ],
+   "work": 2,
+   "critical": 1,
+   "critical_path": [
+    "A"
+   ]
+  },
+  "after": {
+   "nodes": 1,
+   "interfaces": 0,
+   "chain": 1,
+   "width": [
+    1
+   ],
+   "narrow_layers": [
+    0
+   ],
+   "work": 2,
+   "critical": 2,
+   "critical_path": [
+    "A+B"
+   ]
+  },
+  "plan": {
+   "nodes": [
+    {
+     "id": "A+B",
+     "kind": "body",
+     "behaviours": [
+      {
+       "text": "update takes --yes",
+       "size": 1,
+       "writes": [
+        "app/update"
+       ],
+       "provides": [],
+       "needs": []
+      },
+      {
+       "text": "update prints one line",
+       "size": 1,
+       "writes": [
+        "app/update"
+       ],
+       "provides": [],
+       "needs": []
+      }
+     ]
+    }
+   ],
+   "orders": []
+  }
+ }
+}

@@ -1,0 +1,206 @@
+{
+ "name": "13-interfaces-in-one-node",
+ "why": "The same chain as 01 with every interface written by one node.",
+ "options": {
+  "lift": "all",
+  "interfaces": "one"
+ },
+ "plan": {
+  "nodes": [
+   {
+    "id": "A",
+    "behaviours": [
+     {
+      "text": "a works",
+      "size": 1,
+      "writes": [
+       "a"
+      ],
+      "provides": [
+       "a.api"
+      ],
+      "needs": []
+     }
+    ]
+   },
+   {
+    "id": "B",
+    "behaviours": [
+     {
+      "text": "b works",
+      "size": 1,
+      "writes": [
+       "b"
+      ],
+      "provides": [
+       "b.api"
+      ],
+      "needs": [
+       "a.api"
+      ]
+     }
+    ]
+   },
+   {
+    "id": "C",
+    "behaviours": [
+     {
+      "text": "c works",
+      "size": 1,
+      "writes": [
+       "c"
+      ],
+      "provides": [],
+      "needs": [
+       "b.api"
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ "expect": {
+  "before": {
+   "nodes": 3,
+   "interfaces": 0,
+   "chain": 3,
+   "width": [
+    1,
+    1,
+    1
+   ],
+   "narrow_layers": [
+    0,
+    1,
+    2
+   ],
+   "work": 3,
+   "critical": 3,
+   "critical_path": [
+    "A",
+    "B",
+    "C"
+   ]
+  },
+  "after": {
+   "nodes": 4,
+   "interfaces": 1,
+   "chain": 2,
+   "width": [
+    1,
+    3
+   ],
+   "narrow_layers": [
+    0,
+    1
+   ],
+   "work": 5,
+   "critical": 3,
+   "critical_path": [
+    "I",
+    "A"
+   ]
+  },
+  "plan": {
+   "nodes": [
+    {
+     "id": "A",
+     "behaviours": [
+      {
+       "text": "a works",
+       "size": 1,
+       "writes": [
+        "a"
+       ],
+       "provides": [],
+       "needs": [
+        "a.api"
+       ]
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "B",
+     "behaviours": [
+      {
+       "text": "b works",
+       "size": 1,
+       "writes": [
+        "b"
+       ],
+       "provides": [],
+       "needs": [
+        "a.api",
+        "b.api"
+       ]
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "C",
+     "behaviours": [
+      {
+       "text": "c works",
+       "size": 1,
+       "writes": [
+        "c"
+       ],
+       "provides": [],
+       "needs": [
+        "b.api"
+       ]
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "I",
+     "kind": "interface",
+     "behaviours": [
+      {
+       "text": "the signature of a.api",
+       "size": 1,
+       "writes": [
+        "sig:a.api"
+       ],
+       "provides": [
+        "a.api"
+       ],
+       "needs": []
+      },
+      {
+       "text": "the signature of b.api",
+       "size": 1,
+       "writes": [
+        "sig:b.api"
+       ],
+       "provides": [
+        "b.api"
+       ],
+       "needs": []
+      }
+     ]
+    }
+   ],
+   "orders": [
+    {
+     "from": "I",
+     "to": "A",
+     "needs": "a.api"
+    },
+    {
+     "from": "I",
+     "to": "B",
+     "needs": "b.api"
+    },
+    {
+     "from": "I",
+     "to": "C",
+     "needs": "b.api"
+    }
+   ]
+  }
+ }
+}

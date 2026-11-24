@@ -378,6 +378,8 @@ pub enum Cause {
         lowest: TicketId,
         /// The tickets, each waiting on the next and the last on the first, the lowest first.
         cycle: Vec<TicketId>,
+        /// The tickets are of more than one epic, so only a re-plan of one of them breaks it.
+        across_epics: bool,
     },
     /// An epic planned and not challenged past
     /// [`CHALLENGE_DEADLINE`](crate::domain::schedule::CHALLENGE_DEADLINE).
@@ -539,21 +541,43 @@ impl Cause {
                     DeadReason::Missing => {
                         format!("{dependency} is not a ticket (no such issue, or a pull request)")
                     }
-                    DeadReason::ClosedNotPlanned | DeadReason::Cycle => {
+                    DeadReason::ClosedNotPlanned
+                    | DeadReason::Cycle
+                    | DeadReason::CycleAcrossEpics
+                    | DeadReason::NameNotProvided { .. } => {
                         format!("{dependency} is {}", dead.reason)
                     }
                 };
-                format!(
-                    "{ticket} waits on {dependency}, which can never complete: {why}. {ticket} \
-                     waits until {dependency} is done or leaves its Blocked by: line. {}",
-                    self.marker()
-                )
+                match &dead.name {
+                    // A graph ticket has no Blocked by: line to leave.
+                    Some(name) => format!(
+                        "{ticket} waits for {name}, which can never come: {why}. {ticket} waits \
+                         until a re-plan drops the ticket or provides the name. {}",
+                        self.marker()
+                    ),
+                    None => format!(
+                        "{ticket} waits on {dependency}, which can never complete: {why}. \
+                         {ticket} waits until {dependency} is done or leaves its Blocked by: \
+                         line. {}",
+                        self.marker()
+                    ),
+                }
             }
-            Self::Cycle { cycle, .. } => {
+            Self::Cycle {
+                cycle,
+                across_epics,
+                ..
+            } => {
                 let body = match cycle.as_slice() {
                     [only] => format!(
                         "{only} waits on itself: {}, so it can never complete. It waits until \
                          its Blocked by: line no longer names it.",
+                        render_cycle(cycle)
+                    ),
+                    _ if *across_epics => format!(
+                        "These tickets, of more than one epic, wait on each other: {}, so none \
+                         of them can ever complete. They wait until a re-plan of one of the \
+                         epics breaks the cycle.",
                         render_cycle(cycle)
                     ),
                     _ => format!(
@@ -690,6 +714,8 @@ pub fn waiting_causes(
         .collect();
     let graph = dependency_graph(&waiting);
     let mut causes = Vec::new();
+    // The tickets that wait in a cycle across epics: each waiter and the dependency it waits on.
+    let mut across = BTreeSet::new();
     for facts in &waiting {
         if let Some(found) = overdue(facts, now) {
             causes.push(Cause::OverdueCheck {
@@ -707,10 +733,20 @@ pub fn waiting_causes(
                 overdue: found,
             });
         }
+        let dead = dead_dependencies(facts, &graph);
+        across.extend(
+            dead.iter()
+                .filter(|dead| dead.reason == DeadReason::CycleAcrossEpics)
+                .flat_map(|dead| [facts.ticket, dead.dependency]),
+        );
         causes.extend(
-            dead_dependencies(facts, &graph)
-                .into_iter()
-                .filter(|dead| dead.reason != DeadReason::Cycle)
+            dead.into_iter()
+                .filter(|dead| {
+                    !matches!(
+                        dead.reason,
+                        DeadReason::Cycle | DeadReason::CycleAcrossEpics
+                    )
+                })
                 .map(|dead| Cause::DeadDependency {
                     ticket: facts.ticket,
                     dead,
@@ -719,7 +755,12 @@ pub fn waiting_causes(
     }
     causes.extend(cycles(&graph).into_iter().filter_map(|cycle| {
         let lowest = cycle.iter().copied().min()?;
-        Some(Cause::Cycle { lowest, cycle })
+        let across_epics = cycle.len() > 1 && cycle.iter().all(|ticket| across.contains(ticket));
+        Some(Cause::Cycle {
+            lowest,
+            cycle,
+            across_epics,
+        })
     }));
     for epic in &gathered.epics {
         let questioned = gathered

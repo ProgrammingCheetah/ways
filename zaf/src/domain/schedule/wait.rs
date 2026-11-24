@@ -12,11 +12,13 @@
 //! (R30) has no clock: each of its ends is the scheduler's own.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::time::{Duration, SystemTime};
 
-use super::facts::{CheckName, CheckResult, TicketFacts};
+use super::facts::{CheckName, CheckResult, EpicState, TicketFacts};
 use super::phase::{ActionName, PhaseEnd, current_phase};
 use super::place::{Place, WaitingOn, place, ready_since};
+use crate::domain::plan::Name;
 use crate::domain::{CommitId, Epic, EpicStage, Standing, TicketId};
 
 /// How long a ticket may wait on the checks at one head before a question is raised: 2 hours
@@ -217,78 +219,148 @@ pub fn unchallenged(epic: &Epic, questioned: bool, now: SystemTime) -> Option<Ov
     })
 }
 
-/// Each ticket and the dependencies it still waits on, as the dependency facts name them.
-pub type DependencyGraph = BTreeMap<TicketId, Vec<TicketId>>;
+/// Each ticket and the dependencies it still waits on, as the dependency facts name them, and the
+/// epic of each ticket, so a cycle across epics is told from one inside an epic.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DependencyGraph {
+    waits: BTreeMap<TicketId, Vec<TicketId>>,
+    epics: BTreeMap<TicketId, TicketId>,
+}
+
+/// The graph reads as each ticket's dependencies, as it did before it knew the epics.
+impl std::ops::Deref for DependencyGraph {
+    type Target = BTreeMap<TicketId, Vec<TicketId>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.waits
+    }
+}
 
 /// The dependency graph of `tickets`: every ticket and its dependencies that are not done, since
-/// a done one closes any cycle through it.
+/// a done one closes any cycle through it. A wait that still names an epic is no edge: an epic
+/// waits on no ticket.
 #[must_use]
 pub fn dependency_graph(tickets: &[TicketFacts]) -> DependencyGraph {
-    tickets
+    let waits = tickets
         .iter()
         .map(|facts| {
             let named = facts
                 .dependencies
                 .iter()
                 .filter(|dependency| dependency.standing != Standing::Done)
+                .filter(|dependency| dependency.epic.is_none())
                 .map(|dependency| dependency.ticket)
                 .collect();
             (facts.ticket, named)
         })
-        .collect()
+        .collect();
+    let epics = tickets
+        .iter()
+        .filter_map(|facts| Some((facts.ticket, facts.epic?.id)))
+        .collect();
+    DependencyGraph { waits, epics }
 }
 
 /// Why a dependency can never complete.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, strum::Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DeadReason {
     /// It is closed as not planned or as a duplicate.
-    #[strum(to_string = "closed as not planned")]
     ClosedNotPlanned,
     /// There is no such issue, or the number is a pull request.
-    #[strum(to_string = "not a ticket")]
     Missing,
     /// It waits, through its own dependencies, on the ticket that waits on it.
-    #[strum(to_string = "in a cycle")]
     Cycle,
+    /// The same, and the tickets of the cycle are of more than one epic.
+    CycleAcrossEpics,
+    /// The epic it waits on for a name is planned or closed and holds no ticket for the name.
+    NameNotProvided {
+        /// The epic.
+        epic: TicketId,
+    },
+}
+
+impl fmt::Display for DeadReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ClosedNotPlanned => f.write_str("closed as not planned"),
+            Self::Missing => f.write_str("not a ticket"),
+            Self::Cycle => f.write_str("in a cycle"),
+            Self::CycleAcrossEpics => f.write_str("in a cycle across epics"),
+            Self::NameNotProvided { .. } => {
+                f.write_str("an epic planned or closed without the name")
+            }
+        }
+    }
 }
 
 /// A dependency of the ticket that can never complete.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeadDependency {
-    /// The dependency.
+    /// The dependency: the ticket, or for [`DeadReason::NameNotProvided`] the epic.
     pub dependency: TicketId,
     /// Why it never completes.
     pub reason: DeadReason,
+    /// The name the ticket waits for, when its wait carries one (a graph ticket's); none for a
+    /// `Blocked by:` line.
+    pub name: Option<Name>,
 }
 
 /// The dependencies of `facts`'s ticket that can never complete, in the order named: closed as
-/// not planned, missing, or open and leading back to the ticket through `graph` (a ticket that
-/// names itself included). A done dependency is never dead.
+/// not planned, missing, open and leading back to the ticket through `graph` (a ticket that names
+/// itself included; across epics when the cycle's tickets are of more than one), or waited on
+/// through an epic that is planned or closed without the name. A done dependency is never dead,
+/// and neither is a wait on an epic not yet planned.
 #[must_use]
 pub fn dead_dependencies(facts: &TicketFacts, graph: &DependencyGraph) -> Vec<DeadDependency> {
     facts
         .dependencies
         .iter()
         .filter_map(|dependency| {
-            let reason = match dependency.standing {
-                Standing::Done => return None,
-                Standing::ClosedNotPlanned => DeadReason::ClosedNotPlanned,
-                Standing::Missing => DeadReason::Missing,
-                Standing::Open if reaches(graph, dependency.ticket, facts.ticket) => {
-                    DeadReason::Cycle
+            let reason = match (dependency.standing, dependency.epic) {
+                (Standing::Done, _) | (_, Some(EpicState::NotPlanned)) => return None,
+                (_, Some(EpicState::Planned | EpicState::Closed)) => DeadReason::NameNotProvided {
+                    epic: dependency.ticket,
+                },
+                (Standing::ClosedNotPlanned, None) => DeadReason::ClosedNotPlanned,
+                (Standing::Missing, None) => DeadReason::Missing,
+                (Standing::Open, None)
+                    if reaches(&graph.waits, dependency.ticket, facts.ticket) =>
+                {
+                    if crosses_epics(graph, dependency.ticket, facts.ticket) {
+                        DeadReason::CycleAcrossEpics
+                    } else {
+                        DeadReason::Cycle
+                    }
                 }
-                Standing::Open => return None,
+                (Standing::Open, None) => return None,
             };
             Some(DeadDependency {
                 dependency: dependency.ticket,
                 reason,
+                name: dependency.name.clone(),
             })
         })
         .collect()
 }
 
-/// Whether `target` is `from` or a dependency of it, directly or through others, in `graph`.
-fn reaches(graph: &DependencyGraph, from: TicketId, target: TicketId) -> bool {
+/// Whether the cycle `ticket` closes through its dependency `first` holds tickets of more than one
+/// epic: `ticket` itself and each ticket that `first` reaches and that reaches `ticket` back. A
+/// ticket whose epic is unknown counts for none.
+fn crosses_epics(graph: &DependencyGraph, first: TicketId, ticket: TicketId) -> bool {
+    graph
+        .waits
+        .keys()
+        .copied()
+        .filter(|&at| reaches(&graph.waits, first, at) && reaches(&graph.waits, at, ticket))
+        .chain([ticket])
+        .filter_map(|member| graph.epics.get(&member))
+        .collect::<BTreeSet<_>>()
+        .len()
+        > 1
+}
+
+/// Whether `target` is `from` or a dependency of it, directly or through others, in `waits`.
+fn reaches(waits: &BTreeMap<TicketId, Vec<TicketId>>, from: TicketId, target: TicketId) -> bool {
     let mut seen = BTreeSet::new();
     let mut pending = vec![from];
     while let Some(at) = pending.pop() {
@@ -296,7 +368,7 @@ fn reaches(graph: &DependencyGraph, from: TicketId, target: TicketId) -> bool {
             return true;
         }
         if seen.insert(at) {
-            pending.extend(graph.get(&at).into_iter().flatten().copied());
+            pending.extend(waits.get(&at).into_iter().flatten().copied());
         }
     }
     false

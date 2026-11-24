@@ -120,6 +120,26 @@ fn lists_the_catalog() {
 }
 
 #[test]
+fn mcp_lists_plan_check() {
+    let project = Project::new(MANIFEST);
+    let mut client = Client::start(&project);
+    let listed = client.request("tools/list", json!({}));
+    let plan = listed["result"]["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .find(|tool| tool["name"] == "plan")
+        .unwrap_or_else(|| panic!("no `plan` tool in {listed}"));
+    let description = plan["description"].as_str().expect("a description");
+    assert!(description.contains("zaf plan check"), "{description}");
+    assert!(description.contains("zaf plan show"), "{description}");
+    assert!(description.contains("zaf plan verify"), "{description}");
+    assert!(description.contains("<EPIC>"), "{description}");
+    assert!(plan["inputSchema"]["properties"]["stdin"].is_object());
+    assert_eq!(client.finish(), 0);
+}
+
+#[test]
 fn initialize_carries_the_instructions() {
     let project = Project::new(MANIFEST);
     let mut command = project.command_in(&project.root, &["mcp"]);
@@ -174,7 +194,20 @@ fn status_through_server_matches_cli() {
         "{called}"
     );
     assert_eq!(result["content"][0]["type"], "text");
-    assert_eq!(result["content"][0]["text"], direct.as_str());
+    // The `machine:` line counts the zaf processes alive at that instant, the one printing it
+    // among them, so two runs a moment apart may differ there and nowhere else.
+    let steady = |text: &str| -> String {
+        text.lines()
+            .filter(|line| !line.starts_with("machine: "))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let through = result["content"][0]["text"].as_str().expect("text");
+    assert!(
+        through.lines().any(|line| line.starts_with("machine: ")),
+        "{through}"
+    );
+    assert_eq!(steady(through), steady(&direct));
     assert_eq!(result["_meta"]["zaf/exit"], 0);
     assert!(result.get("structuredContent").is_none());
     client.finish();

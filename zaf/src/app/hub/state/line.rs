@@ -3,9 +3,13 @@
 //! Everything here is worked out on read from what the state gather already reads: the board's
 //! epic trees, the questions, where the core places each ticket and the facts that placement read
 //! (`StateInputs::places`, `StateInputs::gathered`). Nothing is stored. A task's body is the one
-//! thing read per task, for its size and its `Blocked by:` line, and it comes from the epic's own
-//! task row (`EpicTask::body`, `EpicTask::url`), so no task is asked of the board. A blocker that
-//! is no task of a read epic is asked once, for where it stands.
+//! thing read per task, for its size, and it comes from the epic's own task row (`EpicTask::body`,
+//! `EpicTask::url`), so no task is asked of the board. What a task waits on is read from the wait
+//! source ([`Waits::of`], D19, D23): a wait on an epic shows as a wait on that epic, and a task of
+//! the older template reads from its `Blocked by:` line as it did. The wait source is read only
+//! when an epic holds a planned task; should the board not list its epics, the line reads each
+//! task's `Blocked by:` line. A blocker that is
+//! no task of a read epic is asked once, for where it stands.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -14,9 +18,10 @@ use super::{
 };
 use crate::app::hub::gather::{LineState, cost_by_task, has_begun, line_state};
 use crate::app::schedule::shadow::current_phase_name;
+use crate::app::spawn::blockers::waits::{Wait, Waits};
 use crate::app::spawn::blockers::{DeadLine, DeadReason, blockers, finished_epic_standing};
 use crate::domain::schedule::{Place, TicketFacts, end_fact_holds};
-use crate::domain::{DEFAULT_TASK_TYPE, Epic, EpicTask, Standing, TaskTemplate, Ticket, TicketId};
+use crate::domain::{DEFAULT_TASK_TYPE, Epic, EpicTask, Standing, TaskBody, Ticket, TicketId};
 use crate::ports::Board;
 
 /// One epic's line.
@@ -43,6 +48,9 @@ struct Tickets<'a> {
     costs: HashMap<u64, TicketCost>,
     /// The blockers open tasks name that never close, as the line's reads found them.
     dead: Vec<DeadLine>,
+    /// What each planned task waits on, read from the graph; none when no epic holds a planned
+    /// task or the board did not list its epics.
+    waits: Option<Waits>,
 }
 
 impl Tickets<'_> {
@@ -102,6 +110,7 @@ pub(super) fn read(
         outside: HashMap::new(),
         costs: cost_by_task(inputs.ledger, inputs.project, inputs.root),
         dead: Vec::new(),
+        waits: read_waits(board, trees),
     };
     // Every task's colour first: a blocker's is read from its own epic's tasks.
     let mut states: HashMap<u64, LineState> = HashMap::new();
@@ -190,6 +199,23 @@ fn epic_state(
     }
 }
 
+/// Whether a task's body is a planned ticket's, whose waits the graph gives.
+fn is_planned(task: &EpicTask) -> bool {
+    matches!(
+        TaskBody::parse(task.body.as_str()),
+        Ok(TaskBody::Planned(_))
+    )
+}
+
+/// The wait source over `trees`, read only when an epic holds a planned task: an older epic reads
+/// from its `Blocked by:` lines and asks the board nothing more.
+fn read_waits(board: &dyn Board, trees: &[Epic]) -> Option<Waits> {
+    if !trees.iter().flat_map(|tree| &tree.tasks).any(is_planned) {
+        return None;
+    }
+    Waits::read(board, &trees.iter().map(|tree| tree.id).collect::<Vec<_>>()).ok()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn line_task(
     inputs: &StateInputs,
@@ -204,13 +230,22 @@ fn line_task(
     let place = inputs.places.and_then(|places| places.get(&task.number));
     let (phase, phases_done, phases_total) = phases(inputs, task, place, facts.get(&task.number));
     // The epic's own row holds the body and the link: no read of the task.
-    let size = task
-        .body
-        .as_str()
-        .parse::<TaskTemplate>()
+    let size = TaskBody::parse(task.body.as_str())
+        .and_then(|body| body.size())
         .ok()
-        .map(|template| template.size.name());
-    let blocked_by = blockers(task.body.as_str());
+        .map(|size| size.name());
+    let planned = is_planned(task);
+    let blocked_by: Vec<TicketId> = match &tickets.waits {
+        Some(waits) if planned => waits
+            .of(task.number)
+            .iter()
+            .map(|wait| match wait {
+                Wait::Ticket(ticket) => *ticket,
+                Wait::Epic { epic, .. } => *epic,
+            })
+            .collect(),
+        _ => blockers(task.body.as_str()),
+    };
     let issue_url = Some(task.url.to_string()).filter(|url| !url.is_empty());
     let mut named = Vec::new();
     for blocker in blocked_by {

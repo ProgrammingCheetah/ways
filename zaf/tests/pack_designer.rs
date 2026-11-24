@@ -386,3 +386,37 @@ fn review_epic_passes_on_the_epics_refusal_and_a_backend_failure() {
         );
     }
 }
+
+#[test]
+fn designer_asks_for_the_vocabulary_block() {
+    if !pack().is_dir() {
+        return;
+    }
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+    for file in [
+        "plugins/teams/agents/designer.md",
+        "plugins/teams/actions/design",
+    ] {
+        let text = fs::read_to_string(root.join(file)).unwrap_or_else(|e| panic!("{file}: {e}"));
+        for words in ["toml vocabulary", "New names:"] {
+            assert!(text.contains(words), "{file} names `{words}`");
+        }
+    }
+}
+
+#[test]
+fn designer_asks_for_a_named_test_per_done_when() {
+    if !pack().is_dir() {
+        return;
+    }
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+    for file in [
+        "plugins/teams/agents/designer.md",
+        "plugins/teams/actions/design",
+    ] {
+        let text = fs::read_to_string(root.join(file)).unwrap_or_else(|e| panic!("{file}: {e}"));
+        for words in ["Done when", "line names a test in backticks"] {
+            assert!(text.contains(words), "{file} names `{words}`");
+        }
+    }
+}

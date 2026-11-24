@@ -12,7 +12,7 @@ mod symbols;
 use std::path::Path;
 
 use super::{Shell, Verdict};
-use crate::domain::TaskTemplate;
+use crate::domain::TaskBody;
 use crate::manifest::CommandLine;
 use crate::ports::{Gate, GateLevel, GateVerdict, PortError};
 
@@ -91,30 +91,37 @@ pub struct TaskInputs<'a> {
     pub root: &'a Path,
 }
 
-/// Checks a task's template against the tree.
-pub fn check_task(template: &TaskTemplate, inputs: &TaskInputs<'_>) -> TaskCheck {
+/// Checks a task's body against the tree: the gate once, then every behaviour's tests,
+/// interfaces and acceptance lines, in section order. An older body is one behaviour.
+pub fn check_task(body: &TaskBody, inputs: &TaskInputs<'_>) -> TaskCheck {
     let mut lines = vec![gate_line(inputs.gate)];
+    let behaviours = body.behaviours();
 
-    let (tests, test_prose) = names(&template.tests);
-    for name in tests {
-        let status = test_status(&name, inputs);
-        lines.push(line(LineKind::Test, name, status));
+    for behaviour in &behaviours {
+        let (tests, test_prose) = names(&behaviour.tests);
+        for name in tests {
+            let status = test_status(&name, inputs);
+            lines.push(line(LineKind::Test, name, status));
+        }
+        lines.extend(manual(LineKind::Test, test_prose));
     }
-    lines.extend(manual(LineKind::Test, test_prose));
 
-    let (interfaces, interface_prose) = names(&template.interfaces);
-    for id in interfaces {
-        let symbol = id.rsplit("::").next().unwrap_or(&id);
-        let status = if symbols::defines(inputs.root, symbol) {
-            LineStatus::Pass
-        } else {
-            LineStatus::Fail("not found in the tree".to_owned())
-        };
-        lines.push(line(LineKind::Interface, id.clone(), status));
+    for behaviour in &behaviours {
+        let (interfaces, interface_prose) = names(&behaviour.interfaces);
+        for id in interfaces {
+            let symbol = id.rsplit("::").next().unwrap_or(&id);
+            let status = if symbols::defines(inputs.root, symbol) {
+                LineStatus::Pass
+            } else {
+                LineStatus::Fail("not found in the tree".to_owned())
+            };
+            lines.push(line(LineKind::Interface, id.clone(), status));
+        }
+        lines.extend(manual(LineKind::Interface, interface_prose));
     }
-    lines.extend(manual(LineKind::Interface, interface_prose));
 
-    lines.extend(manual(LineKind::Acceptance, template.acceptance.clone()));
+    let acceptance = body.acceptance().into_iter().map(str::to_owned).collect();
+    lines.extend(manual(LineKind::Acceptance, acceptance));
     TaskCheck { lines }
 }
 
@@ -147,12 +154,20 @@ fn test_status(name: &str, inputs: &TaskInputs<'_>) -> LineStatus {
     let Some(template) = inputs.tests else {
         return LineStatus::Skipped("no [gate] tests template declared".to_owned());
     };
+    run_named_test(template, inputs.shell, name)
+}
+
+/// Runs one named test: `name` fills the `{name}` of the `[gate] tests` template as one shell
+/// word ([`shell_word`]), and the shell runs the line. The one runner of a named test, for a
+/// task's `Tests:` and for an epic's `Done when:` lines alike. Only [`LineStatus::Pass`] and
+/// [`LineStatus::Fail`] come back.
+pub fn run_named_test(template: &CommandLine, shell: &dyn Shell, name: &str) -> LineStatus {
     let command = CommandLine::from(
         template
             .as_ref()
             .replace(NAME_PLACEHOLDER, &shell_word(name)),
     );
-    match inputs.shell.run(&command) {
+    match shell.run(&command) {
         Ok(gate_run) if gate_run.verdict == GateVerdict::Passed => LineStatus::Pass,
         Ok(gate_run) => LineStatus::Fail(last_line(&gate_run.output)),
         Err(error) => LineStatus::Fail(error.to_string()),

@@ -26,7 +26,8 @@ fn epic(id: u64, version: &str, standing: Standing) -> Epic {
             closed_at: None,
         }],
         planned_at: None,
-        challenged: true,
+        records: Vec::new(),
+        challengers: vec![None],
     }
 }
 

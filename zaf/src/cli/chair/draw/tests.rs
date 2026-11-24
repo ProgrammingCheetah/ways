@@ -184,8 +184,8 @@ fn the_palette_lists_the_actions_over_the_panes() {
     assert!(has(&shown, "│ Answer the top question            a │"));
     assert!(has(&shown, "│ Stop the build                     B │"));
     assert!(
-        has(&shown, "└─────────────────────────── ↓ 2 more ─┘"),
-        "at 80×24 the last two wait below: {}",
+        has(&shown, "└─────────────────────────── ↓ 3 more ─┘"),
+        "at 80×24 the last three wait below: {}",
         shown[21]
     );
     assert!(!has(&shown, "Quit (the build goes on)"));
@@ -197,8 +197,24 @@ fn the_palette_lists_the_actions_over_the_panes() {
     chair.key(Key::Char('k'), Instant::now());
     let shown = rows(&frame(&chair, Instant::now()));
     assert!(has(&shown, "│ Quit (the build goes on)           q │"));
-    assert!(has(&shown, "┌─ actions ───────────────── ↑ 2 more ─┐"));
+    assert!(has(&shown, "┌─ actions ───────────────── ↑ 3 more ─┐"));
     assert!(!has(&shown, "Answer the top question"));
+}
+
+#[test]
+fn chair_palette_lists_v() {
+    let mut chair = chair((120, 40));
+    chair.key(Key::Char(':'), Instant::now());
+
+    let shown = rows(&frame(&chair, Instant::now()));
+
+    assert!(
+        shown
+            .iter()
+            .any(|row| row.contains("Flip the graph: before/after") && row.contains("v │")),
+        "{}",
+        shown.join("\n")
+    );
 }
 
 #[test]
@@ -396,20 +412,130 @@ fn enter_on_an_epic_reads_its_body_and_documents_at_80_by_24() {
 }
 
 #[test]
-fn d_draws_the_epics_tree_at_80_by_24() {
-    let mut chair = chair((80, 24));
+fn d_draws_the_epics_graph_by_layer_at_120_by_40() {
+    use crate::app::chair::look::{GraphRead, Looked};
+    use crate::cli::chair::support::fixture_12_after;
+
+    let mut chair = chair((120, 40));
+    let now = Instant::now();
+    chair.set_focus(PaneId::Epics);
+    let commands = chair.key(Key::Char('d'), now);
+    assert!(
+        commands.contains(&crate::cli::chair::model::Command::Look(
+            0,
+            crate::app::chair::look::Look::Graph(crate::domain::TicketId::from(224))
+        )),
+        "{commands:?}"
+    );
+
+    let shown = rows(&frame(&chair, now));
+    assert!(has(&shown, "Graph of #224"), "{}", shown.join("\n"));
+    assert!(has(&shown, "reading the graph"), "{}", shown.join("\n"));
+
+    chair.looked(
+        0,
+        Looked::Graph(Box::new(GraphRead {
+            epic: crate::domain::TicketId::from(224),
+            view: Ok(fixture_12_after()),
+            before: Ok(crate::cli::chair::support::fixture_12_before()),
+            shape: Ok(Vec::new()),
+        })),
+    );
+    let shown = rows(&frame(&chair, now));
+    let all = shown.join("\n");
+    // The header wraps in Detail's width; its words are all there.
+    assert!(
+        has(&shown, "chain 2 · width 2 2 · critical 2: A+B ·"),
+        "{all}"
+    );
+    assert!(has(&shown, "shape: pass"), "{all}");
+    assert!(has(&shown, "layer 1"), "{all}");
+    assert!(has(&shown, "layer 2"), "{all}");
+    assert!(has(&shown, "★ ✗ A+B #230 update"), "{all}");
+    assert!(has(&shown, "  ? I:mcp.catalog #234"), "{all}");
+    assert!(has(&shown, "□ D #240 profiles"), "{all}");
+    assert!(has(&shown, "← I:mcp.catalog"), "{all}");
+}
+
+/// The chair at 120 by 40 with `d` pressed on the first epic and `read` come back.
+fn drawing(read: crate::app::chair::look::GraphRead) -> Chair {
+    let mut chair = chair((120, 40));
     let now = Instant::now();
     chair.set_focus(PaneId::Epics);
     chair.key(Key::Char('d'), now);
+    chair.looked(0, crate::app::chair::look::Looked::Graph(Box::new(read)));
+    chair
+}
 
+#[test]
+fn chair_graph_v_flips_fixture_12_before_and_after() {
+    use crate::app::chair::look::GraphRead;
+    use crate::cli::chair::support::{fixture_12_after, fixture_12_before};
+
+    let mut chair = drawing(GraphRead {
+        epic: crate::domain::TicketId::from(224),
+        view: Ok(fixture_12_after()),
+        before: Ok(fixture_12_before()),
+        shape: Ok(Vec::new()),
+    });
+    let now = Instant::now();
+
+    // After first: the tickets, with their states.
     let shown = rows(&frame(&chair, now));
+    let all = shown.join("\n");
+    assert!(
+        has(&shown, "chain 2 · width 2 2 · critical 2: A+B"),
+        "{all}"
+    );
+    assert!(has(&shown, "shape: pass"), "{all}");
+    assert!(has(&shown, "★ ✗ A+B #230 update"), "{all}");
+    assert!(!has(&shown, "as planned"), "{all}");
 
-    assert!(has(&shown, "Tree of #224"), "{}", shown.join("\n"));
-    assert!(has(&shown, "├─✗ #230"), "{}", shown.join("\n"));
-    assert!(has(&shown, "│  ├─□ #233"), "{}", shown.join("\n"));
-    assert!(has(&shown, "│  │  └─□ #240"), "{}", shown.join("\n"));
-    assert!(has(&shown, "│  └─? #234"), "{}", shown.join("\n"));
-    assert!(has(&shown, "← ?#285"), "{}", shown.join("\n"));
+    // `v`: the plan record's nodes, no states, their own header and ★ path.
+    chair.key(Key::Char('v'), now);
+    let shown = rows(&frame(&chair, now));
+    let all = shown.join("\n");
+    assert!(has(&shown, "as planned"), "{all}");
+    assert!(
+        has(&shown, "chain 2 · width 3 1 · critical 2: C → D"),
+        "{all}"
+    );
+    assert!(!has(&shown, "shape:"), "{all}");
+    assert!(has(&shown, "★ · C the MCP server lists"), "{all}");
+    assert!(has(&shown, "  · A update: --yes"), "{all}");
+    assert!(has(&shown, "★ · D profiles register"), "{all}");
+    assert!(has(&shown, "← C"), "{all}");
+    assert!(!has(&shown, "A+B"), "{all}");
+    assert!(!has(&shown, "#230 update"), "{all}");
+
+    // `v` again: after.
+    chair.key(Key::Char('v'), now);
+    let shown = rows(&frame(&chair, now));
+    assert!(has(&shown, "★ ✗ A+B #230 update"), "{}", shown.join("\n"));
+}
+
+#[test]
+fn chair_graph_older_epic_shows_one_view() {
+    use crate::app::chair::look::GraphRead;
+    use crate::app::plan::show::ViewKind;
+    use crate::cli::chair::support::fixture_12_after;
+
+    let mut older = fixture_12_after();
+    older.kind = ViewKind::Older;
+    let mut chair = drawing(GraphRead {
+        epic: crate::domain::TicketId::from(224),
+        view: Ok(older.clone()),
+        before: Ok(older),
+        shape: Err("no vocabulary".to_owned()),
+    });
+    let now = Instant::now();
+
+    let flat = rows(&frame(&chair, now));
+    assert!(has(&flat, "planned before 0.6.0"), "{}", flat.join("\n"));
+    assert!(has(&flat, "★ ✗ A+B #230 update"), "{}", flat.join("\n"));
+
+    chair.key(Key::Char('v'), now);
+    assert_eq!(rows(&frame(&chair, now)), flat, "v does nothing here");
 }
 
 #[test]

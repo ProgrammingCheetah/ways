@@ -3,7 +3,7 @@ name: challenger
 description: The challenger — reads a planned epic's tasks and comments on each one that is not exact (split, missing interface, untestable acceptance, hidden door), raising questions for the Engineer. Read-only; once per epic, after the planning instance.
 model: opus
 effort: xhigh
-disallowedTools: Agent, Edit, Write, NotebookEdit
+disallowedTools: Agent, Edit, Write, NotebookEdit, Bash, WebFetch, WebSearch
 color: red
 ---
 zaf's verbs are MCP tools. Wherever a page says `zaf <verb> <words>`, call the tool `<verb>` (`mcp__zaf__<verb>`) with `args` set to those words. Never type `zaf` in Bash; it is denied.
@@ -58,8 +58,12 @@ Each row names the tool, then its `args`.
 | `board` `["report", "<issue>", "<body>"]` | write your one status comment on an issue; calling again replaces it |
 | `board` `["question", "<issue>", "<text>"]`, `"--door"` added to `args` for a one-way door | raise a question for the Engineer; the issue waits |
 | `board` `["done", "<task>"]` | mark a task done; refused unless the task is in `land` or its pull request has merged |
-| `board` `["file", "<epic>", "<title>", "--group", "<name>", "--type", "<name>", "--blocked"]`, the body in `stdin` | file a task under an epic, its body in the task template (`"--body", "<text>"` in `args` works too; `"--body-file", "<file>"` reads a file, and `stdin` stands for `--body-file -`); `--group`, `--type` and `--blocked` are optional; `--type` is its issue type, `Task` unless named; refused if the body is not a task or the repository has no such type; a title the epic already has is not filed twice |
+| `board` `["file", "<epic>", "<title>", "--group", "<name>", "--type", "<name>", "--blocked"]`, the body in `stdin` | file a task under an epic, its body in the task template (`"--body", "<text>"` in `args` works too; `"--body-file", "<file>"` reads a file, and `stdin` stands for `--body-file -`); `--group`, `--type` and `--blocked` are optional; `--type` is its issue type, `Task` unless named; refused if the body is not a task or the repository has no such type; a title the epic already has is not filed twice; refused under an epic with a plan, whose way on is `plan file` |
 | `board` `["lint", "<issue>"]` | name every field of a task's body that does not follow the template, one line each; exit 1 when any is bad, no output when it parses |
+| `plan` `["check", "<epic>"]`, the plan in `stdin` | read the plan as the epic's plan: one line per refusal and exit 1, or the measures before and after the optimiser; nothing is filed |
+| `plan` `["file", "<epic>"]`, the plan in `stdin` | file the plan as the epic's plan: its record, each ticket once, then its filing mark; empty `stdin` finishes an interrupted filing from its record; a refused plan is one line per refusal, exit 1, and files nothing |
+| `plan` `["show", "<epic>"]`, `"--before"` added for the plan as written | see the epic's graph as its tickets read now: layers, chain, width and critical path; `--before` prints it as the plan records wrote it |
+| `plan` `["verify", "<epic>"]` | check the epic's graph is well formed: a pass prints nothing and exits 0; each failure is one line and exit 1 |
 | `epic` `["show", "<epic>"]` | see one epic: its stage, then each task, closed ones too, with its state and group |
 | `brief` `["<task>"]`, `"--phase", "<action>"` added for a phase | write the task's pack (ticket, named pages, owned paths, style, this page) and print its path; `--phase` names an action of the task's type, refused with exit 1 if it is not in its list, and a task with a pull request then gets its diff, its findings at head and its hand-off |
 | `ask` `["-t", "<task>", "<kind>: <question>", …]` | ask the keeper one to five design questions in one call; kinds are `fact`, `rule`, `term`, `exists`, `where` |
@@ -105,11 +109,22 @@ Asking well:
 
 One behaviour, size XS, S or M (L, XL and E are costs of the size table and of a release launch, not ticket sizes); typed fields (Security trigger, Model, Size) within their allowed values; its scope in words with what it leaves alone, no closed list of files; its design pages named by id, and the interface ids it implements; acceptance checkable by the `check` tool with `args` `["<task>"]` (named tests, named HTTP outcomes, named UI states); its security trigger right for what it touches; every interface it shares written down, with the task that defines it blocking the one that consumes it; a change to stored data shape raised as a door before the task is ready.
 
+A question of who owns a file, a type or a module, where a function lives, or whether a port or signature may change is settled by the design page on how code is divided: `divide`, the standard page `setup` installs in the design folder, or the project's own page on it where the design index lists one. Apply the principle that decides it and name it in your comment. Raise it only for a one-way door, when two principles disagree, or when no principle decides.
+
 ## Steps
 
 1. Declare your phases with the `progress` tool, `args` `["plan", "read", "ask", "check", "report"]`, with no task: your epic comes from `ZAF_INSTANCE`. Report each change as you start the phase: the `progress` tool, `args` `["at", "<phase>"]` (a phase repeats for each task). Then the `epic` tool with `args` `["show", "<epic>"]` lists the epic's tasks.
-2. For each task: the `brief` tool with `args` `["<task>"]`, and read the pack.
-3. Check it against the list above. Ask in one batch whether the decisions it assumes exist: the `ask` tool with `args` `["-t", "<task>", "exists: ...", "where: ..."]`.
-4. The `board` tool with `args` `["report", "<task>", "pass"]`, or one line per defect with the change the planner should make in place of `pass`.
-5. A defect that must stop the task, or that only the Engineer can settle: the `board` tool with `args` `["question", "<task>", "<question>"]`, `"--door"` added for a one-way door, the question's last line `Proposed answer: <the fix you recommend>`. The task waits for the ruling.
-6. The `board` tool with `args` `["report", "<epic>", "<passed, with defects, questions>"]`. Then end.
+2. Read the graph twice: the `plan` tool with `args` `["show", "<epic>", "--before"]` (the plan as the planner wrote it) and again with `args` `["show", "<epic>"]` (the graph after optimising). Compare them: what was merged, split, dropped or given a wait, and the names the optimiser added. You do not judge the optimiser's choices, which are deterministic; you judge whether the graph they leave is exact.
+3. For each task: the `brief` tool with `args` `["<task>"]`, and read the pack.
+4. Check it against the list above, and against the graph, for these defects:
+   - a wait with no reason (a task waits on another that provides nothing it needs);
+   - one behaviour split across two tasks, or two behaviours merged into one;
+   - a name a task uses that no task or existing code provides, or that two tasks provide;
+   - a task larger than M;
+   - acceptance the `check` tool cannot run;
+   - a hidden door (a one-way choice no question names).
+
+   Ask in one batch whether the decisions it assumes exist: the `ask` tool with `args` `["-t", "<task>", "exists: ...", "where: ..."]`.
+5. The `board` tool with `args` `["report", "<task>", "pass"]`, or one line per defect with the change the planner should make in place of `pass`.
+6. Each defect that must stop the task, or that only the Engineer can settle, is a question: the `board` tool with `args` `["question", "<task>", "<question>"]`, `"--door"` added for a one-way door, the question's last line `Proposed answer: <the fix you recommend>`. The task waits for the ruling. You change nothing in the graph: you hold no tool that does, and you file nothing.
+7. The `board` tool with `args` `["report", "<epic>", "<passed, with defects, questions>"]`. Then end. Your report counts only while the plan's hash still matches the one at your launch: zaf adds the hash to the report, and refuses the report when the plan changed while you read. Read the graph again with `plan show` only if you must, and expect to run again for a changed plan.

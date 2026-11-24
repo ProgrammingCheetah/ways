@@ -901,10 +901,7 @@ fn status_shows_the_lane_and_what_each_ticket_waits_on() {
         ..of(5)
     };
     let waits = TicketFacts {
-        dependencies: vec![Dependency {
-            ticket: TicketId::from(3),
-            standing: Standing::Open,
-        }],
+        dependencies: vec![Dependency::blocked_by(TicketId::from(3), Standing::Open)],
         ..of(7)
     };
     let mut placed = gathered(vec![
@@ -1089,7 +1086,8 @@ fn epic_of(version: &str) -> Epic {
         body: body.as_str().into(),
         tasks: Vec::new(),
         planned_at: None,
-        challenged: false,
+        records: Vec::new(),
+        challengers: Vec::new(),
     }
 }
 

@@ -24,9 +24,12 @@ use std::time::{Duration, SystemTime};
 
 use super::ReleaseVersion;
 use crate::app::hub::{Report, reports_file};
+use crate::app::plan::show::{PlanView, ShowError, show, show_before};
+use crate::app::plan::verify::verify;
 use crate::app::release::ReleaseFolder;
 use crate::app::schedule::record::{OUTPUT_FILE, PHASES_DIR, read_run, read_text};
 use crate::composition::{Composition, STATE_DIR};
+use crate::domain::plan::shape::ShapeFailure;
 use crate::domain::schedule::RunRecord;
 use crate::domain::{DocumentSignature, TicketId, printable};
 use crate::manifest::Manifest;
@@ -48,6 +51,8 @@ pub enum Look {
     Epic(TicketId),
     /// A ticket's reports and its phase run's log.
     Ticket(TicketId),
+    /// An epic's graph as its tickets read now, and whether it holds to O3's shape.
+    Graph(TicketId),
 }
 
 /// What a look read.
@@ -57,6 +62,23 @@ pub enum Looked {
     Epic(EpicRead),
     /// A ticket's reports and its phase run's log.
     Ticket(TicketRead),
+    /// An epic's graph and its shape check.
+    Graph(Box<GraphRead>),
+}
+
+/// An epic's graph as `d` reads it (D23): the view of its tickets and the shape check beside it.
+/// Each half fails on its own, with the words of why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphRead {
+    /// The epic.
+    pub epic: TicketId,
+    /// The graph as the tickets read now, or why it is not shown.
+    pub view: Result<PlanView, String>,
+    /// The graph as the plan records wrote it, or why it is not shown; an epic filed before 0.6.0
+    /// has the same view in both, of kind `Older`.
+    pub before: Result<PlanView, String>,
+    /// What breaks O3's rules, none for a good graph, or why it was not checked.
+    pub shape: Result<Vec<ShapeFailure>, String>,
 }
 
 /// An epic as Enter reads it.
@@ -143,6 +165,58 @@ pub fn read(root: &Path, look: Look, alive: &dyn Fn(&Holder) -> bool) -> Looked 
     match look {
         Look::Epic(epic) => Looked::Epic(read_epic(root, epic)),
         Look::Ticket(ticket) => Looked::Ticket(read_ticket(&root.join(STATE_DIR), ticket, alive)),
+        Look::Graph(epic) => Looked::Graph(Box::new(read_graph(root, epic))),
+    }
+}
+
+/// The graph of the epic `epic` of the project at `root`: [`show`] and [`verify`] over its board,
+/// every word made [`printable`].
+pub fn read_graph(root: &Path, epic: TicketId) -> GraphRead {
+    let failed = |why: String| GraphRead {
+        epic,
+        view: Err(why.clone()),
+        before: Err(why.clone()),
+        shape: Err(why),
+    };
+    let composition = match Composition::load(root) {
+        Ok(composition) => composition,
+        Err(error) => {
+            return failed(printable(&format!("the manifest cannot be read: {error}")));
+        }
+    };
+    let board = match composition.board() {
+        Ok(board) => board,
+        Err(error) => return failed(printable(&error.to_string())),
+    };
+    let shown = |read: Result<PlanView, ShowError>| {
+        read.map(|mut view| {
+            for node in &mut view.nodes {
+                node.title = printable(&node.title);
+            }
+            view
+        })
+        .map_err(|error| printable(&error.to_string()))
+    };
+    let view = shown(show(board.as_ref(), epic));
+    let before = shown(show_before(board.as_ref(), epic));
+    let shape = composition
+        .vcs()
+        .map_err(|error| printable(&error.to_string()))
+        .and_then(|vcs| {
+            verify(
+                root,
+                composition.manifest(),
+                board.as_ref(),
+                vcs.as_ref(),
+                epic,
+            )
+            .map_err(|error| printable(&error.to_string()))
+        });
+    GraphRead {
+        epic,
+        view,
+        before,
+        shape,
     }
 }
 

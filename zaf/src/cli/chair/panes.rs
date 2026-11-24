@@ -6,7 +6,7 @@
 //! feature still to come fills in its own file:
 //!
 //! - [`inbox`], [`problems`], [`now`], [`epics`]: the left column and the epics, built.
-//! - [`detail`]: a question, a problem and the answer box; its epic views, reading and tree (F6)
+//! - [`detail`]: a question, a problem and the answer box; its epic views, reading and graph (F6)
 //!   and its why view (F7) in `detail/`.
 //! - [`live`]: a ticket followed live, its reports and its phase run's log (F7).
 //! - [`phase`]: a release phase's Claude session on a pseudo-terminal (F8), laid over Detail and
@@ -33,7 +33,7 @@ use ratatui::text::{Line, Span};
 use super::keys::Key;
 use super::layout::PaneId;
 use super::theme::Theme;
-use crate::app::chair::look::{EpicRead, TicketRead};
+use crate::app::chair::look::{EpicRead, GraphRead, TicketRead};
 use crate::app::chair::{ChairAction, ChairState, ReleaseVersion, SquareState};
 use crate::cli::steps::FRAMES;
 use crate::domain::TicketId;
@@ -56,6 +56,8 @@ pub struct Cursor {
     pub scroll: u16,
     /// What Detail shows.
     pub detail: DetailView,
+    /// Whether the graph Detail draws is the one as planned (`v`), not the tickets' own.
+    pub before: bool,
     /// The ticket Live follows; none follows the first that runs.
     pub live: Option<TicketId>,
 }
@@ -85,6 +87,8 @@ pub struct Looks {
     pub epic: Option<(TicketId, Option<EpicRead>)>,
     /// The ticket Live follows: the one asked for, and what came back once it has.
     pub ticket: Option<(TicketId, Option<TicketRead>)>,
+    /// The epic whose graph Detail draws: the one asked for, and what came back once it has.
+    pub graph: Option<(TicketId, Option<GraphRead>)>,
     /// The epics whose signature waits to be written, or was written since the last read, by
     /// project.
     pub signing: BTreeSet<(PathBuf, TicketId)>,
@@ -107,6 +111,14 @@ impl Looks {
             .and_then(|(_, read)| read.as_ref())
     }
 
+    /// What was read of the graph of `epic`, once it came back.
+    pub fn graph(&self, epic: TicketId) -> Option<&GraphRead> {
+        self.graph
+            .as_ref()
+            .filter(|(asked, _)| *asked == epic)
+            .and_then(|(_, read)| read.as_ref())
+    }
+
     /// Whether `epic` of the project at `root` is being signed.
     pub fn signs(&self, root: &Path, epic: TicketId) -> bool {
         self.signing.contains(&(root.to_owned(), epic))
@@ -125,8 +137,8 @@ pub enum DetailView {
     Epic,
     /// The selected epic's stage and body, and its release's objectives and design.
     Read,
-    /// The selected epic's dependency tree.
-    Tree,
+    /// The selected epic's graph, a row for each layer.
+    Graph,
     /// Why a ticket waits, its next phase, its pull request and its cost.
     Why(TicketId),
     /// The answer box.

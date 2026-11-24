@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 
 use super::actions::{Caller, ListedAction, ResolveError, list_actions};
 use crate::composition::STATE_DIR;
-use crate::domain::{Instance, PageId, TaskTemplate, Ticket, TicketId};
+use crate::domain::{Instance, PageId, TaskBody, Ticket, TicketId};
 use crate::manifest::VcsKind;
 use crate::ports::{Board, Design, NewQuestion, Page, PortError};
 
@@ -212,10 +212,10 @@ fn build(
         return Err(BriefError::Instance(query.instance.to_owned()));
     }
     let ticket = ports.board.task(query.task).map_err(BriefError::Board)?;
-    let template = ticket.template().ok();
+    let template = ticket.task_body().ok();
     let pages = match (&template, ports.design) {
-        (Some(template), Some(design)) => {
-            named_pages(design, &template.design_pages).map_err(BriefError::Design)?
+        (Some(body), Some(design)) => {
+            named_pages(design, &body.design_pages().join("\n")).map_err(BriefError::Design)?
         }
         _ => Vec::new(),
     };
@@ -356,7 +356,7 @@ fn is_path_segment(name: &str) -> bool {
 struct Parts<'a> {
     ticket: &'a Ticket,
     questions: &'a [(Ticket, Option<String>)],
-    template: Option<&'a TaskTemplate>,
+    template: Option<&'a TaskBody>,
     pages: &'a [Page],
     actions: &'a [ListedAction],
     /// The resumed phase's sections, when the task has a recorded pull request.
@@ -431,7 +431,7 @@ fn render(
     }
 
     writeln!(text, "## Owned paths\n")?;
-    let paths = template.map(|template| owned_paths(&template.owned_paths));
+    let paths = template.map(|body| owned_paths(&body.owned_paths().join("\n")));
     match (ports.nodes, paths) {
         (_, None) => {}
         (None, Some(paths)) => {

@@ -622,6 +622,7 @@ fn read_with(root: &Path, now: SystemTime, running: usize) -> ProjectState {
         number: EPIC,
         title: format!("The epic of {name}"),
         stage: EpicStage::Challenged,
+        half_filed: false,
         release: None,
         url: None,
         done: 0,

@@ -2599,13 +2599,13 @@ fn stale_line_of_one_profile_matches_its_line() {
 
 /// The generation and the hash of what `init` writes for [`GUARD_FIXTURE`], fixed together: the
 /// pair that was current when `GENERATION` was last raised. Raising `GENERATION` means updating both.
-const GUARDED_GENERATION: u32 = 7;
-const GUARDED_HASH: &str = "8c2790a69046cb53375081e4cf54799a78d86364a97dcfb5cfc27ec5e317ac4a";
+const GUARDED_GENERATION: u32 = 8;
+const GUARDED_HASH: &str = "feee97e19372bb7496479bda944549acef0aef867a5e7edefb930dba0cab177a";
 
 /// The generation and the hash of what `init` does for [`PACK_GUARD_FIXTURE`], fixed together as
 /// the first case's pair is: the commands the pack step ran, in order, and every file written.
-const GUARDED_PACK_GENERATION: u32 = 7;
-const GUARDED_PACK_HASH: &str = "1a2880182e8f0cc218111032f2f110a244e02feab66747141d5ccd6b4ed45557";
+const GUARDED_PACK_GENERATION: u32 = 8;
+const GUARDED_PACK_HASH: &str = "1a47b4d165a556f4e886bf8722675a0dd6d9d9e1791ac0af9b08fc619923f80e";
 
 /// A fixture manifest with a `[pack]` section, reaching the plugin commands, the pack's tag record
 /// and the settings written after the install.

@@ -1,0 +1,98 @@
+{
+ "name": "15-split-then-merged-back",
+ "why": "One node with two small behaviours on the same thing is split, then merged back: the plan was already right.",
+ "options": {
+  "lift": "all",
+  "interfaces": "each"
+ },
+ "plan": {
+  "nodes": [
+   {
+    "id": "A",
+    "behaviours": [
+     {
+      "text": "first",
+      "size": 1,
+      "writes": [
+       "x"
+      ],
+      "provides": [],
+      "needs": []
+     },
+     {
+      "text": "second",
+      "size": 1,
+      "writes": [
+       "x"
+      ],
+      "provides": [],
+      "needs": []
+     }
+    ]
+   }
+  ]
+ },
+ "expect": {
+  "before": {
+   "nodes": 1,
+   "interfaces": 0,
+   "chain": 1,
+   "width": [
+    1
+   ],
+   "narrow_layers": [
+    0
+   ],
+   "work": 2,
+   "critical": 2,
+   "critical_path": [
+    "A"
+   ]
+  },
+  "after": {
+   "nodes": 1,
+   "interfaces": 0,
+   "chain": 1,
+   "width": [
+    1
+   ],
+   "narrow_layers": [
+    0
+   ],
+   "work": 2,
+   "critical": 2,
+   "critical_path": [
+    "A.a+A.b"
+   ]
+  },
+  "plan": {
+   "nodes": [
+    {
+     "id": "A.a+A.b",
+     "kind": "body",
+     "behaviours": [
+      {
+       "text": "first",
+       "size": 1,
+       "writes": [
+        "x"
+       ],
+       "provides": [],
+       "needs": []
+      },
+      {
+       "text": "second",
+       "size": 1,
+       "writes": [
+        "x"
+       ],
+       "provides": [],
+       "needs": []
+      }
+     ]
+    }
+   ],
+   "orders": []
+  }
+ }
+}

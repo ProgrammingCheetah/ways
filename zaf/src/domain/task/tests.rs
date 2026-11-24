@@ -484,3 +484,94 @@ fn a_body_parses_exactly_when_it_has_no_problems() {
         );
     }
 }
+
+/// A planned body of one behaviour: the template without `Blocked by`, under a `Node:` line.
+fn planned_text() -> String {
+    format!(
+        "Node: A\n{}",
+        FILLED_TEMPLATE.replace("Blocked by: #3, #5\n", "")
+    )
+}
+
+/// A planned body of two behaviours, each with its own acceptance and tests.
+fn merged_text() -> String {
+    let section = |key: &str, acceptance: &str, tests: &str| {
+        let fields = FILLED_TEMPLATE
+            .replace("Blocked by: #3, #5\n", "")
+            .replace("  - an empty list exports a header row only", acceptance)
+            .replace("  - a list of three books exports four rows\n", "")
+            .replace(
+                "Tests: export_empty_list_writes_header, export_three_books_writes_four_rows",
+                &format!("Tests: {tests}"),
+            );
+        format!("Behaviour: {key}\n{fields}")
+    };
+    format!(
+        "Node: A+B\n{}{}",
+        section("a", "  - the first behaviour holds", "first_behaviour_test"),
+        section(
+            "b",
+            "  - the second behaviour holds",
+            "second_behaviour_test"
+        ),
+    )
+}
+
+fn body(text: &str) -> TaskBody {
+    TaskBody::parse(text).unwrap_or_else(|error| panic!("the body parses: {error}\n{text}"))
+}
+
+#[test]
+fn task_body_with_node_is_planned() {
+    assert!(matches!(body(&planned_text()), TaskBody::Planned(_)));
+    assert!(matches!(body(&merged_text()), TaskBody::Planned(_)));
+}
+
+#[test]
+fn task_body_without_node_is_template() {
+    assert!(matches!(body(FILLED_TEMPLATE), TaskBody::Template(_)));
+}
+
+#[test]
+fn task_body_is_refused_with_the_error_of_the_shape_it_claimed() {
+    assert_eq!(
+        TaskBody::parse("Node: A\n"),
+        Err(TaskTemplateError::NoSection)
+    );
+    let older_error = "Goal: only a goal"
+        .parse::<TaskTemplate>()
+        .expect_err("a goal alone is refused");
+    assert_eq!(TaskBody::parse("Goal: only a goal"), Err(older_error));
+}
+
+#[test]
+fn task_body_merged_gives_both_acceptances() {
+    let merged = body(&merged_text());
+    assert_eq!(
+        merged.acceptance(),
+        ["the first behaviour holds", "the second behaviour holds"]
+    );
+    assert_eq!(merged.behaviours().len(), 2);
+}
+
+#[test]
+fn task_body_merged_gives_both_tests() {
+    let merged = body(&merged_text());
+    assert_eq!(
+        merged.tests(),
+        ["first_behaviour_test", "second_behaviour_test"]
+    );
+    assert_eq!(merged.interfaces().len(), 2);
+}
+
+#[test]
+fn task_body_template_matches_task_template() {
+    let template = filled();
+    let older = body(FILLED_TEMPLATE);
+    assert_eq!(older.size(), Ok(template.size));
+    assert_eq!(older.model(), template.model);
+    assert_eq!(older.acceptance(), template.acceptance);
+    assert_eq!(older.tests(), [template.tests.as_str()]);
+    assert_eq!(older.interfaces(), [template.interfaces.as_str()]);
+    assert_eq!(older.behaviours(), [&template]);
+}

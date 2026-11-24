@@ -3,6 +3,8 @@
 # zaf 1: refused: no ZAF_ROOT, so it was not run by zaf in a project; or claude's own exit 1
 # zaf mode: 700
 # zaf terminal: yes
+# changed: its phase header tells the Designer the design holds one `toml vocabulary` block of the release's names, and that a name a plan uses must be in it or in the plan's `New names:`
+# changed: its phase header tells the Designer that each "Done when" line names, in backticks, the test that proves it
 # changed: its phase header tells the Designer to say "Ready for Exit." and run `zaf begin ready` when the document is done, which ends the session
 
 # Any other code is claude's own: the session ended that way.
@@ -23,7 +25,9 @@ Output that must exist: design.md in the release folder, and at least one epic f
 zaf takes the Engineer's signature when this session ends, so write no sign-off.
 When you judge the document done, say \"Ready for Exit.\" and run 'zaf begin ready': zaf then ends this session.
 
-The design builds on the objectives document in the release folder."
+The design builds on the objectives document in the release folder.
+The design holds one vocabulary block, the fenced block opened by \`\`\`toml vocabulary, listing the release's names, the names the planner may use. A name a plan uses must be in it or in the plan's 'New names:'.
+Each \"Done when\" line names its test: a \"Done when\" line names a test in backticks, so a plan's acceptance can be checked by 'zaf check'."
     if [ "$#" -gt 0 ]; then
         prompt="$prompt
 

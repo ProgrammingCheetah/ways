@@ -1,0 +1,179 @@
+{
+ "name": "04-split-two-behaviours",
+ "why": "One node holds two unrelated behaviours: it becomes two nodes, and the edge follows the name.",
+ "options": {
+  "lift": "all",
+  "interfaces": "each"
+ },
+ "plan": {
+  "nodes": [
+   {
+    "id": "A",
+    "behaviours": [
+     {
+      "text": "the catalog lists the verbs",
+      "size": 1,
+      "writes": [
+       "mcp"
+      ],
+      "provides": [
+       "mcp.catalog"
+      ],
+      "needs": []
+     },
+     {
+      "text": "the hook records each call",
+      "size": 1,
+      "writes": [
+       "hub"
+      ],
+      "provides": [
+       "hub.record"
+      ],
+      "needs": []
+     }
+    ]
+   },
+   {
+    "id": "B",
+    "behaviours": [
+     {
+      "text": "profiles register the server",
+      "size": 1,
+      "writes": [
+       "profile"
+      ],
+      "provides": [],
+      "needs": [
+       "mcp.catalog"
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ "expect": {
+  "before": {
+   "nodes": 2,
+   "interfaces": 0,
+   "chain": 2,
+   "width": [
+    1,
+    1
+   ],
+   "narrow_layers": [
+    0,
+    1
+   ],
+   "work": 3,
+   "critical": 3,
+   "critical_path": [
+    "A",
+    "B"
+   ]
+  },
+  "after": {
+   "nodes": 4,
+   "interfaces": 1,
+   "chain": 2,
+   "width": [
+    2,
+    2
+   ],
+   "narrow_layers": [
+    0,
+    1
+   ],
+   "work": 4,
+   "critical": 2,
+   "critical_path": [
+    "I:mcp.catalog",
+    "A.a"
+   ]
+  },
+  "plan": {
+   "nodes": [
+    {
+     "id": "A.a",
+     "kind": "body",
+     "behaviours": [
+      {
+       "text": "the catalog lists the verbs",
+       "size": 1,
+       "writes": [
+        "mcp"
+       ],
+       "provides": [],
+       "needs": [
+        "mcp.catalog"
+       ]
+      }
+     ]
+    },
+    {
+     "id": "A.b",
+     "kind": "body",
+     "behaviours": [
+      {
+       "text": "the hook records each call",
+       "size": 1,
+       "writes": [
+        "hub"
+       ],
+       "provides": [
+        "hub.record"
+       ],
+       "needs": []
+      }
+     ]
+    },
+    {
+     "id": "B",
+     "behaviours": [
+      {
+       "text": "profiles register the server",
+       "size": 1,
+       "writes": [
+        "profile"
+       ],
+       "provides": [],
+       "needs": [
+        "mcp.catalog"
+       ]
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "I:mcp.catalog",
+     "kind": "interface",
+     "behaviours": [
+      {
+       "text": "the signature of mcp.catalog",
+       "size": 1,
+       "writes": [
+        "sig:mcp.catalog"
+       ],
+       "provides": [
+        "mcp.catalog"
+       ],
+       "needs": []
+      }
+     ]
+    }
+   ],
+   "orders": [
+    {
+     "from": "I:mcp.catalog",
+     "to": "A.a",
+     "needs": "mcp.catalog"
+    },
+    {
+     "from": "I:mcp.catalog",
+     "to": "B",
+     "needs": "mcp.catalog"
+    }
+   ]
+  }
+ }
+}

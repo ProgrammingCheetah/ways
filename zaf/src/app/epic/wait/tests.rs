@@ -79,6 +79,7 @@ fn epic(stage: EpicStage) -> EpicView {
         number: TicketId::from(EPIC),
         title: "The epic".to_owned(),
         stage,
+        half_filed: false,
         release: None,
         done: 0,
         total: 1,

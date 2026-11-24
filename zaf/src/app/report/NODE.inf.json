@@ -19,7 +19,7 @@
   "fs": [
     {
       "name": "epics.rs",
-      "role": "`zaf report --epics`: one row per epic from the ledger, what it cost beside what it finished",
+      "role": "`zaf report --epics`: one row per epic from the ledger, what it cost beside what it finished, and its planned count with its minutes of work, on questions and per planned task (or `-` and the reason it is left out)",
       "node": false
     },
     {
@@ -55,6 +55,16 @@
     {
       "name": "tests.rs",
       "role": "golden-file tests",
+      "node": false
+    },
+    {
+      "name": "times.rs",
+      "role": "an epic's times: gathered from the phase run folders and the board (`epic_times`, or left out with its reason), then its minutes of work and on questions, question intervals clipped to the window and united",
+      "node": false
+    },
+    {
+      "name": "times/",
+      "role": "tests.rs",
       "node": false
     },
     {

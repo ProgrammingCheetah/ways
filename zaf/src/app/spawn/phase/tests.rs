@@ -208,3 +208,42 @@ fn an_inline_run_whose_tick_is_gone_no_longer_reads_running() {
     .expect("the runs read");
     assert!(runs[0].alive, "{runs:?}");
 }
+
+/// A planned ticket's phase run is launched with what is derived from its sections: the run
+/// folder holds size `M` for two behaviours sized `S`, and the launcher reads it back. A run
+/// carries a size and no model of its own; the model (`sonnet`) is derived by the same
+/// [`TaskBody`] from the same body.
+#[test]
+fn phase_run_uses_planned_ticket_model() {
+    let scene = Inline::new();
+    scene.board.add_ticket(crate::domain::Ticket {
+        id: TicketId::from(7),
+        epic: Some(TicketId::from(2)),
+        title: "Issue 7".into(),
+        body: crate::fakes::PLANNED_M_BODY.into(),
+        state: Some(crate::domain::TicketState::Claimed),
+        url: "".into(),
+        kind: None,
+    });
+    let ports = Ports {
+        board: &scene.board,
+        forge: &scene.forge,
+        ci_filter: None,
+        manifest: &scene.manifest,
+        root: &scene.root,
+        home: &scene.home,
+        state_dir: &scene.state_dir,
+        alive: &|_: &Holder| false,
+        version: None,
+        now: SystemTime::now(),
+        vcs: None,
+    };
+
+    let started = start(&ports, TicketId::from(7), "merge", &|_| Ok(tick_process(1)))
+        .expect("a planned task starts");
+
+    let launch = launch_of(&started.run_dir).expect("the folder reads back");
+    assert_eq!(launch.size, "M");
+    let body = crate::domain::TaskBody::parse(crate::fakes::PLANNED_M_BODY).expect("parses");
+    assert_eq!(body.model(), crate::domain::TaskModel::Sonnet);
+}

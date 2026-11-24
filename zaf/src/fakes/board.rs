@@ -7,19 +7,33 @@ use std::time::SystemTime;
 use super::calls::Calls;
 use crate::domain::schedule::Priority;
 use crate::domain::{
-    CHALLENGER_ROLE, Epic, EpicTask, GroupName, Instance, NewEpic, NewTask, OpenTicket, Signature,
-    Standing, StandingAt, Ticket, TicketId, TicketState, TicketType,
+    CHALLENGER_ROLE, Epic, EpicRecord, EpicTask, GroupName, Instance, NewEpic, NewTask, OpenTicket,
+    RecordComment, Signature, Standing, StandingAt, Ticket, TicketId, TicketState, TicketType,
+    report_graph,
 };
 use crate::ports::{
-    AccessCheck, Board, ClaimOutcome, ClaimRecord, IssueTypes, NewQuestion, PortError,
+    AccessCheck, Board, ClaimOutcome, ClaimRecord, IssueTypes, Login, NewQuestion, PortError,
 };
+
+/// A comment on an in-memory issue, with the login that posted it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FakeComment {
+    /// Who posted it.
+    pub author: Login,
+    /// What it says.
+    pub body: String,
+}
+
+/// The login the in-memory board posts as until told otherwise ([`FakeBoard::set_own_login`]).
+pub const OWN_LOGIN: &str = "zaf-bot";
 
 /// One issue and everything written on it.
 #[derive(Debug, Clone)]
 struct Issue {
     ticket: Ticket,
-    comments: Vec<String>,
-    reports: Vec<(Instance, String)>,
+    comments: Vec<FakeComment>,
+    /// Each status report: who posted it, for which instance, and its text.
+    reports: Vec<(Login, Instance, String)>,
     claim: Option<ClaimRecord>,
     door: bool,
     question: bool,
@@ -29,7 +43,8 @@ struct Issue {
     not_planned: bool,
     epic: bool,
     group: Option<GroupName>,
-    signature: Option<Signature>,
+    /// Each signature and who posted it, oldest first.
+    signatures: Vec<(Login, Signature)>,
     /// The labels a person put on it that the board's own fields do not hold (`priority/1`).
     labels: Vec<String>,
     /// When it was opened; none unless told.
@@ -53,7 +68,7 @@ impl Issue {
             not_planned: false,
             epic: false,
             group: None,
-            signature: None,
+            signatures: Vec::new(),
             labels: Vec::new(),
             opened_at: None,
             closed_at: None,
@@ -85,6 +100,10 @@ struct State {
     question_reads_fail: bool,
     /// How many reads of the questions raised on a ticket were made.
     question_reads: usize,
+    /// The login the board posts as; [`OWN_LOGIN`] when none is set.
+    own_login: Option<Login>,
+    /// The logins the manifest lists for the board; none lists none.
+    trusted: Vec<Login>,
 }
 
 /// The issue types the in-memory repository defines until told otherwise: GitHub's own.
@@ -167,8 +186,10 @@ impl FakeBoard {
     pub fn add_signed_epic(&self, number: TicketId, title: &str) {
         self.add_epic(number, title);
         let mut state = self.state();
+        let own = state.own();
         if let Some(issue) = state.issues.get_mut(&number) {
-            issue.signature = Some(Signature::of(&issue.ticket.body, SystemTime::UNIX_EPOCH));
+            let signature = Signature::of(&issue.ticket.body, SystemTime::UNIX_EPOCH);
+            issue.signatures.push((own, signature));
         }
     }
 
@@ -177,14 +198,16 @@ impl FakeBoard {
     pub fn add_challenged_epic(&self, number: TicketId, title: &str) {
         self.add_epic(number, title);
         let mut state = self.state();
+        let own = state.own();
         if let Some(issue) = state.issues.get_mut(&number) {
-            issue.signature = Some(Signature::of(&issue.ticket.body, SystemTime::UNIX_EPOCH));
+            let signature = Signature::of(&issue.ticket.body, SystemTime::UNIX_EPOCH);
+            issue.signatures.push((own.clone(), signature));
             let challenger = Instance {
                 role: CHALLENGER_ROLE.into(),
                 epic: number,
                 number: 1.into(),
             };
-            issue.reports.push((challenger, "pass".to_owned()));
+            issue.reports.push((own, challenger, "pass".to_owned()));
         }
     }
 
@@ -273,8 +296,57 @@ impl FakeBoard {
         self.state()
             .issues
             .get(&issue)
+            .map(|issue| issue.comments.iter().map(|c| c.body.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    /// The comments on an issue with the login that posted each, oldest first.
+    pub fn comment_rows(&self, issue: TicketId) -> Vec<FakeComment> {
+        self.state()
+            .issues
+            .get(&issue)
             .map(|issue| issue.comments.clone())
             .unwrap_or_default()
+    }
+
+    /// Posts a comment on an issue as `author`, as that user would on the forge. A comment the
+    /// board posts itself ([`Board::comment`]) is by its own login.
+    pub fn comment_as(&self, issue: TicketId, author: &str, body: &str) {
+        if let Some(issue) = self.state().issues.get_mut(&issue) {
+            issue.comments.push(FakeComment {
+                author: Login::from(author),
+                body: body.to_owned(),
+            });
+        }
+    }
+
+    /// Posts a signature comment on an epic as `author`, as that user would on the forge. A
+    /// signature the board posts itself ([`Board::sign`]) is by its own login.
+    pub fn sign_as(&self, epic: TicketId, author: &str, signature: &Signature) {
+        if let Some(issue) = self.state().issues.get_mut(&epic) {
+            let signed = (Login::from(author), signature.clone());
+            issue.signatures.push(signed);
+        }
+    }
+
+    /// Posts `instance`'s status report on an issue as `author`, as that user would on the
+    /// forge by writing a comment under the instance's report marker. A report the board posts
+    /// itself ([`Board::report`]) is by its own login.
+    pub fn report_as(&self, issue: TicketId, author: &str, instance: &Instance, body: &str) {
+        if let Some(issue) = self.state().issues.get_mut(&issue) {
+            let report = (Login::from(author), instance.clone(), body.to_owned());
+            issue.reports.push(report);
+        }
+    }
+
+    /// Sets the login the board posts as, [`OWN_LOGIN`] until then.
+    pub fn set_own_login(&self, login: &str) {
+        self.state().own_login = Some(Login::from(login));
+    }
+
+    /// Sets the logins the manifest lists for the board, as `[board] trusted_logins` does.
+    pub fn set_trusted_logins(&self, logins: &[&str]) {
+        self.state().trusted = logins.iter().copied().map(Login::from).collect();
     }
 
     /// The status comments on a task, one per instance.
@@ -282,7 +354,12 @@ impl FakeBoard {
         self.state()
             .issues
             .get(&task)
-            .map(|issue| issue.reports.clone())
+            .map(|issue| {
+                let reports = issue.reports.iter();
+                reports
+                    .map(|(_, instance, body)| (instance.clone(), body.clone()))
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -320,7 +397,8 @@ impl FakeBoard {
             .issues
             .values()
             .filter(|issue| issue.epic && !issue.closed)
-            .map(|epic| Epic {
+            .map(|epic| (epic, state.trusted()))
+            .map(|(epic, trusted)| Epic {
                 id: epic.ticket.id,
                 title: epic.ticket.title.clone(),
                 body: epic.ticket.body.clone(),
@@ -340,13 +418,22 @@ impl FakeBoard {
                         closed_at: task.closed.then_some(task.closed_at).flatten(),
                     })
                     .collect(),
-                signature: epic.signature.clone(),
+                signature: epic
+                    .signatures
+                    .iter()
+                    .rfind(|(author, _)| trusted.contains(author))
+                    .map(|(_, signature)| signature.clone()),
                 // The fake keeps no time on a comment.
                 planned_at: None,
-                challenged: epic
+                challengers: epic
                     .reports
                     .iter()
-                    .any(|(instance, _)| instance.role.as_str() == CHALLENGER_ROLE),
+                    .filter(|(author, instance, _)| {
+                        instance.role.as_str() == CHALLENGER_ROLE && trusted.contains(author)
+                    })
+                    .map(|(_, _, body)| report_graph(body))
+                    .collect(),
+                records: epic_records(epic, &trusted),
             })
             .collect()
     }
@@ -385,6 +472,20 @@ impl FakeBoard {
     }
 }
 
+/// The plan records on `epic` that one of `trusted` posted, in posting order, as a real board
+/// reads them. The fake keeps no time on a comment.
+fn epic_records(epic: &Issue, trusted: &[Login]) -> Vec<EpicRecord> {
+    let mut records = Vec::new();
+    for comment in &epic.comments {
+        if trusted.contains(&comment.author)
+            && let Some(read) = RecordComment::read(&comment.body)
+        {
+            read.file_into(&mut records, None);
+        }
+    }
+    records
+}
+
 fn not_found(issue: TicketId) -> PortError {
     PortError::NotFound(format!("issue {issue}"))
 }
@@ -394,6 +495,25 @@ impl State {
     fn next_id(&self) -> TicketId {
         let highest = self.issues.keys().next_back().map_or(0, |id| id.get());
         TicketId::from(highest + 1)
+    }
+
+    /// The login the board posts as.
+    fn own(&self) -> Login {
+        self.own_login
+            .clone()
+            .unwrap_or_else(|| Login::from(OWN_LOGIN))
+    }
+
+    /// The trusted logins: the board's own login, then each listed one that is not it.
+    fn trusted(&self) -> Vec<Login> {
+        let own = self.own();
+        let listed: Vec<Login> = self
+            .trusted
+            .iter()
+            .filter(|login| **login != own)
+            .cloned()
+            .collect();
+        std::iter::once(own).chain(listed).collect()
     }
 
     fn issue_mut(&mut self, number: TicketId) -> Result<&mut Issue, PortError> {
@@ -478,7 +598,20 @@ impl Board for FakeBoard {
     fn sign(&self, epic: TicketId, signature: &Signature) -> Result<(), PortError> {
         self.calls.record("sign");
         let mut state = self.state();
-        state.issue_mut(epic)?.signature = Some(signature.clone());
+        let own = state.own();
+        let signed = (own, signature.clone());
+        state.issue_mut(epic)?.signatures.push(signed);
+        Ok(())
+    }
+
+    fn drop_task(&self, task: TicketId) -> Result<(), PortError> {
+        self.calls.record("drop_task");
+        let mut state = self.state();
+        let issue = state.issue_mut(task)?;
+        if !issue.closed {
+            issue.closed = true;
+            issue.not_planned = true;
+        }
         Ok(())
     }
 
@@ -490,6 +623,17 @@ impl Board for FakeBoard {
     fn standing_at(&self, number: TicketId) -> Result<StandingAt, PortError> {
         self.calls.record("standing_at");
         Ok(self.standing_of(number))
+    }
+
+    /// The time a test set with [`FakeBoard::set_opened_at`]; none when it set none or the
+    /// issue is not there.
+    fn opened_at(&self, number: TicketId) -> Result<Option<SystemTime>, PortError> {
+        self.calls.record("opened_at");
+        Ok(self
+            .state()
+            .issues
+            .get(&number)
+            .and_then(|issue| issue.opened_at))
     }
 
     fn ready(&self) -> Result<Vec<Ticket>, PortError> {
@@ -598,6 +742,7 @@ impl Board for FakeBoard {
     fn release(&self, task: TicketId, instance: &Instance) -> Result<(), PortError> {
         self.calls.record("release");
         let mut state = self.state();
+        let own = state.own();
         let issue = state.issue_mut(task)?;
         if !issue
             .claim
@@ -614,9 +759,10 @@ impl Board for FakeBoard {
             issue.ticket.state = Some(TicketState::Ready);
         }
         let at = humantime::format_rfc3339_seconds(SystemTime::now());
-        issue
-            .comments
-            .push(format!("released from {instance} at {at}"));
+        issue.comments.push(FakeComment {
+            author: own,
+            body: format!("released from {instance} at {at}"),
+        });
         Ok(())
     }
 
@@ -636,21 +782,31 @@ impl Board for FakeBoard {
     fn comment(&self, issue: TicketId, body: &str) -> Result<(), PortError> {
         self.calls.record("comment");
         let mut state = self.state();
-        state.issue_mut(issue)?.comments.push(body.to_owned());
+        let author = state.own();
+        state.issue_mut(issue)?.comments.push(FakeComment {
+            author,
+            body: body.to_owned(),
+        });
         Ok(())
+    }
+
+    fn trusted_logins(&self) -> Result<Vec<Login>, PortError> {
+        self.calls.record("trusted_logins");
+        Ok(self.state().trusted())
     }
 
     fn report(&self, task: TicketId, instance: &Instance, body: &str) -> Result<(), PortError> {
         self.calls.record("report");
         let mut state = self.state();
+        let own = state.own();
         let issue = state.issue_mut(task)?;
         let existing = issue
             .reports
             .iter_mut()
-            .find(|(author, _)| author == instance);
+            .find(|(_, reporter, _)| reporter == instance);
         match existing {
-            Some((_, report)) => *report = body.to_owned(),
-            None => issue.reports.push((instance.clone(), body.to_owned())),
+            Some((_, _, report)) => *report = body.to_owned(),
+            None => issue.reports.push((own, instance.clone(), body.to_owned())),
         }
         Ok(())
     }

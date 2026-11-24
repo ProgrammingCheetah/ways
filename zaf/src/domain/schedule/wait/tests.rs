@@ -1,7 +1,8 @@
 use super::super::tests::*;
 use super::*;
+use crate::domain::plan::Name;
 use crate::domain::schedule::{
-    CheckFact, CheckName, CheckResult, Dependency, EpicFacts, PhaseEnd, PullFacts,
+    CheckFact, CheckName, CheckResult, Dependency, EpicFacts, EpicState, PhaseEnd, PullFacts,
 };
 use crate::domain::{BodyHash, EpicTask, Signature};
 
@@ -197,15 +198,15 @@ fn a_question_and_an_unsigned_epic_have_no_clock() {
             id: id(1),
             signed,
             challenged,
+            voided: false,
         });
         assert_eq!(overdue(&held, now()), None, "signed {signed}");
     }
     // Waiting on another ticket as well keeps the clock: nobody has heard of that one.
     let mut blocked = waiting_since(20);
-    blocked.dependencies.push(Dependency {
-        ticket: id(9),
-        standing: Standing::Open,
-    });
+    blocked
+        .dependencies
+        .push(Dependency::blocked_by(id(9), Standing::Open));
     assert!(overdue(&blocked, now()).is_some());
 }
 
@@ -246,10 +247,7 @@ fn depends(ticket: u64, on: &[(u64, Standing)]) -> TicketFacts {
     facts.ticket = id(ticket);
     facts.dependencies = on
         .iter()
-        .map(|&(dependency, standing)| Dependency {
-            ticket: id(dependency),
-            standing,
-        })
+        .map(|&(dependency, standing)| Dependency::blocked_by(id(dependency), standing))
         .collect();
     facts
 }
@@ -272,10 +270,12 @@ fn a_dependency_closed_as_not_planned_or_missing_is_dead() {
             DeadDependency {
                 dependency: id(20),
                 reason: DeadReason::ClosedNotPlanned,
+                name: None,
             },
             DeadDependency {
                 dependency: id(21),
                 reason: DeadReason::Missing,
+                name: None,
             },
         ]
     );
@@ -297,6 +297,7 @@ fn a_dependency_cycle_is_dead() {
         [DeadDependency {
             dependency: id(11),
             reason: DeadReason::Cycle,
+            name: None,
         }]
     );
     let itself = depends(13, &[(13, Standing::Open)]);
@@ -306,6 +307,7 @@ fn a_dependency_cycle_is_dead() {
         [DeadDependency {
             dependency: id(13),
             reason: DeadReason::Cycle,
+            name: None,
         }]
     );
 }
@@ -320,6 +322,124 @@ fn an_open_dependency_off_any_cycle_and_a_done_one_are_alive() {
     let graph = dependency_graph(&tickets);
     assert!(dead_dependencies(&first, &graph).is_empty());
     assert_eq!(graph.get(&id(12)), Some(&Vec::new()));
+}
+
+/// A graph ticket of epic `epic` waiting on `on` for `name`.
+fn graph_ticket(ticket: u64, epic: u64, on: Dependency) -> TicketFacts {
+    let mut facts = facts(pack());
+    facts.ticket = id(ticket);
+    facts.epic = Some(EpicFacts {
+        id: id(epic),
+        signed: true,
+        challenged: true,
+        voided: false,
+    });
+    facts.dependencies = vec![on];
+    facts
+}
+
+/// A wait on `ticket` for `name`, where the ticket stands as `standing`.
+fn named(ticket: u64, standing: Standing, name: &str) -> Dependency {
+    Dependency {
+        name: Some(Name::from(name)),
+        ..Dependency::blocked_by(id(ticket), standing)
+    }
+}
+
+/// A wait on `epic` for `name` that still names the epic, which stands as `state`.
+fn on_epic(epic: u64, state: EpicState, name: &str) -> Dependency {
+    Dependency {
+        name: Some(Name::from(name)),
+        epic: Some(state),
+        ..Dependency::blocked_by(id(epic), Standing::Open)
+    }
+}
+
+#[test]
+fn dead_wait_provider_not_planned() {
+    let waiter = graph_ticket(10, 1, named(20, Standing::ClosedNotPlanned, "token"));
+    let graph = dependency_graph(std::slice::from_ref(&waiter));
+    assert_eq!(
+        dead_dependencies(&waiter, &graph),
+        [DeadDependency {
+            dependency: id(20),
+            reason: DeadReason::ClosedNotPlanned,
+            name: Some(Name::from("token")),
+        }]
+    );
+    // Open and done providers are not dead.
+    for standing in [Standing::Open, Standing::Done] {
+        let waiter = graph_ticket(10, 1, named(20, standing, "token"));
+        let graph = dependency_graph(std::slice::from_ref(&waiter));
+        assert!(dead_dependencies(&waiter, &graph).is_empty());
+    }
+}
+
+#[test]
+fn dead_wait_cycle_across_epics() {
+    let first = graph_ticket(10, 1, named(20, Standing::Open, "b"));
+    let second = graph_ticket(20, 2, named(10, Standing::Open, "a"));
+    let graph = dependency_graph(&[first.clone(), second.clone()]);
+    assert_eq!(
+        dead_dependencies(&first, &graph),
+        [DeadDependency {
+            dependency: id(20),
+            reason: DeadReason::CycleAcrossEpics,
+            name: Some(Name::from("b")),
+        }]
+    );
+    assert_eq!(
+        dead_dependencies(&second, &graph),
+        [DeadDependency {
+            dependency: id(10),
+            reason: DeadReason::CycleAcrossEpics,
+            name: Some(Name::from("a")),
+        }]
+    );
+    // A cycle that stays in one epic is as it was.
+    let third = graph_ticket(30, 1, named(31, Standing::Open, "d"));
+    let fourth = graph_ticket(31, 1, named(30, Standing::Open, "c"));
+    let graph = dependency_graph(&[third.clone(), fourth]);
+    assert_eq!(
+        dead_dependencies(&third, &graph)
+            .iter()
+            .map(|dead| dead.reason)
+            .collect::<Vec<_>>(),
+        [DeadReason::Cycle]
+    );
+    // One that crosses epics only through a third ticket still crosses.
+    let (a, b, c) = (
+        graph_ticket(40, 1, named(41, Standing::Open, "x")),
+        graph_ticket(41, 1, named(42, Standing::Open, "y")),
+        graph_ticket(42, 2, named(40, Standing::Open, "z")),
+    );
+    let graph = dependency_graph(&[a.clone(), b, c]);
+    assert_eq!(
+        dead_dependencies(&a, &graph)[0].reason,
+        DeadReason::CycleAcrossEpics
+    );
+}
+
+#[test]
+fn dead_wait_epic_without_name() {
+    for state in [EpicState::Closed, EpicState::Planned] {
+        let waiter = graph_ticket(10, 1, on_epic(7, state, "token"));
+        let graph = dependency_graph(std::slice::from_ref(&waiter));
+        assert_eq!(
+            dead_dependencies(&waiter, &graph),
+            [DeadDependency {
+                dependency: id(7),
+                reason: DeadReason::NameNotProvided { epic: id(7) },
+                name: Some(Name::from("token")),
+            }]
+        );
+    }
+    // An epic not planned yet may still provide the name: the wait is alive.
+    let waiter = graph_ticket(10, 1, on_epic(7, EpicState::NotPlanned, "token"));
+    let graph = dependency_graph(std::slice::from_ref(&waiter));
+    assert!(dead_dependencies(&waiter, &graph).is_empty());
+    // And an epic is no ticket in the graph.
+    assert_eq!(graph.get(&id(10)), Some(&Vec::new()));
 }
 
 const DAY: u64 = 24 * 60 * 60;
@@ -348,7 +468,8 @@ fn planned_epic(planned: Option<u64>, challenged: bool) -> Epic {
             closed_at: None,
         }],
         planned_at: planned.map(time),
-        challenged,
+        records: Vec::new(),
+        challengers: vec![None; usize::from(challenged)],
     }
 }
 

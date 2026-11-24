@@ -326,6 +326,8 @@ pub struct EpicView {
     pub title: String,
     /// Where it stands.
     pub stage: EpicStage,
+    /// Whether its plan was posted and its filing mark was not: the filing stopped part way.
+    pub half_filed: bool,
     /// The version its body's `Release:` line names.
     pub release: Option<ReleaseVersion>,
     /// Its tickets done.
@@ -336,6 +338,28 @@ pub struct EpicView {
     pub question: Option<TicketId>,
     /// One square per ticket that counts, in id order.
     pub squares: Vec<Square>,
+}
+
+impl EpicView {
+    /// The stage as the chair words it: `half filed` while the filing is unfinished, else the
+    /// epic's stage.
+    pub fn stage_text(&self) -> String {
+        if self.half_filed {
+            "half filed".to_owned()
+        } else {
+            self.stage.to_string()
+        }
+    }
+
+    /// The way on for a half-filed epic; none for any other.
+    pub fn way_on(&self) -> Option<String> {
+        self.half_filed.then(|| {
+            format!(
+                "the tick finishes it, or `zaf plan file {}` with empty stdin",
+                self.number.get()
+            )
+        })
+    }
 }
 
 /// A ticket as its square shows it.

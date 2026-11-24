@@ -1851,3 +1851,183 @@ fn the_design_clone_is_a_plan_row() {
     fs::create_dir(dir.path().join("b-design")).expect("cloned");
     assert!(!writes(&plan(&root, Some(&home), false)));
 }
+
+// ---- the pack's standard design pages ----
+
+const PAGE: &str = "divide-how-code-is-divided.md";
+const PAGE_TEXT: &str = "# How code is divided (SOLID): who owns a file\n\nOne reason to change.\n";
+const DOCS: &str = "[design]\nkind = \"repo-dir\"\npath = \"docs\"\n";
+const GIT_DIFF: &str = "diff --git a/x b/x\n-old\n+new\n";
+
+/// A pack folder carrying the one standard page.
+fn pack_with_page(dir: &Path) -> PathBuf {
+    let pack = pack_with_actions(dir);
+    fs::create_dir_all(pack.join("design")).expect("design folder");
+    fs::write(pack.join("design").join(PAGE), PAGE_TEXT).expect("page");
+    pack
+}
+
+fn set_up_with_page() -> (tempfile::TempDir, PathBuf, PathBuf, RecordingShell) {
+    let (dir, root, home) = places();
+    let pack = pack_with_page(dir.path());
+    fs::create_dir_all(root.join("docs")).expect("docs");
+    fs::write(
+        root.join("docs/index.md"),
+        "# Design pages\n\n- mine current — a page of ours\n",
+    )
+    .expect("index");
+    fs::write(root.join("docs/mine-a-page.md"), "ours\n").expect("own page");
+    (dir, root, home, RecordingShell::installing_at(&pack))
+}
+
+fn run_setup(
+    root: &Path,
+    home: &Path,
+    shell: &RecordingShell,
+    design: &str,
+    commands: &FakeCommands,
+    asker: Option<&mut dyn ReplaceAction>,
+) -> SetupReport {
+    super::setup_with(
+        root,
+        Some(home),
+        &manifest(&format!("{TAGGED}{design}")),
+        commands,
+        shell,
+        None,
+        asker,
+    )
+    .expect("sets up")
+}
+
+#[test]
+fn setup_installs_standard_pages() {
+    let (_dir, root, home, shell) = set_up_with_page();
+    let own = read(&root.join("docs/mine-a-page.md"));
+
+    let report = run_setup(&root, &home, &shell, DOCS, &FakeCommands::new(), None);
+
+    assert_eq!(report.pages.installed, [PAGE]);
+    assert_eq!(report.pages.indexed, ["divide"]);
+    assert_eq!(read(&root.join("docs").join(PAGE)), PAGE_TEXT);
+    let index = read(&root.join("docs/index.md"));
+    assert!(
+        index.contains("- divide current — How code is divided (SOLID): who owns a file\n"),
+        "{index}"
+    );
+    assert!(
+        index.contains("- mine current — a page of ours\n"),
+        "the project's line stays"
+    );
+    assert_eq!(
+        read(&root.join("docs/mine-a-page.md")),
+        own,
+        "its own page is untouched"
+    );
+    // The installed page is one the design source reads, with the status the index gave it.
+    let design = crate::adapters::design::DirDesign::new(root.join("docs"));
+    use crate::ports::Design;
+    let found = design.index().expect("the index");
+    assert!(
+        found
+            .iter()
+            .any(|(id, status, title)| id.as_ref() == "divide"
+                && status.to_string() == "current"
+                && title.contains("who owns a file")),
+        "{found:?}"
+    );
+    assert_eq!(report.pages.lines().len(), 2, "{:?}", report.pages.lines());
+}
+
+#[test]
+fn setup_standard_pages_twice_changes_nothing() {
+    let (_dir, root, home, shell) = set_up_with_page();
+    let commands = FakeCommands::new();
+    run_setup(&root, &home, &shell, DOCS, &commands, None);
+    let before = snapshot(&root.join("docs"));
+
+    let second = run_setup(&root, &home, &shell, DOCS, &commands, None);
+
+    assert_eq!(snapshot(&root.join("docs")), before);
+    assert_eq!(second.pages, super::PackPages::default());
+    assert!(second.pages.lines().is_empty());
+}
+
+#[test]
+fn setup_asks_before_replacing_a_page() {
+    let (_dir, root, home, shell) = set_up_with_page();
+    let commands = FakeCommands::new().with("git", GIT_DIFF);
+    run_setup(&root, &home, &shell, DOCS, &commands, None);
+    let page = root.join("docs").join(PAGE);
+    fs::write(&page, "# the project's own take\n").expect("edit");
+    let index = read(&root.join("docs/index.md"));
+
+    let mut no = Asker::new(false);
+    let kept = run_setup(&root, &home, &shell, DOCS, &commands, Some(&mut no));
+    assert_eq!(read(&page), "# the project's own take\n", "kept on no");
+    assert_eq!(no.asked.len(), 1);
+    assert!(no.asked[0].0.contains(PAGE), "{:?}", no.asked);
+    assert_eq!(no.asked[0].1, GIT_DIFF);
+    assert!(kept.pages.replaced.is_empty());
+    assert_eq!(read(&root.join("docs/index.md")), index);
+
+    let unasked = run_setup(&root, &home, &shell, DOCS, &commands, None);
+    assert_eq!(
+        read(&page),
+        "# the project's own take\n",
+        "kept with no one to ask"
+    );
+    assert_eq!(unasked.pages.differs, [PAGE]);
+
+    let mut yes = Asker::new(true);
+    let replaced = run_setup(&root, &home, &shell, DOCS, &commands, Some(&mut yes));
+    assert_eq!(read(&page), PAGE_TEXT, "replaced on yes");
+    assert_eq!(replaced.pages.replaced, [PAGE]);
+    assert_eq!(
+        read(&root.join("docs/index.md")),
+        index,
+        "its line is not duplicated"
+    );
+}
+
+#[test]
+fn setup_skips_pages_without_a_design_source() {
+    let (_dir, root, home, shell) = set_up_with_page();
+    let docs = snapshot(&root.join("docs"));
+    let git_sibling =
+        "[design]\nkind = \"git-sibling\"\nrepo = \"example/b-design\"\npath = \"docs\"\n";
+
+    for design in ["", "[design]\nkind = \"none\"\n", git_sibling] {
+        let report = run_setup(&root, &home, &shell, design, &FakeCommands::new(), None);
+        assert!(report.pages.installed.is_empty());
+        assert_eq!(report.pages.skipped, 1);
+        let lines = report.pages.lines();
+        assert_eq!(lines.len(), 1, "one line: {lines:?}");
+        assert!(lines[0].contains("repo-dir"), "{lines:?}");
+        assert_eq!(snapshot(&root.join("docs")), docs, "nothing written");
+    }
+}
+
+#[test]
+fn a_page_the_project_lacks_is_a_plan_row() {
+    let (_dir, root, home, shell) = set_up_with_page();
+    // A first run with no design source leaves the page out; the manifest on disk then names one.
+    run_setup(&root, &home, &shell, "", &FakeCommands::new(), None);
+    fs::write(root.join(".zaf.toml"), format!("{HEAD}{TAGGED}{DOCS}")).expect("manifest");
+
+    let rows = plan(&root, Some(&home), false);
+
+    assert_eq!(verbs(&rows), ["Add", "Install", "Check"]);
+    assert_eq!(rows[0].noun.as_str(), format!("1 standard page: {PAGE}"));
+    assert!(writes(&rows));
+    assert!(
+        !root.join("docs").join(PAGE).exists(),
+        "the plan writes nothing"
+    );
+
+    run_setup(&root, &home, &shell, DOCS, &FakeCommands::new(), None);
+    assert_eq!(
+        verbs(&plan(&root, Some(&home), false)),
+        ["Install", "Check"]
+    );
+}

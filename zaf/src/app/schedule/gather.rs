@@ -5,7 +5,8 @@
 //! questions once, then reads each ticket with a phase list and an epic: its type's actions
 //! ([`phases_of`] folds adjacent model actions into one [`Phase`]), its size, its epic's signature
 //! and challenge, the open questions raised on it or on its epic, where each ticket its `Blocked
-//! by:` line names stands ([`Board::standing`], each asked once), the forge's word on its recorded
+//! by:` line names stands ([`Board::standing`], each asked once; a graph ticket's wait carries its
+//! name, and one that still names an epic that epic's state, [`epic_dependency`]), the forge's word on its recorded
 //! pull request, its phase run folders ([`record::read_runs`]) and, once an action of it has ended
 //! [`NOWHERE_LIMIT`] times, the markers of the ruled questions on it.
 //!
@@ -51,17 +52,19 @@ use crate::adapters::process;
 use crate::app::actions::{
     ActionKind, ListedPhase, SliceRecords, VERSION_VAR, live_phases, parse, resolve,
 };
+use crate::app::spawn::blockers::waits::{Wait, Waits};
 use crate::app::spawn::blockers::{blockers, finished_epic_standing};
 use crate::app::spawn::phase::{Ports, listed};
 use crate::composition::{Composition, STATE_DIR, zaf_home};
+use crate::domain::plan::Name;
 use crate::domain::schedule::{
-    ActionName, BaseFacts, CheckFact, CheckResult, Dependency, EpicFacts, GroupBase, HeadEnd,
-    MergeFacts, NO_CHECK_DEADLINE, NOWHERE_LIMIT, Phase, PullFacts, ReviewFact, RuledMarker,
-    RunRecord, TicketFacts, Trees, at_merge, order_merges,
+    ActionName, BaseFacts, CheckFact, CheckResult, Dependency, EpicFacts, EpicState, GroupBase,
+    HeadEnd, MergeFacts, NO_CHECK_DEADLINE, NOWHERE_LIMIT, Phase, PullFacts, ReviewFact,
+    RuledMarker, RunRecord, TicketFacts, Trees, at_merge, order_merges,
 };
 use crate::domain::{
     ChangedFiles, CommitId, DEFAULT_TASK_TYPE, Epic, EpicTask, OpenTicket, Standing, StandingAt,
-    Ticket, TicketId, WorkflowFilter, checks_expected,
+    TaskBody, Ticket, TicketId, WorkflowFilter, checks_expected,
 };
 use crate::manifest::BranchesSection;
 use crate::ports::{Board, BranchName, Check, CheckState, Forge, PortError, PrNumber};
@@ -104,6 +107,8 @@ pub struct Gathered {
     /// The open epics as the board listed them: what the challenge deadline reads
     /// ([`crate::domain::schedule::unchallenged`]).
     pub epics: Vec<Epic>,
+    /// What each ticket of the open epics waits on, read from the wait source (D19).
+    pub waits: Waits,
     /// What was read but ignored, in words, for the tick to print: a gathered ticket's priority
     /// labels that name no level, or more than one; an integration branch whose checks could not
     /// be read; and a ticket held by that branch whose ruled questions could not be read.
@@ -138,6 +143,7 @@ impl Default for Gathered {
             questions: BTreeMap::new(),
             done: BTreeSet::new(),
             epics: Vec::new(),
+            waits: Waits::default(),
             warnings: Vec::new(),
             base: None,
             phase_totals: BTreeMap::new(),
@@ -196,6 +202,8 @@ struct Shared {
     tasks: Vec<EpicTask>,
     /// The open epics as listed.
     listed: Vec<Epic>,
+    /// What each ticket of the open epics waits on.
+    waits: Waits,
     /// The workflows read at each base so far, none for a base whose read failed: each base is
     /// read once per gather ([`expects_a_check`]).
     workflows: RefCell<BTreeMap<BranchName, Option<Vec<WorkflowFilter>>>>,
@@ -233,6 +241,7 @@ pub fn gather(
         questions: shared.questions.clone(),
         done,
         epics: shared.listed.clone(),
+        waits: shared.waits.clone(),
         ..Gathered::default()
     };
     for open in &open {
@@ -607,9 +616,92 @@ pub fn read_lists(board: &dyn Board) -> Result<(Vec<Epic>, Vec<Ticket>), PortErr
     Ok((epics, board.questions()?))
 }
 
-/// The reads every ticket shares, from the open epics and the open questions given.
+/// What `ticket` waits on, as the issues: the wait source's waits for a planned ticket of an open
+/// epic (a wait on an epic that has not planned yet is a wait on that epic), its `Blocked by:` line
+/// for any other, so an older epic's tickets place as they always did (an entry naming an epic is
+/// that epic, not its tasks). The lowest first, once each.
+pub(super) fn waited_on(waits: &Waits, ticket: &Ticket) -> Vec<TicketId> {
+    let mut named: Vec<TicketId> = match graph_waits(waits, ticket) {
+        Some(waits) => waits.iter().map(Wait::on).collect(),
+        None => blockers(ticket.body.as_str()),
+    };
+    named.sort();
+    named.dedup();
+    named
+}
+
+/// The waits of a planned ticket of an open epic, as the wait source holds them; none for any
+/// other ticket, which reads from its `Blocked by:` line.
+fn graph_waits<'a>(waits: &'a Waits, ticket: &Ticket) -> Option<&'a [Wait]> {
+    let planned = matches!(ticket.task_body(), Ok(TaskBody::Planned(_)));
+    (planned && waits.holds(ticket.id)).then(|| waits.of(ticket.id))
+}
+
+/// Where the issue `number` stands and when it closed, asked of the board once and kept in
+/// `standings`; an open epic that is finished stands as done ([`finished_epic_standing`]).
+fn standing_of(
+    ports: &Ports<'_>,
+    shared: &Shared,
+    standings: &mut BTreeMap<TicketId, StandingAt>,
+    number: TicketId,
+) -> Result<StandingAt, Skip> {
+    if let Some(at) = standings.get(&number) {
+        return Ok(*at);
+    }
+    let at = ports
+        .board
+        .standing_at(number)
+        .map_err(|error| Skip::Unread(format!("its blocker {number}: {error}")))?;
+    let at = finished_epic_standing(number, at, &shared.listed);
+    standings.insert(number, at);
+    Ok(at)
+}
+
+/// The dependency of a graph ticket's wait that still names `epic`, for `name` (D13, Q10): no
+/// ticket of the epic holds the name. With it, when the epic closed.
+///
+/// - An open epic stands open whatever its tasks did, since the name has not come: one whose
+///   plan is filed is planned without the name, and any other may still provide it.
+/// - An epic the board does not list as open is read from its issue: closed, it is a closed
+///   epic, standing as the board says. The board lists no closed epic's tickets, so one closed
+///   as completed is taken to have provided the name, as it always was.
+/// - Anything else (no such issue, or an open issue that is no epic) is a wait on that issue.
+fn epic_dependency(
+    ports: &Ports<'_>,
+    shared: &Shared,
+    standings: &mut BTreeMap<TicketId, StandingAt>,
+    epic: TicketId,
+    name: &Name,
+) -> Result<(Dependency, Option<SystemTime>), Skip> {
+    let name = Some(name.clone());
+    if let Some(open) = shared.listed.iter().find(|listed| listed.id == epic) {
+        let state = if open.plan_filed() {
+            EpicState::Planned
+        } else {
+            EpicState::NotPlanned
+        };
+        let dependency = Dependency {
+            name,
+            epic: Some(state),
+            ..Dependency::blocked_by(epic, Standing::Open)
+        };
+        return Ok((dependency, None));
+    }
+    let at = standing_of(ports, shared, standings, epic)?;
+    let closed = matches!(at.standing, Standing::Done | Standing::ClosedNotPlanned);
+    let dependency = Dependency {
+        name,
+        epic: closed.then_some(EpicState::Closed),
+        ..Dependency::blocked_by(epic, at.standing)
+    };
+    Ok((dependency, at.closed_at))
+}
+
+/// The reads every ticket shares, from the open epics and the open questions given, the waits read
+/// from the open epics as listed ([`Waits::of_epics`]): the board is not read again.
 fn shared(epics: &[Epic], questions: &[Ticket]) -> Shared {
     Shared {
+        waits: Waits::of_epics(epics),
         tasks: epics.iter().flat_map(|epic| epic.tasks.clone()).collect(),
         epics: epics
             .iter()
@@ -660,7 +752,8 @@ fn epic_facts(epic: &Epic) -> EpicFacts {
     EpicFacts {
         id: epic.id,
         signed: epic.signed(),
-        challenged: epic.challenged,
+        challenged: epic.challenged(),
+        voided: epic.voided(),
     }
 }
 
@@ -718,33 +811,37 @@ fn read_ticket(
     let list =
         listed(ports.root, ports.home, names).map_err(|error| Skip::Unread(error.to_string()))?;
     let size = ticket
-        .template()
-        .map_err(|error| Skip::Unread(format!("it is not a task: {error}")))?
-        .size;
+        .task_body()
+        .and_then(|body| body.size())
+        .map_err(|error| Skip::Unread(format!("it is not a task: {error}")))?;
     let epic = shared.epics.get(&epic_id).copied();
     let open_questions = open_on(&shared.questions, ticket);
     let mut dependencies = Vec::new();
     let mut last_done = None;
-    for blocker in blockers(ticket.body.as_str()) {
-        let at = match standings.get(&blocker) {
-            Some(at) => *at,
-            None => {
-                let at = ports
-                    .board
-                    .standing_at(blocker)
-                    .map_err(|error| Skip::Unread(format!("its blocker {blocker}: {error}")))?;
-                let at = finished_epic_standing(blocker, at, &shared.listed);
-                standings.insert(blocker, at);
-                at
+    let graph = graph_waits(&shared.waits, ticket);
+    for blocker in waited_on(&shared.waits, ticket) {
+        let wait = graph.and_then(|waits| waits.iter().find(|wait| wait.on() == blocker));
+        let (dependency, closed_at) = match wait {
+            Some(Wait::Epic { epic, name }) => {
+                epic_dependency(ports, shared, standings, *epic, name)?
+            }
+            // A graph ticket's wait on a ticket carries the name it is for; a `Blocked by:`
+            // line carries none.
+            Some(Wait::Ticket(_)) | None => {
+                let at = standing_of(ports, shared, standings, blocker)?;
+                let dependency = Dependency {
+                    name: wait
+                        .and_then(|_| shared.waits.name(ticket.id, blocker))
+                        .cloned(),
+                    ..Dependency::blocked_by(blocker, at.standing)
+                };
+                (dependency, at.closed_at)
             }
         };
-        if at.standing == Standing::Done {
-            last_done = last_done.max(at.closed_at);
+        if dependency.standing == Standing::Done {
+            last_done = last_done.max(closed_at);
         }
-        dependencies.push(Dependency {
-            ticket: blocker,
-            standing: at.standing,
-        });
+        dependencies.push(dependency);
     }
     // A record that cannot be read is never "no pull request": implement would start again over
     // an open one.

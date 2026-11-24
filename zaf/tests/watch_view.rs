@@ -14,7 +14,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use common::Project;
+use common::{Project, Running};
 
 const MANIFEST: &str = "[project]\nname = \"example\"\n\n\
     [board]\nkind = \"github-issues\"\nrepo = \"example/tracker\"\n\n\
@@ -254,19 +254,11 @@ fn open_pty() -> (File, File) {
 #[test]
 fn piped_watch_streams_as_today() {
     let project = project(0);
-    let mut child = project
-        .command_in(&project.root, &watch_args(false))
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("start zaf");
-    let ticked = project.root.join("ticked");
-    assert!(wait_until(Duration::from_secs(20), || ticked.exists()));
-    std::thread::sleep(Duration::from_millis(500));
-    child.kill().expect("kill");
-    let output = child.wait_with_output().expect("output");
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let watch = Running::start(project.command_in(&project.root, &watch_args(false)));
+    // The tick has ended once its `next tick` line is out: a slow machine only waits longer.
+    watch.wait_for_lines("next tick ", 1);
+    assert!(project.root.join("ticked").exists());
+    let stdout = watch.stdout();
 
     assert!(stdout.contains("a tick every 1 minutes"), "{stdout}");
     assert!(stdout.contains("nothing to do"), "{stdout}");
@@ -850,11 +842,17 @@ fn built_board(project: &mut Project) {
         "body": body,
         "labels": [{"name": "epic"}],
         "comments": [
-            {"body": format!(
-                "<!-- zaf:signature sha256={} at=2026-11-01T00:00:00Z -->\nSigned.",
-                hash.as_str()
-            )},
-            {"body": "<!-- zaf:report challenger instance 9 on #1 -->\nEvery task is exact."},
+            {
+                "body": format!(
+                    "<!-- zaf:signature sha256={} at=2026-11-01T00:00:00Z -->\nSigned.",
+                    hash.as_str()
+                ),
+                "author": {"login": common::OWN_LOGIN},
+            },
+            {
+                "body": "<!-- zaf:report challenger instance 9 on #1 -->\nEvery task is exact.",
+                "author": {"login": common::OWN_LOGIN},
+            },
         ],
     }]);
     let tasks = serde_json::json!([{

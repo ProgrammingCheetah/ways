@@ -390,13 +390,13 @@ fn epics_keys_pick_tickets_and_open_the_views() {
     press(&mut chair, &[Key::Char('w')], now);
     assert_eq!(chair.cursor.detail, DetailView::Why(TicketId::from(234)));
     press(&mut chair, &[Key::Char('d')], now);
-    assert_eq!(chair.cursor.detail, DetailView::Tree);
+    assert_eq!(chair.cursor.detail, DetailView::Graph);
     press(&mut chair, &[Key::Char('j')], now);
     assert_eq!((chair.cursor.epic, chair.cursor.ticket), (1, 0));
     assert_eq!(
         chair.cursor.detail,
-        DetailView::Tree,
-        "the tree follows the epic"
+        DetailView::Graph,
+        "the graph follows the epic"
     );
 
     press(&mut chair, &[Key::Enter], now);

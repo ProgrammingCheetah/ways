@@ -25,7 +25,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use super::brief::{RUNS_DIR, ensure_runs_dir, named_pages};
 use crate::domain::{
     Answer, AnsweredQuestion, Ask, AskError, Instance, PageId, PageStatus, Profile, Question,
-    QuestionId, QuoteCheckError, RoleName, TaskTemplate, TicketId, Verdict,
+    QuestionId, QuoteCheckError, RoleName, TaskBody, TicketId, Verdict,
 };
 use crate::manifest::Rung;
 use crate::ports::{Board, Design, Page, PortError, RunRequest, Runner};
@@ -298,7 +298,7 @@ pub fn ask(query: &AskQuery<'_>, ports: &AskPorts<'_>) -> Result<AskOutcome, Ask
     let mut unreadable: Vec<(QuestionId, PageId)> = Vec::new();
     if !open.is_empty() {
         let ticket = ports.board.task(query.task).map_err(AskFailure::Board)?;
-        let template = ticket.template().ok();
+        let template = ticket.task_body().ok();
         let chosen =
             choose_pages(ports.design, template.as_ref(), &open).map_err(AskFailure::Design)?;
         let mut fresh_reads = chosen.reads.iter();
@@ -489,7 +489,7 @@ struct Chosen {
 /// title holds one of its keywords.
 fn choose_pages(
     design: Option<&dyn Design>,
-    template: Option<&TaskTemplate>,
+    template: Option<&TaskBody>,
     open: &[Question],
 ) -> Result<Chosen, PortError> {
     let same_for_all = |read: Read| vec![read; open.len()];
@@ -501,7 +501,7 @@ fn choose_pages(
         });
     };
     let named = match template {
-        Some(template) => named_pages(design, &template.design_pages)?,
+        Some(body) => named_pages(design, &body.design_pages().join("\n"))?,
         None => Vec::new(),
     };
     if !named.is_empty() {

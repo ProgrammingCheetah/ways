@@ -120,6 +120,11 @@ pub struct BoardSection {
     /// when absent. The token itself is never in a manifest.
     #[serde(default)]
     pub token_env: Option<EnvVarName>,
+    /// The logins whose zaf comments the board trusts beside the login its own token posts as
+    /// (signatures, challenger reports, plan records, filing marks); a login is the same
+    /// whatever the case of its letters. When none is listed, only the token's own login is.
+    #[serde(default)]
+    pub trusted_logins: Vec<String>,
 }
 
 impl BoardSection {

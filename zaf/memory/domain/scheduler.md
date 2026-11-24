@@ -37,7 +37,7 @@ A ticket sits in exactly one place: the first of these that holds.
 1. **Running:** a phase process of it is alive. It leaves only when its end is recorded.
 2. **Waiting on its epic:** the epic is not signed, or not challenged yet.
 3. **Waiting on a question:** one is open on it or on its epic.
-4. **Waiting on a ticket:** a dependency is not done (done means closed as completed).
+4. **Waiting on a ticket:** a dependency is not done (done means closed as completed). Where the dependencies come from depends on the epic: in an epic with a plan record, a ticket waits on what its node's graph says, the graph's kept waits (`Waits on:`) and the needs the optimiser kept as edges, and its `Blocked by` line is not read; an epic with no plan record keeps its `Blocked by` lines, each read as a need. A wait that can never end raises a question either way, and its way on fits the source: a re-plan for a graph ticket, leaving the `Blocked by` line for an older one.
 5. **Waiting on a check:** the checks required at its head have not all ended; no check yet counts as not ended.
 6. **In the lane:** none of the above.
 
@@ -87,6 +87,7 @@ Every tick appends one line to `.zaf/ticks.jsonl`: where every ticket sits and w
 
 - [rule] A ticket's state is where it sits: running, waiting under a reason, or in the lane #structural
 - [rule] Tickets are placed from facts, the first that holds; running comes first #facts
+- [rule] A ticket in a planned epic waits on what the graph says; an epic with no plan keeps its Blocked by lines #graph
 - [rule] Memory is a cache: every field names the fact it is rebuilt from #memory
 - [rule] A phase leaves a report of facts and the lane works out the outcome #report
 - [rule] The current phase is derived at the pull request's head, so a push after review opens the review again #phase

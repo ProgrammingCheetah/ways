@@ -153,7 +153,7 @@ fn check_task_in_slice(
         .board
         .task(task)
         .map_err(|error| exit::fail(path, &error))?;
-    let template = ticket.template().map_err(|error| {
+    let body = ticket.task_body().map_err(|error| {
         crate::eprintln_zaf!("zaf {path}: {task} is not a task ticket: {error}");
         REFUSED
     })?;
@@ -175,7 +175,7 @@ fn check_task_in_slice(
         root: &dir,
     };
     let began = SystemTime::now();
-    let check = check_task(&template, &inputs);
+    let check = check_task(&body, &inputs);
     let line = format!("workspace {}", dir.display());
     Ok((CheckRecord::from_task(target, &check, began), line))
 }
@@ -251,10 +251,14 @@ fn task_template(
         .board()
         .map_err(|error| exit::fail_composition(path, &error))?;
     let ticket = board.task(task).map_err(|error| exit::fail(path, &error))?;
-    ticket.template().map_err(|error| {
-        crate::eprintln_zaf!("zaf {path}: {task} is not a task ticket: {error}");
-        REFUSED
-    })
+    ticket
+        .body
+        .as_str()
+        .parse::<TaskTemplate>()
+        .map_err(|error| {
+            crate::eprintln_zaf!("zaf {path}: {task} is not a task ticket: {error}");
+            REFUSED
+        })
 }
 
 /// The live ports a check reaches, built from the composition inside each step's thread.
@@ -434,6 +438,7 @@ fn record_line_pieces(line: &crate::app::check::RecordLine, words: &dyn Fn(&str)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::TaskBody;
 
     fn project(manifest: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -580,6 +585,129 @@ mod tests {
         assert_eq!(runs, vec![workspace.clone()]);
         assert_eq!(line, format!("workspace {}", workspace.display()));
         assert_eq!(record.verdict, crate::app::check::Verdict::Clean);
+    }
+
+    /// A shell that passes every line and keeps each one it ran.
+    struct RecordingShell(Arc<std::sync::Mutex<Vec<String>>>);
+
+    impl Shell for RecordingShell {
+        fn run(&self, line: &CommandLine) -> Result<GateRun, PortError> {
+            self.0.lock().expect("lock").push(line.to_string());
+            Ok(GateRun {
+                verdict: crate::ports::GateVerdict::Passed,
+                output: "ok\n".to_owned(),
+            })
+        }
+    }
+
+    /// A ticket of the given body, checked in a recorded workspace on a recording shell and the
+    /// passing gate; returns the outcome and every line the shell ran.
+    fn check_body(body: &str) -> (Result<(CheckRecord, String), u8>, Vec<String>) {
+        let dir = project(MANIFEST);
+        let composition = Composition::load_with_home(dir.path(), None).expect("loads");
+        let elsewhere = tempfile::tempdir().expect("workspace dir");
+        let workspace = elsewhere.path().canonicalize().expect("absolute");
+        record_workspace(dir.path(), 46, &workspace);
+        let board = crate::fakes::FakeBoard::default();
+        board.add_ticket(crate::domain::Ticket {
+            body: body.into(),
+            ..ticket()
+        });
+        let gate_ran = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let gate_recorder = Arc::clone(&gate_ran);
+        let gate_in = move |dir: &Path| -> Result<Box<dyn Gate>, CompositionError> {
+            Ok(Box::new(DirGate {
+                dir: dir.to_owned(),
+                ran: Arc::clone(&gate_recorder),
+            }))
+        };
+        let ran = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let shell_recorder = Arc::clone(&ran);
+        let shell_in = move |_: &Path| -> Box<dyn Shell> {
+            Box::new(RecordingShell(Arc::clone(&shell_recorder)))
+        };
+        let ports = TaskPorts {
+            board: &board,
+            gate_in: &gate_in,
+            shell_in: &shell_in,
+        };
+        let target = Target::Task(TicketId::from(46));
+        let outcome =
+            check_task_in_slice("check", &composition, &ports, &target, TicketId::from(46));
+        let lines = ran.lock().expect("lock").clone();
+        (outcome, lines)
+    }
+
+    /// A planned ticket of two behaviours, `a` and `b`, each with its own tests and acceptance.
+    fn merged_body() -> String {
+        let section = |key: &str, acceptance: &str, tests: &str| {
+            format!(
+                "Behaviour: {key}\n\
+                 Goal: gate the slice.\n\
+                 Owned paths: src/lib.rs\n\
+                 Interfaces: none\n\
+                 Design pages: none\n\
+                 Architecture: the cli module wires ports\n\
+                 Acceptance:\n\
+                 \x20 - {acceptance}\n\
+                 Tests: {tests}\n\
+                 Security trigger: no\n\
+                 Model: sonnet\n\
+                 Size: S\n"
+            )
+        };
+        format!(
+            "Node: A+B\n{}{}",
+            section("a", "behaviour a holds", "t_a"),
+            section("b", "behaviour b holds", "t_b"),
+        )
+    }
+
+    #[test]
+    fn check_of_merged_ticket_runs_both_behaviours_tests() {
+        let (outcome, ran) = check_body(&merged_body());
+        let (record, _) = outcome.expect("checked");
+        assert_eq!(ran, ["test t_a = passes", "test t_b = passes"]);
+        assert_eq!(record.verdict, crate::app::check::Verdict::Clean);
+    }
+
+    #[test]
+    fn check_of_merged_ticket_checks_both_acceptances() {
+        let body = TaskBody::parse(&merged_body()).expect("parses");
+        let dir = tempfile::tempdir().expect("temp dir");
+        let shell = RecordingShell(Arc::default());
+        let inputs = TaskInputs {
+            gate: None,
+            tests: None,
+            shell: &shell,
+            root: dir.path(),
+        };
+        let check = check_task(&body, &inputs);
+        let acceptance: Vec<&str> = check
+            .lines
+            .iter()
+            .filter(|line| line.kind == crate::app::check::LineKind::Acceptance)
+            .map(|line| line.subject.as_str())
+            .collect();
+        assert_eq!(acceptance, ["behaviour a holds", "behaviour b holds"]);
+    }
+
+    #[test]
+    fn check_of_older_ticket_unchanged() {
+        let older = ticket()
+            .body
+            .as_str()
+            .replace("Tests: beside each module", "Tests: t_old");
+        let (outcome, ran) = check_body(&older);
+        outcome.expect("checked");
+        assert_eq!(ran, ["test t_old = passes"]);
+    }
+
+    #[test]
+    fn check_of_a_body_that_is_not_a_task_is_refused() {
+        let (outcome, ran) = check_body("Goal: only a goal");
+        assert_eq!(outcome.err(), Some(REFUSED));
+        assert!(ran.is_empty(), "the shell ran {ran:?}");
     }
 
     const ENV_MANIFEST: &str = r#"[project]

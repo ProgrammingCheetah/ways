@@ -1,0 +1,51 @@
+{
+ "name": "28-refuse-a-signature-from-an-open-filed-task",
+ "why": "P is filed and open and gives q, which has a signature; no interface holds q, since nothing needed it when P was filed. N may not wait on P for it: P cannot be changed to implement an interface, and the wait would break O3. The way on: drop and re-add P if no phase has started, or re-plan once P is done (D29).",
+ "options": {
+  "lift": "all",
+  "interfaces": "one"
+ },
+ "plan": {
+  "record": 2,
+  "nodes": [
+   {
+    "id": "P",
+    "filed": "open",
+    "epic": "1004",
+    "behaviours": [
+     {
+      "text": "p gives q",
+      "size": 1,
+      "writes": [
+       "store"
+      ],
+      "provides": [
+       "q"
+      ],
+      "needs": []
+     }
+    ]
+   },
+   {
+    "id": "N",
+    "epic": "1004",
+    "behaviours": [
+     {
+      "text": "n uses q",
+      "size": 1,
+      "writes": [
+       "cli"
+      ],
+      "provides": [],
+      "needs": [
+       "q"
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ "expect": {
+  "refused": "fixed-provider"
+ }
+}

@@ -32,9 +32,9 @@ use std::time::SystemTime;
 
 use serde_json::{Value, json};
 
-use super::gather::{Gathered, open_on};
+use super::gather::{Gathered, open_on, waited_on};
 use super::shadow;
-use crate::app::spawn::blockers::{blockers, finished_epic_standing};
+use crate::app::spawn::blockers::finished_epic_standing;
 use crate::domain::schedule::{Place, WaitingOn, label_for};
 use crate::domain::{Standing, Ticket, TicketId, TicketState};
 use crate::ports::{Board, PortError};
@@ -282,7 +282,7 @@ fn unplaced_waits(
         .into_iter()
         .map(WaitingOn::Question)
         .collect();
-    let named = sorted(blockers(ticket.body.as_str()));
+    let named = waited_on(&gathered.waits, ticket);
     for &blocker in &named {
         let standing = match standings.get(&blocker) {
             Some(&standing) => standing,

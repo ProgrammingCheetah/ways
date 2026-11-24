@@ -447,6 +447,7 @@ pub fn build_ready(
     Ok(all_signed(&epics, &version).then_some(version))
 }
 
+pub mod check;
 pub mod wait;
 
 #[cfg(test)]

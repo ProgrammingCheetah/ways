@@ -135,3 +135,20 @@ fn fake_holds_matches_the_rule() {
         Ok(false)
     );
 }
+
+#[test]
+fn path_at_answers_from_the_paths_a_test_gives_it() {
+    let vcs = FakeVcs::default();
+    let port: &dyn Vcs = &vcs;
+    let root = Path::new("/project");
+    vcs.set_paths("v1", &["a.txt", "src/lib.rs"]);
+    vcs.set_paths("v2", &["a.txt"]);
+    assert_eq!(port.path_at(root, "v1", "src/lib.rs"), Ok(true));
+    assert_eq!(port.path_at(root, "v2", "src/lib.rs"), Ok(false));
+    assert_eq!(port.path_at(root, "v2", "a.txt"), Ok(true));
+    // A revision no test gave is an error naming it, never `false`.
+    let Err(error) = port.path_at(root, "v3", "a.txt") else {
+        panic!("an unknown revision is an error");
+    };
+    assert!(error.to_string().contains("v3"), "{error}");
+}

@@ -8,7 +8,8 @@ use super::exit::{self, BACKEND, OK};
 use super::screen::Screen;
 use crate::app::guard;
 use crate::app::report::ledger::{self, LEDGER_FILE, Ledger, LedgerRow};
-use crate::app::report::{self, PriceTable, Query, epics};
+use crate::app::report::{self, PriceTable, Query, epics, times};
+use crate::app::schedule::record::PHASES_DIR;
 use crate::composition::{Composition, zaf_home};
 use crate::ports::Board;
 
@@ -33,6 +34,12 @@ pub struct ReportArgs {
     /// `--top` do not apply; `--all` adds the runs of every project.
     #[arg(long)]
     pub epics: bool,
+    /// Print the average and median minutes of work per planned task of the 0.5.x epics beside
+    /// the epics planned as a graph (`zaf report --times`), whether the graph row is lower, and
+    /// every epic left out with its reason. It reads the board and the phase run folders, not
+    /// the ledger, so no other flag applies and each is refused beside it.
+    #[arg(long, conflicts_with_all = ["all", "hours", "matching", "top", "epics"])]
+    pub times: bool,
 }
 
 /// The default Claude config dir: `$CLAUDE_CONFIG_DIR`, else `~/.claude`.
@@ -65,6 +72,9 @@ pub fn run(cli: &Cli, args: &ReportArgs) -> u8 {
         Ok(composition) => composition,
         Err(error) => return exit::fail_composition(&path, &error),
     };
+    if args.times {
+        return run_times(cli, &composition);
+    }
     if let Err(message) = ingest_ledger(&composition) {
         crate::eprintln_zaf!("zaf {path}: {message}");
         return BACKEND;
@@ -97,7 +107,36 @@ fn run_epics(cli: &Cli, composition: &Composition, args: &ReportArgs) -> u8 {
             return BACKEND;
         }
     };
-    print_epics(cli, &rows, board.as_ref(), &prices)
+    let phases_dir = composition.state_dir().join(PHASES_DIR);
+    print_epics(cli, &rows, board.as_ref(), &prices, &phases_dir)
+}
+
+/// Reads the board and the phase run folders and prints the two rows.
+fn run_times(cli: &Cli, composition: &Composition) -> u8 {
+    let path = cli.verb.path();
+    let board = match composition.board() {
+        Ok(board) => board,
+        Err(error) => return exit::fail_composition(&path, &error),
+    };
+    let phases_dir = composition.state_dir().join(PHASES_DIR);
+    print_times(cli, board.as_ref(), &phases_dir)
+}
+
+/// Prints the comparison; a board that fails exits `2`.
+fn print_times(cli: &Cli, board: &dyn Board, phases_dir: &Path) -> u8 {
+    let view = match times::times_view(board, phases_dir) {
+        Ok(view) => view,
+        Err(error) => {
+            crate::eprintln_zaf!("zaf {}: the board failed: {error}", cli.verb.path());
+            return BACKEND;
+        }
+    };
+    if cli.json {
+        println!("{}", view.to_json());
+    } else {
+        print!("{}", Screen::detect().draw(&view.lines()));
+    }
+    OK
 }
 
 /// The ledger's rows for the project, or for every project with `all`.
@@ -123,8 +162,14 @@ fn project_rows(rows: Vec<LedgerRow>, all: bool, name: &str, root: &Path) -> Vec
 }
 
 /// Prints the per-epic rows; a board that fails exits `2`.
-fn print_epics(cli: &Cli, rows: &[LedgerRow], board: &dyn Board, prices: &PriceTable) -> u8 {
-    let view = match epics::epic_view(rows, board, prices) {
+fn print_epics(
+    cli: &Cli,
+    rows: &[LedgerRow],
+    board: &dyn Board,
+    prices: &PriceTable,
+    phases_dir: &Path,
+) -> u8 {
+    let view = match epics::epic_view(rows, board, prices, phases_dir) {
         Ok(view) => view,
         Err(error) => {
             crate::eprintln_zaf!("zaf {}: the board failed: {error}", cli.verb.path());

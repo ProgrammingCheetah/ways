@@ -7,7 +7,7 @@
 use std::time::SystemTime;
 
 use super::schedule::{Priority, PriorityIgnored};
-use super::{GroupName, TaskTemplate, TaskTemplateError, TicketId, TicketState};
+use super::{GroupName, TaskBody, TaskTemplateError, TicketId, TicketState};
 use crate::newtype::text_newtype;
 
 text_newtype! {
@@ -61,9 +61,10 @@ pub struct Ticket {
 }
 
 impl Ticket {
-    /// The task its body holds; an error for a body that is not a task (an epic, a question).
-    pub fn template(&self) -> Result<TaskTemplate, TaskTemplateError> {
-        self.body.as_str().parse()
+    /// The task its body holds, as a planned body or as the older template; an error for a body
+    /// that is neither (an epic, a question), of the shape it claimed.
+    pub fn task_body(&self) -> Result<TaskBody, TaskTemplateError> {
+        TaskBody::parse(self.body.as_str())
     }
 
     /// The ticket as it leaves zaf: its id (as `number`), epic, title, state, link and type.

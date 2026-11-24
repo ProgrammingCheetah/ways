@@ -867,6 +867,7 @@ fn a_question_and_an_unsigned_epic_have_no_clock() {
         id: id(1),
         signed: false,
         challenged: false,
+        voided: false,
     });
     let mut gathered = gathered_of(vec![facts]);
     gathered.epics = vec![epic(None, None, false)];
@@ -884,10 +885,7 @@ fn depending(ticket: u64, dependencies: &[(u64, Standing)]) -> TicketFacts {
     let mut facts = support::facts(ticket, &pr_list(), TaskSize::S, time(T0), None, Vec::new());
     facts.dependencies = dependencies
         .iter()
-        .map(|(dependency, standing)| Dependency {
-            ticket: id(*dependency),
-            standing: *standing,
-        })
+        .map(|(dependency, standing)| Dependency::blocked_by(id(*dependency), *standing))
         .collect();
     facts
 }
@@ -964,6 +962,91 @@ fn a_dependency_cycle_raises_one_question_naming_the_cycle() {
     assert!(asks_at(&board, &gathered, T0 + 60).is_empty(), "once");
 }
 
+/// Graph ticket `ticket` of epic `epic`, waiting on `waits`.
+fn graph_ticket(ticket: u64, epic: u64, waits: Dependency) -> TicketFacts {
+    let mut facts = depending(ticket, &[]);
+    facts.ticket = id(ticket);
+    facts.epic = Some(crate::domain::schedule::EpicFacts {
+        id: id(epic),
+        signed: true,
+        challenged: true,
+        voided: false,
+    });
+    facts.dependencies = vec![waits];
+    facts
+}
+
+/// A wait on `ticket` for `name`.
+fn for_name(ticket: u64, standing: Standing, name: &str) -> Dependency {
+    Dependency {
+        name: Some(crate::domain::plan::Name::from(name)),
+        ..Dependency::blocked_by(id(ticket), standing)
+    }
+}
+
+#[test]
+fn dead_wait_question_graph_ticket() {
+    let board = board_with(&[7]);
+    let gathered = gathered_of(vec![graph_ticket(
+        7,
+        1,
+        for_name(9, Standing::ClosedNotPlanned, "token"),
+    )]);
+    let raised = asks_at(&board, &gathered, T0);
+    assert_eq!(raised.len(), 1, "at once: {raised:?}");
+    assert_eq!(
+        asked(&board),
+        [(
+            Some(id(7)),
+            "#7 waits for token, which can never come: #9 is closed as not planned. #7 waits \
+             until a re-plan drops the ticket or provides the name. Dead dependency: #9."
+                .to_owned()
+        )]
+    );
+    assert!(asks_at(&board, &gathered, T0 + 60).is_empty(), "once");
+}
+
+#[test]
+fn dead_wait_question_epic_without_name() {
+    let board = board_with(&[7]);
+    let on_epic = Dependency {
+        epic: Some(crate::domain::schedule::EpicState::Planned),
+        ..for_name(4, Standing::Open, "token")
+    };
+    let gathered = gathered_of(vec![graph_ticket(7, 1, on_epic)]);
+    let raised = asks_at(&board, &gathered, T0);
+    assert_eq!(raised.len(), 1, "{raised:?}");
+    assert_eq!(
+        asked(&board),
+        [(
+            Some(id(7)),
+            "#7 waits for token, which can never come: #4 is an epic planned or closed without \
+             the name. #7 waits until a re-plan drops the ticket or provides the name. Dead \
+             dependency: #4."
+                .to_owned()
+        )]
+    );
+}
+
+#[test]
+fn dead_wait_question_cycle_across_epics() {
+    let board = board_with(&[3, 5]);
+    let gathered = gathered_of(vec![
+        graph_ticket(3, 1, for_name(5, Standing::Open, "a")),
+        graph_ticket(5, 2, for_name(3, Standing::Open, "b")),
+    ]);
+    let raised = asks_at(&board, &gathered, T0);
+    assert_eq!(raised.len(), 1, "one question for the cycle: {raised:?}");
+    assert_eq!(raised[0].task, id(3), "on its lowest ticket");
+    let text = &asked(&board)[0].1;
+    assert!(
+        text.contains("a re-plan of one of the epics breaks the cycle"),
+        "{text}"
+    );
+    assert!(!text.contains("Blocked by:"), "{text}");
+    assert!(text.ends_with("Dependency cycle: #3, #5."), "{text}");
+}
+
 // The challenge deadline.
 
 const DAY: u64 = 24 * HOUR;
@@ -992,7 +1075,8 @@ fn epic(signed: Option<u64>, planned: Option<u64>, challenged: bool) -> Epic {
             closed_at: None,
         }],
         planned_at: planned.map(time),
-        challenged,
+        records: Vec::new(),
+        challengers: vec![None; usize::from(challenged)],
     }
 }
 

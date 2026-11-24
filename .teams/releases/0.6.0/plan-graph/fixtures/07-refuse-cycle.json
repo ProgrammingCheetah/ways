@@ -1,0 +1,47 @@
+{
+ "name": "07-refuse-cycle",
+ "why": "A needs B and B needs A: refused, nothing rewritten.",
+ "options": {
+  "lift": "all",
+  "interfaces": "each"
+ },
+ "plan": {
+  "nodes": [
+   {
+    "id": "A",
+    "behaviours": [
+     {
+      "text": "a",
+      "size": 1,
+      "writes": [],
+      "provides": [
+       "a"
+      ],
+      "needs": [
+       "b"
+      ]
+     }
+    ]
+   },
+   {
+    "id": "B",
+    "behaviours": [
+     {
+      "text": "b",
+      "size": 1,
+      "writes": [],
+      "provides": [
+       "b"
+      ],
+      "needs": [
+       "a"
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ "expect": {
+  "refused": "cycle"
+ }
+}

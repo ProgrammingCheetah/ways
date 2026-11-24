@@ -81,14 +81,16 @@ use runs::Run;
 pub use start::{EPIC_SIZE, InUse, PlannedModel, STARVE_AFTER, start_outcome, start_planned};
 pub use state::{SpawnState, derive, load, save};
 pub use tick::{
-    EpicCandidate, EpicSkip, NOT_BUILT, PLANNING_ROLE, PastLaunch, Plan, PlannedLaunch, Settings,
-    SlotCount, Snapshot,
+    EpicCandidate, EpicSkip, HalfFinished, NOT_BUILT, PLANNING_ROLE, PastLaunch, Plan,
+    PlannedLaunch, Settings, SlotCount, Snapshot, finish_half_filed,
 };
 pub use waits::{launch_outcome, launch_waits};
 
 use super::actions::{PHASES_DIR, SliceRecords, ended_instances, running_tasks};
 use super::guard::{GUARD_FILE, Level};
 use super::schedule::gather::questions_by_issue;
+use crate::domain::plan::read::PlanGraph;
+use crate::domain::plan::record::GraphHash;
 use crate::domain::{CHALLENGER_ROLE, Instance, Profile, RoleName, TaskSize, TicketId};
 use crate::manifest::{Manifest, ManifestError};
 use crate::ports::{
@@ -199,8 +201,11 @@ fn read_snapshot(board: &dyn Board, runs: &[Run]) -> Result<(Snapshot, Questions
     let epics = board.epics()?;
     let found = blockers::read(board, &ready, &epics)?;
     let mut open = found.graph;
+    let mut ready_waits = blockers::Graph::new();
     for ticket in &ready {
-        open.remove(&ticket.id);
+        if let Some(named) = open.remove(&ticket.id) {
+            ready_waits.insert(ticket.id, named);
+        }
     }
     let questions = board.questions()?;
     let questioned = questions
@@ -210,6 +215,7 @@ fn read_snapshot(board: &dyn Board, runs: &[Run]) -> Result<(Snapshot, Questions
     let snapshot = Snapshot {
         ready,
         open,
+        ready_waits,
         dead: found.dead,
         epics,
         questioned,
@@ -227,6 +233,7 @@ fn past_launch(run: &Run) -> Option<PastLaunch> {
     Some(PastLaunch {
         instance: record.instance.parse().ok()?,
         reserved_at: humantime::parse_rfc3339_weak(&record.reserved_at).ok()?,
+        graph: record.graph_hash(),
     })
 }
 
@@ -407,7 +414,11 @@ pub fn prepare(
     let mut reserved = Vec::new();
     let mut reserve = || -> Result<(), SpawnError> {
         for planned in &plan.launches {
-            reserved.push(runs::reserve(state_dir, planned, holder, &now)?);
+            let dir = match challenged_graph(&snapshot, planned) {
+                Some(graph) => runs::reserve_challenger(state_dir, planned, holder, &now, &graph)?,
+                None => runs::reserve(state_dir, planned, holder, &now)?,
+            };
+            reserved.push(dir);
             state.next_instance = state
                 .next_instance
                 .max(planned.instance.number.get().saturating_add(1));
@@ -426,6 +437,19 @@ pub fn prepare(
         released,
         questions,
     })
+}
+
+/// The hash of the graph of the epic a challenger's launch is for, read as the tick sees the
+/// release now (I14); none for any other role's launch, or an epic the snapshot lacks.
+fn challenged_graph(snapshot: &Snapshot, planned: &PlannedLaunch) -> Option<GraphHash> {
+    if planned.instance.role.as_str() != CHALLENGER_ROLE {
+        return None;
+    }
+    let epic = snapshot
+        .epics
+        .iter()
+        .find(|epic| epic.id == planned.instance.epic)?;
+    Some(PlanGraph::read(epic, &snapshot.epics).hash())
 }
 
 /// Releases each task claimed by an instance that no longer runs ([`orphaned`]), or only `task`'s

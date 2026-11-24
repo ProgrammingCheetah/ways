@@ -1,0 +1,32 @@
+{
+ "name": "23-refuse-providing-another-epics-name",
+ "why": "mcp.catalog is another epic's to provide (epic #1004, in its interface ticket I@1004.1): a plan that provides it too has two providers, refused (D13).",
+ "options": {
+  "lift": "all",
+  "interfaces": "each"
+ },
+ "plan": {
+  "outside": {
+   "mcp.catalog": "I@1004.1"
+  },
+  "nodes": [
+   {
+    "id": "A",
+    "behaviours": [
+     {
+      "text": "a second catalog",
+      "size": 1,
+      "writes": [],
+      "provides": [
+       "mcp.catalog"
+      ],
+      "needs": []
+     }
+    ]
+   }
+  ]
+ },
+ "expect": {
+  "refused": "two-providers"
+ }
+}

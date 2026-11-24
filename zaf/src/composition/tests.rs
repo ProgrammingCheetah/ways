@@ -560,6 +560,126 @@ fn a_role_runner_carries_its_profile_dir_its_model_and_its_effort() {
 }
 
 #[test]
+fn challenger_launch_disallows_the_shell_and_the_web() {
+    let root = scratch_dir("role-challenger");
+    let role = "model = \"opus\"\neffort = \"high\"\nprofile = \"build\"\nturns = 5\n";
+    write_manifest(
+        &root,
+        &format!(
+            "{HEAD}[runners.claude]\n\
+             command = \"claude -p {{prompt}} --model {{model}} --add-dir {{root}}\"\n\
+             [roles.challenger]\n{role}[roles.planning]\n{role}"
+        ),
+    );
+    let composition = Composition::load_with_home(&root, None).expect("loads");
+    let launch = |name: &str| {
+        let request = RunRequest {
+            role: RoleName::from(name),
+            profile: Profile::Build,
+            ..request(&root)
+        };
+        composition.role_launch(&request).expect("describes").0
+    };
+    let challenger = launch("challenger");
+    let words: Vec<&str> = challenger.split(' ').collect();
+    let at = words
+        .iter()
+        .position(|word| *word == "--disallowedTools")
+        .expect("the flag is on the line");
+    assert_eq!(
+        words[at + 1..],
+        [
+            "Agent",
+            "Edit",
+            "Write",
+            "NotebookEdit",
+            "Bash",
+            "WebFetch",
+            "WebSearch"
+        ]
+    );
+    assert!(!launch("planning").contains("--disallowedTools"));
+    fs::remove_dir_all(&root).expect("clean up");
+}
+
+#[test]
+fn challenger_launch_is_refused_where_the_tool_limit_might_not_land_on_claude() {
+    let role = "model = \"opus\"\neffort = \"high\"\nprofile = \"build\"\nturns = 5\n";
+    for (case, command) in [
+        ("pipe", "claude -p {prompt} | tee run.log"),
+        ("redirect", "claude -p {prompt} 2>> run.log"),
+        ("and", "claude -p {prompt} && notify-send done"),
+        ("then", "claude -p {prompt}; true"),
+        ("wrapper", "sh -c 'claude -p {prompt}'"),
+        ("subshell", "(claude -p {prompt})"),
+        ("comment", "claude -p {prompt} # the runner"),
+    ] {
+        let root = scratch_dir(&format!("role-challenger-refused-{case}"));
+        write_manifest(
+            &root,
+            &format!(
+                "{HEAD}[runners.claude]\ncommand = \"{command}\"\n\
+                 [roles.challenger]\n{role}[roles.planning]\n{role}"
+            ),
+        );
+        let composition = Composition::load_with_home(&root, None).expect("loads");
+        let launch = |name: &str| {
+            let request = RunRequest {
+                role: RoleName::from(name),
+                profile: Profile::Build,
+                ..request(&root)
+            };
+            composition.role_launch(&request)
+        };
+        let Err(error) = launch("challenger") else {
+            panic!("{command:?} should be refused for the challenger");
+        };
+        assert!(
+            matches!(error, CompositionError::ToolLimitMisplaced { .. }),
+            "{command}: {error:?}"
+        );
+        let said = error.to_string();
+        assert!(said.contains("[runners.claude]"), "{said}");
+        assert!(said.contains("--disallowedTools"), "{said}");
+        assert!(
+            composition
+                .runner_for_role(&RoleName::from("challenger"))
+                .is_err(),
+            "{command}"
+        );
+        // Only the challenger carries a limit, so only its launch is refused.
+        assert!(launch("planning").is_ok(), "{command}");
+        fs::remove_dir_all(&root).expect("clean up");
+    }
+}
+
+#[test]
+fn challenger_launch_takes_a_plain_wrapper_before_claude() {
+    let root = scratch_dir("role-challenger-wrapper");
+    let role = "model = \"opus\"\neffort = \"high\"\nprofile = \"build\"\nturns = 5\n";
+    write_manifest(
+        &root,
+        &format!(
+            "{HEAD}[runners.claude]\n\
+             command = \"nice -n 5 claude -p {{prompt}} --model {{model}} --add-dir {{root}}\"\n\
+             [roles.challenger]\n{role}"
+        ),
+    );
+    let composition = Composition::load_with_home(&root, None).expect("loads");
+    let request = RunRequest {
+        role: RoleName::from("challenger"),
+        profile: Profile::Build,
+        ..request(&root)
+    };
+    let (line, _) = composition.role_launch(&request).expect("describes");
+    assert!(
+        line.ends_with(" --disallowedTools Agent Edit Write NotebookEdit Bash WebFetch WebSearch"),
+        "{line}"
+    );
+    fs::remove_dir_all(&root).expect("clean up");
+}
+
+#[test]
 fn a_role_without_the_claude_runner_has_no_runner() {
     let root = scratch_dir("role-no-runner");
     write_manifest(&root, HEAD);

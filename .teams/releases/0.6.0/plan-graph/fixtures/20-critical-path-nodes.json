@@ -1,0 +1,298 @@
+{
+ "name": "20-critical-path-nodes",
+ "why": "The critical path is named node by node, weighed by size. A and B tie before C, and E and G tie as ends: the lower id wins each tie (D15).",
+ "options": {
+  "lift": "none",
+  "interfaces": "each"
+ },
+ "plan": {
+  "nodes": [
+   {
+    "id": "A",
+    "behaviours": [
+     {
+      "text": "a",
+      "size": 2,
+      "writes": [],
+      "provides": [
+       "a"
+      ],
+      "needs": []
+     }
+    ]
+   },
+   {
+    "id": "B",
+    "behaviours": [
+     {
+      "text": "b",
+      "size": 2,
+      "writes": [],
+      "provides": [
+       "b"
+      ],
+      "needs": []
+     }
+    ]
+   },
+   {
+    "id": "C",
+    "behaviours": [
+     {
+      "text": "c",
+      "size": 1,
+      "writes": [],
+      "provides": [
+       "c"
+      ],
+      "needs": [
+       "a",
+       "b"
+      ]
+     }
+    ]
+   },
+   {
+    "id": "D",
+    "behaviours": [
+     {
+      "text": "d",
+      "size": 1,
+      "writes": [],
+      "provides": [
+       "d"
+      ],
+      "needs": []
+     }
+    ]
+   },
+   {
+    "id": "E",
+    "behaviours": [
+     {
+      "text": "e",
+      "size": 1,
+      "writes": [],
+      "provides": [],
+      "needs": [
+       "c",
+       "d"
+      ]
+     }
+    ]
+   },
+   {
+    "id": "F",
+    "behaviours": [
+     {
+      "text": "f",
+      "size": 2,
+      "writes": [],
+      "provides": [
+       "f"
+      ],
+      "needs": []
+     }
+    ]
+   },
+   {
+    "id": "G",
+    "behaviours": [
+     {
+      "text": "g",
+      "size": 2,
+      "writes": [],
+      "provides": [],
+      "needs": [
+       "f"
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ "expect": {
+  "before": {
+   "nodes": 7,
+   "interfaces": 0,
+   "chain": 3,
+   "width": [
+    4,
+    2,
+    1
+   ],
+   "narrow_layers": [
+    1,
+    2
+   ],
+   "work": 11,
+   "critical": 4,
+   "critical_path": [
+    "A",
+    "C",
+    "E"
+   ]
+  },
+  "after": {
+   "nodes": 7,
+   "interfaces": 0,
+   "chain": 3,
+   "width": [
+    4,
+    2,
+    1
+   ],
+   "narrow_layers": [
+    1,
+    2
+   ],
+   "work": 11,
+   "critical": 4,
+   "critical_path": [
+    "A",
+    "C",
+    "E"
+   ]
+  },
+  "plan": {
+   "nodes": [
+    {
+     "id": "A",
+     "behaviours": [
+      {
+       "text": "a",
+       "size": 2,
+       "writes": [],
+       "provides": [
+        "a"
+       ],
+       "needs": []
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "B",
+     "behaviours": [
+      {
+       "text": "b",
+       "size": 2,
+       "writes": [],
+       "provides": [
+        "b"
+       ],
+       "needs": []
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "C",
+     "behaviours": [
+      {
+       "text": "c",
+       "size": 1,
+       "writes": [],
+       "provides": [
+        "c"
+       ],
+       "needs": [
+        "a",
+        "b"
+       ]
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "D",
+     "behaviours": [
+      {
+       "text": "d",
+       "size": 1,
+       "writes": [],
+       "provides": [
+        "d"
+       ],
+       "needs": []
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "E",
+     "behaviours": [
+      {
+       "text": "e",
+       "size": 1,
+       "writes": [],
+       "provides": [],
+       "needs": [
+        "c",
+        "d"
+       ]
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "F",
+     "behaviours": [
+      {
+       "text": "f",
+       "size": 2,
+       "writes": [],
+       "provides": [
+        "f"
+       ],
+       "needs": []
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "G",
+     "behaviours": [
+      {
+       "text": "g",
+       "size": 2,
+       "writes": [],
+       "provides": [],
+       "needs": [
+        "f"
+       ]
+      }
+     ],
+     "kind": "body"
+    }
+   ],
+   "orders": [
+    {
+     "from": "A",
+     "to": "C",
+     "needs": "a"
+    },
+    {
+     "from": "B",
+     "to": "C",
+     "needs": "b"
+    },
+    {
+     "from": "C",
+     "to": "E",
+     "needs": "c"
+    },
+    {
+     "from": "D",
+     "to": "E",
+     "needs": "d"
+    },
+    {
+     "from": "F",
+     "to": "G",
+     "needs": "f"
+    }
+   ]
+  }
+ }
+}

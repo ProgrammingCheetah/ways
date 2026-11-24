@@ -42,6 +42,8 @@ struct State {
     next_tree: u64,
     tags: BTreeSet<String>,
     remote: bool,
+    /// The paths in the tree at a revision, as [`FakeVcs::set_paths`] recorded them.
+    tree_paths: BTreeMap<String, BTreeSet<String>>,
     /// The repository's root, once [`FakeVcs::set_root`] names it; until then any directory is
     /// the repository.
     root: Option<PathBuf>,
@@ -190,6 +192,14 @@ impl FakeVcs {
         self.state().remote = false;
     }
 
+    /// Records the paths in the tree at a revision, replacing any recorded before: `path_at`
+    /// answers `true` for these and `false` for any other path. A revision never recorded is
+    /// one the repository does not hold.
+    pub fn set_paths(&self, revision: &str, paths: &[&str]) {
+        let paths = paths.iter().map(|path| (*path).to_owned()).collect();
+        self.state().tree_paths.insert(revision.to_owned(), paths);
+    }
+
     /// Names the repository's root: the reads that take a root then answer
     /// [`PortError::NotFound`] for any other directory, as the real adapters do for a directory
     /// that is no repository.
@@ -334,6 +344,16 @@ impl Vcs for FakeVcs {
         let state = self.state();
         state.at_root(root)?;
         Ok(state.tags.iter().cloned().collect())
+    }
+
+    fn path_at(&self, root: &Path, revision: &str, path: &str) -> Result<bool, PortError> {
+        let state = self.state();
+        state.at_root(root)?;
+        state
+            .tree_paths
+            .get(revision)
+            .map(|paths| paths.contains(path))
+            .ok_or_else(|| PortError::NotFound(format!("revision {revision}")))
     }
 
     fn diff_hunks(

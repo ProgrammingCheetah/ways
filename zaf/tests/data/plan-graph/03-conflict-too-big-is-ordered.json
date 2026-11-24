@@ -1,0 +1,118 @@
+{
+ "name": "03-conflict-too-big-is-ordered",
+ "why": "A small and a medium node write the same thing; together they pass the limit, so they are put in order, lower id first on a tie.",
+ "options": {
+  "lift": "all",
+  "interfaces": "each"
+ },
+ "plan": {
+  "nodes": [
+   {
+    "id": "A",
+    "behaviours": [
+     {
+      "text": "the big change",
+      "size": 2,
+      "writes": [
+       "app/update"
+      ],
+      "provides": [],
+      "needs": []
+     }
+    ]
+   },
+   {
+    "id": "B",
+    "behaviours": [
+     {
+      "text": "the small change",
+      "size": 1,
+      "writes": [
+       "app/update"
+      ],
+      "provides": [],
+      "needs": []
+     }
+    ]
+   }
+  ]
+ },
+ "expect": {
+  "before": {
+   "nodes": 2,
+   "interfaces": 0,
+   "chain": 1,
+   "width": [
+    2
+   ],
+   "narrow_layers": [
+    0
+   ],
+   "work": 3,
+   "critical": 2,
+   "critical_path": [
+    "A"
+   ]
+  },
+  "after": {
+   "nodes": 2,
+   "interfaces": 0,
+   "chain": 2,
+   "width": [
+    1,
+    1
+   ],
+   "narrow_layers": [
+    0,
+    1
+   ],
+   "work": 3,
+   "critical": 3,
+   "critical_path": [
+    "A",
+    "B"
+   ]
+  },
+  "plan": {
+   "nodes": [
+    {
+     "id": "A",
+     "behaviours": [
+      {
+       "text": "the big change",
+       "size": 2,
+       "writes": [
+        "app/update"
+       ],
+       "provides": [],
+       "needs": []
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "B",
+     "behaviours": [
+      {
+       "text": "the small change",
+       "size": 1,
+       "writes": [
+        "app/update"
+       ],
+       "provides": [],
+       "needs": []
+      }
+     ],
+     "kind": "body"
+    }
+   ],
+   "orders": [
+    {
+     "from": "A",
+     "to": "B",
+     "needs": "turn:app/update"
+    }
+   ]
+  }
+ }
+}

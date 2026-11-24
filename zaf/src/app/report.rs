@@ -9,6 +9,7 @@
 pub mod epics;
 pub mod ledger;
 mod prices;
+pub mod times;
 mod transcript;
 
 use std::path::{Path, PathBuf};

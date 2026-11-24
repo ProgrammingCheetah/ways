@@ -276,6 +276,15 @@ fn comments(bodies: &[String]) -> Value {
     )
 }
 
+/// [`comments`], each posted by `login`.
+fn comments_by(login: &str, bodies: &[String]) -> Value {
+    let mut rows = comments(bodies);
+    for row in rows.as_array_mut().into_iter().flatten() {
+        row["user"] = json!({ "login": login });
+    }
+    rows
+}
+
 fn claim_line(holder: u32, seconds: u64) -> String {
     LeaseNote::Claim {
         instance: instance(holder),
@@ -682,6 +691,39 @@ fn a_closed_issue_says_when_it_closed() {
 }
 
 #[test]
+fn board_opened_at_forgejo() {
+    let fake = FakeCurl::new();
+    let mut closed = issue(8, &["task", "state/done"], "closed");
+    closed["created_at"] = json!("2026-11-12T03:00:00-07:00");
+    fake.on(&format!("GET {API}/issues/8"), 200, &closed);
+    fake.on(
+        &format!("GET {API}/issues/3"),
+        200,
+        &issue(3, &["task"], "open"),
+    );
+    let mut pull = issue(4, &[], "open");
+    pull["created_at"] = json!("2026-11-12T03:00:00-07:00");
+    pull["pull_request"] = json!({ "merged": false });
+    fake.on(&format!("GET {API}/issues/4"), 200, &pull);
+    let board = fake.board();
+    assert_eq!(
+        board.opened_at(TicketId::from(8)),
+        Ok(Some(at(1_794_477_600))),
+        "a closed issue says when it opened"
+    );
+    assert_eq!(
+        board.opened_at(TicketId::from(3)),
+        Ok(None),
+        "no created_at"
+    );
+    assert_eq!(
+        board.opened_at(TicketId::from(4)),
+        Ok(None),
+        "a pull request"
+    );
+}
+
+#[test]
 fn a_task_reads_its_state_type_epic_and_link() {
     let fake = FakeCurl::new();
     fake.on(
@@ -912,6 +954,53 @@ fn a_state_left_on_beside_the_new_one_is_taken_off() {
     assert_eq!(
         fake.asked().last().map(String::as_str),
         Some(format!("DELETE {API}/issues/3/labels/{}", label_id("state/ready")).as_str())
+    );
+}
+
+#[test]
+fn forgejo_drop_task_request() {
+    let fake = FakeCurl::new();
+    fake.on(
+        &format!("GET {API}/issues/7"),
+        200,
+        &issue(7, &["task", "state/ready"], "open"),
+    );
+    fake.on(
+        &format!("GET {API}/labels?*"),
+        200,
+        &labels(&["task", "state/ready", "not planned"]),
+    );
+    fake.on(
+        &format!("POST {API}/issues/7/labels"),
+        200,
+        &labels(&["task", "state/ready", "not planned"]),
+    );
+    fake.on(
+        &format!("PATCH {API}/issues/7"),
+        201,
+        &issue(7, &["task", "not planned"], "closed"),
+    );
+    fake.on(
+        &format!("GET {API}/issues/8"),
+        200,
+        &issue(8, &["task", "state/done"], "closed"),
+    );
+    let board = fake.board();
+    board.drop_task(TicketId::from(7)).expect("drop");
+    assert_eq!(
+        fake.bodies(&format!("POST {API}/issues/7/labels")),
+        [json!({ "labels": [31] })]
+    );
+    assert_eq!(
+        fake.bodies(&format!("PATCH {API}/issues/7")),
+        [json!({ "state": "closed" })]
+    );
+    // A closed task is read and left as it is.
+    board.drop_task(TicketId::from(8)).expect("already closed");
+    assert!(fake.bodies(&format!("PATCH {API}/issues/8")).is_empty());
+    assert!(
+        fake.bodies(&format!("POST {API}/issues/8/labels"))
+            .is_empty()
     );
 }
 
@@ -1224,7 +1313,12 @@ fn epics_read_tasks_from_dependencies_and_their_notes_from_comments() {
     fake.on(
         &format!("GET {API}/issues/1/comments"),
         200,
-        &comments(&[signed, planned, challenged]),
+        &comments_by("zaf-bot", &[signed, planned, challenged]),
+    );
+    fake.on(
+        "GET */api/v1/user",
+        200,
+        &json!({ "id": 5, "login": "zaf-bot" }),
     );
     let mut dropped = issue(4, &["task", "state/ready", "not planned"], "closed");
     dropped["title"] = json!("dropped");
@@ -1269,7 +1363,7 @@ fn epics_read_tasks_from_dependencies_and_their_notes_from_comments() {
         Some(&BodyHash::of(&epic_body.into()))
     );
     assert!(epic.signed());
-    assert!(epic.challenged);
+    assert!(epic.challenged());
     assert_eq!(epic.planned_at, parse_time("2026-11-12T10:00:00Z"));
 }
 
@@ -1887,3 +1981,4 @@ fn pull_facts_unchanged_with_pool() {
 }
 
 mod forge;
+mod logins;

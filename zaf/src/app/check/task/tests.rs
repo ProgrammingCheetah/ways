@@ -32,11 +32,11 @@ impl Shell for ScriptedShell {
     }
 }
 
-fn template(tests: &str, interfaces: &str) -> TaskTemplate {
+fn template(tests: &str, interfaces: &str) -> TaskBody {
     template_with_architecture(tests, interfaces, "none")
 }
 
-fn template_with_architecture(tests: &str, interfaces: &str, architecture: &str) -> TaskTemplate {
+fn template_with_architecture(tests: &str, interfaces: &str, architecture: &str) -> TaskBody {
     let body = format!(
         "Goal: export the list.\n\
          Owned paths: src/export/** (new), src/lib.rs\n\
@@ -52,7 +52,7 @@ fn template_with_architecture(tests: &str, interfaces: &str, architecture: &str)
          Size: S\n\
          Blocked by: —\n"
     );
-    body.parse().expect("template parses")
+    TaskBody::parse(&body).expect("template parses")
 }
 
 fn project() -> tempfile::TempDir {
@@ -162,7 +162,7 @@ fn a_named_test_that_passes_and_one_that_fails() {
 }
 
 /// Runs a task check over the sample project with no gate and no tests.
-fn interface_lines(template: &TaskTemplate) -> TaskCheck {
+fn interface_lines(template: &TaskBody) -> TaskCheck {
     let dir = project();
     let shell = ScriptedShell::default();
     let inputs = TaskInputs {

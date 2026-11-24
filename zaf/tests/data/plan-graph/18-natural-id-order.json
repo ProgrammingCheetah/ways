@@ -1,0 +1,155 @@
+{
+ "name": "18-natural-id-order",
+ "why": "Ids sort as numbers: 9 before 10. Three nodes that cannot merge are ordered 9, 10, 11.",
+ "options": {
+  "lift": "all",
+  "interfaces": "each"
+ },
+ "plan": {
+  "nodes": [
+   {
+    "id": "10",
+    "behaviours": [
+     {
+      "text": "ten",
+      "size": 2,
+      "writes": [
+       "x"
+      ],
+      "provides": [],
+      "needs": []
+     }
+    ]
+   },
+   {
+    "id": "9",
+    "behaviours": [
+     {
+      "text": "nine",
+      "size": 2,
+      "writes": [
+       "x"
+      ],
+      "provides": [],
+      "needs": []
+     }
+    ]
+   },
+   {
+    "id": "11",
+    "behaviours": [
+     {
+      "text": "eleven",
+      "size": 2,
+      "writes": [
+       "x"
+      ],
+      "provides": [],
+      "needs": []
+     }
+    ]
+   }
+  ]
+ },
+ "expect": {
+  "before": {
+   "nodes": 3,
+   "interfaces": 0,
+   "chain": 1,
+   "width": [
+    3
+   ],
+   "narrow_layers": [
+    0
+   ],
+   "work": 6,
+   "critical": 2,
+   "critical_path": [
+    "9"
+   ]
+  },
+  "after": {
+   "nodes": 3,
+   "interfaces": 0,
+   "chain": 3,
+   "width": [
+    1,
+    1,
+    1
+   ],
+   "narrow_layers": [
+    0,
+    1,
+    2
+   ],
+   "work": 6,
+   "critical": 6,
+   "critical_path": [
+    "9",
+    "10",
+    "11"
+   ]
+  },
+  "plan": {
+   "nodes": [
+    {
+     "id": "9",
+     "behaviours": [
+      {
+       "text": "nine",
+       "size": 2,
+       "writes": [
+        "x"
+       ],
+       "provides": [],
+       "needs": []
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "10",
+     "behaviours": [
+      {
+       "text": "ten",
+       "size": 2,
+       "writes": [
+        "x"
+       ],
+       "provides": [],
+       "needs": []
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "11",
+     "behaviours": [
+      {
+       "text": "eleven",
+       "size": 2,
+       "writes": [
+        "x"
+       ],
+       "provides": [],
+       "needs": []
+      }
+     ],
+     "kind": "body"
+    }
+   ],
+   "orders": [
+    {
+     "from": "9",
+     "to": "10",
+     "needs": "turn:x"
+    },
+    {
+     "from": "10",
+     "to": "11",
+     "needs": "turn:x"
+    }
+   ]
+  }
+ }
+}

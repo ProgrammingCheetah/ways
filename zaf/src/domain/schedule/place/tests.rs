@@ -112,16 +112,14 @@ fn facts_of(number: u64, combination: Combination) -> TicketFacts {
         id: id(EPIC),
         signed,
         challenged,
+        voided: false,
     });
     if combination.question {
         facts.open_questions.insert(id(QUESTION));
     }
     facts.dependencies = combination
         .dependency
-        .map(|standing| Dependency {
-            ticket: id(DEPENDENCY),
-            standing,
-        })
+        .map(|standing| Dependency::blocked_by(id(DEPENDENCY), standing))
         .into_iter()
         .collect();
     let checks: Vec<CheckFact> = match combination.checks {
@@ -268,11 +266,11 @@ fn running_comes_first_even_with_an_open_question() {
         id: id(EPIC),
         signed: false,
         challenged: false,
+        voided: false,
     });
-    facts.dependencies.push(Dependency {
-        ticket: id(DEPENDENCY),
-        standing: Standing::Open,
-    });
+    facts
+        .dependencies
+        .push(Dependency::blocked_by(id(DEPENDENCY), Standing::Open));
     facts.pull = Some(PullFacts {
         checks: vec![pending()],
         ..pull("h1", 20)
@@ -309,10 +307,9 @@ fn placement_is_total_and_deterministic() {
 fn a_ticket_whose_phases_all_ended_is_done_and_waits_on_nothing() {
     let mut facts = facts(vec![phase("implement", &[PhaseEnd::PrOpen], None)]);
     facts.pull = Some(pull("h1", 20));
-    facts.dependencies.push(Dependency {
-        ticket: id(DEPENDENCY),
-        standing: Standing::Open,
-    });
+    facts
+        .dependencies
+        .push(Dependency::blocked_by(id(DEPENDENCY), Standing::Open));
     assert_eq!(place(&facts, now()), Place::Done);
 }
 
@@ -325,18 +322,9 @@ fn a_ticket_with_no_phase_is_done_as_today() {
 fn a_ticket_waits_on_every_thing_that_holds() {
     let mut facts = facts(pack());
     facts.dependencies = vec![
-        Dependency {
-            ticket: id(5),
-            standing: Standing::Open,
-        },
-        Dependency {
-            ticket: id(6),
-            standing: Standing::Missing,
-        },
-        Dependency {
-            ticket: id(7),
-            standing: Standing::Done,
-        },
+        Dependency::blocked_by(id(5), Standing::Open),
+        Dependency::blocked_by(id(6), Standing::Missing),
+        Dependency::blocked_by(id(7), Standing::Done),
     ];
     facts.open_questions.insert(id(QUESTION));
     let placed = place(&facts, now());
@@ -395,4 +383,72 @@ fn the_lane_is_ordered_by_weight() {
         placement.lane.front().map(|entry| entry.size),
         Some(TaskSize::M)
     );
+}
+
+/// An epic signed and challenged once, its challenge voided since.
+fn voided_epic() -> EpicFacts {
+    EpicFacts {
+        id: id(EPIC),
+        signed: true,
+        challenged: false,
+        voided: true,
+    }
+}
+
+/// A ticket between two phases: its `implement` ran and opened the pull request, and its `ci`
+/// has not finished.
+fn between_phases() -> TicketFacts {
+    let mut facts = facts(pack());
+    facts.runs.push(run("implement", None, 5).exits(0, 10));
+    facts.pull = Some(PullFacts {
+        checks: vec![passed(30)],
+        ..pull("h1", 20)
+    });
+    facts
+}
+
+#[test]
+fn voided_unstarted_ticket_waits_on_epic() {
+    let mut facts = facts(pack());
+    facts.epic = Some(voided_epic());
+    assert_eq!(
+        place(&facts, now()),
+        Place::Waiting([WaitingOn::Epic(id(EPIC))].into())
+    );
+}
+
+#[test]
+fn voided_ticket_between_phases_goes_on() {
+    let mut facts = between_phases();
+    facts.epic = Some(voided_epic());
+    let Place::InLane { next, .. } = place(&facts, now()) else {
+        panic!("a voided challenge held a ticket in its phases");
+    };
+    assert_eq!(next, name("review"));
+    // It still waits on what else holds.
+    facts.open_questions.insert(id(QUESTION));
+    assert_eq!(
+        place(&facts, now()),
+        Place::Waiting([WaitingOn::Question(id(QUESTION))].into())
+    );
+}
+
+#[test]
+fn unsigned_epic_stops_every_ticket() {
+    let mut facts = between_phases();
+    for voided in [false, true] {
+        facts.epic = Some(EpicFacts {
+            id: id(EPIC),
+            signed: false,
+            challenged: true,
+            voided,
+        });
+        let Place::Waiting(waits) = place(&facts, now()) else {
+            panic!("an unsigned epic let a ticket between phases go on (voided {voided})");
+        };
+        assert!(
+            waits.contains(&WaitingOn::Epic(id(EPIC))),
+            "voided {voided}"
+        );
+    }
 }

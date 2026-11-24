@@ -10,13 +10,13 @@ use std::time::SystemTime;
 use super::GhCommand;
 use super::command::{GraphqlValue, number_from_url};
 use super::rows::{
-    BatchData, ISSUE_FIELDS, IssueRow, NameRow, OPEN_TICKET_FIELDS, STANDING_FIELDS, StandingRow,
-    TICKET_LIST_FIELDS,
+    BatchData, ISSUE_FIELDS, IssueRow, NameRow, OPEN_TICKET_FIELDS, OPENED_FIELDS, OpenedRow,
+    STANDING_FIELDS, StandingRow, TICKET_LIST_FIELDS,
 };
 use super::state::{LabelState, ProjectRef, ProjectState, StateStore};
 use crate::adapters::issues::{
-    DOOR_LABEL, EPIC_LABEL, GROUP_COLOR, GROUP_PREFIX, QUESTION_LABEL, TASK_LABEL, can_wait, group,
-    keeps_state_on_release, waits_on_ruling,
+    DOOR_LABEL, EPIC_LABEL, GROUP_COLOR, GROUP_PREFIX, QUESTION_LABEL, TASK_LABEL, TrustedLogins,
+    can_wait, group, keeps_state_on_release, waits_on_ruling,
 };
 use crate::adapters::notes::{
     EpicNotes, LeaseNote, RULING_MARKER, SIGNATURE_TEXT, held_by, live_claim, marked,
@@ -28,7 +28,7 @@ use crate::domain::{
     Ticket, TicketId, TicketState, TicketType,
 };
 use crate::manifest::RepoName;
-use crate::ports::{Board, ClaimOutcome, ClaimRecord, IssueTypes, NewQuestion, PortError};
+use crate::ports::{Board, ClaimOutcome, ClaimRecord, IssueTypes, Login, NewQuestion, PortError};
 
 /// The most issues one list call reads.
 const LIST_LIMIT: &str = "1000";
@@ -48,9 +48,9 @@ const ISSUE_TYPES: &str = "query($owner: String!, $name: String!) { \
     repository(owner: $owner, name: $name) { issueTypes(first: 50) { nodes { name } } } }";
 
 /// The fields of an issue the batched read asks for: [`ISSUE_FIELDS`] in GraphQL's words.
-const BATCH_ISSUE: &str = "number title body state labels(first: 100) { totalCount nodes { name } } \
+pub(super) const BATCH_ISSUE: &str = "number title body state labels(first: 100) { totalCount nodes { name } } \
     parent { number } issueType { name } \
-    comments(first: 100) { totalCount nodes { body url createdAt } }";
+    comments(first: 100) { totalCount nodes { body url createdAt author { login } } }";
 
 /// What [`ISSUE_TYPES`] returns.
 #[derive(Debug, serde::Deserialize)]
@@ -80,6 +80,7 @@ struct TypeNodes {
 pub struct GithubBoard<S = LabelState> {
     gh: GhCommand,
     store: S,
+    trusted: TrustedLogins,
 }
 
 /// The board on GitHub Projects: the issues of one repository, each task's state in a
@@ -92,6 +93,7 @@ impl From<GhCommand> for GithubBoard<LabelState> {
         Self {
             gh,
             store: LabelState,
+            trusted: TrustedLogins::default(),
         }
     }
 }
@@ -102,11 +104,19 @@ impl GithubBoard<ProjectState> {
         Self {
             gh,
             store: ProjectState::new(project),
+            trusted: TrustedLogins::default(),
         }
     }
 }
 
 impl<S: StateStore> GithubBoard<S> {
+    /// The board trusting the zaf comments of `logins` (the manifest's list); with none, only
+    /// the login gh posts as.
+    pub fn trusting(mut self, logins: Vec<Login>) -> Self {
+        self.trusted = TrustedLogins::listed(logins);
+        self
+    }
+
     /// The states the issue read as `row` has.
     fn states(&self, row: &IssueRow) -> Result<Vec<TicketState>, PortError> {
         self.store.states(&self.gh, row.number, &row.labels)
@@ -153,7 +163,7 @@ impl<S: StateStore> GithubBoard<S> {
             .collect())
     }
 
-    fn issue(&self, number: TicketId) -> Result<IssueRow, PortError> {
+    pub(super) fn issue(&self, number: TicketId) -> Result<IssueRow, PortError> {
         let number = number.get().to_string();
         self.gh
             .json(&["issue", "view", &number, "--json", ISSUE_FIELDS])
@@ -347,14 +357,17 @@ impl<S: StateStore> Board for GithubBoard<S> {
         let epics = epics
             .iter()
             .map(|epic| {
-                let notes = EpicNotes::read(epic.comments.iter().map(|comment| {
-                    let posted = comment
-                        .created_at
-                        .as_deref()
-                        .and_then(|at| humantime::parse_rfc3339(at).ok());
-                    (comment.body.as_str(), posted)
-                }));
-                Epic {
+                let notes = EpicNotes::read(
+                    epic.comments.iter().map(|comment| {
+                        let posted = comment
+                            .created_at
+                            .as_deref()
+                            .and_then(|at| humantime::parse_rfc3339(at).ok());
+                        (comment.body.as_str(), posted, comment.author.as_ref())
+                    }),
+                    || self.trusted_logins(),
+                )?;
+                Ok(Epic {
                     id: TicketId::from(epic.number),
                     title: epic.title.clone().into(),
                     body: epic.body.clone().into(),
@@ -388,10 +401,11 @@ impl<S: StateStore> Board for GithubBoard<S> {
                         .collect(),
                     signature: notes.signature,
                     planned_at: notes.planned_at,
-                    challenged: notes.challenged,
-                }
+                    challengers: notes.challengers,
+                    records: notes.records,
+                })
             })
-            .collect();
+            .collect::<Result<Vec<Epic>, PortError>>()?;
         Ok(epics)
     }
 
@@ -520,6 +534,24 @@ impl<S: StateStore> Board for GithubBoard<S> {
             ),
             closed_at,
         })
+    }
+
+    /// One `gh issue view` for `createdAt`, open or closed; none for an issue that is not there,
+    /// a pull request, or a row with no readable time.
+    fn opened_at(&self, number: TicketId) -> Result<Option<SystemTime>, PortError> {
+        let number = number.get().to_string();
+        let viewed: Result<OpenedRow, PortError> =
+            self.gh
+                .json(&["issue", "view", &number, "--json", OPENED_FIELDS]);
+        match viewed {
+            Ok(row) if row.url.contains(PULL_PATH) => Ok(None),
+            Ok(row) => Ok(row
+                .created_at
+                .as_deref()
+                .and_then(|at| humantime::parse_rfc3339(at).ok())),
+            Err(PortError::NotFound(_)) => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     fn ready(&self) -> Result<Vec<Ticket>, PortError> {
@@ -651,6 +683,22 @@ impl<S: StateStore> Board for GithubBoard<S> {
                 .map(drop)?;
         }
         Ok(())
+    }
+
+    /// Closes the open issue as not planned; a closed one is left as it is.
+    fn drop_task(&self, task: TicketId) -> Result<(), PortError> {
+        let row = self.issue(task)?;
+        if row.state != OPEN {
+            return Ok(());
+        }
+        let number = task.get().to_string();
+        self.gh
+            .text(&["issue", "close", &number, "--reason", "not planned"])
+            .map(drop)
+    }
+
+    fn trusted_logins(&self) -> Result<Vec<Login>, PortError> {
+        self.trusted.get(|| self.gh.own_login().map(Login::from))
     }
 
     fn comment(&self, issue: TicketId, body: &str) -> Result<(), PortError> {

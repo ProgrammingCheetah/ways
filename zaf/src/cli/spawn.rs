@@ -333,6 +333,26 @@ fn write_trace(path: &str, composition: &Composition, entry: &Entry) -> trace::L
     appended.line
 }
 
+/// Finishes the half-filed plans of the open epics no planning instance runs on (D9, M14). A
+/// project whose version control cannot be composed finishes none.
+fn finish_half_filed(
+    composition: &Composition,
+    board: &dyn Board,
+    state_dir: &Path,
+) -> Result<Vec<spawn::HalfFinished>, SpawnError> {
+    let Ok(vcs) = composition.vcs() else {
+        return Ok(Vec::new());
+    };
+    let (state, _) = spawn::derive(state_dir, &process::alive)?;
+    Ok(spawn::finish_half_filed(
+        composition.root(),
+        composition.manifest(),
+        board,
+        vcs.as_ref(),
+        &state,
+    )?)
+}
+
 /// What a tick saw for its trace: the core's placement, or why it could not place.
 struct Observed {
     /// The core's placement, or why there is none.
@@ -415,6 +435,18 @@ fn tick(
         );
         return BACKEND;
     };
+    // An epic's half-filed plan is finished before the launches are planned, so a plan that
+    // needed only its filing launches no second planning instance.
+    let finished = match finish_half_filed(composition, board.as_ref(), &state_dir) {
+        Ok(finished) => finished,
+        Err(error) => {
+            traced.stopped = Some(error.to_string());
+            if let SpawnError::Port(_) = error {
+                traced.unread = Some(error.to_string());
+            }
+            return failed(&path, &error);
+        }
+    };
     let prepared = match spawn::prepare(
         board.as_ref(),
         &state_dir,
@@ -435,6 +467,9 @@ fn tick(
     // tail after. `--json` prints none of it.
     let mut block = spawn::digest::Block::new(began, clock::utc_offset(began));
     block.asked = when.asked.map(Asked::line);
+    block
+        .did
+        .extend(finished.iter().map(spawn::HalfFinished::line));
     block.did.extend(
         prepared
             .lost

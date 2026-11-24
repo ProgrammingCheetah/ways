@@ -339,6 +339,7 @@ mod tests {
             number: 7,
             title: "An epic".into(),
             stage,
+            half_filed: false,
             release: None,
             url: None,
             done: 0,

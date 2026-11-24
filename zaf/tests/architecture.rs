@@ -354,3 +354,152 @@ fn the_glob_matcher_is_named_only_in_the_ci_rule() {
         breaks.join("\n")
     );
 }
+
+/// Every `src/<path> names <name>` for a file of `files` that `allowed` does not pass and that
+/// names one of `names` as a crate, a path or a word of its own.
+fn names_unallowed(
+    files: &[(String, String)],
+    names: &[&str],
+    allowed: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    let mut breaks = Vec::new();
+    for (path, text) in files {
+        if allowed(path) {
+            continue;
+        }
+        let code = code_of(text);
+        for name in names {
+            if names_crate(&code, name) {
+                breaks.push(format!("src/{path} names {name}"));
+            }
+        }
+    }
+    breaks
+}
+
+/// The graph crates: only `domain/plan/graph.rs` (the `Dag`) may name them.
+const GRAPH_CRATES: [&str; 2] = ["petgraph", "rustworkx_core"];
+const GRAPH_HOME: &str = "domain/plan/graph";
+
+/// Names the plan never uses: a random or a parallel run would make the plan differ between
+/// runs, and the longest path is `Dag`'s own to write.
+const BANNED: [&str; 3] = ["longest_path", "rand", "rayon"];
+
+/// The hash collections, whose iteration order is not fixed: the plan module uses ordered ones.
+const HASH_COLLECTIONS: [&str; 2] = ["HashMap", "HashSet"];
+
+fn sample(path: &str, text: &str) -> Vec<(String, String)> {
+    vec![(path.to_string(), text.to_string())]
+}
+
+#[test]
+fn graph_crates_fenced() {
+    let at_home = |path: &str| within(path, GRAPH_HOME);
+    let breaks = names_unallowed(&source_files(), &GRAPH_CRATES, at_home);
+    assert!(
+        breaks.is_empty(),
+        "a graph crate outside domain/plan/graph.rs:\n{}",
+        breaks.join("\n")
+    );
+
+    let fence =
+        |path: &str, text: &str| names_unallowed(&sample(path, text), &GRAPH_CRATES, at_home);
+    // The home may name them; a second file may not.
+    assert!(fence("domain/plan/graph.rs", "use petgraph::graph::DiGraph;").is_empty());
+    assert!(fence("domain/plan/graph.rs", "use rustworkx_core::dag_algo;").is_empty());
+    assert_eq!(
+        fence("domain/plan/other.rs", "let g = petgraph::Graph::new();"),
+        ["src/domain/plan/other.rs names petgraph"]
+    );
+    assert_eq!(
+        fence(
+            "app/plan.rs",
+            "use rustworkx_core::dag_algo::topological_order;"
+        ),
+        ["src/app/plan.rs names rustworkx_core"]
+    );
+    // A word inside another word, or a comment, is not a hit.
+    assert!(fence("app/plan.rs", "let my_petgraph_like = 1;").is_empty());
+    assert!(fence("app/plan.rs", "let x = 1; // petgraph::Graph").is_empty());
+}
+
+#[test]
+fn banned_crates_absent() {
+    let nowhere = |_: &str| false;
+    let breaks = names_unallowed(&source_files(), &BANNED, nowhere);
+    assert!(
+        breaks.is_empty(),
+        "a banned crate or function named:\n{}",
+        breaks.join("\n")
+    );
+
+    let banned = |text: &str| names_unallowed(&sample("app/x.rs", text), &BANNED, nowhere);
+    assert_eq!(banned("use rand::Rng;"), ["src/app/x.rs names rand"]);
+    assert_eq!(
+        banned("let n = rand::random::<u8>();"),
+        ["src/app/x.rs names rand"]
+    );
+    assert_eq!(
+        banned("use rayon::prelude::*;"),
+        ["src/app/x.rs names rayon"]
+    );
+    assert_eq!(
+        banned("rustworkx_core::dag_algo::longest_path(&g, f)"),
+        ["src/app/x.rs names longest_path"]
+    );
+    // No file is exempt, the graph's home included.
+    assert!(
+        !names_unallowed(
+            &sample("domain/plan/graph.rs", "use rand::Rng;"),
+            &BANNED,
+            nowhere
+        )
+        .is_empty()
+    );
+    // A word inside another word, or a comment, is not a hit.
+    assert!(banned("let operand = 1;").is_empty());
+    assert!(banned("let brand = grand + rands;").is_empty());
+    assert!(banned("let x = 1; // use rand::Rng;").is_empty());
+}
+
+#[test]
+fn plan_module_has_no_hash_collections() {
+    let outside_plan = |path: &str| !within(path, "domain/plan");
+    let breaks = names_unallowed(&source_files(), &HASH_COLLECTIONS, outside_plan);
+    assert!(
+        breaks.is_empty(),
+        "a hash collection under src/domain/plan:\n{}",
+        breaks.join("\n")
+    );
+
+    let plan = |path: &str, text: &str| {
+        names_unallowed(&sample(path, text), &HASH_COLLECTIONS, outside_plan)
+    };
+    assert_eq!(
+        plan(
+            "domain/plan/graph.rs",
+            "let s: std::collections::HashSet<u32> = Default::default();"
+        ),
+        ["src/domain/plan/graph.rs names HashSet"]
+    );
+    assert_eq!(
+        plan("domain/plan.rs", "use std::collections::HashMap;"),
+        ["src/domain/plan.rs names HashMap"]
+    );
+    // Elsewhere they are free; an ordered collection or a longer word is no hit.
+    assert!(plan("app/x.rs", "use std::collections::HashMap;").is_empty());
+    assert!(plan("domain/plan/graph.rs", "use std::collections::BTreeMap;").is_empty());
+    assert!(plan("domain/plan/graph.rs", "let MyHashMapLike = 1;").is_empty());
+}
+
+#[test]
+fn no_caller_of_ticket_template() {
+    // A body is read through `TaskBody` (I7): `Ticket::template` is gone, so a planned ticket is
+    // a task to every reader.
+    let callers: Vec<String> = source_files()
+        .into_iter()
+        .filter(|(_, text)| code_of(text).contains(".template()"))
+        .map(|(path, _)| path)
+        .collect();
+    assert!(callers.is_empty(), "calls Ticket::template: {callers:?}");
+}

@@ -91,6 +91,34 @@ fn the_checked_path_names_the_action_of_do_and_the_flags() {
 }
 
 #[test]
+fn epic_check_is_an_mcp_word() {
+    let argv: Vec<String> = ["zaf", "epic", "check", "1162"].map(str::to_owned).to_vec();
+    let path = Catalog::new(Cli::command()).check(&argv).expect("parses");
+    assert_eq!(path.words, ["epic", "check"]);
+    let spec = specs()
+        .into_iter()
+        .find(|spec| spec.name == "epic")
+        .expect("epic tool");
+    assert!(
+        spec.description.contains("epic check"),
+        "{}",
+        spec.description
+    );
+}
+
+#[test]
+fn report_times_is_an_mcp_word() {
+    let argv: Vec<String> = ["zaf", "report", "--times"].map(str::to_owned).to_vec();
+    let path = Catalog::new(Cli::command()).check(&argv).expect("parses");
+    assert_eq!(path.words, ["report"]);
+    let spec = specs()
+        .into_iter()
+        .find(|spec| spec.name == "report")
+        .expect("report tool");
+    assert!(spec.description.contains("--times"), "{}", spec.description);
+}
+
+#[test]
 fn usage_error_is_clap_message() {
     let argv: Vec<String> = ["zaf", "board", "frobnicate"].map(str::to_owned).to_vec();
     let expected = Cli::command()

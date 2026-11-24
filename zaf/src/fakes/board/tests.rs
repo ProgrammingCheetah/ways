@@ -15,6 +15,35 @@ fn ticket(number: u64) -> Ticket {
 }
 
 #[test]
+fn drop_task_closes_as_not_planned() {
+    let board = FakeBoard::default();
+    board.add_ticket(ticket(2));
+    board.drop_task(TicketId::from(2)).expect("drop");
+    assert_eq!(board.closed_as(TicketId::from(2)), Some(false));
+}
+
+#[test]
+fn dropped_task_is_not_done_for_a_blocker() {
+    let board = FakeBoard::default();
+    board.add_ticket(ticket(2));
+    board.drop_task(TicketId::from(2)).expect("drop");
+    assert_eq!(
+        board.standing(TicketId::from(2)),
+        Ok(Standing::ClosedNotPlanned)
+    );
+}
+
+#[test]
+fn drop_task_on_a_closed_task_is_a_no_op() {
+    let board = FakeBoard::default();
+    board.add_ticket(ticket(2));
+    board.close(TicketId::from(2));
+    assert_eq!(board.drop_task(TicketId::from(2)), Ok(()));
+    assert_eq!(board.closed_as(TicketId::from(2)), Some(true));
+    assert_eq!(board.standing(TicketId::from(2)), Ok(Standing::Done));
+}
+
+#[test]
 fn a_ruling_keeps_the_question_label_and_closes_the_issue() {
     let board = FakeBoard::default();
     board.add_ticket(ticket(2));
@@ -143,6 +172,26 @@ fn open_tickets_lists_open_tasks_in_any_state_but_done_in_number_order() {
         .map(|open| open.ticket.id)
         .collect();
     assert_eq!(listed, [2, 3, 5, 6].map(TicketId::from));
+}
+
+#[test]
+fn fake_board_opened_at() {
+    use std::time::{Duration, SystemTime};
+
+    let board = FakeBoard::default();
+    board.add_ticket(ticket(2));
+    board.add_ticket(ticket(3));
+    let opened = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+    board.set_opened_at(TicketId::from(2), opened);
+    board.close(TicketId::from(2));
+
+    assert_eq!(board.opened_at(TicketId::from(2)), Ok(Some(opened)));
+    assert_eq!(board.opened_at(TicketId::from(3)), Ok(None), "none set");
+    assert_eq!(
+        board.opened_at(TicketId::from(9)),
+        Ok(None),
+        "no such issue"
+    );
 }
 
 #[test]

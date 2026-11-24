@@ -406,6 +406,11 @@ impl Scene {
             200,
             r#"{"max_response_items":50}"#,
         );
+        self.curl.on(
+            "GET */api/v1/user",
+            200,
+            &format!(r#"{{"id":1,"login":"{}"}}"#, common::OWN_LOGIN),
+        );
         let mut on_task: Vec<_> = labels
             .iter()
             .map(|(id, name)| {
@@ -427,11 +432,11 @@ impl Scene {
         // The epic is signed, planned and challenged, so its tasks are for building.
         let hash = zaf::domain::BodyHash::of(&zaf::domain::TicketBody::from("An epic.\n"));
         let epic_comments = serde_json::json!([
-            {"id": 1, "created_at": "2026-11-21T20:00:00Z",
+            {"id": 1, "created_at": "2026-11-21T20:00:00Z", "user": {"login": common::OWN_LOGIN},
              "body": format!("<!-- zaf:signature sha256={} at=2026-11-21T20:00:00Z -->\nSigned.", hash.as_str())},
             {"id": 2, "created_at": "2026-11-21T20:10:00Z",
              "body": "<!-- zaf:exit planning instance 1 on #424 done -->\nPlanned."},
-            {"id": 3, "created_at": "2026-11-21T20:20:00Z",
+            {"id": 3, "created_at": "2026-11-21T20:20:00Z", "user": {"login": common::OWN_LOGIN},
              "body": "<!-- zaf:report challenger instance 1 on #424 -->\nChallenged."},
         ]);
         let curl = &mut self.curl;

@@ -1,0 +1,43 @@
+{
+ "name": "26-refuse-a-planner-written-existing",
+ "why": "A plan may add names, but never one the code is said to provide: that would pass a need nobody provides. Refused (D7).",
+ "options": {
+  "lift": "all",
+  "interfaces": "each"
+ },
+ "plan": {
+  "vocabulary": {
+   "areas": [
+    "a"
+   ],
+   "signature": [],
+   "existing": []
+  },
+  "new_names": {
+   "existing": [
+    "ghost"
+   ]
+  },
+  "nodes": [
+   {
+    "id": "A",
+    "behaviours": [
+     {
+      "text": "a",
+      "size": 1,
+      "writes": [
+       "a"
+      ],
+      "provides": [],
+      "needs": [
+       "ghost"
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ "expect": {
+  "refused": "planner-list"
+ }
+}

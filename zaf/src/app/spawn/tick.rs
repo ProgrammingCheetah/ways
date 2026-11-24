@@ -6,17 +6,28 @@
 //! epic launches nothing here: its tasks are built by their phases (docs/zaf-actions.md §5.1),
 //! never by a team instance. An unsigned epic, a done one and one with a question open on it
 //! launch nothing.
+//!
+//! An epic whose last plan record has no filing mark is finished from its record, once a tick
+//! and only when no planning instance runs on it and no question is open on it ([`half_filed`],
+//! [`finish_half_filed`], D9, M14). That step reads and writes the board through `plan file`'s
+//! own finish; it comes before the launches are planned, which are pure.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 use std::time::SystemTime;
 
-use super::blockers::{self, DeadBlocker, DeadReason, Graph, blockers};
+use super::blockers::{self, DeadBlocker, DeadReason, Graph};
 use super::state::SpawnState;
 use crate::app::guard::Level;
+use crate::app::plan::file::FileError;
+use crate::app::plan::finish::{Finished, finish};
+use crate::domain::plan::read::PlanGraph;
+use crate::domain::plan::record::GraphHash;
 use crate::domain::{
     CHALLENGER_ROLE, Epic, EpicStage, Instance, InstanceNumber, RoleName, Ticket, TicketId,
 };
 use crate::manifest::Manifest;
+use crate::ports::{Board, NewQuestion, PortError, Vcs};
 
 pub use crate::domain::PLANNING_ROLE;
 
@@ -32,6 +43,9 @@ pub struct Snapshot {
     /// The open tasks the blockers lead to that are not ready, with the blockers each names;
     /// the ready tasks' own bodies are read from `ready`.
     pub open: Graph,
+    /// What each ready task waits on, read from the wait source (D19); a ready task with no
+    /// entry here reads from its own `Blocked by:` line.
+    pub ready_waits: Graph,
     /// Blockers that can never be seen closed, and why.
     pub dead: BTreeMap<TicketId, DeadReason>,
     /// The open epics, with everything their stage is derived from.
@@ -49,6 +63,9 @@ pub struct PastLaunch {
     pub instance: Instance,
     /// When the tick reserved it.
     pub reserved_at: SystemTime,
+    /// `LaunchRecord.graph`: the epic's graph hash at a challenger's launch (I14); `None` for
+    /// any other role's launch and for a record written before the field.
+    pub graph: Option<GraphHash>,
 }
 
 /// What the tick reads from the manifest.
@@ -106,7 +123,8 @@ pub enum EpicSkip {
     PlannedNothing,
     /// The challenger runs on it.
     ChallengerRuns,
-    /// The challenger ran on it and left no report: it runs once per epic.
+    /// The challenger ran on it and left no report: it runs once per graph hash, or once ever
+    /// for an epic with no plan record.
     ChallengerEnded,
     /// Every task is finished.
     Done,
@@ -147,6 +165,20 @@ pub fn allowed_slots(total: u32, level: Level) -> u32 {
     }
 }
 
+/// Whether a challenger was already launched on the epic for its graph as it reads now (D22,
+/// M14, Q13): an earlier challenger launch record holds the graph's current hash. An epic with
+/// no plan record has no graph to hash, so any challenger launch ever answers it.
+fn challenger_launched(epic: &Epic, snapshot: &Snapshot) -> bool {
+    let mut launches = snapshot.launched.iter().filter(|past| {
+        past.instance.epic == epic.id && past.instance.role.as_str() == CHALLENGER_ROLE
+    });
+    if epic.records.is_empty() {
+        return launches.next().is_some();
+    }
+    let now = PlanGraph::read(epic, &snapshot.epics).hash();
+    launches.any(|past| past.graph.as_ref() == Some(&now))
+}
+
 /// Which instance an epic's stage calls for, if any: planning or the challenger. A challenged
 /// epic calls for none, its tasks being built by their phases.
 fn next_launch(
@@ -185,9 +217,7 @@ fn next_launch(
             }
         }
         EpicStage::Planned if runs(CHALLENGER_ROLE) => Err(EpicSkip::ChallengerRuns),
-        EpicStage::Planned if launched_since(CHALLENGER_ROLE, None) => {
-            Err(EpicSkip::ChallengerEnded)
-        }
+        EpicStage::Planned if challenger_launched(epic, snapshot) => Err(EpicSkip::ChallengerEnded),
         EpicStage::Planned => Ok(CHALLENGER_ROLE),
         _ => Err(EpicSkip::BuiltByPhases),
     }
@@ -233,6 +263,76 @@ pub fn epic_candidates(snapshot: &Snapshot, state: &SpawnState) -> Vec<EpicCandi
         .collect()
 }
 
+/// The epics whose last plan record has no filing mark and that nothing holds back: no planning
+/// instance of `running` runs on them and no question in `questioned` is open on them. An epic
+/// whose finish was refused for a changed design keeps its question, so it is left alone while
+/// that question is open.
+pub fn half_filed(
+    epics: &[Epic],
+    questioned: &BTreeSet<TicketId>,
+    running: &[Instance],
+) -> Vec<TicketId> {
+    epics
+        .iter()
+        .filter(|epic| epic.half_filed())
+        .filter(|epic| !questioned.contains(&epic.id))
+        .filter(|epic| {
+            !running
+                .iter()
+                .any(|instance| instance.epic == epic.id && instance.role.as_str() == PLANNING_ROLE)
+        })
+        .map(|epic| epic.id)
+        .collect()
+}
+
+/// What the tick's finish did for one half-filed epic.
+#[derive(Debug)]
+pub struct HalfFinished {
+    /// The epic.
+    pub epic: TicketId,
+    /// What the finish did, or why it refused.
+    pub outcome: Result<Finished, FileError>,
+}
+
+impl HalfFinished {
+    /// The line the tick's block says of it.
+    pub fn line(&self) -> String {
+        match &self.outcome {
+            Ok(finished) => format!("epic {}: {}", self.epic, finished.summary()),
+            Err(error) => format!("epic {}: plan not finished: {error}", self.epic),
+        }
+    }
+}
+
+/// Finishes, once each, the plans [`half_filed`] names among the board's open epics, with the
+/// finish of `plan file` (D9, M14). A refusal is the epic's own result and stops no other epic;
+/// a board that cannot be read is the tick's error.
+///
+/// # Errors
+///
+/// A [`PortError`] when the epics or the questions cannot be read.
+pub fn finish_half_filed(
+    root: &Path,
+    manifest: &Manifest,
+    board: &dyn Board,
+    vcs: &dyn Vcs,
+    state: &SpawnState,
+) -> Result<Vec<HalfFinished>, PortError> {
+    let epics = board.epics()?;
+    let questioned = board
+        .questions()?
+        .iter()
+        .filter_map(|question| NewQuestion::raised_on(question.body.as_str()))
+        .collect();
+    Ok(half_filed(&epics, &questioned, &state.running_instances())
+        .into_iter()
+        .map(|epic| HalfFinished {
+            epic,
+            outcome: finish(root, manifest, board, vcs, epic),
+        })
+        .collect())
+}
+
 /// Plans one tick: at most one launch per open epic, by its stage.
 pub fn plan(snapshot: &Snapshot, state: &SpawnState, level: Level, settings: Settings) -> Plan {
     let allowed = allowed_slots(settings.slots, level);
@@ -246,7 +346,7 @@ pub fn plan(snapshot: &Snapshot, state: &SpawnState, level: Level, settings: Set
     };
     let mut graph = snapshot.open.clone();
     for ticket in &snapshot.ready {
-        graph.insert(ticket.id, blockers(ticket.body.as_str()));
+        graph.insert(ticket.id, blockers::named_by(&snapshot.ready_waits, ticket));
     }
     let cycles = blockers::cycles(&graph);
     let dead = blockers::dead(&graph, &snapshot.dead);

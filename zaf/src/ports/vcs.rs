@@ -104,6 +104,14 @@ pub trait Vcs {
     /// repository is [`PortError::NotFound`].
     fn tags(&self, root: &Path) -> Result<Vec<String>, PortError>;
 
+    /// Whether `path` (relative to the repository root, a file or a folder) is in the tree at
+    /// `revision` in the repository at `root`. A path that is absent is `false`. A revision the
+    /// repository does not hold is [`PortError::NotFound`] naming the revision, never `false`, and
+    /// so is a directory that is no repository. A branch is read where the remote (`origin`) has
+    /// it, as the base of a diff is: a local branch of its name may be absent or stale. A read
+    /// fetches nothing.
+    fn path_at(&self, root: &Path, revision: &str, path: &str) -> Result<bool, PortError>;
+
     /// The hunks of one changed file of a workspace against its base, on request; a file
     /// with no change is [`PortError::NotFound`].
     fn diff_hunks(

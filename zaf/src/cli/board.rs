@@ -53,6 +53,11 @@ fn record_in_run(on: TicketId, question: TicketId) -> Result<(), String> {
 /// Runs a board action.
 pub fn run(cli: &Cli, action: &BoardAction) -> u8 {
     let path = cli.verb.path();
+    if matches!(action, BoardAction::File { .. })
+        && let Some(code) = super::exit::refuse_challenger_filing(&path)
+    {
+        return code;
+    }
     let composition = match Composition::discover_here() {
         Ok(composition) => composition,
         Err(error) => return fail_composition(&path, &error),
@@ -111,7 +116,7 @@ pub fn run(cli: &Cli, action: &BoardAction) -> u8 {
                 instance,
                 body: body.clone(),
             };
-            board::report(board, &command).map(|outcome| {
+            board::report_checked(board, &composition.state_dir(), &command).map(|outcome| {
                 let json = json!({ "task": task.get(), "heartbeat": outcome.heartbeat });
                 let lease = if outcome.heartbeat {
                     "; lease touched"
@@ -331,9 +336,13 @@ pub(super) fn exit_code(error: &BoardError) -> u8 {
         | BoardError::NoPullRequest(_)
         | BoardError::NotATask(_)
         | BoardError::NotAnOpeningState(_)
+        | BoardError::PlannedAsGraph
+        | BoardError::GraphChanged { .. }
         | BoardError::NoSuchType { .. } => REFUSED,
         // A read that failed is no answer about the task: exit 2, never a refusal.
-        BoardError::Unreadable(_) | BoardError::Record(_) => BACKEND,
+        BoardError::Unreadable(_) | BoardError::Record(_) | BoardError::LaunchUnreadable(_) => {
+            BACKEND
+        }
         BoardError::Port(error) => code_for(error),
     }
 }

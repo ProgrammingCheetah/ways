@@ -308,6 +308,7 @@ fn every_open_task_with_a_phase_list_is_gathered_whatever_its_state_and_no_done_
             id: id(EPIC),
             signed: true,
             challenged: true,
+            voided: false,
         })
     );
     assert_eq!(facts.pull, None);
@@ -341,6 +342,7 @@ fn an_unsigned_epic_is_read_and_holds_its_ticket() {
             id: id(3),
             signed: false,
             challenged: false,
+            voided: false,
         })
     );
     assert_eq!(
@@ -375,18 +377,9 @@ fn a_dependency_not_done_is_read_with_where_it_stands() {
     assert_eq!(
         facts.dependencies,
         [
-            Dependency {
-                ticket: id(25),
-                standing: Standing::Open,
-            },
-            Dependency {
-                ticket: id(26),
-                standing: Standing::Done,
-            },
-            Dependency {
-                ticket: id(27),
-                standing: Standing::Missing,
-            },
+            Dependency::blocked_by(id(25), Standing::Open),
+            Dependency::blocked_by(id(26), Standing::Done),
+            Dependency::blocked_by(id(27), Standing::Missing),
         ]
     );
     let Place::Waiting(waits) = place(&facts, time(100)) else {
@@ -435,10 +428,7 @@ fn scheduler_unblocks_ticket_of_finished_epic() {
 
     assert_eq!(
         facts.dependencies,
-        [Dependency {
-            ticket: id(50),
-            standing: Standing::Done,
-        }]
+        [Dependency::blocked_by(id(50), Standing::Done)]
     );
     assert!(!waits_on_epic(&facts));
     assert_eq!(
@@ -1683,6 +1673,9 @@ impl crate::ports::Vcs for CountingVcs {
     fn tags(&self, root: &Path) -> Result<Vec<String>, PortError> {
         self.inner.tags(root)
     }
+    fn path_at(&self, root: &Path, revision: &str, path: &str) -> Result<bool, PortError> {
+        self.inner.path_at(root, revision, path)
+    }
     fn diff_hunks(
         &self,
         workspace: &Path,
@@ -1734,4 +1727,479 @@ fn gather_finds_git_folder_once() {
     // One lookup for all four commits, and none for each.
     assert_eq!(vcs.batches.get(), 1);
     assert_eq!(vcs.one_at_a_time.get(), 0);
+}
+
+#[test]
+fn gather_reads_planned_ticket_size() {
+    let scene = Scene::new();
+    scene.board.add_ticket(Ticket {
+        id: id(7),
+        epic: Some(id(EPIC)),
+        title: "Issue 7".into(),
+        body: crate::fakes::PLANNED_M_BODY.into(),
+        state: Some(TicketState::Ready),
+        url: "".into(),
+        kind: None,
+    });
+
+    // Two behaviours sized S weigh as one of size M: the size is derived, not read.
+    assert_eq!(scene.facts_of(7).size, TaskSize::M);
+    assert!(scene.gather().unreadable.is_empty());
+}
+
+/// A planned body of one section, as the epic's tickets of 0.6.0 are filed: `provides`,
+/// `implements` and `needs` are its names.
+fn planned_body(
+    node: &str,
+    kind: crate::domain::plan::NodeKind,
+    provides: &[&str],
+    implements: &[&str],
+    needs: &[&str],
+) -> String {
+    use std::collections::BTreeSet;
+
+    use crate::domain::plan::body::{PlannedTicket, Section, Signature};
+    use crate::domain::plan::{Name, NodeId};
+    use crate::domain::{SecurityTrigger, TaskModel, TaskSize, TaskTemplate};
+
+    let names = |values: &[&str]| -> BTreeSet<Name> {
+        values.iter().map(|name| Name::from(*name)).collect()
+    };
+    let signatures = if kind == crate::domain::plan::NodeKind::Interface {
+        vec![Signature {
+            name: Name::from("mcp.catalog"),
+            shape: "fn catalog() -> Vec<Tool>".to_owned(),
+        }]
+    } else {
+        Vec::new()
+    };
+    PlannedTicket {
+        node: NodeId::from(node),
+        kind,
+        signatures,
+        turns: Vec::new(),
+        waits: Vec::new(),
+        sections: vec![Section {
+            key: None,
+            template: TaskTemplate {
+                goal: "a goal".to_owned(),
+                owned_paths: "a path".to_owned(),
+                scoped: false,
+                out_of_scope: None,
+                interfaces: "none".to_owned(),
+                design_pages: "D1".to_owned(),
+                architecture: String::new(),
+                acceptance: vec!["a line".to_owned()],
+                tests: "a test".to_owned(),
+                security_trigger: SecurityTrigger::No,
+                model: TaskModel::Sonnet,
+                size: TaskSize::S,
+                blocked_by: Vec::new(),
+                style: None,
+            },
+            writes: BTreeSet::new(),
+            provides: names(provides),
+            implements: names(implements),
+            needs: names(needs),
+        }],
+    }
+    .to_string()
+}
+
+/// Fixture 12 after the optimiser: A+B (#101), C (#102) and D (#103), and the interface ticket of
+/// `mcp.catalog` (#104), which C implements and D needs. No ticket has a `Blocked by:` line.
+fn fixture_12(scene: &Scene, interface: TicketState) {
+    use crate::domain::plan::NodeKind;
+
+    let tickets = [
+        (
+            101,
+            planned_body("A+B", NodeKind::Body, &[], &[], &[]),
+            TicketState::Ready,
+        ),
+        (
+            102,
+            planned_body("C", NodeKind::Body, &[], &["mcp.catalog"], &["cli"]),
+            TicketState::Ready,
+        ),
+        (
+            103,
+            planned_body("D", NodeKind::Body, &[], &[], &["mcp.catalog"]),
+            TicketState::Ready,
+        ),
+        (
+            104,
+            planned_body("I:mcp.catalog", NodeKind::Interface, &[], &[], &[]),
+            interface,
+        ),
+    ];
+    for (number, body, state) in tickets {
+        scene.board.add_ticket(Ticket {
+            id: id(number),
+            epic: Some(id(EPIC)),
+            title: format!("Issue {number}").into(),
+            body: body.into(),
+            state: Some(state),
+            url: "".into(),
+            kind: None,
+        });
+    }
+}
+
+#[test]
+fn gather_fixture_12_interface_first() {
+    let scene = Scene::new();
+    fixture_12(&scene, TicketState::Ready);
+    let at = time(100_000);
+
+    // The interface ticket is ready; C and D wait on it, with no `Blocked by:` line to say so.
+    let interface = scene.facts_of(104);
+    assert!(matches!(place(&interface, at), Place::InLane { .. }));
+    for waiter in [102, 103] {
+        let facts = scene.facts_of(waiter);
+        assert_eq!(
+            facts.dependencies,
+            [Dependency {
+                name: Some(Name::from("mcp.catalog")),
+                ..Dependency::blocked_by(id(104), Standing::Open)
+            }],
+            "the wait carries the name it is for"
+        );
+        let Place::Waiting(waits) = place(&facts, at) else {
+            panic!("#{waiter} waits on the interface ticket");
+        };
+        assert_eq!(waits, BTreeSet::from([WaitingOn::Ticket(id(104))]));
+    }
+    assert!(matches!(
+        place(&scene.facts_of(101), at),
+        Place::InLane { .. }
+    ));
+
+    // Once it is done, C and D are ready side by side.
+    let scene = Scene::new();
+    fixture_12(&scene, TicketState::Done);
+    for waiter in [102, 103] {
+        let facts = scene.facts_of(waiter);
+        assert_eq!(
+            facts.dependencies,
+            [Dependency {
+                name: Some(Name::from("mcp.catalog")),
+                ..Dependency::blocked_by(id(104), Standing::Done)
+            }],
+            "the wait carries the name it is for"
+        );
+        assert!(
+            matches!(place(&facts, at), Place::InLane { .. }),
+            "#{waiter} is ready"
+        );
+    }
+}
+
+/// A graph epic (#2) on the scene's board: tickets #101 (not started) and #102 (its implement
+/// ended, a pull request open), a filed plan record, and a challenger's report that holds the graph
+/// as it reads now.
+fn challenged_graph_scene() -> Scene {
+    use crate::domain::plan::NodeKind;
+    use crate::domain::plan::read::PlanGraph;
+    use crate::domain::plan::record::{FilingMark, PlanRecord};
+    use crate::domain::{BodyHash, CHALLENGER_ROLE};
+
+    let scene = Scene::new();
+    for (number, state) in [(101, TicketState::Ready), (102, TicketState::Claimed)] {
+        scene.board.add_ticket(Ticket {
+            id: id(number),
+            epic: Some(id(EPIC)),
+            title: format!("Issue {number}").into(),
+            body: planned_body(&format!("N{number}"), NodeKind::Body, &[], &[], &[]).into(),
+            state: Some(state),
+            url: "".into(),
+            kind: None,
+        });
+    }
+    scene.open_changing_pr(102, CheckState::Passed);
+    let epic = scene.board.epic(id(EPIC)).expect("the epic reads");
+    let record = PlanRecord {
+        k: 1,
+        design: BodyHash::of(&epic.body),
+        dropped: Vec::new(),
+        plan: "plan 1\n".to_owned(),
+    };
+    let mark = FilingMark {
+        k: 1,
+        graph: "ab".repeat(32).parse().expect("a digest"),
+    };
+    scene
+        .board
+        .comment(id(EPIC), &record.to_string())
+        .expect("record");
+    scene
+        .board
+        .comment(id(EPIC), &mark.to_string())
+        .expect("mark");
+    let epic = scene.board.epic(id(EPIC)).expect("the epic reads");
+    let hash = PlanGraph::read(&epic, &[]).hash();
+    let challenger = Instance {
+        role: CHALLENGER_ROLE.into(),
+        epic: id(EPIC),
+        number: InstanceNumber::from(2),
+    };
+    scene
+        .board
+        .report(
+            id(EPIC),
+            &challenger,
+            &format!("All exact.\ngraph sha256:{hash}\n"),
+        )
+        .expect("report");
+    scene
+}
+
+/// The roles a tick's plan launches on the scene's board, with nothing running.
+fn launched_roles(scene: &Scene) -> Vec<String> {
+    let holder = Holder {
+        pid: std::process::id(),
+        start: "1000".to_owned(),
+    };
+    let prepared = crate::app::spawn::prepare(
+        &scene.board,
+        &scene.state_dir,
+        &scene.manifest,
+        &|_: &Holder| true,
+        &holder,
+    )
+    .expect("the tick plans");
+    prepared
+        .plan
+        .launches
+        .iter()
+        .map(|launch| launch.instance.role.as_str().to_owned())
+        .collect()
+}
+
+/// Whether the ticket waits on the epic.
+fn held_by_epic(scene: &Scene, task: u64) -> bool {
+    matches!(
+        place(&scene.facts_of(task), time(100)),
+        Place::Waiting(waits) if waits.contains(&WaitingOn::Epic(id(EPIC)))
+    )
+}
+
+#[test]
+fn edited_body_voids_challenge_and_holds_unstarted() {
+    use crate::domain::plan::NodeKind;
+
+    let scene = challenged_graph_scene();
+    let epic = scene.facts_of(101).epic.expect("an epic");
+    assert!(epic.challenged && !epic.voided);
+    assert!(launched_roles(&scene).is_empty(), "challenged: no launch");
+    assert!(!held_by_epic(&scene, 101));
+
+    scene.board.set_body(
+        id(101),
+        &planned_body("N101-edited", NodeKind::Body, &[], &[], &[]),
+    );
+
+    let epic = scene.facts_of(101).epic.expect("an epic");
+    assert!(epic.voided && !epic.challenged);
+    assert_eq!(launched_roles(&scene), ["challenger"], "a new challenger");
+    assert!(held_by_epic(&scene, 101), "no phase started: it waits");
+    assert!(!held_by_epic(&scene, 102), "between phases: it goes on");
+}
+
+#[test]
+fn closed_ticket_neither_voids_nor_relaunches() {
+    let scene = challenged_graph_scene();
+    scene.board.close(id(101));
+
+    let epic = scene.facts_of(102).epic.expect("an epic");
+    assert!(epic.challenged && !epic.voided);
+    assert!(launched_roles(&scene).is_empty(), "no new challenger");
+    assert!(!held_by_epic(&scene, 102));
+}
+
+#[test]
+fn never_challenged_epic_not_voided() {
+    use crate::domain::BodyHash;
+    use crate::domain::plan::NodeKind;
+    use crate::domain::plan::record::PlanRecord;
+
+    let mut scene = challenged_graph_scene();
+    // A graph epic no challenger reported on.
+    scene.board = FakeBoard::default();
+    scene.board.add_signed_epic(id(EPIC), "Issue 2");
+    scene.board.add_ticket(Ticket {
+        id: id(101),
+        epic: Some(id(EPIC)),
+        title: "Issue 101".into(),
+        body: planned_body("N101", NodeKind::Body, &[], &[], &[]).into(),
+        state: Some(TicketState::Ready),
+        url: "".into(),
+        kind: None,
+    });
+    let record = PlanRecord {
+        k: 1,
+        design: BodyHash::of(&scene.board.epic(id(EPIC)).expect("epic").body),
+        dropped: Vec::new(),
+        plan: "plan 1\n".to_owned(),
+    };
+    scene
+        .board
+        .comment(id(EPIC), &record.to_string())
+        .expect("record");
+
+    let epic = scene.facts_of(101).epic.expect("an epic");
+    assert!(!epic.challenged && !epic.voided);
+    assert!(held_by_epic(&scene, 101), "unchallenged holds every ticket");
+}
+
+/// A planned ticket #7 of the scene's epic, holding the kept wait `on` for `token`.
+fn graph_ticket_waiting(scene: &Scene, on: crate::domain::plan::WaitOn) {
+    use crate::domain::plan::body::{PlannedTicket, Section};
+    use crate::domain::plan::{NodeId, NodeKind, Wait as Line};
+    use crate::domain::{SecurityTrigger, TaskModel, TaskTemplate};
+    let token = Name::from("token");
+    let section = Section {
+        key: None,
+        template: TaskTemplate {
+            goal: "a goal".to_owned(),
+            owned_paths: "a path".to_owned(),
+            scoped: false,
+            out_of_scope: None,
+            interfaces: "none".to_owned(),
+            design_pages: "D1".to_owned(),
+            architecture: String::new(),
+            acceptance: vec!["a line".to_owned()],
+            tests: "a test".to_owned(),
+            security_trigger: SecurityTrigger::No,
+            model: TaskModel::Sonnet,
+            size: TaskSize::S,
+            blocked_by: Vec::new(),
+            style: None,
+        },
+        writes: BTreeSet::new(),
+        provides: BTreeSet::new(),
+        implements: BTreeSet::new(),
+        needs: BTreeSet::from([token.clone()]),
+    };
+    let planned = PlannedTicket {
+        node: NodeId::from("D"),
+        kind: NodeKind::Body,
+        signatures: Vec::new(),
+        turns: Vec::new(),
+        waits: vec![Line { on, name: token }],
+        sections: vec![section],
+    };
+    scene.board.add_ticket(Ticket {
+        id: id(7),
+        epic: Some(id(EPIC)),
+        title: "Issue 7".into(),
+        body: planned.to_string().as_str().into(),
+        state: Some(TicketState::Ready),
+        url: "".into(),
+        kind: None,
+    });
+}
+
+fn on_epic(epic: u64, state: EpicState) -> Dependency {
+    Dependency {
+        name: Some(Name::from("token")),
+        epic: Some(state),
+        ..Dependency::blocked_by(id(epic), Standing::Open)
+    }
+}
+
+/// The dead dependencies of #7 as gathered.
+fn dead_of_seven(scene: &Scene) -> Vec<crate::domain::schedule::DeadDependency> {
+    let gathered = scene.gather();
+    let graph = crate::domain::schedule::dependency_graph(&gathered.tickets);
+    let facts = gathered
+        .tickets
+        .iter()
+        .find(|facts| facts.ticket == id(7))
+        .expect("#7 is gathered");
+    crate::domain::schedule::dead_dependencies(facts, &graph)
+}
+
+/// Q10, E4 part 2: a wait on an epic for a name, where the epic is planned and no ticket of it
+/// holds the name, can never end. It is gathered with the name and the epic's state, so the
+/// core names it; and the epic finishing its tasks does not end the wait.
+#[test]
+fn a_wait_on_a_planned_epic_without_the_name_is_gathered_as_dead() {
+    use crate::domain::schedule::{DeadDependency, DeadReason};
+    let scene = Scene::new();
+    scene.board.add_challenged_epic(id(50), "Other epic");
+    scene.task(51, 50, TicketState::Ready, "—");
+    graph_ticket_waiting(&scene, crate::domain::plan::WaitOn::Epic(id(50)));
+    let dead = [DeadDependency {
+        dependency: id(50),
+        reason: DeadReason::NameNotProvided { epic: id(50) },
+        name: Some(Name::from("token")),
+    }];
+
+    let facts = scene.facts_of(7);
+    assert_eq!(facts.dependencies, [on_epic(50, EpicState::Planned)]);
+    assert_eq!(dead_of_seven(&scene), dead);
+
+    // Every task of the epic done: the name still never came, and #7 does not start.
+    scene.board.close_at(id(51), time(3000));
+    let facts = scene.facts_of(7);
+    assert_eq!(facts.dependencies, [on_epic(50, EpicState::Planned)]);
+    assert!(waits_on_epic(&facts));
+    assert_eq!(dead_of_seven(&scene), dead);
+}
+
+#[test]
+fn a_wait_on_an_epic_not_planned_yet_is_alive() {
+    let scene = Scene::new();
+    scene.board.add_signed_epic(id(50), "Other epic");
+    graph_ticket_waiting(&scene, crate::domain::plan::WaitOn::Epic(id(50)));
+
+    let facts = scene.facts_of(7);
+
+    assert_eq!(facts.dependencies, [on_epic(50, EpicState::NotPlanned)]);
+    assert!(waits_on_epic(&facts));
+    assert!(dead_of_seven(&scene).is_empty());
+}
+
+#[test]
+fn a_wait_on_an_epic_closed_as_not_planned_is_gathered_as_dead() {
+    use crate::domain::schedule::DeadReason;
+    let scene = Scene::new();
+    scene.board.add_signed_epic(id(50), "Other epic");
+    scene.board.close_not_planned(id(50));
+    graph_ticket_waiting(&scene, crate::domain::plan::WaitOn::Epic(id(50)));
+
+    let facts = scene.facts_of(7);
+
+    assert_eq!(
+        facts.dependencies,
+        [Dependency {
+            standing: Standing::ClosedNotPlanned,
+            ..on_epic(50, EpicState::Closed)
+        }]
+    );
+    let dead = dead_of_seven(&scene);
+    assert_eq!(dead.len(), 1, "{dead:?}");
+    assert_eq!(dead[0].reason, DeadReason::NameNotProvided { epic: id(50) });
+    assert_eq!(dead[0].name, Some(Name::from("token")));
+}
+
+/// A graph ticket's wait on a ticket carries its name, so a dead one is asked about by the name
+/// and not by a `Blocked by:` line the ticket does not have.
+#[test]
+fn a_graph_tickets_wait_on_a_ticket_carries_its_name() {
+    let scene = Scene::new();
+    scene.task(9, EPIC, TicketState::Ready, "—");
+    scene.board.close_not_planned(id(9));
+    graph_ticket_waiting(&scene, crate::domain::plan::WaitOn::Task(id(9)));
+
+    let facts = scene.facts_of(7);
+
+    assert_eq!(
+        facts.dependencies,
+        [Dependency {
+            name: Some(Name::from("token")),
+            ..Dependency::blocked_by(id(9), Standing::ClosedNotPlanned)
+        }]
+    );
 }

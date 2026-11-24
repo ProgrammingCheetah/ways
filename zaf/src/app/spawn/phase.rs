@@ -180,9 +180,9 @@ pub fn start(
 ) -> Result<Started, PhaseError> {
     let ticket = ports.board.task(task)?;
     let size = ticket
-        .template()
-        .map_err(|error| PhaseError::Refused(format!("{task} is not a task: {error}")))?
-        .size;
+        .task_body()
+        .and_then(|body| body.size())
+        .map_err(|error| PhaseError::Refused(format!("{task} is not a task: {error}")))?;
     let task_type = ticket
         .kind
         .as_ref()

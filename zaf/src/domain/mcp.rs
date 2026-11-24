@@ -7,6 +7,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use super::RoleName;
+use super::epic::{CHALLENGER_ROLE, PLANNING_ROLE};
+
+/// The role of the release instance, which files fix tasks as a re-plan (D20).
+const RELEASE_ROLE: &str = "release";
 
 /// Who calls the MCP server, as the server read it once at start (D7).
 ///
@@ -219,6 +223,26 @@ enum Refused {
     Everyone,
     /// An instance; an outside caller runs it.
     Instance,
+    /// An instance of one of these roles; an outside caller runs it.
+    Roles(&'static [&'static str]),
+    /// An instance of any role but these; an outside caller runs it.
+    AllInstancesBut(&'static [&'static str]),
+}
+
+impl Refused {
+    /// Whether a row refusing `self` applies to `caller`.
+    fn applies(self, caller: &McpCaller) -> bool {
+        match (self, caller) {
+            (Self::Everyone, _) | (Self::Instance, McpCaller::Instance(_)) => true,
+            (Self::Roles(roles), McpCaller::Instance(role)) => roles.contains(&role.as_str()),
+            (Self::AllInstancesBut(roles), McpCaller::Instance(role)) => {
+                !roles.contains(&role.as_str())
+            }
+            (Self::Instance | Self::Roles(_) | Self::AllInstancesBut(_), McpCaller::Outside) => {
+                false
+            }
+        }
+    }
 }
 
 /// How a policy row names a command.
@@ -272,7 +296,7 @@ struct Row {
 /// D9's table, in the order a call is judged: the rows refused to every caller first, so a
 /// command both of them name gets the way on that holds for the Engineer too. `do release` and
 /// `do ship` have no row (Q5); they stay under the action modes and `[forbidden]`.
-const ROWS: [Row; 7] = [
+const ROWS: [Row; 10] = [
     Row {
         names: &[Names::Path(&["epic", "sign"])],
         refused: Refused::Everyone,
@@ -329,6 +353,28 @@ const ROWS: [Row; 7] = [
         refused: Refused::Instance,
         way_on: "zaf moves tickets; nobody moves themselves.",
     },
+    Row {
+        names: &[
+            Names::Path(&["plan", "file"]),
+            Names::Path(&["board", "file"]),
+            Names::Path(&["epic", "file"]),
+        ],
+        refused: Refused::Roles(&[CHALLENGER_ROLE]),
+        way_on: "The challenger files nothing: report with `board report`, or raise a question with `board question`.",
+    },
+    Row {
+        names: &[Names::Path(&["plan", "file"])],
+        refused: Refused::AllInstancesBut(&[PLANNING_ROLE, RELEASE_ROLE]),
+        way_on: "Only the planning and release instances file a plan; raise a question on the task.",
+    },
+    Row {
+        names: &[
+            Names::Path(&["board", "file"]),
+            Names::Path(&["epic", "file"]),
+        ],
+        refused: Refused::Roles(&[PLANNING_ROLE]),
+        way_on: "A plan is filed as a graph: use `plan file`.",
+    },
 ];
 
 /// The MCP's policy: who may run which command (D9). Pure: it reads the parsed command, never
@@ -341,11 +387,9 @@ impl Policy {
     /// `[forbidden]`.
     pub fn judge(caller: &McpCaller, path: &CommandPath, forbidden: &ForbiddenSection) -> Verdict {
         for row in &ROWS {
-            let applies = match (row.refused, caller) {
-                (Refused::Everyone, _) | (Refused::Instance, McpCaller::Instance(_)) => true,
-                (Refused::Instance, McpCaller::Outside) => false,
-            };
-            if applies && row.names.iter().any(|names| names.hits(path, forbidden)) {
+            if row.refused.applies(caller)
+                && row.names.iter().any(|names| names.hits(path, forbidden))
+            {
                 return Verdict::Refuse {
                     what: Self::what(path),
                     way_on: row.way_on,
@@ -623,6 +667,92 @@ mod tests {
             judge(&McpCaller::Outside, &CommandPath::new(["spawn"])),
             Verdict::Run
         );
+    }
+
+    const PLAN_FILE: &str =
+        "Only the planning and release instances file a plan; raise a question on the task.";
+    const USE_PLAN_FILE: &str = "A plan is filed as a graph: use `plan file`.";
+
+    fn role(name: &str) -> McpCaller {
+        McpCaller::Instance(RoleName::from(name))
+    }
+
+    #[test]
+    fn policy_planning_refused_board_file() {
+        let planning = role("planning");
+        for words in [["board", "file"], ["epic", "file"]] {
+            let path = CommandPath::new(words);
+            let what = format!("zaf {} {}", words[0], words[1]);
+            assert_eq!(judge(&planning, &path), refuse(&what, USE_PLAN_FILE));
+            // Other roles are not refused by this row.
+            assert_eq!(judge(&role("release"), &path), Verdict::Run);
+            assert_eq!(judge(&instance(), &path), Verdict::Run);
+        }
+        assert_eq!(
+            judge(&planning, &CommandPath::new(["plan", "file"])),
+            Verdict::Run
+        );
+    }
+
+    const CHALLENGER_FILES_NOTHING: &str = "The challenger files nothing: report with `board report`, or raise a question with `board question`.";
+
+    fn challenger_refused(words: [&str; 2]) {
+        let what = format!("zaf {} {}", words[0], words[1]);
+        assert_eq!(
+            judge(&role("challenger"), &CommandPath::new(words)),
+            refuse(&what, CHALLENGER_FILES_NOTHING)
+        );
+    }
+
+    #[test]
+    fn policy_challenger_refused_plan_file() {
+        challenger_refused(["plan", "file"]);
+        // Other roles keep the plan row's own refusal.
+        let want = refuse("zaf plan file", PLAN_FILE);
+        for name in ["programmer", "team"] {
+            assert_eq!(
+                judge(&role(name), &CommandPath::new(["plan", "file"])),
+                want,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn policy_challenger_refused_board_file() {
+        challenger_refused(["board", "file"]);
+    }
+
+    #[test]
+    fn policy_challenger_refused_epic_file() {
+        challenger_refused(["epic", "file"]);
+    }
+
+    #[test]
+    fn policy_challenger_allowed_board_report_and_question() {
+        for words in [["board", "report"], ["board", "question"]] {
+            assert_eq!(
+                judge(&role("challenger"), &CommandPath::new(words)),
+                Verdict::Run
+            );
+        }
+    }
+
+    #[test]
+    fn policy_release_allowed_plan_file() {
+        let path = CommandPath::new(["plan", "file"]);
+        assert_eq!(judge(&role("release"), &path), Verdict::Run);
+        assert_eq!(judge(&role("planning"), &path), Verdict::Run);
+    }
+
+    #[test]
+    fn policy_engineer_not_refused_by_roles() {
+        for words in [["plan", "file"], ["board", "file"], ["epic", "file"]] {
+            assert_eq!(
+                judge(&McpCaller::Outside, &CommandPath::new(words)),
+                Verdict::Run
+            );
+        }
     }
 
     #[test]

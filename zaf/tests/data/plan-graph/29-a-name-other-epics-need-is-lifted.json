@@ -1,0 +1,152 @@
+{
+ "name": "29-a-name-other-epics-need-is-lifted",
+ "why": "Nothing in epic #1004 needs mcp.catalog, but other epics do (the vocabulary gives the name to #1004, or a filed task elsewhere needs it). It is lifted anyway, into I@1004.1, so their waits go through an interface and O3 holds (D13).",
+ "options": {
+  "lift": "all",
+  "interfaces": "one"
+ },
+ "plan": {
+  "shared": [
+   "mcp.catalog"
+  ],
+  "nodes": [
+   {
+    "id": "A",
+    "epic": "1004",
+    "behaviours": [
+     {
+      "text": "a gives the catalog",
+      "size": 1,
+      "writes": [
+       "mcp"
+      ],
+      "provides": [
+       "mcp.catalog"
+      ],
+      "needs": []
+     }
+    ]
+   },
+   {
+    "id": "B",
+    "epic": "1004",
+    "behaviours": [
+     {
+      "text": "b documents it",
+      "size": 1,
+      "writes": [
+       "docs"
+      ],
+      "provides": [
+       "docs.mcp"
+      ],
+      "needs": []
+     }
+    ]
+   }
+  ]
+ },
+ "expect": {
+  "before": {
+   "nodes": 2,
+   "interfaces": 0,
+   "chain": 1,
+   "width": [
+    2
+   ],
+   "narrow_layers": [
+    0
+   ],
+   "work": 2,
+   "critical": 1,
+   "critical_path": [
+    "A"
+   ]
+  },
+  "after": {
+   "nodes": 3,
+   "interfaces": 1,
+   "chain": 2,
+   "width": [
+    2,
+    1
+   ],
+   "narrow_layers": [
+    0,
+    1
+   ],
+   "work": 3,
+   "critical": 2,
+   "critical_path": [
+    "I@1004.1",
+    "A"
+   ]
+  },
+  "plan": {
+   "nodes": [
+    {
+     "id": "A",
+     "epic": "1004",
+     "behaviours": [
+      {
+       "text": "a gives the catalog",
+       "size": 1,
+       "writes": [
+        "mcp"
+       ],
+       "provides": [],
+       "needs": [
+        "mcp.catalog"
+       ]
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "B",
+     "epic": "1004",
+     "behaviours": [
+      {
+       "text": "b documents it",
+       "size": 1,
+       "writes": [
+        "docs"
+       ],
+       "provides": [
+        "docs.mcp"
+       ],
+       "needs": []
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "I@1004.1",
+     "kind": "interface",
+     "behaviours": [
+      {
+       "text": "the signature of mcp.catalog",
+       "size": 1,
+       "writes": [
+        "sig:mcp.catalog"
+       ],
+       "provides": [
+        "mcp.catalog"
+       ],
+       "needs": []
+      }
+     ],
+     "epic": "1004"
+    }
+   ],
+   "orders": [
+    {
+     "from": "I@1004.1",
+     "to": "A",
+     "needs": "mcp.catalog"
+    }
+   ],
+   "kept": []
+  }
+ }
+}

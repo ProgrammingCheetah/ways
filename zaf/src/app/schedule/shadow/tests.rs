@@ -74,6 +74,7 @@ fn each_place_is_written_with_its_ticket_in_ticket_order() {
             id: TicketId::from(2),
             signed: false,
             challenged: false,
+            voided: false,
         }),
         open_questions: [TicketId::from(30)].into(),
         pull: Some(pull("h1")),

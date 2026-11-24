@@ -383,7 +383,7 @@ impl Chair {
             PaneId::Epics
                 if !matches!(
                     self.cursor.detail,
-                    DetailView::Tree | DetailView::Read | DetailView::Why(_)
+                    DetailView::Graph | DetailView::Read | DetailView::Why(_)
                 ) =>
             {
                 self.cursor.detail = DetailView::Epic;
@@ -479,6 +479,18 @@ impl Chair {
             // Left, it is read again when Enter comes back to it.
             None => self.looks.epic = None,
         }
+        // The graph is read again each time it is opened, and for each epic the cursor reaches.
+        let drawing = (self.cursor.detail == DetailView::Graph)
+            .then(|| panes::epics::selected(&state, &self.cursor).map(|epic| epic.number))
+            .flatten();
+        match drawing {
+            Some(epic) if self.looks.graph.as_ref().map(|(asked, _)| *asked) != Some(epic) => {
+                self.looks.graph = Some((epic, None));
+                commands.push(Command::Look(self.active, Look::Graph(epic)));
+            }
+            Some(_) => {}
+            None => self.looks.graph = None,
+        }
         match panes::live::followed_ticket(&state, &self.cursor) {
             Some(ticket) => {
                 let new = self.looks.ticket.as_ref().map(|(asked, _)| *asked) != Some(ticket);
@@ -513,6 +525,13 @@ impl Chair {
                     && *asked == read.ticket
                 {
                     *kept = Some(read);
+                }
+            }
+            Looked::Graph(read) => {
+                if let Some((asked, kept)) = &mut self.looks.graph
+                    && *asked == read.epic
+                {
+                    *kept = Some(*read);
                 }
             }
         }
@@ -617,11 +636,17 @@ impl Chair {
                 None => Effect::Note(Tone::Plain, "no epic is open".to_owned()),
             },
             Key::Char('d') => {
-                self.cursor.detail = if self.cursor.detail == DetailView::Tree {
+                self.cursor.detail = if self.cursor.detail == DetailView::Graph {
                     DetailView::Epic
                 } else {
-                    DetailView::Tree
+                    DetailView::Graph
                 };
+                self.cursor.before = false;
+                self.cursor.scroll = 0;
+                Effect::Done
+            }
+            Key::Char('v') if self.cursor.detail == DetailView::Graph => {
+                self.cursor.before = !self.cursor.before;
                 self.cursor.scroll = 0;
                 Effect::Done
             }

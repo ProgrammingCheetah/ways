@@ -531,7 +531,7 @@ fn a_challengers_report_challenges_its_epic(arrange: &dyn Arrange) {
         )
         .expect("the team reports");
     let listed = settled(arrange, || board.epic(epic), Result::is_ok);
-    assert!(!listed.expect("the epic reads").challenged);
+    assert!(!listed.expect("the epic reads").challenged());
     let challenger = role_instance("challenger", 905, epic);
     board
         .report(epic, &challenger, "Every task is exact.")
@@ -539,9 +539,9 @@ fn a_challengers_report_challenges_its_epic(arrange: &dyn Arrange) {
     let read = settled(
         arrange,
         || board.epic(epic),
-        |read| read.as_ref().is_ok_and(|read| read.challenged),
+        |read| read.as_ref().is_ok_and(|read| read.challenged()),
     );
-    assert!(read.expect("the epic reads").challenged);
+    assert!(read.expect("the epic reads").challenged());
 }
 
 fn a_ticket_that_is_no_open_epic_is_not_one(arrange: &dyn Arrange) {

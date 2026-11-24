@@ -1,0 +1,1388 @@
+{
+ "about": "zaf 0.5.5 as its planners wrote it, read from the board on 2026-11-22. One node per task; a task provides the name t:<its number>; 'Blocked by' a task is a need of that name, and 'Blocked by' an epic is a need of every task of that epic. What each task writes is not on the board, so conflicts are not modelled here.",
+ "groups_without_signature": [
+  "docs",
+  "mcp-docs",
+  "orchestrator-docs",
+  "prompts",
+  "roles",
+  "bug-report",
+  "install"
+ ],
+ "limit": 3,
+ "lanes": 4,
+ "nodes": [
+  {
+   "id": "1010",
+   "epic": "1002",
+   "group": "update-yes",
+   "label": "S",
+   "blocked_by": [],
+   "behaviours": [
+    {
+     "text": "#1010 update: the 0.5.4 hang reproduced as two tests",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1010"
+     ],
+     "needs": []
+    }
+   ]
+  },
+  {
+   "id": "1011",
+   "epic": "1002",
+   "group": "update-yes",
+   "label": "M",
+   "blocked_by": [],
+   "behaviours": [
+    {
+     "text": "#1011 update: the UpdateAnswers port, asked or assumed",
+     "size": 2,
+     "writes": [],
+     "provides": [
+      "t:1011"
+     ],
+     "needs": []
+    }
+   ]
+  },
+  {
+   "id": "1014",
+   "epic": "1002",
+   "group": "update-yes",
+   "label": "M",
+   "blocked_by": [
+    1010,
+    1011
+   ],
+   "behaviours": [
+    {
+     "text": "#1014 update: assumed answers keep the machine actions you edited",
+     "size": 2,
+     "writes": [],
+     "provides": [
+      "t:1014"
+     ],
+     "needs": [
+      "t:1010",
+      "t:1011"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1015",
+   "epic": "1002",
+   "group": "update-yes",
+   "label": "S",
+   "blocked_by": [
+    1014
+   ],
+   "behaviours": [
+    {
+     "text": "#1015 update: --yes ends on one line and its exit",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1015"
+     ],
+     "needs": [
+      "t:1014"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1017",
+   "epic": "1002",
+   "group": "update-yes",
+   "label": "S",
+   "blocked_by": [
+    1015
+   ],
+   "behaviours": [
+    {
+     "text": "#1017 update: O3's no-terminal update proven by a scripted test",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1017"
+     ],
+     "needs": [
+      "t:1015"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1012",
+   "epic": "1003",
+   "group": "mcp-core",
+   "label": "M",
+   "blocked_by": [],
+   "behaviours": [
+    {
+     "text": "#1012 MCP: ToolService runs a tool call through the VerbRunner port",
+     "size": 2,
+     "writes": [],
+     "provides": [
+      "t:1012"
+     ],
+     "needs": []
+    }
+   ]
+  },
+  {
+   "id": "1018",
+   "epic": "1003",
+   "group": "mcp-core",
+   "label": "S",
+   "blocked_by": [
+    1012
+   ],
+   "behaviours": [
+    {
+     "text": "#1018 MCP: the tool catalog is generated from clap's visible verbs",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1018"
+     ],
+     "needs": [
+      "t:1012"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1020",
+   "epic": "1003",
+   "group": "mcp-core",
+   "label": "M",
+   "blocked_by": [
+    1012
+   ],
+   "behaviours": [
+    {
+     "text": "#1020 MCP: a tool call runs the zaf binary on disk as a child process",
+     "size": 2,
+     "writes": [],
+     "provides": [
+      "t:1020"
+     ],
+     "needs": [
+      "t:1012"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1021",
+   "epic": "1003",
+   "group": "mcp-core",
+   "label": "S",
+   "blocked_by": [
+    1012
+   ],
+   "behaviours": [
+    {
+     "text": "#1021 MCP: a tool result carries the output, the exit trailer and _meta",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1021"
+     ],
+     "needs": [
+      "t:1012"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1024",
+   "epic": "1003",
+   "group": "mcp-server",
+   "label": "M",
+   "blocked_by": [
+    1012,
+    1018,
+    1020,
+    1021
+   ],
+   "behaviours": [
+    {
+     "text": "#1024 MCP: the hidden zaf mcp verb serves the catalog over stdio with rmcp",
+     "size": 2,
+     "writes": [],
+     "provides": [
+      "t:1024"
+     ],
+     "needs": [
+      "t:1012",
+      "t:1018",
+      "t:1020",
+      "t:1021"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1029",
+   "epic": "1003",
+   "group": "mcp-server",
+   "label": "S",
+   "blocked_by": [
+    1024
+   ],
+   "behaviours": [
+    {
+     "text": "#1029 MCP: a long call sends rising progress and stops on cancel",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1029"
+     ],
+     "needs": [
+      "t:1024"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1030",
+   "epic": "1003",
+   "group": "mcp-server",
+   "label": "S",
+   "blocked_by": [
+    1024
+   ],
+   "behaviours": [
+    {
+     "text": "#1030 MCP: a live claude -p test reaches the status tool",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1030"
+     ],
+     "needs": [
+      "t:1024"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1031",
+   "epic": "1003",
+   "group": "mcp-server",
+   "label": "S",
+   "blocked_by": [
+    1021,
+    1024
+   ],
+   "behaviours": [
+    {
+     "text": "#1031 MCP: a result says when zaf was updated under the running server",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1031"
+     ],
+     "needs": [
+      "t:1021",
+      "t:1024"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1033",
+   "epic": "1003",
+   "group": "mcp-docs",
+   "label": "S",
+   "blocked_by": [
+    1024,
+    1029,
+    1031
+   ],
+   "behaviours": [
+    {
+     "text": "#1033 MCP: the docs and the memory note describe zaf's MCP",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1033"
+     ],
+     "needs": [
+      "t:1024",
+      "t:1029",
+      "t:1031"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1013",
+   "epic": "1004",
+   "group": "caller",
+   "label": "S",
+   "blocked_by": [
+    1003
+   ],
+   "behaviours": [
+    {
+     "text": "#1013 zaf mcp: the server knows who calls it from its environment and process tree",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1013"
+     ],
+     "needs": [
+      "t:1012",
+      "t:1018",
+      "t:1020",
+      "t:1021",
+      "t:1024",
+      "t:1029",
+      "t:1030",
+      "t:1031",
+      "t:1033"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1016",
+   "epic": "1004",
+   "group": "policy",
+   "label": "S",
+   "blocked_by": [
+    1003
+   ],
+   "behaviours": [
+    {
+     "text": "#1016 zaf mcp: a forbidden line matches any verb's parsed path, flags dropped",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1016"
+     ],
+     "needs": [
+      "t:1012",
+      "t:1018",
+      "t:1020",
+      "t:1021",
+      "t:1024",
+      "t:1029",
+      "t:1030",
+      "t:1031",
+      "t:1033"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1019",
+   "epic": "1004",
+   "group": "policy",
+   "label": "M",
+   "blocked_by": [
+    1003,
+    1013,
+    1016
+   ],
+   "behaviours": [
+    {
+     "text": "#1019 zaf mcp: the policy table judges a call by caller and command path",
+     "size": 2,
+     "writes": [],
+     "provides": [
+      "t:1019"
+     ],
+     "needs": [
+      "t:1012",
+      "t:1013",
+      "t:1016",
+      "t:1018",
+      "t:1020",
+      "t:1021",
+      "t:1024",
+      "t:1029",
+      "t:1030",
+      "t:1031",
+      "t:1033"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1022",
+   "epic": "1004",
+   "group": "policy",
+   "label": "S",
+   "blocked_by": [
+    1003,
+    1013,
+    1019
+   ],
+   "behaviours": [
+    {
+     "text": "#1022 zaf mcp: a refused call ends with exit 1 and one line before any child starts",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1022"
+     ],
+     "needs": [
+      "t:1012",
+      "t:1013",
+      "t:1018",
+      "t:1019",
+      "t:1020",
+      "t:1021",
+      "t:1024",
+      "t:1029",
+      "t:1030",
+      "t:1031",
+      "t:1033"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1025",
+   "epic": "1004",
+   "group": "caller",
+   "label": "S",
+   "blocked_by": [
+    1003
+   ],
+   "behaviours": [
+    {
+     "text": "#1025 zaf mcp: a call through the MCP is never nested, so zaf's own forbidden refusal applies",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1025"
+     ],
+     "needs": [
+      "t:1012",
+      "t:1018",
+      "t:1020",
+      "t:1021",
+      "t:1024",
+      "t:1029",
+      "t:1030",
+      "t:1031",
+      "t:1033"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1027",
+   "epic": "1004",
+   "group": "sign",
+   "label": "S",
+   "blocked_by": [],
+   "behaviours": [
+    {
+     "text": "#1027 zaf epic sign refuses inside Claude Code or without a terminal on stdin",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1027"
+     ],
+     "needs": []
+    }
+   ]
+  },
+  {
+   "id": "1028",
+   "epic": "1004",
+   "group": "records",
+   "label": "XS",
+   "blocked_by": [
+    1003,
+    1019,
+    1025,
+    1027
+   ],
+   "behaviours": [
+    {
+     "text": "#1028 docs: the MCP policy table and why it is not a permission boundary",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1028"
+     ],
+     "needs": [
+      "t:1012",
+      "t:1018",
+      "t:1019",
+      "t:1020",
+      "t:1021",
+      "t:1024",
+      "t:1025",
+      "t:1027",
+      "t:1029",
+      "t:1030",
+      "t:1031",
+      "t:1033"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1023",
+   "epic": "1005",
+   "group": "position",
+   "label": "S",
+   "blocked_by": [],
+   "behaviours": [
+    {
+     "text": "#1023 zaf progress takes the ticket from ZAF_INSTANCE when no task is given",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1023"
+     ],
+     "needs": []
+    }
+   ]
+  },
+  {
+   "id": "1026",
+   "epic": "1005",
+   "group": "position",
+   "label": "M",
+   "blocked_by": [],
+   "behaviours": [
+    {
+     "text": "#1026 The chair's epic line shows the phase of each model reporting on the epic",
+     "size": 2,
+     "writes": [],
+     "provides": [
+      "t:1026"
+     ],
+     "needs": []
+    }
+   ]
+  },
+  {
+   "id": "1032",
+   "epic": "1005",
+   "group": "hook",
+   "label": "S",
+   "blocked_by": [],
+   "behaviours": [
+    {
+     "text": "#1032 Record the PostToolUse payload of an MCP tool call on a claude -p run",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1032"
+     ],
+     "needs": []
+    }
+   ]
+  },
+  {
+   "id": "1034",
+   "epic": "1005",
+   "group": "hook",
+   "label": "S",
+   "blocked_by": [
+    1032
+   ],
+   "behaviours": [
+    {
+     "text": "#1034 The hub's hook gives an mcp__zaf__ call the word the same zaf command gets in Bash",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1034"
+     ],
+     "needs": [
+      "t:1032"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1037",
+   "epic": "1005",
+   "group": "position",
+   "label": "XS",
+   "blocked_by": [
+    1023,
+    1026
+   ],
+   "behaviours": [
+    {
+     "text": "#1037 docs/zaf-actions.md says every role reports its phases through the progress tool",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1037"
+     ],
+     "needs": [
+      "t:1023",
+      "t:1026"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1043",
+   "epic": "1006",
+   "group": "profile-mcp",
+   "label": "M",
+   "blocked_by": [
+    1004
+   ],
+   "behaviours": [
+    {
+     "text": "#1043 zaf profile init registers zaf's MCP server in each generated profile",
+     "size": 2,
+     "writes": [],
+     "provides": [
+      "t:1043"
+     ],
+     "needs": [
+      "t:1013",
+      "t:1016",
+      "t:1019",
+      "t:1022",
+      "t:1025",
+      "t:1027",
+      "t:1028"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1047",
+   "epic": "1006",
+   "group": "profile-mcp",
+   "label": "S",
+   "blocked_by": [
+    1004,
+    1043
+   ],
+   "behaviours": [
+    {
+     "text": "#1047 Profile settings allow zaf's MCP tools and deny Bash zaf",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1047"
+     ],
+     "needs": [
+      "t:1013",
+      "t:1016",
+      "t:1019",
+      "t:1022",
+      "t:1025",
+      "t:1027",
+      "t:1028",
+      "t:1043"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1053",
+   "epic": "1006",
+   "group": "profile-mcp",
+   "label": "S",
+   "blocked_by": [
+    1047
+   ],
+   "behaviours": [
+    {
+     "text": "#1053 Profile settings load no MCP server but zaf's (connectors and .mcp.json servers off)",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1053"
+     ],
+     "needs": [
+      "t:1047"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1055",
+   "epic": "1006",
+   "group": "setup-mcp",
+   "label": "M",
+   "blocked_by": [
+    1043
+   ],
+   "behaviours": [
+    {
+     "text": "#1055 zaf setup offers to register zaf's MCP in the Engineer's Claude at user scope",
+     "size": 2,
+     "writes": [],
+     "provides": [
+      "t:1055"
+     ],
+     "needs": [
+      "t:1043"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1056",
+   "epic": "1006",
+   "group": "doctor-mcp",
+   "label": "S",
+   "blocked_by": [
+    1043
+   ],
+   "behaviours": [
+    {
+     "text": "#1056 zaf doctor shows whether the Engineer's Claude has zaf's MCP at user scope",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1056"
+     ],
+     "needs": [
+      "t:1043"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1057",
+   "epic": "1006",
+   "group": "doctor-mcp",
+   "label": "M",
+   "blocked_by": [
+    1053,
+    1056
+   ],
+   "behaviours": [
+    {
+     "text": "#1057 zaf doctor fails on a profile without zaf's MCP or its MCP settings",
+     "size": 2,
+     "writes": [],
+     "provides": [
+      "t:1057"
+     ],
+     "needs": [
+      "t:1053",
+      "t:1056"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1058",
+   "epic": "1006",
+   "group": "doctor-mcp",
+   "label": "S",
+   "blocked_by": [
+    1057
+   ],
+   "behaviours": [
+    {
+     "text": "#1058 zaf doctor notes a role override that tells a model to type zaf in Bash",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1058"
+     ],
+     "needs": [
+      "t:1057"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1059",
+   "epic": "1006",
+   "group": "records",
+   "label": "XS",
+   "blocked_by": [
+    1047,
+    1053
+   ],
+   "behaviours": [
+    {
+     "text": "#1059 docs: the framework page says profiles carry zaf's MCP and no other server",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1059"
+     ],
+     "needs": [
+      "t:1047",
+      "t:1053"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1039",
+   "epic": "1007",
+   "group": "interface",
+   "label": "M",
+   "blocked_by": [],
+   "behaviours": [
+    {
+     "text": "#1039 zaf's interface page opens with D15's rule and names every verb as a tool call",
+     "size": 2,
+     "writes": [],
+     "provides": [
+      "t:1039"
+     ],
+     "needs": []
+    }
+   ]
+  },
+  {
+   "id": "1040",
+   "epic": "1007",
+   "group": "prompts",
+   "label": "S",
+   "blocked_by": [
+    1039
+   ],
+   "behaviours": [
+    {
+     "text": "#1040 pack: the planning and challenger briefs name zaf's tools, not Bash commands",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1040"
+     ],
+     "needs": [
+      "t:1039"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1041",
+   "epic": "1007",
+   "group": "prompts",
+   "label": "S",
+   "blocked_by": [
+    1039
+   ],
+   "behaviours": [
+    {
+     "text": "#1041 pack: the implement, fix and review-epic actions pass claude -p prompts that name zaf's tools",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1041"
+     ],
+     "needs": [
+      "t:1039"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1042",
+   "epic": "1007",
+   "group": "roles",
+   "label": "M",
+   "blocked_by": [
+    1039
+   ],
+   "behaviours": [
+    {
+     "text": "#1042 pack: the role files name zaf's tools in their own text below the interface page",
+     "size": 2,
+     "writes": [],
+     "provides": [
+      "t:1042"
+     ],
+     "needs": [
+      "t:1039"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1045",
+   "epic": "1007",
+   "group": "roles",
+   "label": "S",
+   "blocked_by": [
+    1042,
+    1040,
+    1023
+   ],
+   "behaviours": [
+    {
+     "text": "#1045 pack: each role zaf runs declares and reports its phases through the progress tool",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1045"
+     ],
+     "needs": [
+      "t:1023",
+      "t:1040",
+      "t:1042"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1046",
+   "epic": "1007",
+   "group": "roles",
+   "label": "S",
+   "blocked_by": [
+    1039
+   ],
+   "behaviours": [
+    {
+     "text": "#1046 pack: the skills name zaf's tools, not Bash commands",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1046"
+     ],
+     "needs": [
+      "t:1039"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1048",
+   "epic": "1007",
+   "group": "guard",
+   "label": "S",
+   "blocked_by": [
+    1039,
+    1040,
+    1041,
+    1042,
+    1045,
+    1046
+   ],
+   "behaviours": [
+    {
+     "text": "#1048 pack test fails on any zaf command a model is told to run in Bash",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1048"
+     ],
+     "needs": [
+      "t:1039",
+      "t:1040",
+      "t:1041",
+      "t:1042",
+      "t:1045",
+      "t:1046"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1052",
+   "epic": "1007",
+   "group": "guard",
+   "label": "S",
+   "blocked_by": [
+    1041,
+    1042,
+    1045,
+    1046
+   ],
+   "behaviours": [
+    {
+     "text": "#1052 pack: the teams plugin's version is raised for the tool-form pages",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1052"
+     ],
+     "needs": [
+      "t:1041",
+      "t:1042",
+      "t:1045",
+      "t:1046"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1054",
+   "epic": "1007",
+   "group": "docs",
+   "label": "S",
+   "blocked_by": [],
+   "behaviours": [
+    {
+     "text": "#1054 docs: a project role override names zaf's tools, shown by example",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1054"
+     ],
+     "needs": []
+    }
+   ]
+  },
+  {
+   "id": "1067",
+   "epic": "1008",
+   "group": "spawn-start",
+   "label": "M",
+   "blocked_by": [],
+   "behaviours": [
+    {
+     "text": "#1067 zaf spawn: the chair's b starts the scheduler through one app-layer function that drops every CLAUDE* variable",
+     "size": 2,
+     "writes": [],
+     "provides": [
+      "t:1067"
+     ],
+     "needs": []
+    }
+   ]
+  },
+  {
+   "id": "1069",
+   "epic": "1008",
+   "group": "spawn-start",
+   "label": "S",
+   "blocked_by": [
+    1067
+   ],
+   "behaviours": [
+    {
+     "text": "#1069 zaf spawn start --version <v> starts the scheduler detached and prints its pid",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1069"
+     ],
+     "needs": [
+      "t:1067"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1071",
+   "epic": "1008",
+   "group": "epic-wait",
+   "label": "M",
+   "blocked_by": [],
+   "behaviours": [
+    {
+     "text": "#1071 zaf epic wait <epic> returns when the epic needs the Engineer, shows a problem or is done",
+     "size": 2,
+     "writes": [],
+     "provides": [
+      "t:1071"
+     ],
+     "needs": []
+    }
+   ]
+  },
+  {
+   "id": "1073",
+   "epic": "1008",
+   "group": "begin-way-on",
+   "label": "S",
+   "blocked_by": [],
+   "behaviours": [
+    {
+     "text": "#1073 zaf status and epic list point a due release phase to the chair in a terminal",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1073"
+     ],
+     "needs": []
+    }
+   ]
+  },
+  {
+   "id": "1075",
+   "epic": "1008",
+   "group": "begin-way-on",
+   "label": "XS",
+   "blocked_by": [
+    1019,
+    1022,
+    1024,
+    1073
+   ],
+   "behaviours": [
+    {
+     "text": "#1075 zaf mcp: the begin refusal reaches an outside caller with the chair's way on",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1075"
+     ],
+     "needs": [
+      "t:1019",
+      "t:1022",
+      "t:1024",
+      "t:1073"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1076",
+   "epic": "1008",
+   "group": "mcp-only-check",
+   "label": "M",
+   "blocked_by": [],
+   "behaviours": [
+    {
+     "text": "#1076 tools/mcp-only-check fails on a Bash tool call that runs zaf in an instance or orchestrator transcript",
+     "size": 2,
+     "writes": [],
+     "provides": [
+      "t:1076"
+     ],
+     "needs": []
+    }
+   ]
+  },
+  {
+   "id": "1077",
+   "epic": "1008",
+   "group": "mcp-only-check",
+   "label": "S",
+   "blocked_by": [
+    1076
+   ],
+   "behaviours": [
+    {
+     "text": "#1077 tools/mcp-only-check fails on a lane tool call in the orchestrator's transcript",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1077"
+     ],
+     "needs": [
+      "t:1076"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1078",
+   "epic": "1008",
+   "group": "orchestrator-docs",
+   "label": "XS",
+   "blocked_by": [
+    1069,
+    1071,
+    1073,
+    1077
+   ],
+   "behaviours": [
+    {
+     "text": "#1078 docs: zaf-actions.md describes the orchestrator's run of a signed epic and its transcript check",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1078"
+     ],
+     "needs": [
+      "t:1069",
+      "t:1071",
+      "t:1073",
+      "t:1077"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1061",
+   "epic": "1009",
+   "group": "settings",
+   "label": "S",
+   "blocked_by": [],
+   "behaviours": [
+    {
+     "text": "#1061 Manifest: [actions.<name>] settings tables load, machine under project",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1061"
+     ],
+     "needs": []
+    }
+   ]
+  },
+  {
+   "id": "1062",
+   "epic": "1009",
+   "group": "settings",
+   "label": "S",
+   "blocked_by": [
+    1061
+   ],
+   "behaviours": [
+    {
+     "text": "#1062 zaf do: an action's run gets its own settings as ZAF_SETTING_<KEY>",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1062"
+     ],
+     "needs": [
+      "t:1061"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1064",
+   "epic": "1009",
+   "group": "bug-report",
+   "label": "S",
+   "blocked_by": [
+    1062
+   ],
+   "behaviours": [
+    {
+     "text": "#1064 bug-report: refuses with the parameter list or the missing settings, filing nothing",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1064"
+     ],
+     "needs": [
+      "t:1062"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1065",
+   "epic": "1009",
+   "group": "bug-report",
+   "label": "M",
+   "blocked_by": [
+    1064
+   ],
+   "behaviours": [
+    {
+     "text": "#1065 bug-report: files a scrubbed, capped report on a Forgejo place",
+     "size": 2,
+     "writes": [],
+     "provides": [
+      "t:1065"
+     ],
+     "needs": [
+      "t:1064"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1066",
+   "epic": "1009",
+   "group": "bug-report",
+   "label": "S",
+   "blocked_by": [
+    1065
+   ],
+   "behaviours": [
+    {
+     "text": "#1066 bug-report: files on a GitHub place with GH_TOKEN from token_env",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1066"
+     ],
+     "needs": [
+      "t:1065"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1068",
+   "epic": "1009",
+   "group": "bug-report",
+   "label": "M",
+   "blocked_by": [
+    1066
+   ],
+   "behaviours": [
+    {
+     "text": "#1068 bug-report-query: lists the reports carrying a tag, with links",
+     "size": 2,
+     "writes": [],
+     "provides": [
+      "t:1068"
+     ],
+     "needs": [
+      "t:1066"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1070",
+   "epic": "1009",
+   "group": "install",
+   "label": "S",
+   "blocked_by": [
+    1068
+   ],
+   "behaviours": [
+    {
+     "text": "#1070 Setup and update install bug-report and bug-report-query on the machine tier",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1070"
+     ],
+     "needs": [
+      "t:1068"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "1072",
+   "epic": "1009",
+   "group": "docs",
+   "label": "S",
+   "blocked_by": [
+    1062,
+    1068
+   ],
+   "behaviours": [
+    {
+     "text": "#1072 Docs: the bug-report actions and action settings, in zaf-actions.md and the machine config template",
+     "size": 1,
+     "writes": [],
+     "provides": [
+      "t:1072"
+     ],
+     "needs": [
+      "t:1062",
+      "t:1068"
+     ]
+    }
+   ]
+  }
+ ]
+}

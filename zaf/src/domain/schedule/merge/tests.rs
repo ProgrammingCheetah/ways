@@ -212,6 +212,7 @@ fn the_hold_ends_when_a_question_opens_on_the_fresh_ticket() {
         id: id(1),
         signed: false,
         challenged: true,
+        voided: false,
     });
     assert_eq!(fresh_from_fix(&unsigned), None);
 }
@@ -249,10 +250,7 @@ fn the_hold_ends_when_the_fresh_tickets_head_moves_by_anything_but_a_fix() {
 #[test]
 fn a_fresh_ticket_that_waits_on_a_ticket_holds_nobody() {
     let mut depends = fixed(12, 50);
-    depends.dependencies = vec![Dependency {
-        ticket: id(3),
-        standing: Standing::Open,
-    }];
+    depends.dependencies = vec![Dependency::blocked_by(id(3), Standing::Open)];
     assert_eq!(fresh_from_fix(&depends), None);
     let places = placed(vec![at_its_merge(3), depends]);
     assert_eq!(places[0], in_lane("merge", 85), "or the two would wait");

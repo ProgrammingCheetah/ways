@@ -1,0 +1,179 @@
+{
+ "name": "11-thin-drops-an-implied-wait",
+ "why": "With lifting off: C waits on A and on B, and B waits on A. The wait C on A is implied and dropped.",
+ "options": {
+  "lift": "none",
+  "interfaces": "each"
+ },
+ "plan": {
+  "nodes": [
+   {
+    "id": "A",
+    "behaviours": [
+     {
+      "text": "a",
+      "size": 1,
+      "writes": [
+       "a"
+      ],
+      "provides": [
+       "a"
+      ],
+      "needs": []
+     }
+    ]
+   },
+   {
+    "id": "B",
+    "behaviours": [
+     {
+      "text": "b",
+      "size": 1,
+      "writes": [
+       "b"
+      ],
+      "provides": [
+       "b"
+      ],
+      "needs": [
+       "a"
+      ]
+     }
+    ]
+   },
+   {
+    "id": "C",
+    "behaviours": [
+     {
+      "text": "c",
+      "size": 1,
+      "writes": [
+       "c"
+      ],
+      "provides": [],
+      "needs": [
+       "a",
+       "b"
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ "expect": {
+  "before": {
+   "nodes": 3,
+   "interfaces": 0,
+   "chain": 3,
+   "width": [
+    1,
+    1,
+    1
+   ],
+   "narrow_layers": [
+    0,
+    1,
+    2
+   ],
+   "work": 3,
+   "critical": 3,
+   "critical_path": [
+    "A",
+    "B",
+    "C"
+   ]
+  },
+  "after": {
+   "nodes": 3,
+   "interfaces": 0,
+   "chain": 3,
+   "width": [
+    1,
+    1,
+    1
+   ],
+   "narrow_layers": [
+    0,
+    1,
+    2
+   ],
+   "work": 3,
+   "critical": 3,
+   "critical_path": [
+    "A",
+    "B",
+    "C"
+   ]
+  },
+  "plan": {
+   "nodes": [
+    {
+     "id": "A",
+     "behaviours": [
+      {
+       "text": "a",
+       "size": 1,
+       "writes": [
+        "a"
+       ],
+       "provides": [
+        "a"
+       ],
+       "needs": []
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "B",
+     "behaviours": [
+      {
+       "text": "b",
+       "size": 1,
+       "writes": [
+        "b"
+       ],
+       "provides": [
+        "b"
+       ],
+       "needs": [
+        "a"
+       ]
+      }
+     ],
+     "kind": "body"
+    },
+    {
+     "id": "C",
+     "behaviours": [
+      {
+       "text": "c",
+       "size": 1,
+       "writes": [
+        "c"
+       ],
+       "provides": [],
+       "needs": [
+        "a",
+        "b"
+       ]
+      }
+     ],
+     "kind": "body"
+    }
+   ],
+   "orders": [
+    {
+     "from": "A",
+     "to": "B",
+     "needs": "a"
+    },
+    {
+     "from": "B",
+     "to": "C",
+     "needs": "b"
+    }
+   ]
+  }
+ }
+}

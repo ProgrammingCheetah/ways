@@ -1,4 +1,4 @@
-//! `zaf epic list|show|sign|file|wait`: the open epics and where each stands, the Engineer's
+//! `zaf epic list|show|sign|file|check|wait`: the open epics and where each stands, the Engineer's
 //! signature, filing an epic of a version, and waiting on one.
 //!
 //! `wait <epic> [--minutes <n>]` (default 60, at least 1) blocks until a question on the epic or
@@ -25,6 +25,11 @@
 //! 0 as signing does. `file --version <v> --title <t>` reads the body on
 //! stdin and prints the new epic's id (the open epic's of that version and title, when there is
 //! one); an empty title or body exits 1, as does a board that cannot file an epic.
+//!
+//! `check <epic>` prints the failures of the behaviours check and the `Done when:` check, one
+//! line each (with `--json`, a list), and nothing on a pass. A pass exits 0; a failure, an epic
+//! with no `Done when:` line and an epic not signed exit 1, each with its reason; a board that
+//! fails exits 2.
 
 use std::time::{Duration, Instant, SystemTime};
 
@@ -38,6 +43,7 @@ use super::{Cli, EpicAction};
 use crate::adapters::process;
 use crate::app::actions::Terminal;
 use crate::app::chair::gatherer::floor_of;
+use crate::app::epic::check::{self, EpicCheckError as CheckError};
 use crate::app::epic::wait::{self, Clock, ProjectGather, Waited};
 use crate::app::epic::{self, EpicError, FileOutcome, SignGuard, SignOutcome};
 use crate::app::schedule::request;
@@ -195,12 +201,75 @@ fn wait_verb(
     OK
 }
 
+/// A port shell serving the `Done when:` tests.
+struct RootShell(Box<dyn crate::ports::Shell>);
+
+impl crate::app::check::Shell for RootShell {
+    fn run(
+        &self,
+        line: &crate::manifest::CommandLine,
+    ) -> Result<crate::ports::GateRun, crate::ports::PortError> {
+        self.0.run(line)
+    }
+}
+
+/// `zaf epic check <epic>`: the failures of both checks, one line each (a list with `--json`),
+/// nothing on a pass; exit 1 for a failure or a refusal, 2 for a board or a manifest that cannot
+/// serve the check.
+fn check_verb(
+    cli: &Cli,
+    composition: &Composition,
+    board: &dyn crate::ports::Board,
+    epic: crate::domain::TicketId,
+) -> u8 {
+    let path = cli.verb.path();
+    let env = match composition.project_env(None) {
+        Ok(env) => env,
+        Err(error) => {
+            crate::eprintln_zaf!("zaf {path}: {error}");
+            return BACKEND;
+        }
+    };
+    let shell = RootShell(composition.tests_shell_in_with_env(composition.root(), &env));
+    let tests = composition
+        .manifest()
+        .gate
+        .as_ref()
+        .and_then(|section| section.tests.as_ref());
+    match check::check(board, epic, tests, &shell) {
+        Ok(failures) => {
+            if cli.json {
+                println!("{}", json!(failures));
+            } else {
+                for line in &failures {
+                    println!("{}", crate::domain::printable(line));
+                }
+            }
+            if failures.is_empty() { OK } else { REFUSED }
+        }
+        Err(CheckError::Board(error)) => exit::fail(&path, &error),
+        Err(error @ CheckError::NoTestsTemplate) => {
+            crate::eprintln_zaf!("zaf {path}: {error}");
+            BACKEND
+        }
+        Err(error) => {
+            crate::eprintln_zaf!("zaf {path}: {error}");
+            REFUSED
+        }
+    }
+}
+
 /// Runs the verb.
 pub fn run(cli: &Cli, action: &EpicAction) -> u8 {
     let path = cli.verb.path();
     if matches!(action, EpicAction::Sign { .. }) && Seat::here().refuses_signing() {
         crate::eprintln_zaf!("zaf {path}: Sign in zaf's chair.");
         return REFUSED;
+    }
+    if matches!(action, EpicAction::File { .. })
+        && let Some(code) = exit::refuse_challenger_filing(&path)
+    {
+        return code;
     }
     let composition = match Composition::discover_here() {
         Ok(composition) => composition,
@@ -213,9 +282,13 @@ pub fn run(cli: &Cli, action: &EpicAction) -> u8 {
     if let EpicAction::Wait { epic, minutes } = action {
         return wait_verb(cli, &composition, board.as_ref(), *epic, *minutes);
     }
+    if let EpicAction::Check { epic } = action {
+        return check_verb(cli, &composition, board.as_ref(), *epic);
+    }
     let mut build: Option<String> = None;
     let done = match action {
         EpicAction::Wait { .. } => unreachable!("`wait` is run before this match"),
+        EpicAction::Check { .. } => unreachable!("`check` is run before this match"),
         EpicAction::List => epic::list_with_due(board.as_ref(), |epics| {
             super::status::due_releases(&composition, epics)
         })

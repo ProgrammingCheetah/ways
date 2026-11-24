@@ -12,6 +12,8 @@ use crate::app::chair::{
 };
 use crate::app::hub::next::NextKind;
 use crate::app::hub::state::{FixVerb, ProblemKind, TicketCost, WaitKind, WaitState};
+use crate::app::plan::show::{PlanView, ViewKind, ViewNode};
+use crate::domain::plan::{Measures, Name, NodeId, NodeKind, Order};
 use crate::domain::{EpicStage, TicketId};
 use crate::manifest::ProjectName;
 
@@ -214,6 +216,7 @@ pub fn ways() -> ChairState {
                 number: TicketId::from(224),
                 title: "the screens and setup".to_owned(),
                 stage: EpicStage::Challenged,
+                half_filed: false,
                 release: Some(ReleaseVersion::from("0.5.2")),
                 done: 1,
                 total: 7,
@@ -224,6 +227,7 @@ pub fn ways() -> ChairState {
                 number: TicketId::from(226),
                 title: "begin and the build start".to_owned(),
                 stage: EpicStage::Planned,
+                half_filed: false,
                 release: Some(ReleaseVersion::from("0.5.2")),
                 done: 1,
                 total: 2,
@@ -251,4 +255,100 @@ pub fn chair(size: (u16, u16)) -> Chair {
 /// A moment to count from.
 pub fn start() -> Instant {
     Instant::now()
+}
+
+/// A node of a view: held by `ticket`, titled `title`.
+pub fn node(id: &str, ticket: u64, title: &str, kind: NodeKind) -> ViewNode {
+    ViewNode {
+        id: NodeId::from(id),
+        ticket: Some(TicketId::from(ticket)),
+        title: title.to_owned(),
+        kind,
+    }
+}
+
+/// A wait of `to` on `from`, on `name`.
+pub fn order(from: &str, to: &str, name: &str) -> Order {
+    Order {
+        from: NodeId::from(from),
+        to: NodeId::from(to),
+        needs: Name::from(name),
+    }
+}
+
+/// Fixture 12's epic as its plan record wrote it, before optimising: A, B, C and D, no ticket
+/// holding any, D waiting on C's name.
+pub fn fixture_12_before() -> PlanView {
+    let ids = |names: &[&str]| names.iter().map(|id| NodeId::from(*id)).collect::<Vec<_>>();
+    let planned = |id: &str, title: &str| ViewNode {
+        id: NodeId::from(id),
+        ticket: None,
+        title: title.to_owned(),
+        kind: NodeKind::Body,
+    };
+    PlanView {
+        epic: TicketId::from(224),
+        kind: ViewKind::Before,
+        nodes: vec![
+            planned("A", "update: --yes"),
+            planned("B", "update: one summary line"),
+            planned("C", "the MCP server lists the verbs"),
+            planned("D", "profiles register the MCP server"),
+        ],
+        orders: vec![order("C", "D", "mcp.catalog")],
+        kept: Vec::new(),
+        layers: vec![ids(&["A", "B", "C"]), ids(&["D"])],
+        measures: Measures {
+            nodes: 4,
+            interfaces: 0,
+            chain: 2,
+            width: vec![3, 1],
+            narrow_layers: vec![1],
+            work: 4,
+            critical: 2,
+            critical_path: ids(&["C", "D"]),
+        },
+    }
+}
+
+/// Fixture 12's epic after optimising: A and B merged, an interface for the catalog, and C and D
+/// waiting on it. Its tickets are the first epic's #230, #234, #233 and #240.
+pub fn fixture_12_after() -> PlanView {
+    let ids = |names: &[&str]| names.iter().map(|id| NodeId::from(*id)).collect::<Vec<_>>();
+    PlanView {
+        epic: TicketId::from(224),
+        kind: ViewKind::After,
+        nodes: vec![
+            node(
+                "A+B",
+                230,
+                "update: --yes and one summary line",
+                NodeKind::Body,
+            ),
+            node("C", 233, "the MCP server lists the verbs", NodeKind::Body),
+            node("D", 240, "profiles register the MCP server", NodeKind::Body),
+            node(
+                "I:mcp.catalog",
+                234,
+                "the signature of mcp.catalog",
+                NodeKind::Interface,
+            ),
+        ],
+        orders: vec![
+            order("I:mcp.catalog", "C", "mcp.catalog"),
+            order("I:mcp.catalog", "D", "mcp.catalog"),
+        ],
+        kept: Vec::new(),
+        layers: vec![ids(&["A+B", "I:mcp.catalog"]), ids(&["C", "D"])],
+        measures: Measures {
+            nodes: 4,
+            interfaces: 1,
+            chain: 2,
+            width: vec![2, 2],
+            narrow_layers: vec![0, 1],
+            work: 5,
+            critical: 2,
+            critical_path: ids(&["A+B"]),
+        },
+    }
 }

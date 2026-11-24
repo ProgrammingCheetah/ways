@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use super::tick::PlannedLaunch;
 use super::{RUNS_DIR, SpawnError, slug};
 use crate::domain::Instance;
+use crate::domain::plan::record::GraphHash;
 use crate::ports::Holder;
 
 /// The launch record inside a run folder.
@@ -47,6 +48,27 @@ pub struct LaunchRecord {
     /// When it started, RFC 3339; none while it waits for its runner.
     #[serde(default)]
     pub started_at: Option<String>,
+    /// `LaunchRecord.graph`: the epic's graph hash, `sha256:<hex>`, when the launch is a challenger's (I14); left out
+    /// of every other role's record, and empty in one written before the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph: Option<String>,
+}
+
+/// What opens the `graph` of a launch record, before the hash's hex digits.
+const GRAPH_PREFIX: &str = "sha256:";
+
+/// A graph's hash as a launch record's `graph` holds it: `sha256:<hex>` (I14).
+pub fn graph_text(graph: &GraphHash) -> String {
+    format!("{GRAPH_PREFIX}{graph}")
+}
+
+impl LaunchRecord {
+    /// The graph hash the record holds; none for a record with no `graph`, or one that does
+    /// not read as [`graph_text`] writes it.
+    pub fn graph_hash(&self) -> Option<GraphHash> {
+        let text = self.graph.as_deref()?;
+        text.strip_prefix(GRAPH_PREFIX)?.parse().ok()
+    }
 }
 
 /// One run folder as read.
@@ -135,6 +157,24 @@ pub fn read_all(state_dir: &Path) -> Result<Vec<Run>, SpawnError> {
     Ok(runs)
 }
 
+/// The launch record of `instance`, read from its own run folder (by its slug); none when the
+/// folder or its record is not there. A garbled record is an error naming it.
+pub fn read_launch(
+    state_dir: &Path,
+    instance: &Instance,
+) -> Result<Option<LaunchRecord>, SpawnError> {
+    let dir = runs_dir(state_dir).join(slug(instance));
+    let Some(text) = read_text(&dir.join(LAUNCH_FILE))? else {
+        return Ok(None);
+    };
+    serde_json::from_str(&text)
+        .map(Some)
+        .map_err(|error| SpawnError::Read {
+            path: dir.join(LAUNCH_FILE),
+            reason: error.to_string(),
+        })
+}
+
 /// Reads one run folder. A garbled launch record is an error naming it; a garbled holder
 /// reads as none, so it holds nothing.
 fn read_one(dir: &Path) -> Result<Run, SpawnError> {
@@ -191,6 +231,28 @@ pub fn reserve(
     holder: &Holder,
     at: &str,
 ) -> Result<PathBuf, SpawnError> {
+    reserve_record(state_dir, planned, holder, at, None)
+}
+
+/// [`reserve`] for a challenger's launch: its record also holds `graph`, the hash of the epic's
+/// graph at the launch, as `sha256:<hex>` (I14).
+pub fn reserve_challenger(
+    state_dir: &Path,
+    planned: &PlannedLaunch,
+    holder: &Holder,
+    at: &str,
+    graph: &GraphHash,
+) -> Result<PathBuf, SpawnError> {
+    reserve_record(state_dir, planned, holder, at, Some(graph_text(graph)))
+}
+
+fn reserve_record(
+    state_dir: &Path,
+    planned: &PlannedLaunch,
+    holder: &Holder,
+    at: &str,
+    graph: Option<String>,
+) -> Result<PathBuf, SpawnError> {
     let parent = runs_dir(state_dir);
     std::fs::create_dir_all(&parent).map_err(|source| SpawnError::Write {
         path: parent.clone(),
@@ -206,6 +268,7 @@ pub fn reserve(
         tasks: Vec::new(),
         reserved_at: at.to_owned(),
         started_at: None,
+        graph,
     };
     if let Err(error) = write_record(&dir, &record)
         .and_then(|()| write(&dir.join(HOLDER_FILE), &format!("{holder}\n")))

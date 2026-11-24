@@ -35,7 +35,7 @@ use crate::domain::schedule::Place;
 use crate::domain::screen::{Line, Meaning, Text, clean};
 use crate::domain::{
     Budget, DEFAULT_RESERVE, Epic, EpicStage, Mebibytes, SLOTS_DIR, SizeTable, SlotRecord,
-    TaskTemplate, Ticket, TicketId, TicketSummary, Units,
+    TaskBody, Ticket, TicketId, TicketSummary, Units,
 };
 use crate::ports::{Board, ClaimRecord, Holder, MachineInstance, NewQuestion, PortError, live_use};
 
@@ -416,7 +416,7 @@ pub fn status(
     let mut ready = Vec::new();
     let mut unparsed = Vec::new();
     for ticket in &ready_tickets {
-        let problems = TaskTemplate::problems(ticket.body.as_str());
+        let problems = TaskBody::problems(ticket.body.as_str());
         if problems.is_empty() {
             ready.push(ticket.summary());
         } else {
